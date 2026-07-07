@@ -1,0 +1,192 @@
+.filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+.filterBtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  border: 1px solid var(--surface-border);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-200);
+  padding: 0.5em 0.9em;
+  border-radius: var(--r-pill);
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.filterBtn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+.filterBtn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.filterDot {
+  width: 0.55em;
+  height: 0.55em;
+  border-radius: 50%;
+  background: var(--fdot, var(--text-muted));
+}
+.filterCount {
+  color: var(--text-faint);
+}
+
+.groupLabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-200);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: var(--sp-6) 0 var(--sp-4);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.groupLabel::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--surface-border-soft);
+}
+.groupLabel:first-of-type {
+  margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-4);
+}
+@media (max-width: 400px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Card */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  padding: var(--sp-4);
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.card:hover {
+  border-color: var(--surface-border);
+  transform: translateY(-2px);
+}
+.cardGated {
+  border-color: var(--deny-crimson-border);
+  background: linear-gradient(180deg, var(--deny-crimson-soft), var(--bg-panel) 60%);
+}
+
+.gatedBanner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--deny-crimson);
+  border: 1px solid var(--deny-crimson-border);
+  background: var(--deny-crimson-soft);
+  padding: 0.28em 0.6em;
+  border-radius: var(--r-pill);
+}
+
+.name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--fs-500);
+  line-height: 1.2;
+}
+.value {
+  color: var(--text-secondary);
+  font-size: var(--fs-300);
+  line-height: 1.5;
+}
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.body {
+  color: var(--text-muted);
+  font-size: var(--fs-200);
+  line-height: 1.6;
+}
+.flow {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  font-size: var(--fs-200);
+  color: var(--text-secondary);
+}
+.flow li {
+  display: flex;
+  gap: 0.5em;
+  align-items: baseline;
+}
+.flow li::before {
+  content: "→";
+  color: var(--local-teal);
+  flex: none;
+}
+.cardGated .flow li::before {
+  content: "⛔";
+}
+
+.stageRow {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.notes {
+  border-top: 1px dashed var(--surface-border);
+  padding-top: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+.note {
+  display: flex;
+  gap: 0.5em;
+  align-items: baseline;
+  font-size: var(--fs-200);
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+.noteIcon {
+  flex: none;
+}
+.crisis {
+  color: var(--leave-amber);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: var(--fs-300);
+  padding: var(--sp-6);
+  text-align: center;
+  border: 1px dashed var(--surface-border);
+  border-radius: var(--r-md);
+}
