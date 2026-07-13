@@ -1,0 +1,121 @@
+.article {
+  border: 1px solid var(--deny-crimson-border);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--deny-crimson-soft), var(--bg-panel) 45%);
+  padding: var(--sp-6);
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: var(--sp-6);
+  align-items: start;
+}
+@media (max-width: 820px) {
+  .article {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-5);
+    padding: var(--sp-5);
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--deny-crimson);
+  border: 1px solid var(--deny-crimson-border);
+  background: var(--deny-crimson-soft);
+  padding: 0.3em 0.7em;
+  border-radius: var(--r-pill);
+  margin-bottom: var(--sp-4);
+}
+.title {
+  font-size: var(--fs-600);
+  margin-bottom: var(--sp-3);
+}
+.para {
+  color: var(--text-secondary);
+  font-size: var(--fs-400);
+  line-height: 1.6;
+  margin-bottom: var(--sp-3);
+}
+.para strong {
+  color: var(--text-primary);
+}
+
+.flowCard {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  padding: var(--sp-4);
+}
+.flowLabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
+}
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  counter-reset: step;
+}
+.step {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  font-size: var(--fs-300);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.stepNum {
+  counter-increment: step;
+  flex: none;
+  width: 1.7em;
+  height: 1.7em;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-200);
+  border: 1.5px solid var(--deny-crimson-border);
+  color: var(--deny-crimson);
+}
+.stepNum::before {
+  content: counter(step);
+}
+.denyStep {
+  color: var(--deny-crimson);
+  font-weight: 600;
+}
+
+.cta {
+  appearance: none;
+  width: 100%;
+  border: 1px solid var(--deny-crimson-border);
+  background: var(--deny-crimson-soft);
+  color: var(--deny-crimson);
+  font-weight: 600;
+  font-size: var(--fs-300);
+  padding: 0.8em 1.2em;
+  border-radius: var(--r-md);
+  transition: background var(--dur-fast) var(--ease);
+}
+.cta:hover {
+  background: rgba(232, 84, 107, 0.2);
+}
+.disclaimer {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-200);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
