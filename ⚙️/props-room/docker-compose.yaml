@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8300:8300"
+    environment:
+      PROPS_ROOM_DATA_DIR: /data
+      PROPS_ROOM_TV_REPO_ROOT: /workspace/tv
+      PROPS_ROOM_ALLOW_HOST_SUBPROCESS: "true"
+    volumes:
+      - props-room-data:/data
+      - ../../🔬/tv:/workspace/tv:ro
+
+volumes:
+  props-room-data:

@@ -1,0 +1,18 @@
+###############################################################################
+# Props Room — dstack / Phala Cloud TEE overlay
+#
+# This overlay:
+#   - enables dstack mode for sealing + attestation
+#   - mounts dstack.sock inside the service
+#   - keeps the tv repo mounted read-only
+###############################################################################
+
+services:
+  app:
+    environment:
+      PROPS_ROOM_DSTACK_ENABLED: "true"
+      PROPS_ROOM_TV_REPO_ROOT: /workspace/tv
+    volumes:
+      - props-room-data:/data
+      - ../../🔬/tv:/workspace/tv:ro
+      - /var/run/dstack.sock:/var/run/dstack.sock

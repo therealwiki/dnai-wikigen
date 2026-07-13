@@ -1,0 +1,22 @@
+[project]
+name = "props-room"
+version = "0.1.0"
+description = "NDAI + Props control plane for TEE-protected raw data ingestion and downstream approvals"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "cryptography>=44.0",
+]
+
+[project.scripts]
+props-room = "props_room.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["props_room"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

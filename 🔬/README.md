@@ -29,6 +29,9 @@
 | 18 | [neko (G-structure fork)](#neko-g-structure-fork) | Fork with Nix packaging + GHCR CI — anti-bot-resistant virtual browser | 🟡 High |
 | 19 | [neko_agent](#neko_agent) | AI vision agent that drives neko for automated browser tasks in TEE | 🟡 High |
 | 20 | [neko-with-playwright](#neko-with-playwright) | CDP playground — Neko + Playwright for programmatic browser control | 🟡 High |
+| 21 | [tinker-cookbook](#tinker-cookbook) | Post-training recipes — SFT, RL, RLHF, tool use, multi-agent | 🟢 Reference |
+| 22 | [tinker](#tinker-sdk) | Training API + CLI for distributed LLM fine-tuning via LoRA | 🟢 Reference |
+| 23 | [tinker-project-ideas](#tinker-project-ideas) | Community project ideas for Tinker fine-tuning | 🟢 Reference |
 
 ---
 
@@ -438,6 +441,121 @@ Andrew Miller's CDP playground — minimal setup proving Chrome DevTools Protoco
 
 ---
 
+## NDAI Ecosystem ⭐
+
+> These repos were highlighted by Andrew Miller in the first Shape Rotator hackathon session as key starting points.
+
+### awesome-ndai
+`🔬/account-link/awesome-ndai`
+
+⭐ The curated reading list for NDAI and TEE-based systems. Start here for an organized overview of tutorials, applications, sandboxes, and related papers.
+
+**Slides under the lens:**
+- TEE & Dstack Tutorials — links to devproof guides, dstack tutorial, Phala docs
+- TEE Applications — Hermes, Teleport-Tokscope, Phala Cloud templates
+- Dstack Sandboxes — Dshield, Multiplayer MCP, OAuth3 Enclave, Semi-Proprietary Modules
+- Related Papers — DelegaTEE (credible forgetting), Information Bazaar, Liquefaction
+
+**Takeaway:** The index. If you're unsure where to start, this is the map Andrew curated for hackathon teams.
+
+---
+
+### mcp-multiplayer
+`🔬/account-link/mcp-multiplayer`
+
+⭐ Multi-agent MCP channels with transparent bots, cryptographic commitments, and verifiable execution. Creates "portals" between Claude/ChatGPT sessions where agents interact through shared channels with SHA-256 hashed bot code.
+
+**Slides under the lens:**
+- `multiplayer_server.py` — FastMCP server with OAuth 2.1 + channel operations
+- `bot_manager.py` — Bot attachment, RestrictedPython sandbox (5s timeout, non-root, allowlisted imports)
+- `channel_manager.py` — Channel creation, invite codes, rejoin tokens for session continuity
+- `bots/guess_bot.py` — Commitment-reveal pattern (bot commits to secret, proves it after guess)
+- `docker-compose.yml` — OAuth proxy (:8100) + MCP server (:8201)
+- `note-dstack.md` — Notes on dstack TEE deployment
+
+**Takeaway:** The credible commitment primitive for agent-to-agent negotiation. Two AI agents can play games, make bets, or mediate disputes with verifiable rules. The bot-code-as-contract pattern maps to deal room arbitration.
+
+---
+
+### dstack-semiproprietary-modules
+`🔬/account-link/dstack-semiproprietary-modules`
+
+⭐ Encrypted module distribution with self-containment verification. Authors encrypt proprietary code, publish to a bulletin board, and TEE enclaves decrypt according to on-chain policy — no author needed at runtime.
+
+**Slides under the lens:**
+- `enclave/` — TEE code: verifier + service + encryption with TEE-derived keys
+- `private_module/` — Example: self-contained sudoku solver (no external hints allowed)
+- `scripts/` — Module publishing to local bulletin board or GitHub Gists
+- `docker-compose.yml` + `docker-compose-dstack.yml` — Local and TEE deployment
+- `DSTACK-DEPLOYMENT.md` — Phala Cloud deployment guide
+- `timing-sidechannel/` — Timing side-channel analysis
+
+**Takeaway:** The pattern for running proprietary code in a TEE with public interface contracts. Seller uploads encrypted module → TEE decrypts and runs it → buyer gets results without seeing source.
+
+---
+
+### dshield
+`🔬/jameslbarnes/dshield`
+
+⭐ Verifiable egress logging for AI agents. Answers: "where does this agent send my data?" TEE-attested functions log every outbound HTTP request with cryptographic signatures, without requiring open-source code.
+
+**Slides under the lens:**
+- `src/` — TypeScript serverless runtime on Phala Cloud (TDX TEE)
+- `functions/` — Deployable functions (Python/Node.js) with egress logging
+- `docs/` — Architecture and deployment documentation
+- `examples/` — ETHEREA creative AI tool showing the report card pattern
+- `docker-compose.yml` — Phala Cloud deployment
+
+**Takeaway:** The transparency layer. Proves what external services an agent contacts at runtime. For the diligence room, this proves the evaluator agent only contacts approved LLM endpoints and doesn't exfiltrate the artifact.
+
+---
+
+## Thinking Machines Lab
+
+[Thinking Machines](https://thinkingmachines.ai/) is an AI lab founded by Mira Murati (former OpenAI CTO). Their first product is **Tinker** — a managed API for distributed LLM fine-tuning. Tinker abstracts away cluster management, GPU scheduling, and failure recovery while giving researchers full control over algorithms and data. It uses LoRA to share compute across training runs and supports models from small to trillion-parameter MoE architectures (Qwen, Kimi K2 Thinking). GA since December 2025. Early adopters include groups at Princeton, Stanford, Berkeley, and Redwood Research.
+
+### tinker-cookbook
+`🔬/thinking-machines/tinker-cookbook`
+
+Realistic post-training examples and reusable abstractions built on the Tinker API. 2.9k stars.
+
+**Slides under the lens:**
+- `tinker_cookbook/recipes/chat_sl/` — Supervised fine-tuning on conversational datasets
+- `tinker_cookbook/recipes/math_reasoning/` — Reward-based RL for mathematical problem-solving
+- `tinker_cookbook/recipes/preference_learning/` — Three-stage RLHF pipeline (SFT → reward model → RL)
+- `tinker_cookbook/recipes/tool_use/` — Training models to use retrieval tools
+- `tinker_cookbook/recipes/prompt_distillation/` — Internalizing complex system prompts into model weights
+- `tinker_cookbook/recipes/multi_agent/` — Self-play and competitive multi-agent optimization
+- `sl_basic.py`, `rl_basic.py` — Minimal working examples
+- `tinker_cookbook/evaluation/` — Model evaluation + InspectAI benchmark integration
+
+**Takeaway:** The reference for how to fine-tune open-weight models via API. The multi-agent and tool-use recipes are directly relevant if the evaluator agent inside the diligence room needs task-specific tuning. The RL recipes show how to train models with custom reward signals — applicable to training an agent that respects disclosure constraints.
+
+---
+
+### tinker (SDK)
+`🔬/thinking-machines/tinker`
+
+The Python SDK and CLI for the Tinker training API. 348 stars.
+
+**Slides under the lens:**
+- Low-level primitives: `forward_backward` and `sample` for implementing custom post-training methods
+- Managed scheduling, GPU allocation, and checkpoint handling
+- Switch between model sizes by changing a single string
+
+**Takeaway:** The SDK that powers the cookbook. Reference for building against a managed training API.
+
+---
+
+### tinker-project-ideas
+`🔬/thinking-machines/tinker-project-ideas`
+
+Community-sourced project ideas for Tinker fine-tuning experiments. 172 stars.
+
+**Takeaway:** Inspiration for what to fine-tune and why. Useful for scoping evaluator agent training if we go beyond prompting.
+
+---
+
 ## Architecture Cheat Sheet
 
 ```
@@ -463,6 +581,7 @@ Browser Automation in TEE   → github-zktls-1 --sealed-box (browser-container/)
 CDP over Neko               → neko-with-playwright (amiller)
 Browser Agent + Anti-Bot    → neko_agent + neko fork (G-structure)
 Verification Chain          → hermes (VERIFICATION-REPORT.md)
+Agent Fine-Tuning           → tinker-cookbook (RL, tool use, multi-agent recipes)
 ```
 
 ---

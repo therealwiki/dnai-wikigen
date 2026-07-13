@@ -1,0 +1,37 @@
+###############################################################################
+# Tinker Delegate — dstack / Phala Cloud overlay
+#
+# Deploy alongside tee-email-oracle in the same CVM:
+#   Merge both compose files for the CVM deployment.
+#
+# This overlay:
+#   - Connects to neko Chrome + email oracle on the CVM internal network
+#   - Mounts dstack.sock for TDX attestation + KMS key derivation
+#   - Enables dstack mode for real attestation quotes
+###############################################################################
+
+services:
+  delegate:
+    environment:
+      TINKER_CDP_URL: http://172.30.0.3:9222
+      TINKER_ORACLE_URL: http://oracle:8000
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_BROWSER_SESSION_KEY_PATH: tinker/browser_session
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_FUNDING_RECEIPT_KEY_PATH: tinker/funding_receipts
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_RUN_METADATA_KEY_PATH: tinker/run_metadata
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}
+      DSTACK_ENABLED: "true"
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    networks:
+      - oracle-net
+
+networks:
+  oracle-net:
+    external: true
+    name: tee-email-oracle_oracle-net

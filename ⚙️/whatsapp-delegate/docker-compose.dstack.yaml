@@ -1,0 +1,22 @@
+###############################################################################
+# WhatsApp Delegate — dstack / Phala Cloud TEE overlay
+#
+# Deploy to Phala:
+#   docker compose -f docker-compose.yaml -f docker-compose.dstack.yaml up
+#
+# This overlay:
+#   - Mounts /var/run/dstack.sock for TDX attestation + KMS
+#   - Enables dstack mode: seal key derived from TEE identity
+#   - Removes dev volume mount (app code baked into image)
+#   - Data sealed with derive_key("whatsapp/messages") — only this CVM can decrypt
+###############################################################################
+
+services:
+  app:
+    volumes:
+      - wa-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      WA_DSTACK_ENABLED: "true"
+      WA_CDP_URL: http://172.32.0.3:9222
+      WA_SEAL_KEY_HEX: ""  # Ignored in dstack mode — key derived from TEE

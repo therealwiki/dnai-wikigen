@@ -1,0 +1,140 @@
+###############################################################################
+# Unified Cross-Compose — All services for local dev
+#
+# Runs everything in a single compose: neko browser, email oracle, delegate.
+# Replaces the need to start tee-email-oracle and tinker-delegate separately.
+#
+# Usage (headless — no browser UI, fast):
+#   docker compose -f docker-compose.all.yaml up -d oracle delegate
+#
+# Usage (with neko browser for visual debugging):
+#   docker compose -f docker-compose.all.yaml --profile browser up -d
+#   open http://localhost:52000   # neko web UI — watch the browser live
+#
+# Usage (Phala deployment — merge with dstack overlay):
+#   docker compose -f docker-compose.all.yaml -f docker-compose.all.dstack.yaml up
+#
+# API endpoints:
+#   curl http://localhost:8000/health    # email oracle
+#   curl http://localhost:8080/health    # tinker delegate
+#
+# Network layout (shared 172.20.0.0/24):
+#   172.20.0.3 — neko (Chrome + CDP)
+#   172.20.0.4 — oracle (email oracle)
+#   172.20.0.5 — delegate (tinker delegate)
+###############################################################################
+
+services:
+  # ─── Neko Chrome + CDP (browser automation target) ──────────────────────
+  neko:
+    build:
+      context: ../tee-email-oracle/neko-chrome
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    profiles: ["browser"]
+    restart: unless-stopped
+    shm_size: 2gb
+    ulimits:
+      core: 0
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "52000:8080"    # Neko web UI
+      - "9222:9222"     # CDP proxy (nginx → Chrome DevTools)
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: neko
+      NEKO_PASSWORD_ADMIN: admin
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.20.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  # ─── Email Oracle ───────────────────────────────────────────────────────
+  oracle:
+    build:
+      context: ../tee-email-oracle
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.4
+    ports:
+      - "8000:8000"
+    volumes:
+      - oracle-data:/data
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ${ORACLE_CRED_STORE_KEY:-}
+      ORACLE_CDP_URL: http://172.20.0.3:9222
+      ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-false}
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_DSTACK_ENABLED: "false"
+      ORACLE_DSTACK_KEY_PATH: "email/creds"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      retries: 5
+      timeout: 5s
+      start_period: 180s
+
+  # ─── Tinker Delegate ────────────────────────────────────────────────────
+  delegate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      oracle:
+        condition: service_started
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.5
+    ports:
+      - "8080:8080"
+    volumes:
+      - delegate-data:/data
+    environment:
+      TINKER_CDP_URL: http://172.20.0.3:9222
+      TINKER_ORACLE_URL: http://172.20.0.4:8000
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}
+      TINKER_BOOTSTRAP_SIGNUP: ${TINKER_BOOTSTRAP_SIGNUP:-false}
+      TINKER_BOOTSTRAP_ORACLE_TIMEOUT: ${TINKER_BOOTSTRAP_ORACLE_TIMEOUT:-300}
+      TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL: ${TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL:-5}
+      DSTACK_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      retries: 40
+      timeout: 5s
+      start_period: 300s
+
+volumes:
+  oracle-data:
+  delegate-data:
+
+networks:
+  tee-net:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

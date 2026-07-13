@@ -1,4 +1,11 @@
 # Secrets
 .env
+**/.venv/
+**/__pycache__/
+**/*.egg-info/
+**/.pytest_cache/
 # Private Markdown Files
 *.private.md
+# Captcha solver samples
+⚙️/tee-email-oracle/captcha-solver/samples/
+⚙️/tee-email-oracle/data
