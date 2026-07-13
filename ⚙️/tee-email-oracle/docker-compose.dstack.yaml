@@ -1,0 +1,30 @@
+###############################################################################
+# TEE Email Oracle — dstack / Phala Cloud overlay
+#
+# Deploy to Phala:
+#   docker compose -f docker-compose.yaml -f docker-compose.dstack.yaml up
+#
+# This overlay:
+#   - Activates neko (removes profile restriction — always on in prod)
+#   - Runs natively on amd64 (no emulation needed on Phala)
+#   - Mounts /var/run/dstack.sock for TDX attestation + KMS
+#   - Enables dstack mode (derive_key for credentials, TDX quotes)
+#   - Oracle connects to neko's Google Chrome via CDP
+###############################################################################
+
+services:
+  neko:
+    profiles: !reset []
+
+  oracle:
+    depends_on:
+      neko:
+        condition: service_healthy
+    volumes:
+      - oracle-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_CRED_STORE_KEY: ""
+      ORACLE_USE_BROWSER_FALLBACK: "true"
+      ORACLE_CDP_URL: http://172.30.0.3:9222

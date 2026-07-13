@@ -1,0 +1,166 @@
+###############################################################################
+# Phala Oracle Genesis Debug Compose
+#
+# TEMPORARY DEBUG ONLY. This compose enables email-oracle auto-genesis so we can
+# test cock.li captcha/account creation inside Phala. Do not use it for
+# production, Tinker login, API-key provisioning, billing, or card handling.
+#
+# Guardrails:
+# - no tinker-delegate service
+# - no Tinker bootstrap
+# - no credential provisioning endpoint
+# - no card, API-key, artifact, or OTP-bearing workflow
+# - debug-only image pin; public health/attestation must be re-checked before
+#   this compose is used to claim bounded mailbox egress
+###############################################################################
+
+services:
+  neko:
+    image: ghcr.io/m1k1o/neko/google-chrome@sha256:320c62313c38fd3e6567eef6c8ee78e1d115deb0b88ba60ef02cc4ea7d6ebbea
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 2gb
+    ulimits:
+      core: 0
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "52000:8080"
+      - "9222:9223"
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-admin}
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.20.0.3
+      NEKO_CHROME_FLAGS: ${NEKO_CHROME_FLAGS:-}
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        cat >/usr/local/bin/cdp_proxy.py <<'EOF'
+        import socket
+        import threading
+
+        LISTEN = ("0.0.0.0", 9223)
+        TARGET = ("127.0.0.1", 9222)
+
+
+        def pump(src, dst):
+            try:
+                while True:
+                    chunk = src.recv(65536)
+                    if not chunk:
+                        break
+                    dst.sendall(chunk)
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+
+        def handle(client):
+            upstream = socket.create_connection(TARGET)
+            threading.Thread(target=pump, args=(client, upstream), daemon=True).start()
+            threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
+
+
+        with socket.create_server(LISTEN, reuse_port=False) as server:
+            while True:
+                client, _ = server.accept()
+                threading.Thread(target=handle, args=(client,), daemon=True).start()
+        EOF
+        cat >/etc/neko/supervisord/google-chrome.conf <<'EOF'
+        [program:google-chrome]
+        environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"
+        command=/bin/sh -c "exec /usr/bin/google-chrome \
+          --remote-debugging-port=9222 \
+          --remote-debugging-address=0.0.0.0 \
+          --remote-allow-origins=* \
+          --window-position=0,0 \
+          --display=$$DISPLAY \
+          --user-data-dir=/home/neko/chrome-profile \
+          --no-first-run \
+          --start-maximized \
+          --bwsi \
+          --disable-file-system \
+          --disable-gpu \
+          --disable-software-rasterizer \
+          --disable-dev-shm-usage \
+          $$NEKO_CHROME_FLAGS"
+        stopsignal=INT
+        autorestart=true
+        priority=800
+        user=%(ENV_USER)s
+        stdout_logfile=/var/log/neko/google-chrome.log
+        stdout_logfile_maxbytes=100MB
+        stdout_logfile_backups=10
+        redirect_stderr=true
+
+        [program:cdp-proxy]
+        command=/usr/bin/python3 -u /usr/local/bin/cdp_proxy.py
+        autorestart=true
+        priority=700
+        stdout_logfile=/var/log/neko/cdp-proxy.log
+        stdout_logfile_maxbytes=100MB
+        stdout_logfile_backups=10
+        redirect_stderr=true
+        EOF
+        exec /usr/bin/supervisord -c /etc/neko/supervisord.conf
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  oracle:
+    image: ghcr.io/g-structure/dnai-wikigen/tee-email-oracle@sha256:99ce7765558a00699e265a8ca7cdcdc8f402dd93c50cf8ddb52a1ef175dffefe
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      neko:
+        condition: service_healthy
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.4
+    ports:
+      - "8000:8000"
+    volumes:
+      - oracle-genesis-debug-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ""
+      ORACLE_CDP_URL: http://172.20.0.3:9223
+      ORACLE_USE_BROWSER_FALLBACK: "true"
+      ORACLE_AUTO_GENESIS: "true"
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_DSTACK_KEY_PATH: email/creds-debug
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth-debug
+      ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
+      ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      retries: 10
+      timeout: 5s
+      start_period: 300s
+
+volumes:
+  oracle-genesis-debug-data:
+
+networks:
+  tee-net:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

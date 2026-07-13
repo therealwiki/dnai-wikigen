@@ -1,0 +1,149 @@
+###############################################################################
+# Temporary Main-CVM Selector Diagnostics Compose
+#
+# Purpose: one-shot read-only browser-control evidence capture against the main
+# Phala CVM. Redeploy back to docker-compose.tinker-funding-validation.phala.yaml
+# immediately after collecting bounded readiness/selector-probe receipts.
+#
+# Guardrails:
+# - registry images only; no local build contexts
+# - oracle mailbox genesis remains disabled
+# - Tinker signup/bootstrap remains disabled
+# - plaintext card, encrypted card, and add-balance mutations remain disabled
+# - browser readiness and selector probe are enabled only for this diagnostic
+# - browser diagnostics must emit bounded URL classes/hashes and selector bands,
+#   never raw page text, cookies, OTPs, API keys, card data, or account IDs
+###############################################################################
+
+services:
+  neko:
+    image: ghcr.io/g-structure/dnai-wikigen/neko-chrome@sha256:525e43d585828d1d9aa1bceaf7c8cfffc2eec47abf67e0b10550bf05338c4a07
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 2gb
+    ulimits:
+      core: 0
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "52000:8080"
+      - "9222:9222"
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-admin}
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.20.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  oracle:
+    image: ghcr.io/g-structure/dnai-wikigen/tee-email-oracle@sha256:f6103cd24ba2f63c859b55f5c1caab43fec92db9ac49009c7fdf0a07ffd9a7e3
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      neko:
+        condition: service_healthy
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.4
+    ports:
+      - "8000:8000"
+    volumes:
+      - oracle-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ${ORACLE_CRED_STORE_KEY:-}
+      ORACLE_CDP_URL: http://172.20.0.3:9222
+      ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-true}
+      ORACLE_AUTO_GENESIS: "false"
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_DSTACK_KEY_PATH: ${ORACLE_DSTACK_KEY_PATH:-email/creds}
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_KEY_PATH: ${ORACLE_RUNTIME_AUTH_KEY_PATH:-oracle/runtime-auth}
+      ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
+      ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      retries: 5
+      timeout: 5s
+      start_period: 180s
+
+  delegate:
+    image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:17f22d8e87f774717a1989f1501ea659ad13bf409e7d601af6cf7b1c1fdc7381
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      oracle:
+        condition: service_started
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.5
+    ports:
+      - "8080:8080"
+    volumes:
+      - delegate-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      TINKER_BROWSER_WS_ENDPOINT: ""
+      TINKER_CDP_URL: http://172.20.0.3:9222
+      TINKER_ORACLE_URL: http://172.20.0.4:8000
+      TINKER_ORACLE_AUTH_KEY_PATH: ${TINKER_ORACLE_AUTH_KEY_PATH:-oracle/runtime-auth}
+      TINKER_RUNTIME_AUTH_REQUIRED: "true"
+      TINKER_RUNTIME_AUTH_TOKEN: ${TINKER_RUNTIME_AUTH_TOKEN:-}
+      TINKER_RUNTIME_AUTH_KEY_PATH: ${TINKER_RUNTIME_AUTH_KEY_PATH:-tinker/runtime-auth}
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_DSTACK_KEY_PATH: ${TINKER_DSTACK_KEY_PATH:-tinker/api_key}
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_BROWSER_SESSION_KEY_PATH: ${TINKER_BROWSER_SESSION_KEY_PATH:-tinker/browser_session}
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_FUNDING_RECEIPT_KEY_PATH: ${TINKER_FUNDING_RECEIPT_KEY_PATH:-tinker/funding_receipts}
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_RUN_METADATA_KEY_PATH: ${TINKER_RUN_METADATA_KEY_PATH:-tinker/run_metadata}
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_AUTH_AUTOMATION_ENDPOINT: "false"
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: "false"
+      TINKER_ALLOW_PLAINTEXT_CARD_ENDPOINT: "false"
+      TINKER_ALLOW_BROWSER_READINESS_ENDPOINT: "true"
+      TINKER_ALLOW_SELECTOR_PROBE_ENDPOINT: "true"
+      TINKER_BOOTSTRAP_SIGNUP: "false"
+      TINKER_BOOTSTRAP_FAIL_OPEN: "true"
+      TINKER_BOOTSTRAP_ORACLE_TIMEOUT: ${TINKER_BOOTSTRAP_ORACLE_TIMEOUT:-300}
+      TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL: ${TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL:-5}
+      TINKER_FIRST_NAME: ${TINKER_FIRST_NAME:-Tinker}
+      TINKER_LAST_NAME: ${TINKER_LAST_NAME:-Delegate}
+      TINKER_LOCAL_BROWSER_FALLBACK: "false"
+      DSTACK_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      retries: 40
+      timeout: 5s
+      start_period: 300s
+
+volumes:
+  oracle-data:
+  delegate-data:
+
+networks:
+  tee-net:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

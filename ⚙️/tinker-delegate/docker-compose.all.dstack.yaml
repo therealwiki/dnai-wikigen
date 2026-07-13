@@ -1,0 +1,59 @@
+###############################################################################
+# Unified Cross-Compose — dstack / Phala Cloud overlay
+#
+# Deploy all services as a single CVM on Phala Cloud:
+#   docker compose -f docker-compose.all.yaml -f docker-compose.all.dstack.yaml up
+#
+# This overlay:
+#   - Activates neko (always on in prod — no profile restriction)
+#   - Mounts dstack.sock on oracle + delegate for TDX attestation + KMS
+#   - Enables dstack mode on both services
+#   - Oracle waits for neko health before starting
+#   - Delegate waits for oracle health before starting
+#   - Service-to-service auth via dstack derive_key (see docs/ORACLE-AUTH-SCOPE.md)
+#
+# Trust boundary:
+#   All three containers share a CVM. The compose hash in the TDX quote
+#   covers all services — attestation proves the exact set of containers.
+#   dstack.sock is only mounted on oracle + delegate (not neko).
+###############################################################################
+
+services:
+  # Activate neko in prod (remove profile restriction)
+  neko:
+    profiles: !reset []
+
+  oracle:
+    depends_on:
+      neko:
+        condition: service_healthy
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_CRED_STORE_KEY: ""
+      ORACLE_USE_BROWSER_FALLBACK: "true"
+      ORACLE_CDP_URL: http://172.20.0.3:9222
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth
+
+  delegate:
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      TINKER_CDP_URL: http://172.20.0.3:9222
+      TINKER_ORACLE_URL: http://172.20.0.4:8000
+      TINKER_ORACLE_AUTH_KEY_PATH: oracle/runtime-auth
+      TINKER_BOOTSTRAP_SIGNUP: "true"
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_BROWSER_SESSION_KEY_PATH: tinker/browser_session
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_FUNDING_RECEIPT_KEY_PATH: tinker/funding_receipts
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_RUN_METADATA_KEY_PATH: tinker/run_metadata
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}

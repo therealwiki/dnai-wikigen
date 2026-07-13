@@ -1,0 +1,32 @@
+[project]
+name = "openproblems-denoising"
+version = "0.1.0"
+description = "OpenProblems v1 single-cell RNA-seq denoising as a private verified-reward env (prime-rl / verifiers v0). Exact metrics stay inside the boundary; only bounded reward bands leave."
+tags = ["single-turn", "private-reward", "biology", "denoising", "openproblems", "train", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Heavy stacks kept optional so denoising_core stays testable with numpy only.
+data = ["anndata>=0.10", "scipy>=1.11"]
+rl = ["verifiers>=0.1.8", "datasets>=2.19"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "openproblems_denoising.py",
+    "denoising_core.py",
+    "denoising_data.py",
+    "datasets.json",
+    "fetch_datasets.py",
+    "pyproject.toml",
+]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
