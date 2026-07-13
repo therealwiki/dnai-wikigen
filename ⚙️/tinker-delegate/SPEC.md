@@ -22,13 +22,14 @@ We need:
 | Decision | Resolution |
 |---|---|
 | **Who pays Tinker compute?** | The buyer. Compute cost is deducted from their escrow alongside the deal payment. |
-| **How is the Tinker account funded?** | Pre-funded by the developers (us). Credit card updated via encrypted channel to the TEE. |
+| **How is the Tinker account funded?** | Pre-funded by the developers (us) is still the intended production model. `TINKER_FUNDING_MODE=manual_prefund` denies raw-card/add-balance browser automation by default; the encrypted raw-card channel is limited to opt-in `operator_capped_validation` for a one-off capped operator-owned validation path. Runtime bearer auth protects operator-only mutation endpoints when `TINKER_RUNTIME_AUTH_REQUIRED=true`: `/auth/reauth`, `/billing/card/encrypted`, `/billing/add-balance`, `/billing/funding-receipts`, and the explicitly local plaintext card endpoint. `TinkerAccountEncumbrance.sol` adds an on-chain policy/audit surface; the Base Sepolia deployment at `0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e` has `$10` add-balance/spend caps after tx `0x3ab263bb7cb7758787fa1136dd043cca002db9cf511b29ad20ef4d1216199d3f`. The low-value operator-validation lane has proven funding: bounded packet `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, replay verification passed with deployed attestation, and bounded balance read-back now reports `$10.00` without card details. This remains non-production: the live CVM still uses dev/debug posture, production/repeated funding needs official Tinker or Stripe-hosted/tokenized rails plus compliance review, and the latest live client-config compose `0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085` still needs on-chain approval before it can be used for the next compute-smoke lane. |
 | **Fee structure** | 1% surcharge on top of raw Tinker API costs, paid to the developer account. |
 | **Evaluation protocol** | Up to the agent and its owner (the buyer). The agent decides base model, steps, benchmarks autonomously. |
 | **`ttl_seconds` on checkpoints** | Mandatory on every save. Dead man's switch — Tinker auto-deletes even if our cleanup never runs. |
-| **Tinker console automation** | **RESOLVED**: Chrome CDP via neko + Playwright. Passwordless magic-code auth (6-digit OTP via email). No captcha, no phone verification. `cock.email` domain passes blocklist. See `README.md` for full recon findings. |
+| **Tinker console automation** | **PARTIAL**: Local Neko/CDP + Playwright works for passwordless magic-code auth, onboarding, and API-key provisioning as of 2026-07-08. API-key provisioning now has selector fallback families, aria-label/data-testid variants, bounded `api_key_provisioning` attempt records, and replayable mock-page tests for successful extraction and selector failures. `tinker-delegate selector-map` emits the bounded selector/frame/auth-flow contract for email auth, OTP, onboarding, API-key creation, billing, Stripe iframe, balance top-up, and auto-reload surfaces with a recomputable map hash and no raw account, OTP, API-key, card, page-text, cookie, or browser-session output. `tinker-delegate selector-probe` is the read-only live browser observation command for deployed evidence: it does not navigate, click, type, screenshot, or capture page text, and emits only URL classes/hashes, selector match bands, frame kinds, selector-map hash, and bounded failure JSON. In source/tests and Phala one-shot evidence, selector-probe now falls back to raw CDP when Playwright attachment fails: it uses `Target.getTargets`, `Target.attachToTarget`, `Runtime.evaluate`, and `Page.getFrameTree` to emit bounded target/page/frame/selector-family inventory, URL classes/hashes, frame kinds, stage/error bands, and bounded raw-CDP failure receipts only; per-page attach/frame-tree failures preserve page URL classes/hashes and bounded error kinds without raw URL/page-text egress. The GitHub-attested `a384db2` Phala run returned `success=true`, target count `2+`, page count `1`, `pages_observed=1`, one page observation, `attached=true`, `frame_tree_error_kind=timeout`, `partial_error_kind=frame_tree_timeout`, empty frame observations, and `raw_secret_egress=false`; normal compose was restored and both diagnostic endpoints returned 403. Runtime selector-family counting is source/test-real but not yet Phala-proven; `Page.getFrameTree` still times out before deployed frame inventory. `GET /browser/selector-probe` wraps that same probe for one-shot deployed evidence capture but is disabled by default and returns 403 unless `TINKER_ALLOW_SELECTOR_PROBE_ENDPOINT=true`. `tinker-delegate browser-readiness` and `GET /browser/readiness` now diagnose browser-control availability with endpoint classes/hashes, CDP metadata reachability, raw WebSocket upgrade stage bands, one-command CDP protocol probe bands, Playwright/CDP handshake bands, and bounded error kinds only; they do not navigate, click, type, screenshot, inspect page text, expose raw browser URLs, or return CDP response bodies. The raw WebSocket stage keeps the advertised debugger URL in memory only and emits URL class/hash, TCP/TLS/upgrade stage booleans, HTTP status band, and bounded error kind. The post-upgrade protocol probe sends one browser-scoped `Browser.getVersion` command and emits only command/response booleans, response kind, browser family, URL class/hash, status band, and bounded error kind. The selector and readiness endpoints have now been Phala-proven with GitHub-attested images: `7973b27` proved the raw WebSocket stage reaches HTTP `101`, and `59a9eac` proved the post-upgrade CDP protocol command returns a bounded Chromium `result` response while Playwright `connect_over_cdp` still times out. The selector profile returned bounded `browser_unavailable` JSON with `raw_secret_egress=false`; then normal compose was restored and both endpoints returned 403. Startup bootstrap preserves the last bounded attempt record in `/health.runtime.last_bootstrap_attempt_record` for successful API-key provisioning, selector/API-key failures, and early `tinker_auth` failures across account lookup, CDP/browser connection, context/page setup, auth, and onboarding. Those records expose no raw mailbox, OTP, URL, page text, or API key. A bounded local `reauth` path can refresh OTP auth and returns only `tinker_auth` receipt metadata; source/tests now save successful browser auth `storage_state` into encrypted `/data/browser_session.enc` with a separate `tinker/browser_session` dstack key path, and billing loads that sealed state for fresh contexts. The delegate Docker image now installs the optional Tinker SDK and a local image run reports `/health.agent_stack_available=true`. Phala one-shot bootstrap attempts have now failed closed first at Tinker auth with `auth_access_blocked`, then under headed Neko CDP with generic `bootstrap_error`, then with bounded `tinker_auth` `unknown_failure`; the latest Phala retry preserves that nested outcome in top-level `bootstrap_error_kind`. Production bootstrap is not solved because no API key has been sealed in the CVM, and browser-session persistence still needs GitHub-attested image deployment plus Phala repro. |
+| **Plaintext card API** | Disabled by default and unavailable in dstack mode. The normal API path is `/billing/card/encrypted` after quote verification; plaintext card JSON is only an explicit local-development test hook. |
 | **Oracle boot authorization** | Governed on-chain by oracle compose hash policy. The oracle's own code authorization is frozen permanently after production sign-off; fresh TDX quotes continue to verify against that frozen policy. |
-| **OTP consumer authorization** | Managed separately from oracle code authorization. The deployer may update approved consumer app IDs / compose hashes directly or delegate that power to an approved operator during development. |
+| **OTP consumer authorization** | Managed separately from oracle code authorization. Current same-CVM runtime enforcement uses a bearer token derived from the shared dstack key path; full on-chain consumer-registry checks remain pending. |
 
 ## 3. Architecture Overview
 
@@ -93,18 +94,260 @@ PHASE 0: EMAIL
   → seals credentials via derive_key("email/creds")
   → emits TDX attestation binding email address
 
-PHASE 1: TINKER SIGNUP  ✅ IMPLEMENTED — see tinker_delegate/signup.py
+PHASE 1: TINKER SIGNUP  LOCAL VALIDATED — deployed CVM validation pending
   Neko browser → tinker-console.thinkingmachines.ai → auth.thinkingmachines.ai
   → enter cock.email address → Continue → magic-code page (6-digit OTP)
-  → email oracle extracts OTP via IMAP (POST /pin, regex \b\d{6}\b)
+  → delegate calls authenticated email oracle POST /pin with target service,
+    expected sender, nonce, caller identity, reason, max age, and bounded regex
   → enter code into 6x input[inputmode="numeric"] boxes → authenticated
   → complete onboarding form (name + TOS checkbox) → welcome page
-  → navigate to /keys → click "New key" → capture tml-... API key
-  → seal via derive_key("tinker/api_key")
+  → navigate to /keys → click "New key" → click "Generate key"
+  → capture one-time tml-... API key
+  → seal via encrypted key store locally or derive_key("tinker/api_key") in dstack
+  → return only bounded key hash/status metadata
   → emit TDX attestation: {email, tinker_account_id, enclave_identity}
 
-  KEY FINDING: cock.li and firemail.cc domains are BLOCKED by Thinking Machines.
-  cock.email (also a cock.li domain) passes the blocklist. IMAP server is the same.
+  HISTORICAL FINDING: cock.li and firemail.cc domains were blocked by Thinking
+  Machines while cock.email was previously observed to pass the blocklist.
+  CAPTCHA FINDING: a source-level fix now tracks cock.li's current form
+  contract: fill `password_confinm`, leave the `password_confirm` honeypot
+  empty, and mirror `csrf_valid`. A fresh Phala auto-genesis debug CVM with the
+  fixed, GitHub-attested oracle image reached IMAP verification. That proof also
+  showed public `/health` exposed the generated mailbox address, so source now
+  bounds public `/health` and `/attestation` to readiness plus
+  `oracle_email_hash` and moves raw address retrieval to runtime-authenticated
+  `/email`. A second Phala debug proof with the bounded-health image confirmed
+  public `/health` and `/attestation` return `oracle_email=""` with hash-only
+  readiness, while unauthenticated `/email` returns 401.
+  MAIN-CVM MAILBOX FINDING: a one-shot main Phala CVM deployment using
+  `docker-compose.mailbox-genesis.phala.yaml` generated and sealed the mailbox
+  while Tinker bootstrap, billing, add-balance, API-key provisioning, and
+  credential provisioning stayed disabled. The CVM was redeployed back to the
+  normal compose with `ORACLE_AUTO_GENESIS=false`; public health still reports
+  `oracle_ready=true`, `imap_connected=true`, `oracle_email=""`, and only
+  `oracle_email_hash`.
+  CURRENT FINDING: the local Neko browser path works end to end through API-key
+  capture. The main CVM now has a sealed mailbox ready for OTPs, and the
+  one-shot deployed bootstrap profile has been reworked and Phala-tested with
+  headed Neko CDP instead of the Playwright sidecar, but production
+  OTP/login/API-key bootstrap is still not solved.
+  PHALA TINKER BOOTSTRAP FINDING: `docker-compose.tinker-bootstrap.phala.yaml`
+  is the bounded one-shot profile for deployed probes. It keeps oracle genesis,
+  credential provisioning, and add-balance disabled, enables only
+  `TINKER_BOOTSTRAP_SIGNUP=true`, uses headed Neko CDP, and is reverted to the
+  normal compose after bounded success/failure evidence is collected. The first
+  live Phala run, using the old Playwright sidecar path, reached the Tinker
+  auth surface and failed closed with `bootstrap_error_kind=auth_access_blocked`.
+  The headed-Neko CDP retry verified the intended packaging and endpoint gates
+  but failed closed with generic `bootstrap_error` before a bounded stage
+  receipt or API-key capture. A later retry with GitHub-attested `74ad4b6`
+  images proved the bounded early-stage receipt path in Phala:
+  `/health.runtime.last_bootstrap_attempt_record` reported
+  `surface=tinker_auth`, `outcome=unknown_failure`,
+  `furthest_stage=not_started`, and `raw_secret_egress=false`. The outer
+  `bootstrap_error_kind` still flattened to generic `bootstrap_error` in that
+  live run. A follow-up Phala retry with GitHub-attested `8fb6e3a` images
+  proved the top-level preservation fix:
+  `/health.runtime.bootstrap_error_kind=unknown_failure` now matches the
+  bounded nested receipt. No API key was created, no card or add-balance path
+  was opened, and the normal compose was restored after each attempt.
+  SELECTOR PROBE ENDPOINT FINDING: source now includes a disabled-by-default
+  `GET /browser/selector-probe` route for one-shot deployed selector/frame
+  capture. It requires `TINKER_ALLOW_SELECTOR_PROBE_ENDPOINT=true`, performs the
+  same bounded read-only probe as the CLI, and returns bounded
+  `browser_unavailable` JSON on browser errors.
+  PHALA SELECTOR PROBE FINDING: GitHub-attested `59a9eac` oracle/delegate images
+  were pinned into the one-shot bootstrap profile with
+  `TINKER_ALLOW_SELECTOR_PROBE_ENDPOINT=true` and
+  `TINKER_ALLOW_BROWSER_READINESS_ENDPOINT=true`. The readiness endpoint
+  returned bounded `cdp_timeout` after successful CDP metadata discovery, raw
+  WebSocket TCP connect, HTTP Upgrade status band `101`, and a successful
+  one-command CDP protocol probe: `Browser.getVersion` returned a bounded
+  Chromium `result` response. The selector endpoint returned HTTP 503 with
+  bounded `browser_unavailable`, `bounded_output=true`, `read_only=true`, and
+  `raw_secret_egress=false`. The CVM was restored to normal compose afterward,
+  and both endpoints returned 403. This proves the deployed endpoint
+  gates/fail-closed paths and the basic DevTools protocol path, but not actual
+  selector/frame matches, because Playwright `connect_over_cdp` still times out.
+  A later GitHub-attested `f63dd18` one-shot run proved the raw-CDP selector
+  fallback reaches metadata, WebSocket Upgrade status band `101`, and
+  `Target.getTargets`, returning bounded target count `2+` and page count `1`.
+  `Page.getFrameTree` still timed out, so frame inventory and deployed DOM
+  selector counts remained incomplete. The CVM was restored to normal compose
+  afterward, and both diagnostic endpoints returned 403.
+  A later GitHub-attested `a384db2` one-shot run proved the timeout-preserving
+  page target receipt on Phala: selector-probe returned `probe_backend=raw_cdp`,
+  `success=true`, target count `2+`, page count `1`, `pages_observed=1`, one
+  bounded page URL class/hash, `attached=true`,
+  `frame_tree_error_kind=timeout`, `partial_error_kind=frame_tree_timeout`,
+  empty frame observations, and `raw_secret_egress=false`. The CVM was restored
+  to normal compose afterward, and both diagnostic endpoints returned 403.
+  Source/tests now add a bounded raw-CDP `Runtime.evaluate` selector-family
+  counter that emits only declared flow/family names plus `0`, `1`, `2+`, or
+  `probe_error` bands. Source/tests now run a constant page-scoped Runtime
+  micro-probe before the selector matrix and emit only
+  `runtime_micro_probe_command_success`, `runtime_micro_probe_success`, and
+  `runtime_micro_probe_error_kind`; this narrows the next deployed diagnosis
+  without exposing page text, raw DOM, selectors, URLs, cookies, OTPs, API keys,
+  or card material. A 2026-07-08 Phala one-shot run with GitHub-attested
+  `50de0a9` images proved the deployed route still returns bounded raw-CDP
+  output, but the page-scoped Runtime selector command timed out. A follow-up
+  Phala one-shot run with GitHub-attested `5943c61` images proved that even the
+  constant page-scoped Runtime micro-probe times out after page attach:
+  `partial_error_kind=runtime_micro_probe_timeout`,
+  `runtime_micro_probe_command_success=false`,
+  `runtime_micro_probe_error_kind=timeout`,
+  `runtime_selector_command_success=false`, and `flow_observations=[]`. This
+  narrows the deployed blocker to Runtime command delivery/evaluation in the
+  Neko/CDP path, not selector-expression complexity. The CVM was restored to
+  normal compose afterward at live hash
+  `6ead86a6f857f12210b9dd7656fbd54a2547795538a60f28bb9404165e3166fd`, and
+  `/browser/readiness`, `/browser/selector-probe`, and `/billing/add-balance`
+  returned 403. Selector-family match capture remains not Phala-proven; next
+  source/test-real diagnosis now adds bounded `Runtime.enable` and
+  execution-context event bands before the micro-probe:
+  `runtime_enable_command_success`,
+  `runtime_execution_context_event_observed`, `runtime_enable_success`,
+  `runtime_enable_error_kind`, `runtime_event_before_enable_response`,
+  `runtime_event_count_band`, and `runtime_execution_context_created`. It emits
+  no event payloads, context IDs, frame IDs, raw URLs, page text, selectors,
+  cookies, OTPs, API keys, or card material. A 2026-07-08 Phala one-shot run
+  with GitHub-attested `9d69364` images proved `Runtime.enable` itself times
+  out on the attached page session before any micro-probe or selector
+  evaluation: `partial_error_kind=runtime_enable_timeout`,
+  `runtime_enable_command_success=false`,
+  `runtime_execution_context_event_observed=false`,
+  `runtime_enable_error_kind=timeout`, `runtime_event_count_band=0`,
+  `runtime_execution_context_created=false`,
+  `runtime_micro_probe_command_success=false`,
+  `runtime_selector_command_success=false`, `flow_observations=[]`, and
+  `raw_secret_egress=false`. The CVM was restored to normal compose afterward
+  at live attested compose hash
+  `54ee243db5605588550d670fcc767ba17b49407e76613b633ddc7eee44494eb2`, and
+  `/browser/readiness`, `/browser/selector-probe`, and `/billing/add-balance`
+  returned 403. Source/tests now add a direct page-target WebSocket route for
+  that blocker: if attached-session `Runtime.enable` fails, the probe fetches
+  bounded page-target inventory from `/json/list`, connects directly to the
+  matching page target WebSocket, and retries `Runtime.enable`, the constant
+  micro-probe, and selector-family matrix on that direct connection. The nested
+  `direct_page_runtime` receipt emits only page-list success, page-WebSocket
+  availability, Runtime enable/error/event-count bands, micro-probe
+  success/error, selector success/error, and declared selector-family count
+  bands. It emits no raw page URLs, WebSocket URLs, event payloads, context IDs,
+  frame IDs, page text, selectors, cookies, OTPs, API keys, or card material.
+  A 2026-07-08 Phala one-shot run with GitHub-attested `bf39f56` images proved
+  the direct page-target route reaches `/json/list` and the page WebSocket, but
+  direct page `Runtime.enable` still times out:
+  `direct_page_runtime_attempted=true`,
+  `direct_page_runtime.page_list_success=true`,
+  `direct_page_runtime.page_websocket_available=true`,
+  `direct_page_runtime_enable_success=false`,
+  `direct_page_runtime.runtime_enable_error_kind=timeout`,
+  `direct_page_runtime_micro_probe_success=false`,
+  `direct_page_runtime_selector_success=false`, empty `flow_observations`, and
+  `raw_secret_egress=false`. The CVM was restored to normal compose afterward
+  at live attested compose hash
+  `382aa6c881d477724552f4445157afbcd75738ee1feb9603b982b75ec4e82c2c`, and
+  `/browser/readiness`, `/browser/selector-probe`, and `/billing/add-balance`
+  returned 403 with the current request schema. Selector-family match capture
+  remains not Phala-proven; the remaining deployed blocker is Neko/Chrome
+  Runtime-domain behavior itself, not just attached-session routing. Source/tests
+  now add a bounded `Page.enable` discriminator before `Runtime.enable` on both
+  attached-session and direct page-target paths. It emits only
+  `page_enable_command_success`, `page_enable_success`, and
+  `page_enable_error_kind`, so the next Phala run can distinguish page-domain
+  command delivery from Runtime-domain enablement without exposing page text,
+  raw URLs, selectors, cookies, OTPs, API keys, card material, event payloads,
+  frame IDs, or execution-context IDs. A follow-up 2026-07-08 Phala one-shot
+  run with GitHub-attested `556387a` images proved that `Page.enable` itself
+  times out on both attached-session and direct page-target paths:
+  `partial_error_kind=page_enable_timeout`,
+  `page_enable_command_success=false`,
+  `direct_page_runtime.page_list_success=true`,
+  `direct_page_runtime.page_websocket_available=true`,
+  `direct_page_runtime.page_enable_success=false`,
+  `direct_page_runtime.page_enable_error_kind=timeout`, no Runtime micro-probe,
+  no selector-family matrix, empty `flow_observations`, and
+  `raw_secret_egress=false`. The CVM was restored to normal compose afterward
+  at live attested compose hash
+  `e9e07417f7df3b0dae2fdc148fc6847751afa240b9167cc81e76883060ecd586`, and
+  `/browser/readiness`, `/browser/selector-probe`, and `/billing/add-balance`
+  returned 403. The remaining deployed blocker is now lower-level page CDP
+  command delivery through the Phala Neko path. A 2026-07-09 one-shot run with
+  the tracked `docker-compose.selector-diagnostics.phala.yaml` profile repeated
+  the measurement against the current GitHub-attested `eb3bde3` funding
+  validation images. The diagnostic profile used registry images only,
+  disabled Tinker bootstrap and every card/funding mutation, and enabled only
+  `/browser/readiness` plus `/browser/selector-probe`. The live one-shot
+  attested compose hash was
+  `170862495089566bbe75a0c95f8cc8c1267cb6d17e678144119be82a2f1b81d2`.
+  Readiness proved CDP metadata, WebSocket upgrade, and a browser-scoped
+  DevTools command succeed. Selector-probe returned `success=true`,
+  `probe_backend=raw_cdp`, target/page bands, one attached page, then
+  `partial_error_kind=page_enable_timeout` before Runtime or selector-family
+  counting. The direct page-target route also saw page-list and page-WebSocket
+  availability but timed out at `Page.enable`. No raw page URL, page text,
+  cookie, OTP, API key, account identifier, or card data left the TEE boundary.
+  The CVM was restored to the funding-validation profile afterward, with live
+  attested compose hash
+  `b3fc9840dc7db51d2ba835f349564fbace5b64a0a122025c9c1c5923f88686f7`, and
+  both diagnostic endpoints now return 403 disabled.
+  FUNDING VALIDATION PROFILE: on 2026-07-09 the temporary
+  `docker-compose.tinker-funding-validation.phala.yaml` profile was deployed to
+  Phala with GitHub-attested images, then refreshed to the custom Neko/CDP path
+  at live attested compose hash
+  `f4728f219572c09c6ccc013883a4a895f3e366ea6e9654459fd6b0002fe33552`.
+  `verify-deployment-bundle` passed with GitHub provenance/SBOM attestations,
+  digest-pinned registry images, and live TDX envelope evidence.
+  Health is OK, the email oracle is ready, IMAP is connected, public logs remain
+  disabled, and unauthenticated funding mutations return `401 Bearer token
+  required`. `$5` remote preflight with recorded deployment identity was ready
+  under the old deployed cap, authenticated `/auth/reauth` succeeds, and
+  `TinkerAccountEncumbrance` approves the current compose hash. The current
+  Tinker-minimum `$10` flow still needs the on-chain cap raised before preflight
+  and top-up can be considered ready.
+  The first approved real-card validation did not fund the account: live
+  `/billing/balance` returned `$0.00`; the payment-method receipt reached
+  `payment_submitted` and saw bounded card-management copy; add-balance opened
+  the modal but returned bounded `selector_missing` because the amount input was
+  not found. Source/tests now repair that classification/selector gap, add
+  bounded card-on-file status/removal controls, and enforce the `$10` Tinker
+  minimum; on-chain policy update, redeploy, and another bounded add-balance
+  receipt are still required.
+  Source/tests now add a bounded billing auth-state classifier before
+  payment-method/add-balance selector searches: sign-in or magic-code surfaces
+  return `auth_required`, and Tinker's access-blocked surface returns
+  `auth_access_blocked`, both without exposing page text or clicking billing
+  controls. This classifier is now Phala-proven with GitHub-attested images.
+  Source/tests and Phala also preserve bounded auth-stage evidence for
+  `auth_access_blocked` during signup and `/auth/reauth`: receipts can now say
+  `auth_page_loaded`, `auth_email_submitted`, or `auth_otp_page_reached` rather
+  than collapsing every deployed auth block to `not_started`. These stage labels
+  do not include raw page text, URLs, OTPs, cookies, API keys, or account
+  identifiers. The live funding-validation CVM now returns
+  `auth_access_blocked` at `auth_email_submitted`, proving browser launch and
+  email submission work on Phala but Tinker blocks the flow before OTP.
+  Browser-session persistence is also source/test-real and Phala-deployed:
+  successful auth will save Playwright `storage_state` into encrypted
+  `/data/browser_session.enc` under the separate `tinker/browser_session`
+  dstack key path, and billing will load that sealed state for fresh contexts.
+  No useful live session has been saved yet because deployed reauth still fails
+  before OTP with bounded `auth_access_blocked`; the remaining blocker is
+  Tinker's auth access-blocked posture before billing.
+  BOUNDED BROWSER READINESS FINDING: source now includes
+  `tinker-delegate browser-readiness` plus disabled-by-default
+  `GET /browser/readiness`. The diagnostic reports only endpoint classes/hashes,
+  CDP metadata reachability, raw WebSocket upgrade stage bands, Playwright/CDP
+  handshake results, one-command CDP protocol result bands, and bounded error
+  kinds; it does not navigate, click, type, screenshot, inspect page text, or
+  expose raw browser URLs. The raw WebSocket stage keeps the advertised debugger
+  URL in memory only and emits URL class/hash, TCP/TLS/upgrade stage booleans,
+  HTTP status band, and bounded error kind. The CDP protocol stage sends one
+  browser-scoped `Browser.getVersion` command and emits no response body. Normal
+  Phala compose disables the endpoint. The one-shot bootstrap measurement
+  profile has proven the route on Phala with bounded `cdp_timeout`, raw
+  WebSocket HTTP Upgrade status band `101`, successful CDP protocol result, and
+  restored-normal 403 gating.
 
 PHASE 2: READY
   Control plane starts listening for on-chain deal events
@@ -116,15 +359,20 @@ PHASE 2: READY
   → consumer registry may remain mutable during development, then freeze separately
 ```
 
-**RESOLVED**: Recon complete. See `README.md` for full findings. Summary:
+**Current auth status**: Local recon and automation work. Production signup is
+not complete until the same flow is validated in the deployed CVM package. See
+`README.md` for current findings. Summary:
 - **Framework**: Next.js SPA at `auth.thinkingmachines.ai`
-- **Auth**: Passwordless magic-code (6-digit OTP via email, no password, no captcha, no phone verification)
-- **Email domain blocklist**: `cock.li`, `airmail.cc`, `firemail.cc` blocked; `cock.email` allowed
+- **Auth**: Passwordless magic-code (6-digit OTP via email)
+- **Email domain blocklist**: `cock.li`, `airmail.cc`, `firemail.cc` were historically blocked; `cock.email` was historically allowed
+- **Current local result**: local Neko/CDP reaches magic-code auth, receives OTP through the oracle, completes onboarding, and provisions API keys with bounded attempt records
+- **Current deployed gap**: Phala/deployed browser posture emits bounded failure
+  evidence but still does not complete API-key sealing
 - **Onboarding**: Name + TOS checkbox (custom styled — click label, not hidden input)
-- **API key**: "New key" button at `/keys` → modal shows `tml-...` key once
+- **API key**: `/keys` uses "New key" / "Create API key" style actions, then a generate/confirm action; modal shows `tml-...` key once
 - **OTP sender**: `Thinking Machines Lab <no-reply@thinkingmachines.ai>`
 - **OTP format**: 6 digits, 6 individual `<input inputmode="numeric">` boxes
-- **Implementation**: `tinker_delegate/signup.py` — fully working, tested end-to-end
+- **Implementation**: `tinker_delegate/signup.py` — local path validated, deployed CVM validation pending
 
 ### 4.2 IsolatedTinkerSession (SDK Wrapper)
 
@@ -159,8 +407,10 @@ class IsolatedTinkerSession:
         **kwargs,
     ) -> tinker.TrainingClient:
         """Start a LoRA training run. One per deal, enforced."""
-        assert not self._closed, "Session closed"
-        assert self._training_run_id is None, "Only one training run per deal"
+        if self._closed:
+            raise RuntimeError("Session closed")
+        if self._training_run_id is not None:
+            raise RuntimeError("Only one training run per deal")
 
         tc = self._sc.create_lora_training_client(
             base_model=base_model,
@@ -184,8 +434,11 @@ class IsolatedTinkerSession:
 
         TTL is mandatory — auto-cleanup backstop even if cleanup() never runs.
         """
-        assert not self._closed, "Session closed"
-        assert self._training_client is not None, "No training run"
+        if self._closed:
+            raise RuntimeError("Session closed")
+        if self._training_client is None:
+            raise RuntimeError("No training run")
+        ttl_seconds = max(MIN_TTL, min(ttl_seconds, MAX_TTL))
 
         resp = self._training_client.save_weights_for_sampler(
             name=name,
@@ -196,7 +449,8 @@ class IsolatedTinkerSession:
 
     def create_sampler(self, model_path: str) -> tinker.SamplingClient:
         """Create a sampling client. Path MUST be from this session."""
-        assert not self._closed, "Session closed"
+        if self._closed:
+            raise RuntimeError("Session closed")
         if model_path not in self._allowed_paths:
             raise PermissionError(
                 f"Cannot sample from {model_path} — "
@@ -204,11 +458,24 @@ class IsolatedTinkerSession:
             )
         return self._sc.create_sampling_client(model_path=model_path)
 
+    def save_and_get_sampler(
+        self,
+        name: str = "eval",
+        ttl_seconds: int = 3600,
+    ) -> tinker.SamplingClient:
+        """Convenience path that still enforces TTL and path checks."""
+        model_path = self.save_for_sampling(name, ttl_seconds)
+        return self.create_sampler(model_path)
+
     # --- State (scoped to this run) ---
 
     def save_state(self, name: str, ttl_seconds: int = 3600) -> str:
         """Save training state (weights + optimizer) for resumption."""
-        assert not self._closed and self._training_client is not None
+        if self._closed:
+            raise RuntimeError("Session closed")
+        if self._training_client is None:
+            raise RuntimeError("No training run")
+        ttl_seconds = max(MIN_TTL, min(ttl_seconds, MAX_TTL))
         resp = self._training_client.save_state(
             name=name,
             ttl_seconds=ttl_seconds,
@@ -339,17 +606,26 @@ Orchestrates the deal lifecycle. Watches the on-chain escrow contract, creates/d
 **API:**
 
 ```
+POST /deal/{deal_id}/artifact/encrypted
+  Auth: seller's signature
+  Body: artifact encrypted to the attestation-exposed TEE public key
+  → Decrypts inside TEE, verifies artifactHash, stores artifact in memory
+    (never on disk)
+
 POST /deal/{deal_id}/artifact
   Auth: seller's signature
-  Body: encrypted artifact (encrypted to TEE's public key)
-  → Stores artifact in memory (never on disk)
+  Body: plaintext hex artifact payload
+  → Local-dev hook only; disabled by default and unavailable in dstack mode
 
 GET /deal/{deal_id}/result
   Auth: buyer's signature
   → Returns EvaluationResult + TDX quote (only after evaluation completes)
 
-GET /attestation
-  → Returns current TDX quote, compose hash, code measurements
+GET /attestation?context=ingress|artifact|billing
+  → Returns current context-bound TDX quote, compose hash, code measurements
+
+POST /auth/reauth
+  → Disabled unless explicitly enabled; refreshes OTP auth and returns only a bounded tinker_auth receipt
 
 GET /health
   → Liveness check + active session count
@@ -422,12 +698,16 @@ contract DiligenceRoom {
     // Buyer funds the deal — msg.value covers budget_cap + max compute + fee
     function fundDeal(uint256 dealId) external payable;
 
-    // TEE submits evaluation result + metered compute cost (attested via TDX)
+    // TEE submits bounded result + metered compute cost after verifier auth.
     function submitResult(
         uint256 dealId,
+        ScoreBand scoreBand,
+        uint256 computeCost,
         bytes32 resultHash,
-        uint256 computeCost
-    ) external;  // only callable by teeIdentity
+        bytes32 composeHash,
+        uint256 authorizationExpiry,
+        bytes calldata verifierSignature
+    ) external;  // callable only by teeIdentity with resultVerifier authorization
 
     // Buyer accepts — three-way settlement:
     //   seller gets deal_payment
@@ -449,7 +729,7 @@ contract DiligenceRoom {
 
 ### 5.1 Account Funding Model
 
-The Tinker account is **pre-funded by the developers** (the team running this system). The developers hold a credit card that pays Tinker's usage-based billing. The TEE holds the encumbered account — the developers can update billing details but cannot access the API key, training data, or model weights.
+The Tinker account is **pre-funded by the developers** (the team running this system). The default runtime funding mode is `manual_prefund`: card and add-balance browser automation are denied unless an operator explicitly switches to `operator_capped_validation` for a one-off approved test. The developers may hold a credit card that pays Tinker's usage-based billing, but the raw-card encrypted browser path is not the production/repeated funding model. The TEE holds the encumbered account — the developers can update billing details only through an approved funding mode and cannot access the API key, training data, or model weights.
 
 ### 5.2 Encrypted Card Update Channel
 
@@ -648,7 +928,7 @@ This maps directly to the NDAI paper (Section 5): A_B is the buyer's agent, and 
 | # | Threat | Attacker | Impact | Mitigation |
 |---|--------|----------|--------|------------|
 | T1 | Extract Tinker API key from TEE memory | Cloud provider / host root | Full account takeover, access to all past training runs | TDX memory encryption. API key sealed via KMS. Host reads cause page faults. |
-| T2 | Agent accesses models from other deals | Buggy or malicious agent code | Cross-deal data leakage | IsolatedTinkerSession path-checks every operation. Agent never receives raw ServiceClient. |
+| T2 | Agent accesses models from other deals | Buggy or malicious agent code | Cross-deal data leakage | First-party evaluator code uses only IsolatedTinkerSession wrapper methods, which path-check sampling and expose no REST/list/download/publish methods. Arbitrary third-party evaluator code still needs a process/sandbox capability boundary before it is trusted. |
 | T3 | Trained model persists after deal resolves | Cleanup failure (crash, network) | Seller's data-derivative persists on Tinker servers | TTL on all checkpoint saves (auto-delete). Cleanup-on-boot. No download path exposed. |
 | T4 | Agent emits raw quality scores instead of bands | Agent implementation bug | Buyer learns exact value, gains bargaining leverage | Output bounding is in the control plane, not the agent. Agent returns raw numbers, control plane maps to bands before egress. |
 | T5 | Buyer reverse-engineers artifact from bounded output | Sophisticated buyer | Partial disclosure beyond intended band | Score bands are coarse by design. Offer price derived from band, not raw delta. Paper's analysis shows bounded outputs preserve seller leverage. |
@@ -778,26 +1058,53 @@ session.save_for_sampling(name="eval", ttl_seconds=int(ttl))
 
 ## 10. Implementation Plan
 
-### Phase 1: Tinker Console Recon ✅ COMPLETE
+### Phase 1: Tinker Console Recon PARTIAL
 
 - [x] Navigate to `tinker-console.thinkingmachines.ai` via neko/CDP
-- [x] Document: Next.js SPA, passwordless magic-code auth, no captcha
+- [x] Document: Next.js SPA and passwordless magic-code auth
 - [x] Test: no phone verification from datacenter IP (neko runs in Docker)
-- [x] Document: API key generation — 2 clicks (New key → copy from modal)
+- [x] Document: API key generation — New key → Generate key → copy from modal
 - [x] Test: API key can only be generated via console UI (no API endpoint found)
-- [x] Discover: `cock.li`/`firemail.cc` domains blocked, `cock.email` passes
+- [x] Historical discovery: `cock.li`/`firemail.cc` domains blocked, `cock.email` observed as allowed
+- [x] Confirm Phala oracle-genesis failure evidence: auto-genesis debug CVM
+      reached captcha submission, but HTTP signup was rejected and browser
+      fallback timed out.
+- [x] Repair source-level cock.li form mapping for `password_confinm`,
+      `password_confirm` honeypot, and `csrf_valid`.
+- [x] Rebuild/pin oracle image and re-run Phala oracle-genesis debug proof;
+      HTTP signup reached IMAP verification in Phala.
+- [x] Bound public oracle health/attestation email fields in source after
+      successful genesis showed raw mailbox egress on `/health`.
+- [x] Rebuild/pin bounded-health oracle image and re-run Phala oracle-genesis
+      debug proof.
 - [x] Implement: full automation in `tinker_delegate/signup.py`
+- [x] Validate local Neko/CDP auth, onboarding, and API-key provisioning against the live Tinker UI
+- [ ] Revalidate the deployed Phala/CVM browser posture against the live Tinker UI
 
 ### Phase 2: Core SDK Wrapper ✅ IMPLEMENTED
 
 - [x] Implement `IsolatedTinkerSession` — `tinker_delegate/session.py`
 - [x] Path-checked sampling (only models from this session's training run)
+- [x] Scoped base-model sampling for first-party tuned-vs-base comparison
 - [x] Mandatory TTL on all checkpoint saves (MIN_TTL=1h, MAX_TTL=24h)
 - [x] Cost metering: per-token tracking with model-specific pricing
-- [x] Cleanup: deletes all checkpoints from this deal's training run
-- [ ] Unit tests: session isolation (cannot access other paths)
-- [ ] Unit tests: mandatory cleanup (all checkpoints deleted)
-- [ ] Integration test: create training run → train → sample → cleanup → verify deletion
+- [x] Cleanup: retries deletes for all checkpoints from this deal's training run
+      and returns a bounded cleanup attestation
+- [x] Unit tests: session isolation (cannot access other paths)
+- [x] Unit tests: first-party evaluator source does not reach raw ServiceClient,
+      REST/list/download/publish/delete APIs, or arbitrary sampling paths
+- [x] Unit tests: mandatory cleanup (all checkpoints deleted)
+- [x] Unit tests: cleanup retries and bounded cleanup attestation without raw
+      checkpoint IDs
+- [x] Mocked-SDK integration tests: create run, enforce one-run guard, clamp TTL
+      on every save path, sample only approved paths, meter calls, cleanup
+      checkpoints
+- [x] Gated real SDK integration test harness: create training run → train →
+      save TTL checkpoint → sample → cleanup, disabled unless
+      `TINKER_RUN_REAL_SDK_TESTS=1` and `TINKER_REAL_SDK_MAX_USD` is low
+- [ ] Run real SDK integration test inside deployed CVM:
+      create training run → train → sample → cleanup
+      → verify deletion
 
 ### Phase 3: Evaluator Agent ✅ IMPLEMENTED (stub + SFT)
 
@@ -813,6 +1120,7 @@ session.save_for_sampling(name="eval", ttl_seconds=int(ttl))
 - [x] Artifact ingress (encrypted, memory-only, zeroed on resolution)
 - [x] Output bounding (raw delta → score band → offer price)
 - [x] Cleanup enforcement on deal resolution
+- [x] Cleanup attestation stored on deal resolution
 - [x] Orphan cleanup on boot (scans training runs with deal_id metadata)
 - [x] Control plane API endpoints in FastAPI — `tinker_delegate/api.py`
   - POST /deal/notify-funded, POST /deal/{id}/artifact, POST /deal/{id}/evaluate
@@ -832,18 +1140,33 @@ session.save_for_sampling(name="eval", ttl_seconds=int(ttl))
 - [x] `docker-compose.yaml` — delegate service with Dockerfile
 - [x] `docker-compose.dstack.yaml` — dstack overlay (neko + oracle network, TDX sock)
 - [x] Encryption channel: X25519 + AES-256-GCM for card delivery — `tinker_delegate/crypto.py`
+- [x] Encrypted artifact ingress: quote-key channel, deal/hash-bound AES-GCM,
+      disabled plaintext production path, client-side attestation envelope gate
+- [x] Per-deal/per-artifact HKDF context for artifact upload keys under the
+      attestation-exposed TEE public key
+- [x] No-disk-write regression tests for encrypted FastAPI artifact ingress and
+      control-plane evaluation dispatch while raw artifact buffers are in scope
 - [x] TDX quote stubs (local) / real generation (dstack) in attestation endpoints
-- [ ] Replace file-based key store with `dstack_sdk.TappdClient.derive_key()`
+- [x] Client-side attestation envelope verifier: mode, quote presence, compose
+      hash, app ID, OS image hash, report-data key binding, and fetch freshness
+- [x] Compose-hash verifier CLI renders registry-image Phala compose files,
+      rejects local `build:` services and mutable tag-only images, emits the
+      digest-pinned image manifest, and computes the Phala Cloud-style compose
+      hash over the rendered app-compose object
+- [x] Key-store code path uses `dstack_sdk.TappdClient.derive_key()` in dstack mode
+- [ ] Full cryptographic Intel TDX quote parsing/freshness verification
+- [ ] Validate dstack-derived key sealing in a deployed CVM
 - [ ] Local testing with `/phala-simulator`
 - [ ] Deploy to Phala Cloud via `/phala-deploy`
 
 ### Phase 7: Tinker Account Genesis ✅ LOCAL COMPLETE (TEE sealing pending)
 
 - [x] Signup automation — `tinker_delegate/signup.py`
-- [x] Email oracle integration — `tinker_delegate/oracle_client.py` (POST /pin for OTP)
-- [x] API key capture — extracted from console modal, `tml-...` format
-- [ ] API key sealing via `derive_key("tinker/api_key")` (requires dstack deployment)
-- [ ] End-to-end genesis test on Phala Cloud
+- [x] Email oracle integration — `tinker_delegate/oracle_client.py` (authenticated POST /pin for OTP)
+- [x] API key capture — New key → Generate key → extracted from console modal, `tml-...` format
+- [x] API key is stored in encrypted key store and signup returns only hash/status metadata
+- [ ] API key sealing via `derive_key("tinker/api_key")` validated in deployed dstack CVM
+- [ ] End-to-end genesis test on Phala Cloud using the validated local selector flow
 
 ## 11. Decided Questions
 
@@ -857,17 +1180,19 @@ session.save_for_sampling(name="eval", ttl_seconds=int(ttl))
 
 ## 12. Open Questions
 
-1. ~~**Tinker console signup flow**~~ — **RESOLVED**. Chrome CDP via neko + Playwright. Next.js SPA, passwordless magic-code auth (6-digit OTP), no captcha, no phone verification. `cock.email` domain passes blocklist. Full automation implemented in `tinker_delegate/signup.py`. See `README.md` for detailed recon findings.
+1. **Tinker console signup flow** — Local Neko/CDP automation works against the live Tinker UI as of 2026-07-08: OTP arrives through the email oracle, onboarding completes, and API-key provisioning captures a one-time `tml-...` key. The deployed one-shot bootstrap profile now uses headed Neko CDP instead of the Playwright sidecar and has been Phala-tested, but production signup is still not complete: the sidecar attempt failed closed with `auth_access_blocked`; the first headed-Neko retry failed closed with generic `bootstrap_error`; the next instrumented headed-Neko retry captured a bounded `tinker_auth` `unknown_failure` receipt at `not_started`; and the latest retry preserves that outcome in top-level `bootstrap_error_kind` without API-key sealing.
 
-2. ~~**Tinker billing settings page**~~ — **RESOLVED**. No billing API — console-only. Stripe Elements iframe for card input (PCI-compliant cross-origin iframe). Parent page has cardholder name + billing address fields. hCaptcha invisible on form. Auto-reload configurable. Prepaid balance model. Implementation: `tinker_delegate/billing.py` (browser automation) + `tinker_delegate/card_channel.py` (secure encrypted channel) + `tinker_delegate/api.py` (FastAPI endpoints).
+2. **Tinker billing settings page** — Browser automation and encrypted card-channel code exist. Local Neko reaches the Stripe Elements payment form, fills the test card, and has returned bounded decline/failure receipts without exposing card details. Add-balance enforces whole-dollar `TINKER_MIN_ADD_BALANCE_USD` / `TINKER_MAX_ADD_BALANCE_USD` policy before browser launch, returning bounded `policy_denied` receipts for non-finite, non-positive, below-minimum, fractional, or over-cap requests. Tinker's current UI minimum is `$10`, so source/config defaults now use `$10` for both min and validation cap. `add-card-encrypted-prompt` and `funding-validation-packet --prompt-card --run-card-attempt` are the intended operator paths for approved real-card validation because they prompt interactively instead of placing card fields in command-line arguments, require deployed attestation expectations unless explicitly run in local-development mode, and can require live `TinkerAccountEncumbrance` approval before prompting. The first approved real-card validation did not top up the account, but the later same-context reauth/add-balance packet did: `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, `check-funding-validation-packet --require-deployed-attestation` passed, and bounded balance read-back returned `$10.00`. The add-balance receipt is intentionally conservative because explicit success copy was not observed, but the bounded balance read is current funding evidence. Card-on-file status and removal paths return only bounded booleans/bands/receipts, never card brand, last4, expiry, address, or page text. `TINKER_FUNDING_MODE=manual_prefund` remains the default production model and denies encrypted card/add-balance automation before decryption or browser launch; `operator_capped_validation` is required for deliberate capped operator validation. Production/repeated funding should use an official Tinker route, Stripe-hosted/tokenized collection, SetupIntent / PaymentMethod reuse with consent, or manual/developer prefunding until compliance review approves otherwise.
 
-3. **TTL reliability** — Does Tinker actually purge expired checkpoints and make them inaccessible after `ttl_seconds`? Or are they just marked expired but still fetchable? Needs empirical testing.
+3. **TinkerAccountEncumbrance deployment** — The Base Sepolia contract is deployed at `0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e` with owner `0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD`. It enforces compose-hash approval, emergency halt, and `$10` add-balance/spend caps for the operator-validation Tinker account. Earlier approved compute/proxy compose `0xe682ddac9de80188c7e68cab84cffe8f461478d87d506159f10cba3e65a342a7` remains approved from tx `0x3bc992cc2979aa8198923bcaf856d2c82d387646e49e750dada1f5cb203b3d17`. The latest live Phala client-config install compose `0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085` is attested and running but `approvedComposeHashes(...)` currently returns `false`; approve it before using that live compose for the next `SPEND_TINKER_COMPUTE` smoke. The deploy/redeploy helpers and command plans never require raw private-key flags; operator broadcasts use the Foundry keystore account.
 
-4. ~~**Cost metering precision**~~ — **RESOLVED**. Pricing is per-million-tokens, split into prefill/sample/train rates per model. See Section 5.5 for the full pricing table. Cost metering in `IsolatedTinkerSession` tracks tokens processed per API call and multiplies by the model-specific rate.
+4. **TTL reliability** — Does Tinker actually purge expired checkpoints and make them inaccessible after `ttl_seconds`? Or are they just marked expired but still fetchable? Needs empirical testing.
 
-5. **Tinker trust gap** — Training data is sent to Tinker's servers in plaintext. For the hackathon, we accept and document this. Long-term, need encrypted compute or self-hosted training inside a GPU-TEE.
+5. ~~**Cost metering precision**~~ — Implemented for the current known pricing table. Pricing is per-million-tokens, split into prefill/sample/train rates per model. See Section 5.5 for the full pricing table. Cost metering in `IsolatedTinkerSession` tracks tokens processed per API call and multiplies by the model-specific rate.
 
-6. **Multiple checkpoints during evaluation** — Should the agent be allowed to save intermediate checkpoints (e.g., every 50 steps) to track training dynamics? More checkpoints = more cleanup surface area, but TTL backstop handles it. Agent's choice per Section 6.
+6. **Tinker trust gap** — Training data is sent to Tinker's servers in plaintext. For the hackathon, we accept and document this. Long-term, need encrypted compute or self-hosted training inside a GPU-TEE.
+
+7. **Multiple checkpoints during evaluation** — Should the agent be allowed to save intermediate checkpoints (e.g., every 50 steps) to track training dynamics? More checkpoints = more cleanup surface area, but TTL backstop handles it. Agent's choice per Section 6.
 
 7. **Concurrent deals** — Can the CVM handle multiple deals simultaneously? Each deal gets its own `IsolatedTinkerSession`, and Tinker supports concurrent training runs. The sessions are independent. Main constraint: CVM memory for holding multiple artifacts.
 

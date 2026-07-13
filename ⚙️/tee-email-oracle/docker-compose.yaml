@@ -19,7 +19,7 @@
 #   curl http://localhost:8000/health
 #   curl -X POST http://localhost:8000/pin \
 #     -H 'Content-Type: application/json' \
-#     -d '{"from_filter":"noreply@example.com","subject_contains":"verify"}'
+#     -d '{"target_service":"tinker","expected_sender":"no-reply@thinkingmachines.ai","expected_subject_contains":"","max_age_seconds":300,"extract_pattern":"\\b\\d{6}\\b","nonce":"dev-nonce-123","caller_identity":"tinker-delegate.dev","reason":"tinker-auth"}'
 ###############################################################################
 
 services:

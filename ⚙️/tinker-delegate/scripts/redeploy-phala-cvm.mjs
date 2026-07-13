@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,14 +15,24 @@ function usage() {
       "    --compose <docker-compose-file> \\",
       "    --runtime-env <env-file> \\",
       "    [--api-env .env] \\",
+      "    [--runtime-env-policy compose-refs|explicit|all] \\",
+      "    [--runtime-env-allow KEY] \\",
+      "    [--runtime-env-allow-file <key-file>] \\",
+      "    [--self-compose-hash-env KEY] \\",
+      "    [--print-runtime-env-keys] \\",
       "    [--wait-seconds 300]",
     ].join("\n"),
   );
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     apiEnv: ".env",
+    runtimeEnvPolicy: "compose-refs",
+    runtimeEnvAllow: [],
+    runtimeEnvAllowFiles: [],
+    selfComposeHashEnv: "",
+    printRuntimeEnvKeys: false,
     waitSeconds: 300,
   };
 
@@ -34,6 +45,10 @@ function parseArgs(argv) {
     const key = arg.slice(2);
     if (key === "help") {
       args.help = true;
+      continue;
+    }
+    if (key === "print-runtime-env-keys") {
+      args.printRuntimeEnvKeys = true;
       continue;
     }
 
@@ -53,6 +68,18 @@ function parseArgs(argv) {
       case "runtime-env":
         args.runtimeEnv = value;
         break;
+      case "runtime-env-policy":
+        args.runtimeEnvPolicy = value;
+        break;
+      case "runtime-env-allow":
+        args.runtimeEnvAllow.push(value);
+        break;
+      case "runtime-env-allow-file":
+        args.runtimeEnvAllowFiles.push(value);
+        break;
+      case "self-compose-hash-env":
+        args.selfComposeHashEnv = requireEnvKey(value);
+        break;
       case "api-env":
         args.apiEnv = value;
         break;
@@ -62,6 +89,10 @@ function parseArgs(argv) {
       default:
         throw new Error(`unknown flag: --${key}`);
     }
+  }
+
+  if (!["compose-refs", "explicit", "all"].includes(args.runtimeEnvPolicy)) {
+    throw new Error("--runtime-env-policy must be compose-refs, explicit, or all");
   }
 
   return args;
@@ -112,7 +143,7 @@ function unquote(value) {
   return trimmed;
 }
 
-async function parseEnvFile(filePath) {
+export async function parseEnvFile(filePath) {
   const content = await readFile(filePath, "utf8");
   const env = new Map();
 
@@ -136,6 +167,114 @@ async function parseEnvFile(filePath) {
   return env;
 }
 
+function requireEnvKey(key) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error(`invalid runtime env key: ${key}`);
+  }
+  return key;
+}
+
+export function extractComposeEnvNames(composeText) {
+  const names = [];
+  const pattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}/g;
+  let match;
+  while ((match = pattern.exec(composeText)) !== null) {
+    names.push(match[1]);
+  }
+  return [...new Set(names)].sort();
+}
+
+export async function parseEnvKeyFile(filePath) {
+  const content = await readFile(filePath, "utf8");
+  const keys = [];
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const normalized = line.startsWith("export ") ? line.slice(7).trim() : line;
+    const eqIndex = normalized.indexOf("=");
+    const key = (eqIndex >= 0 ? normalized.slice(0, eqIndex) : normalized).trim();
+    keys.push(requireEnvKey(key));
+  }
+
+  return keys;
+}
+
+export async function selectRuntimeEnv(runtimeEnv, composeText, args) {
+  const selectedKeys = [];
+  const missingExplicitKeys = [];
+  const composeEnvNames = extractComposeEnvNames(composeText);
+
+  if (args.runtimeEnvPolicy === "all") {
+    selectedKeys.push(...runtimeEnv.keys());
+  } else if (args.runtimeEnvPolicy === "compose-refs") {
+    for (const key of composeEnvNames) {
+      if (runtimeEnv.has(key)) {
+        selectedKeys.push(key);
+      }
+    }
+  }
+
+  const explicitKeys = [...(args.runtimeEnvAllow || [])].map(requireEnvKey);
+  for (const filePath of args.runtimeEnvAllowFiles || []) {
+    explicitKeys.push(...(await parseEnvKeyFile(filePath)));
+  }
+  for (const key of explicitKeys) {
+    if (!runtimeEnv.has(key)) {
+      missingExplicitKeys.push(key);
+      continue;
+    }
+    selectedKeys.push(key);
+  }
+
+  if (missingExplicitKeys.length > 0) {
+    throw new Error(
+      "explicit runtime env keys missing from runtime env file: "
+        + missingExplicitKeys.join(","),
+    );
+  }
+
+  const dedupedKeys = [...new Set(selectedKeys)];
+  if (dedupedKeys.length === 0) {
+    throw new Error(
+      "no runtime env keys selected; add --runtime-env-allow KEY or use "
+        + "--runtime-env-policy all for legacy broad updates",
+    );
+  }
+
+  return {
+    entries: dedupedKeys.map((key) => ({ key, value: runtimeEnv.get(key) })),
+    composeEnvNames,
+    policy: args.runtimeEnvPolicy,
+  };
+}
+
+export function runtimeEnvKeyHash(envEntries) {
+  const keys = envEntries.map((entry) => entry.key).sort();
+  return createHash("sha256").update(keys.join("\n")).digest("hex");
+}
+
+export function bindSelfComposeHashEnv(envEntries, key, composeHash) {
+  const normalizedKey = requireEnvKey(key);
+  if (!/^[0-9a-f]{64}$/i.test(composeHash)) {
+    throw new Error("self compose hash must be a 32-byte hex string without 0x prefix");
+  }
+  let found = false;
+  const updated = envEntries.map((entry) => {
+    if (entry.key !== normalizedKey) {
+      return entry;
+    }
+    found = true;
+    return { key: entry.key, value: composeHash.toLowerCase() };
+  });
+  if (!found) {
+    throw new Error(`self compose hash env key not selected: ${normalizedKey}`);
+  }
+  return updated;
+}
+
 async function loadCloudSdk() {
   const npmRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
   const sdkPath = path.join(
@@ -154,7 +293,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function main() {
+export async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     usage();
@@ -181,6 +320,8 @@ async function main() {
   }
 
   const composeText = await readFile(args.compose, "utf8");
+  const selectedRuntimeEnv = await selectRuntimeEnv(runtimeEnv, composeText, args);
+  let envEntries = selectedRuntimeEnv.entries;
   const { createClient, encryptEnvVars } = await loadCloudSdk();
   const client = createClient({
     apiKey,
@@ -200,7 +341,6 @@ async function main() {
     throw new Error("current CVM info is missing the encrypted env public key");
   }
 
-  const envEntries = [...runtimeEnv.entries()].map(([key, value]) => ({ key, value }));
   const nextCompose = {
     ...currentCompose,
     docker_compose_file: composeText,
@@ -212,6 +352,14 @@ async function main() {
     app_compose: nextCompose,
     update_env_vars: true,
   });
+
+  if (args.selfComposeHashEnv) {
+    envEntries = bindSelfComposeHashEnv(
+      envEntries,
+      args.selfComposeHashEnv,
+      provisioned.compose_hash,
+    );
+  }
 
   const encryptedEnv = await encryptEnvVars(envEntries, envPubkey);
   await client.commitCvmComposeFileUpdate({
@@ -225,7 +373,15 @@ async function main() {
   console.log(`app_id=${args.appId}`);
   console.log(`cvm_id=${currentInfo.data.id}`);
   console.log(`compose_hash=${provisioned.compose_hash}`);
-  console.log(`runtime_env_keys=${envEntries.map((entry) => entry.key).join(",")}`);
+  console.log(`runtime_env_policy=${selectedRuntimeEnv.policy}`);
+  console.log(`runtime_env_key_count=${envEntries.length}`);
+  console.log(`runtime_env_keys_sha256=${runtimeEnvKeyHash(envEntries)}`);
+  if (args.selfComposeHashEnv) {
+    console.log(`self_compose_hash_env=${args.selfComposeHashEnv}`);
+  }
+  if (args.printRuntimeEnvKeys) {
+    console.log(`runtime_env_keys=${envEntries.map((entry) => entry.key).join(",")}`);
+  }
 
   if (args.waitSeconds === 0) {
     return;
@@ -256,7 +412,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
-  process.exit(1);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    process.exit(1);
+  });
+}

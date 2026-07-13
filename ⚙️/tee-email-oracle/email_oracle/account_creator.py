@@ -13,6 +13,7 @@ import httpx
 
 from email_oracle.config import Settings
 from email_oracle.cred_store import CredentialStore, EmailCredentials
+from email_oracle.redaction import hash_text, redact_text
 
 
 from captcha_solver.parser import parse_box_shadow_pixels, pixels_to_image, extract_captcha_key
@@ -21,6 +22,8 @@ from captcha_solver.fetcher import _extract_field
 
 
 UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+PASSWORD_CONFIRM_FIELD = "password_confinm"
+PASSWORD_CONFIRM_HONEYPOT_FIELD = "password_confirm"
 
 
 def generate_credentials(domain: str) -> EmailCredentials:
@@ -28,6 +31,30 @@ def generate_credentials(domain: str) -> EmailCredentials:
     username = secrets.token_hex(8)  # 16-char hex string
     password = secrets.token_urlsafe(32)  # 256-bit password
     return EmailCredentials(username=username, domain=domain, password=password)
+
+
+def _registration_form_data(
+    *,
+    csrf: str,
+    creds: EmailCredentials,
+    captcha_key: str,
+    captcha_solution: str,
+) -> dict[str, str]:
+    """Build cock.li registration form data without filling honeypots."""
+    return {
+        "csrf": csrf,
+        "csrf_valid": csrf,
+        "username": creds.username,
+        "domain": creds.domain,
+        "password": creds.password,
+        # cock.li currently misspells the real confirm field as "confinm".
+        PASSWORD_CONFIRM_FIELD: creds.password,
+        "captcha_key": captcha_key,
+        "captcha_solution": captcha_solution,
+        "noscript": "1",
+        "tos_agree": "on",
+        PASSWORD_CONFIRM_HONEYPOT_FIELD: "",
+    }
 
 
 def signup_http(settings: Settings) -> EmailCredentials:
@@ -39,7 +66,8 @@ def signup_http(settings: Settings) -> EmailCredentials:
     4. Verify IMAP login works
     """
     creds = generate_credentials(settings.cockli_domain)
-    print(f"[signup] attempting HTTP registration for {creds.email}")
+    email_hash = hash_text(creds.email)
+    print(f"[signup] attempting HTTP registration email_hash={email_hash}")
 
     with httpx.Client(
         follow_redirects=True,
@@ -59,19 +87,15 @@ def signup_http(settings: Settings) -> EmailCredentials:
         pixels = parse_box_shadow_pixels(html)
         img = pixels_to_image(pixels, scale=1)
         captcha_solution = solve_from_image(img)
-        print(f"[signup] captcha solved: {captcha_solution}")
+        print("[signup] captcha solved")
 
         # Submit registration
-        form_data = {
-            "csrf": csrf,
-            "username": creds.username,
-            "domain": creds.domain,
-            "password": creds.password,
-            "password_confirm": creds.password,
-            "captcha_key": captcha_key,
-            "captcha_solution": captcha_solution,
-            "tos_agree": "on",
-        }
+        form_data = _registration_form_data(
+            csrf=csrf,
+            creds=creds,
+            captcha_key=captcha_key,
+            captcha_solution=captcha_solution,
+        )
 
         resp = client.post(
             settings.cockli_register_url,
@@ -90,7 +114,7 @@ def signup_http(settings: Settings) -> EmailCredentials:
 
         # cock.li shows specific error messages in the form
         if "already taken" in response_lower or "username is taken" in response_lower:
-            raise RuntimeError(f"Username {creds.username} already taken")
+            raise RuntimeError(f"Generated mailbox collision email_hash={email_hash}")
         if "incorrect" in response_lower and "captcha" in response_lower:
             raise RuntimeError("Captcha solution was incorrect")
 
@@ -102,13 +126,13 @@ def signup_http(settings: Settings) -> EmailCredentials:
 
     # Verify IMAP login
     verify_imap_login(creds, settings)
-    print(f"[signup] account created and IMAP verified: {creds.email}")
+    print(f"[signup] account created and IMAP verified email_hash={email_hash}")
     return creds
 
 
 def verify_imap_login(creds: EmailCredentials, settings: Settings) -> None:
     """Verify credentials work via IMAP."""
-    print(f"[signup] verifying IMAP login for {creds.email}")
+    print(f"[signup] verifying IMAP login email_hash={hash_text(creds.email)}")
     mail = imaplib.IMAP4_SSL(settings.cockli_imap_host, settings.cockli_imap_port)
     try:
         mail.login(creds.imap_login, creds.password)
@@ -130,7 +154,8 @@ async def signup_browser(settings: Settings) -> EmailCredentials:
     from playwright.async_api import async_playwright
 
     creds = generate_credentials(settings.cockli_domain)
-    print(f"[signup] attempting browser registration for {creds.email}")
+    email_hash = hash_text(creds.email)
+    print(f"[signup] attempting browser registration email_hash={email_hash}")
     print(f"[signup] connecting to CDP at {settings.cdp_url}")
 
     async with async_playwright() as p:
@@ -146,13 +171,13 @@ async def signup_browser(settings: Settings) -> EmailCredentials:
             pixels = parse_box_shadow_pixels(html)
             img = pixels_to_image(pixels, scale=1)
             captcha_solution = solve_from_image(img)
-            print(f"[signup] captcha solved: {captcha_solution}")
+            print("[signup] captcha solved")
 
             # Fill form
             await page.fill('input[name="username"]', creds.username)
             await page.select_option('select[name="domain"]', creds.domain)
             await page.fill('input[name="password"]', creds.password)
-            await page.fill('input[name="password_confirm"]', creds.password)
+            await page.fill(f'input[name="{PASSWORD_CONFIRM_FIELD}"]', creds.password)
             await page.fill('input[name="captcha_solution"]', captcha_solution)
             await page.check('input[name="tos_agree"]')
 
@@ -163,7 +188,7 @@ async def signup_browser(settings: Settings) -> EmailCredentials:
             # Check result
             result_text = (await page.content()).lower()
             if "already taken" in result_text:
-                raise RuntimeError(f"Username {creds.username} already taken")
+                raise RuntimeError(f"Generated mailbox collision email_hash={email_hash}")
             if "incorrect" in result_text and "captcha" in result_text:
                 raise RuntimeError("Captcha solution was incorrect")
 
@@ -172,7 +197,7 @@ async def signup_browser(settings: Settings) -> EmailCredentials:
 
     # Verify IMAP login
     verify_imap_login(creds, settings)
-    print(f"[signup] browser registration succeeded: {creds.email}")
+    print(f"[signup] browser registration succeeded email_hash={email_hash}")
     return creds
 
 
@@ -195,7 +220,7 @@ async def create_account(
             return creds
         except Exception as e:
             last_error = e
-            print(f"[signup] HTTP attempt {attempt} failed: {e}")
+            print(f"[signup] HTTP attempt {attempt} failed: {redact_text(e)}")
 
     # Fall back to browser if HTTP failed
     if settings.use_browser_fallback:
@@ -207,6 +232,6 @@ async def create_account(
                 return creds
             except Exception as e:
                 last_error = e
-                print(f"[signup] browser attempt {attempt} failed: {e}")
+                print(f"[signup] browser attempt {attempt} failed: {redact_text(e)}")
 
-    raise RuntimeError(f"Account creation failed after all attempts: {last_error}")
+    raise RuntimeError(f"Account creation failed after all attempts: {redact_text(last_error)}")

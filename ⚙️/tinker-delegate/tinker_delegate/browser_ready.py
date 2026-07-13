@@ -10,7 +10,9 @@ from urllib.request import urlopen
 
 from playwright.async_api import Browser, BrowserContext, Playwright
 
+from tinker_delegate.browser_session_store import build_browser_session_store
 from tinker_delegate.config import Settings
+from tinker_delegate.redaction import redact_text
 
 
 def _cdp_probe_url(cdp_url: str) -> str:
@@ -43,7 +45,7 @@ def _probe_cdp(probe_url: str) -> tuple[bool, str]:
             return False, "missing webSocketDebuggerUrl"
         return True, browser
     except Exception as exc:  # pragma: no cover - transient network failures
-        return False, str(exc)
+        return False, redact_text(exc)
 
 
 async def wait_for_cdp(settings: Settings) -> None:
@@ -79,7 +81,7 @@ async def connect_playwright_server(
         except Exception as exc:
             print(
                 "[browser] remote Playwright server not ready yet at "
-                f"{settings.browser_ws_endpoint}: {exc}"
+                f"{settings.browser_ws_endpoint}: {redact_text(exc)}"
             )
             await asyncio.sleep(settings.browser_poll_interval)
 
@@ -103,7 +105,7 @@ async def connect_chromium(playwright: Playwright, settings: Settings) -> Browse
                 raise
             print(
                 "[browser] remote Playwright connect failed, "
-                f"falling back to local Chromium: {exc}"
+                f"falling back to local Chromium: {redact_text(exc)}"
             )
 
     if settings.cdp_url:
@@ -116,7 +118,7 @@ async def connect_chromium(playwright: Playwright, settings: Settings) -> Browse
         except Exception as exc:
             if not settings.local_browser_fallback:
                 raise
-            print(f"[cdp] connect_over_cdp failed, falling back to local Chromium: {exc}")
+            print(f"[cdp] connect_over_cdp failed, falling back to local Chromium: {redact_text(exc)}")
 
     print("[browser] launching bundled local Chromium")
     return await playwright.chromium.launch(
@@ -125,8 +127,19 @@ async def connect_chromium(playwright: Playwright, settings: Settings) -> Browse
     )
 
 
-async def get_browser_context(browser: Browser) -> BrowserContext:
-    """Reuse the first context when present, otherwise create one."""
+async def get_browser_context(
+    browser: Browser,
+    settings: Settings | None = None,
+    *,
+    prefer_saved_state: bool = False,
+) -> BrowserContext:
+    """Return a context, optionally preferring encrypted Tinker session state."""
+    should_load_state = settings is not None and (prefer_saved_state or not browser.contexts)
+    if should_load_state:
+        state = build_browser_session_store(settings).load()
+        if state and (prefer_saved_state or not browser.contexts):
+            print("[browser] creating context from encrypted Tinker session state")
+            return await browser.new_context(storage_state=state)
     if browser.contexts:
         return browser.contexts[0]
     return await browser.new_context()

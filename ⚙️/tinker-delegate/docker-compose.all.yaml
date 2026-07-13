@@ -34,6 +34,8 @@ services:
     profiles: ["browser"]
     restart: unless-stopped
     shm_size: 2gb
+    ulimits:
+      core: 0
     cap_add:
       - SYS_ADMIN
     networks:
@@ -60,6 +62,8 @@ services:
       context: ../tee-email-oracle
       dockerfile: Dockerfile
     restart: unless-stopped
+    ulimits:
+      core: 0
     networks:
       tee-net:
         ipv4_address: 172.20.0.4
@@ -91,6 +95,8 @@ services:
       dockerfile: Dockerfile
     platform: linux/amd64
     restart: unless-stopped
+    ulimits:
+      core: 0
     depends_on:
       oracle:
         condition: service_started
@@ -105,6 +111,13 @@ services:
       TINKER_CDP_URL: http://172.20.0.3:9222
       TINKER_ORACLE_URL: http://172.20.0.4:8000
       TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}
       TINKER_BOOTSTRAP_SIGNUP: ${TINKER_BOOTSTRAP_SIGNUP:-false}
       TINKER_BOOTSTRAP_ORACLE_TIMEOUT: ${TINKER_BOOTSTRAP_ORACLE_TIMEOUT:-300}
       TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL: ${TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL:-5}

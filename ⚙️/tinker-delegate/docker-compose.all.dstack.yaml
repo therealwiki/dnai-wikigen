@@ -34,6 +34,8 @@ services:
       ORACLE_CRED_STORE_KEY: ""
       ORACLE_USE_BROWSER_FALLBACK: "true"
       ORACLE_CDP_URL: http://172.20.0.3:9222
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth
 
   delegate:
     volumes:
@@ -42,5 +44,16 @@ services:
       DSTACK_ENABLED: "true"
       TINKER_CDP_URL: http://172.20.0.3:9222
       TINKER_ORACLE_URL: http://172.20.0.4:8000
+      TINKER_ORACLE_AUTH_KEY_PATH: oracle/runtime-auth
       TINKER_BOOTSTRAP_SIGNUP: "true"
       TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_BROWSER_SESSION_KEY_PATH: tinker/browser_session
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_FUNDING_RECEIPT_KEY_PATH: tinker/funding_receipts
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_RUN_METADATA_KEY_PATH: tinker/run_metadata
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}

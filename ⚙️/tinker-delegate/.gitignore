@@ -1,0 +1,4 @@
+data/
+screenshot_*.png
+__pycache__/
+*.py[cod]

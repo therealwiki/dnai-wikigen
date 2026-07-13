@@ -12,6 +12,7 @@ import asyncio
 from email_oracle.account_creator import signup_browser
 from email_oracle.config import Settings
 from email_oracle.cred_store import CredentialStore
+from email_oracle.redaction import hash_text
 
 
 async def main():
@@ -39,7 +40,7 @@ async def main():
 
     creds = await signup_browser(settings)
     store.save(creds)
-    print(f"\nAccount created: {creds.email}")
+    print(f"\nAccount created email_hash={hash_text(creds.email)}")
     print(f"Credentials saved to: {settings.cred_store_path}")
 
 

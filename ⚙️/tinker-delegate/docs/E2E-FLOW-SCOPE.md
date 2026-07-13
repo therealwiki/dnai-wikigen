@@ -17,16 +17,17 @@
  Email oracle creates cock.email account (cock.li IMAP, domain passes blocklist)
    → Seals credentials via dstack-KMS derive_key("email/creds")
    → Oracle compose hash is authorized on-chain for KMS boot
- Browser automation signs up for Tinker (magic-code OTP, no captcha)
-   → Captures tml-... API key from console modal
+Browser automation attempts Tinker signup through the magic-code OTP path
+   → Current deployed headless path is blocked by Tinker bot/fingerprint checks
+   → Once unblocked, captures tml-... API key from console modal
    → Seals API key via dstack-KMS derive_key("tinker/api_key")
- Approved consumer app ID + compose hash are registered for OTP access
- Production hardening:
+Approved consumer app ID + compose hash are registered for OTP access
+Production hardening:
    → Freeze oracle code authorization permanently after final audited deploy
    → Optionally freeze consumer registry after final consumer measurement is approved
- Developer encrypts credit card to TEE's X25519 public key (from /attestation)
-   → TEE fills Stripe form via browser, zeroes card from memory
- Control plane starts, emits genesis attestation (TDX quote binding identity)
+Developer encrypts credit card to TEE's X25519 public key (from /attestation)
+   → Funding path is in progress: TEE should fill Stripe form via browser, then zero card from memory
+Control plane starts, emits genesis attestation (TDX quote binding identity)
 
  PHASE 1: DEAL CREATION (on-chain)
  ──────────────────────────────────
@@ -64,7 +65,8 @@
    → ScoreBand × budget_cap → offer_price (clamped to reserve_price floor)
    → Attaches TDX quote binding deal_id + score_band + offer_price
  TEE submits result on-chain:
-   → DiligenceRoom.submitResult(dealId, scoreBand, computeCost, resultHash)
+   → DiligenceRoom.submitResult(dealId, scoreBand, computeCost, resultHash,
+                                composeHash, authorizationExpiry, verifierSignature)
    → On-chain: State = Evaluated
    → Event: EvaluationSubmitted(dealId, scoreBand, computeCost, resultHash)
  Bounded result available to buyer:
@@ -180,8 +182,8 @@
 
 | Component | File(s) | Status |
 |-----------|---------|--------|
-| **Tinker signup automation** | `signup.py`, `oracle_client.py` | Fully working end-to-end. Handles magic-code OTP, onboarding, API key capture. |
-| **Billing automation** | `billing.py` | Browser automation for Stripe Elements iframe. Card entry, balance add, auto-reload. |
+| **Tinker signup automation** | `signup.py`, `oracle_client.py` | Implemented, but not production-complete. Handles magic-code OTP in the happy path; current deployed headless path is blocked by Tinker bot/fingerprint checks. |
+| **Billing automation** | `billing.py` | Browser automation for Stripe Elements iframe. Card entry, balance add, auto-reload are coded; reliable end-to-end completion through Tinker/Stripe remains in progress. |
 | **Encrypted card channel** | `crypto.py`, `card_channel.py` | X25519 + AES-256-GCM. TEE keypair generation, encrypt/decrypt, memory zeroing. |
 | **IsolatedTinkerSession** | `session.py` | Session isolation, path-checked sampling, mandatory TTL, cost metering, cleanup. |
 | **Control plane** | `control_plane.py` | Deal lifecycle state machine, session factory, artifact ingress, output bounding, orphan cleanup. |
@@ -260,9 +262,13 @@ DiligenceRoom.submitResult(
     dealId,                    # uint256
     scoreBand,                 # ScoreBand enum (0-4)
     computeCost,               # uint256 (wei)
-    resultHash                 # bytes32 (keccak256 of full EvaluationResult)
+    resultHash,                # bytes32 (replay-bound result commitment)
+    composeHash,               # bytes32 (approved app/compose measurement)
+    authorizationExpiry,       # uint256
+    verifierSignature          # bytes (resultVerifier authorization)
 )
 # msg.sender must == deal.teeIdentity (KMS-derived address)
+# verifierSignature must bind the bounded submission context.
 ```
 
 **Encrypted Card Channel: Developer → TEE**

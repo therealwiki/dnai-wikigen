@@ -9,7 +9,7 @@
 # On Apple Silicon Macs, this runs via OrbStack/Rosetta emulation.
 # On Phala Cloud (amd64 Intel TDX), this runs natively.
 
-FROM ghcr.io/m1k1o/neko/base:latest
+FROM ghcr.io/m1k1o/neko/base@sha256:4de36f83b563c7aa4bcc7a4e357609b95eb09be91c106244fc6e0ea00b789cb5
 
 # Install Google Chrome stable (amd64 only)
 RUN set -eux; \

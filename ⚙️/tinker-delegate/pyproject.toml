@@ -12,11 +12,18 @@ dependencies = [
     "pydantic-settings>=2.7",
     "cryptography>=44.0",
     "dstack-sdk>=0.5.2",
+    "eth-hash[pycryptodome]>=0.7.0",
+    "eth-account>=0.13.7",
 ]
 
 [project.optional-dependencies]
 agent = [
-    "tinker",    # Thinking Machines SDK (for IsolatedTinkerSession + evaluator)
+    # Thinking Machines SDK (for IsolatedTinkerSession + evaluator).
+    # Pinned to >=0.22: the Tinker server rejects older SDKs with a 400
+    # "Your Tinker SDK version is no longer supported" (the deployed CVM image
+    # shipped 0.15.0, which is why the live smoke failed at ServiceClient
+    # creation). Rebuild the CVM image to pick up a supported SDK.
+    "tinker>=0.22",
 ]
 
 [project.scripts]

@@ -55,12 +55,14 @@ The current implementation (`session.py`) covers the critical path -- single tra
 | `optim_step(adam_params)` | YES | `optim_step(adam_params)` | No token cost, but counts as API usage |
 | `save_state(name, ttl_seconds)` | YES | `save_state(name, ttl_seconds)` | TTL clamped to [1h, 24h]; path NOT added to allowed sampling paths |
 | `save_weights_for_sampler(name, ttl_seconds)` | YES | `save_for_sampling(name, ttl_seconds)` | TTL enforced; path added to allowed set |
-| `save_weights_and_get_sampling_client(name, retry_config)` | YES | `save_and_get_sampler(name)` | Convenience method; ephemeral save |
+| `save_weights_and_get_sampling_client(name, retry_config)` | NO | -- | Direct ephemeral save bypasses explicit TTL policy |
+| explicit save + sampling client | YES | `save_and_get_sampler(name, ttl_seconds)` | Convenience wrapper calls `save_for_sampling()` with clamped TTL, then path-checked `create_sampler()` |
 | `load_state(path)` | NO | -- | Could load weights from other deals. **BLOCKED.** |
 | `load_state_with_optimizer(path)` | NO | -- | Same risk. **BLOCKED.** |
 | `get_info()` | NO | -- | Returns training_run_id, model metadata. Low risk but not needed. |
 | `get_tokenizer()` | YES | `get_tokenizer()` | Safe -- returns HuggingFace tokenizer, no secrets |
 | `create_sampling_client(model_path, retry_config)` | NO | -- | Bypasses session path checking. Use `create_sampler()` instead. |
+| `create_sampling_client(base_model=...)` | YES | `create_base_sampler(base_model)` | Scoped to this deal's training model for tuned-vs-base evaluation |
 
 **Gaps identified:**
 - `forward()` (inference-only pass) is not exposed. Evaluator might need this for computing eval loss without gradients. Should be added with metering.
@@ -249,10 +251,11 @@ The IsolatedTinkerSession defends against a **malicious evaluator agent** (or co
 | Cross-deal access | `list_training_runs`, `list_sessions` blocked | IMPLEMENTED | |
 | State loading | `load_state`, `create_training_client_from_state` blocked | IMPLEMENTED | |
 | Path traversal | `create_sampler` path-checked against `_allowed_paths` | IMPLEMENTED | |
+| Raw client bypass in first-party evaluator | `sft_evaluate()` uses wrapper methods only | IMPLEMENTED | Source regression test blocks `_sc`, REST, list, download, publish, delete |
 | Unbounded cost | `CostMeter` tracks all operations | PARTIAL | **Generation tokens not metered** |
 | Unbounded training | One training run per deal | IMPLEMENTED | |
 | Checkpoint persistence | Mandatory TTL on all saves (1h-24h) | IMPLEMENTED | |
-| Checkpoint persistence | `cleanup()` deletes all checkpoints on deal resolution | IMPLEMENTED | |
+| Checkpoint persistence | `cleanup()` deletes all checkpoints on deal resolution | IMPLEMENTED | Retry-backed; emits bounded cleanup attestation |
 | Exact quality leakage | `bound_output()` maps to coarse score bands | IMPLEMENTED | In control_plane.py |
 | TTL extension | `set_checkpoint_ttl` blocked | IMPLEMENTED | Cannot call RestClient |
 
@@ -260,15 +263,35 @@ The IsolatedTinkerSession defends against a **malicious evaluator agent** (or co
 
 **GAP 1: Generated token metering.** The `sample()` method meters prefill tokens but not generated tokens. After `sampler.sample()` returns, the output tokens in `result.sequences[i].tokens` are not counted toward cost. Fix: await the result inside the wrapper and count output tokens before returning.
 
-**GAP 2: `save_and_get_sampler()` does not enforce TTL.** The `save_weights_and_get_sampling_client()` method uses an ephemeral save (no named path), but we have no control over its TTL. The SDK's internal implementation creates a transient sampler session, but the underlying weights may persist. Fix: use explicit `save_for_sampling()` with TTL, then `create_sampler()` instead. OR verify that ephemeral saves are truly transient in the Tinker backend.
+**RESOLVED: `save_and_get_sampler()` TTL enforcement.** The wrapper no longer
+calls `save_weights_and_get_sampling_client()` directly. It uses explicit
+`save_for_sampling()` with clamped TTL, then path-checked `create_sampler()`.
+Mocked-SDK tests verify that the convenience path uses the same TTL policy as
+named sampler checkpoints.
 
-**GAP 3: `forward_backward_custom()` security.** This method executes a user-provided Python callable locally (in the TEE), receiving logprob tensors from the server. The callable itself never leaves the TEE, but it has access to the `TrainingClient` internals through the closure. If exposed, it should be wrapped to prevent the callable from accessing `self._training_client` or `self._sc` directly.
+**RESOLVED: cleanup retry and attestation.** `cleanup()` retries checkpoint
+deletions, closes the session idempotently, and returns a bounded
+`CleanupAttestation` containing counts, attempts, success/error status, and a
+hash of checkpoint IDs rather than raw IDs. `ControlPlane.on_deal_resolved()`
+stores that attestation on the deal context.
 
-**GAP 4: `**kwargs` passthrough in `create_training()`.** Currently, `**kwargs` is passed to `create_lora_training_client`, which could allow injecting unexpected parameters. The session should explicitly whitelist: `seed`, `train_mlp`, `train_attn`, `train_unembed`.
+**GAP 2: `forward_backward_custom()` security.** This method executes a user-provided Python callable locally (in the TEE), receiving logprob tensors from the server. The callable itself never leaves the TEE, but it has access to the `TrainingClient` internals through the closure. If exposed, it should be wrapped to prevent the callable from accessing `self._training_client` or `self._sc` directly.
+
+**GAP 3: `**kwargs` passthrough in `create_training()`.** Currently, `**kwargs` is passed to `create_lora_training_client`, which could allow injecting unexpected parameters. The session should explicitly whitelist: `seed`, `train_mlp`, `train_attn`, `train_unembed`.
 
 **GAP 5: Methodology summary free-text.** The evaluator's returned `methodology` string passes through to `EvaluationResult.methodology_summary`. A malicious evaluator could steganographically encode exact quality values in this text. Fix: validate/truncate the methodology string, or generate it from structured data in the control plane.
 
-**GAP 6: Base model sampler in evaluator.** The current `sft_evaluate()` function creates a base model sampler via `session._sc.create_sampling_client(base_model=base_model)`, bypassing the session's path-checking. This is used for A/B comparison (tuned vs. base). The session should expose a controlled method for creating a base-model-only sampler.
+**RESOLVED: base model sampler in evaluator.** `sft_evaluate()` now calls
+`session.create_base_sampler(base_model)`, which only creates a base sampler for
+the model scoped to the current deal. Source regression tests fail if the
+first-party evaluator reaches `session._sc`, REST/list/download/publish/delete
+APIs, or arbitrary sampling paths.
+
+**GAP 6: In-process Python introspection.** The wrapper blocks the first-party
+evaluator path and ordinary method access, but an arbitrary malicious evaluator
+running in the same Python process could still attempt object introspection.
+Before accepting third-party evaluator code, move evaluator execution behind a
+process or sandbox capability boundary.
 
 **GAP 7: No budget cap enforcement.** The session meters costs but does not enforce a maximum spend. If `compute_cost_wei` exceeds the deal's `budget_cap`, training should be halted. The control plane passes `budget_cap` to the evaluator but the session does not enforce it.
 
@@ -526,22 +549,29 @@ Larger RL evaluation on Qwen3-235B:
 | `test_closed_session_rejects` | N/A | All methods raise after `cleanup()` |
 | `test_ttl_clamping` | Mock `TrainingClient.save_weights_for_sampler` | TTL arg is clamped to [3600, 86400] |
 | `test_path_checking` | N/A | `create_sampler("tinker://other/...")` raises `PermissionError` |
+| `test_base_sampler_is_scoped_to_training_model` | Mock `ServiceClient.create_sampling_client` | Base sampler must match the training model |
 | `test_allowed_path_tracking` | Mock save response with path | Path added to `_allowed_paths`; `create_sampler` succeeds |
+| `test_sft_evaluator_does_not_reach_raw_tinker_client_or_admin_apis` | Source inspection | Evaluator does not use raw client/admin APIs |
 | `test_cost_metering_train` | Mock `forward_backward` | `meter.train_tokens` incremented by datum token count |
 | `test_cost_metering_prefill` | Mock `sample` | `meter.prefill_tokens` incremented by prompt length |
 | `test_cost_metering_sample` | Mock `sample` result | `meter.sample_tokens` incremented by generated token count |
 | `test_cost_calculation` | Set known token counts | `total_cost_usd` matches manual calculation |
 | `test_deal_id_in_metadata` | Mock `create_lora_training_client` | `user_metadata["deal_id"]` is set |
 | `test_cleanup_idempotent` | Mock `RestClient` | Double `cleanup()` does not raise |
+| `test_cleanup_retries_transient_delete_failures` | Mock transient delete failures | Retries and succeeds |
+| `test_cleanup_attests_permanent_delete_failures` | Mock persistent delete failure | Returns bounded failed cleanup attestation |
+| `test_cleanup_attests_checkpoint_listing_failure` | Mock list failure | Returns bounded failed cleanup attestation |
 | `test_kwargs_whitelist` | N/A | Unexpected kwargs rejected |
 | `test_budget_cap_enforcement` | Set low budget, meter tokens | Operation raises `BudgetExceededError` |
 
 ### 8.2 Integration Tests (Against Tinker API)
 
-**Requires `TINKER_API_KEY` and real API calls. Run with `--integration` flag.**
+**Requires `TINKER_API_KEY` and real API calls. Disabled by default. Run only
+with `TINKER_RUN_REAL_SDK_TESTS=1` and a low `TINKER_REAL_SDK_MAX_USD` cap.**
 
 | Test | Steps | Asserts |
 |------|-------|---------|
+| `test_tiny_training_sampling_and_cleanup` | Tiny real SDK smoke with explicit budget gate | Creates run, saves TTL checkpoint, samples, cleans up |
 | `test_e2e_sft_evaluation` | Full SFT eval with 10 training examples | Returns quality_delta > 0, compute_cost_wei > 0 |
 | `test_checkpoint_ttl_expiry` | Save with TTL=3600, wait, check expiry | Checkpoint `expires_at` is set correctly |
 | `test_cleanup_deletes_all` | Create run, save 3 checkpoints, cleanup | `list_checkpoints` returns empty |
@@ -646,12 +676,11 @@ The NDAI paper's Section 5 analyzes robustness when agents make random errors. I
 
 | # | Question | Owner | Impact |
 |---|----------|-------|--------|
-| 1 | **Do ephemeral sampler weights auto-expire?** When using `save_weights_and_get_sampling_client()` without a name, does Tinker auto-delete the underlying weights? | Tinker team / integration test | If not, weights persist indefinitely -- a security hole |
-| 2 | **What is the checkpoint count limit per training run?** Can an evaluator create unlimited checkpoints, exhausting storage? | Tinker team | DoS vector if unlimited |
-| 3 | **Rate limits on training API?** Are there per-user or per-model concurrency limits? | Tinker team | Could affect evaluation speed and timeout behavior |
-| 4 | **How is the Tinker API key scoped?** Can we create a key that is limited to create + train + sample but cannot list/download/publish? | Tinker team | Would provide defense-in-depth beyond session wrapper |
-| 5 | **ETH/USD price oracle integration** | Smart contract team | Needed for accurate cost-to-wei conversion |
-| 6 | **Evaluator code pinning** | Control plane team | TDX quote must include evaluator code hash |
+| 1 | **What is the checkpoint count limit per training run?** Can an evaluator create unlimited checkpoints, exhausting storage? | Tinker team | DoS vector if unlimited |
+| 2 | **Rate limits on training API?** Are there per-user or per-model concurrency limits? | Tinker team | Could affect evaluation speed and timeout behavior |
+| 3 | **How is the Tinker API key scoped?** Can we create a key that is limited to create + train + sample but cannot list/download/publish? | Tinker team | Would provide defense-in-depth beyond session wrapper |
+| 4 | **ETH/USD price oracle integration** | Smart contract team | Needed for accurate cost-to-wei conversion |
+| 5 | **Evaluator code pinning** | Control plane team | TDX quote must include evaluator code hash |
 
 ### 10.2 Should Resolve Before Production
 

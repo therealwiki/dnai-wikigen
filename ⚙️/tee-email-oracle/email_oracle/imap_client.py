@@ -10,6 +10,7 @@ from email.header import decode_header
 
 from email_oracle.config import Settings
 from email_oracle.cred_store import EmailCredentials
+from email_oracle.redaction import hash_text
 
 
 @dataclass
@@ -125,7 +126,14 @@ class IMAPClient:
         criteria.append(f'SINCE "{cutoff.strftime("%d-%b-%Y")}"')
 
         search_str = " ".join(criteria) if criteria else "ALL"
-        print(f"[imap] searching: {search_str}")
+        print(
+            "[imap] searching "
+            f"from_filter_set={bool(from_filter)} "
+            f"from_filter_hash={hash_text(from_filter) if from_filter else ''} "
+            f"subject_filter_set={bool(subject_contains)} "
+            f"subject_filter_hash={hash_text(subject_contains) if subject_contains else ''} "
+            f"max_age_seconds={max_age_seconds}"
+        )
 
         _, data = conn.search(None, search_str)
         msg_ids = data[0].split() if data[0] else []
@@ -159,7 +167,10 @@ class IMAPClient:
             match = re.search(extract_pattern, body)
             if match:
                 pin = match.group()
-                print(f"[imap] extracted pin '{pin}' from email '{subject}' ({sender})")
+                print(
+                    "[imap] extracted pin from matching email "
+                    f"subject_hash={hash_text(subject)} sender_hash={hash_text(sender)}"
+                )
                 return ExtractedPin(
                     pin=pin,
                     email_id=msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id),

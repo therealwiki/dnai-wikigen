@@ -1,11 +1,11 @@
-"""X25519 + AES-256-GCM encryption for the card delivery channel.
+"""X25519 + AES-256-GCM encryption for TEE-bound payload channels.
 
 Protocol (ECIES-like):
   1. TEE generates an X25519 keypair on boot. Public key served via /attestation.
   2. Developer verifies TDX quote, extracts TEE's public key.
   3. Developer generates ephemeral X25519 keypair.
   4. Developer computes shared_secret = ECDH(ephemeral_private, tee_public).
-  5. Developer derives AES key via HKDF-SHA256(shared_secret, info="tinker-delegate-card").
+  5. Developer derives AES key via a channel-specific HKDF-SHA256 context.
   6. Developer encrypts CardPayload JSON with AES-256-GCM.
   7. Developer sends {ephemeral_public_key, nonce, ciphertext, tag} to POST /billing/card.
   8. TEE computes same shared_secret, derives same AES key, decrypts.
@@ -30,7 +30,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 
-HKDF_INFO = b"tinker-delegate-card"
+CARD_HKDF_INFO = b"tinker-delegate-card"
+ARTIFACT_HKDF_INFO = b"tinker-delegate-artifact"
 NONCE_SIZE = 12  # 96 bits for AES-GCM
 
 
@@ -57,13 +58,13 @@ class EncryptedPayload:
         )
 
 
-def _derive_aes_key(shared_secret: bytes) -> bytes:
+def _derive_aes_key(shared_secret: bytes, info: bytes = CARD_HKDF_INFO) -> bytes:
     """HKDF-SHA256 to derive 256-bit AES key from raw ECDH output."""
     return HKDF(
         algorithm=hashes.SHA256(),
         length=32,
         salt=None,
-        info=HKDF_INFO,
+        info=info,
     ).derive(shared_secret)
 
 
@@ -78,20 +79,45 @@ class TEEKeyPair:
         self._private = X25519PrivateKey.generate()
         self.public_key_bytes = self._private.public_key().public_bytes_raw()
 
-    def decrypt(self, payload: EncryptedPayload) -> bytes:
-        """Decrypt an encrypted card payload."""
+    @classmethod
+    def from_private_key_hex(cls, private_key_hex: str) -> "TEEKeyPair":
+        """Reconstruct a keypair from a persisted raw X25519 private key (hex).
+
+        Used for local/dev recipient key custody (a 0600 key file), and to let
+        an in-boundary key source drive the same decrypt path as the boot-time
+        generated key. Production CVM custody derives this from dstack.
+        """
+        self = cls.__new__(cls)
+        self._private = X25519PrivateKey.from_private_bytes(bytes.fromhex(private_key_hex))
+        self.public_key_bytes = self._private.public_key().public_bytes_raw()
+        return self
+
+    def decrypt(
+        self,
+        payload: EncryptedPayload,
+        *,
+        info: bytes = CARD_HKDF_INFO,
+        associated_data: bytes | None = None,
+    ) -> bytes:
+        """Decrypt an encrypted payload for the selected channel."""
         sender_public = X25519PublicKey.from_public_bytes(payload.ephemeral_public_key)
         shared_secret = self._private.exchange(sender_public)
-        aes_key = _derive_aes_key(shared_secret)
+        aes_key = _derive_aes_key(shared_secret, info)
         aesgcm = AESGCM(aes_key)
-        return aesgcm.decrypt(payload.nonce, payload.ciphertext, None)
+        return aesgcm.decrypt(payload.nonce, payload.ciphertext, associated_data)
 
 
 # ---------------------------------------------------------------------------
 # Developer side: encryption
 # ---------------------------------------------------------------------------
 
-def encrypt_for_tee(plaintext: bytes, tee_public_key: bytes) -> EncryptedPayload:
+def encrypt_for_tee(
+    plaintext: bytes,
+    tee_public_key: bytes,
+    *,
+    info: bytes = CARD_HKDF_INFO,
+    associated_data: bytes | None = None,
+) -> EncryptedPayload:
     """Encrypt data to the TEE's X25519 public key.
 
     Used by the developer CLI / SDK to encrypt card details before sending
@@ -102,11 +128,11 @@ def encrypt_for_tee(plaintext: bytes, tee_public_key: bytes) -> EncryptedPayload
 
     tee_pub = X25519PublicKey.from_public_bytes(tee_public_key)
     shared_secret = ephemeral_private.exchange(tee_pub)
-    aes_key = _derive_aes_key(shared_secret)
+    aes_key = _derive_aes_key(shared_secret, info)
 
     nonce = os.urandom(NONCE_SIZE)
     aesgcm = AESGCM(aes_key)
-    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, associated_data)
 
     return EncryptedPayload(
         ephemeral_public_key=ephemeral_public,
@@ -129,5 +155,5 @@ def encrypt_card_payload(card_data: dict, tee_public_key_hex: str) -> dict:
     """
     plaintext = json.dumps(card_data).encode()
     tee_public_key = bytes.fromhex(tee_public_key_hex)
-    payload = encrypt_for_tee(plaintext, tee_public_key)
+    payload = encrypt_for_tee(plaintext, tee_public_key, info=CARD_HKDF_INFO)
     return payload.to_hex()

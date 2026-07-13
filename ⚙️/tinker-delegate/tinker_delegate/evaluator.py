@@ -249,8 +249,8 @@ async def sft_evaluate(
     eval_losses_tuned = []
     eval_losses_base = []
 
-    # Also create a base model sampler for comparison
-    base_sampler = session._sc.create_sampling_client(base_model=base_model)
+    # Also create a scoped base model sampler for comparison.
+    base_sampler = session.create_base_sampler(base_model=base_model)
 
     for record in eval_records[:20]:  # cap eval at 20 examples
         tokens, weights = _tokenize_sft_example(tokenizer, record)

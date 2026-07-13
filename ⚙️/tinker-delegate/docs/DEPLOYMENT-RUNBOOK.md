@@ -1,12 +1,38 @@
 # Deployment Runbook
 
-Last updated: 2026-03-17
+Last updated: 2026-07-08
 
-This file records the live Base Sepolia contracts and the current Phala CVM state for the tinker delegate stack.
+This file records Base Sepolia and Phala deployment evidence for the tinker
+delegate stack. It is a runbook, not a trust source by itself. The
+machine-readable deployment ledger is:
+
+```text
+deployments/base-sepolia.json
+```
+
+The previous Base Sepolia contracts below still have bytecode, but they are now
+classified as **legacy deployed code** for this branch because the current
+operator deployer is:
+
+```text
+0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD
+```
+
+and the historical contracts are not controlled by that deployer. Fresh
+current-operator deployments should be broadcast with:
+
+```bash
+cd "⚙️/tinker-delegate/contracts"
+./scripts/deploy-base-sepolia.sh
+```
+
+The helper uses Foundry `--account "$FOUNDRY_KEYSTORE_ACCOUNT"` and therefore
+prompts for the encrypted keystore password. It does not use or require a raw
+private key.
 
 ## Base Sepolia
 
-### DiligenceRoom
+### Historical DiligenceRoom
 
 - Contract: `DiligenceRoom`
 - Address: `0xe51A3C5fd564c625C9D72D2283878Ab4296b3844`
@@ -15,6 +41,7 @@ This file records the live Base Sepolia contracts and the current Phala CVM stat
 - Deployment tx: `0x9407f7989c11ac1161397c85aa41bf3752ebca8124e5ecb7fafe05c6dbd899e4`
 - Deployment block: `38837040`
 - Deployer / developer fee recipient: `0x111dB654eCD8756188e03746C1bcff74FD749791`
+- Current-operator controlled: no
 - Compiler: `solc 0.8.28`
 - Optimizer runs: `200`
 - Verification: passed on BaseScan
@@ -42,7 +69,7 @@ The original escrow contract was not safe enough to deploy unchanged. The deploy
 
 - `createDeal(uint256 reservePrice, uint256 expiry, bytes32 artifactHash, address teeIdentity)`
 - `fundDeal(uint256 dealId)` payable
-- `submitResult(uint256 dealId, ScoreBand scoreBand, uint256 computeCost, bytes32 resultHash)`
+- `submitResult(uint256 dealId, ScoreBand scoreBand, uint256 computeCost, bytes32 resultHash, bytes32 composeHash, uint256 authorizationExpiry, bytes verifierSignature)`
 - `acceptDeal(uint256 dealId, uint256 dealPayment)`
 - `rejectDeal(uint256 dealId)`
 - `expireDeal(uint256 dealId)`
@@ -60,13 +87,14 @@ The original escrow contract was not safe enough to deploy unchanged. The deploy
   - adversarial test proving a reverting seller cannot block `acceptDeal`
   - budget safety test proving over-budget compute is rejected
 
-### EmailOracleAuth
+### Historical EmailOracleAuth
 
 - Contract: `EmailOracleAuth`
 - Address: `0xd21706E1AfF482F1d23664be5768ceaD63ccdBfF`
 - Network: Base Sepolia (`chainId = 84532`)
 - BaseScan: `https://sepolia.basescan.org/address/0xd21706E1AfF482F1d23664be5768ceaD63ccdBfF`
 - Owner: `0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38`
+- Current-operator controlled: no
 - Oracle upgrade delay: `172800` seconds (`2 days`)
 - `allowAnyDevice()`: `true`
 - `oracleCodeFrozen()`: `false`
@@ -91,9 +119,15 @@ The oracle contract is still mutable. Before production freeze:
 3. Call `freezeOracleCodeAuth()`.
 4. Optionally call `freezeConsumerRegistry()`.
 
+Because the historical owner is not the current operator deployer, do not use
+the historical `EmailOracleAuth` as the production policy root for this branch.
+Deploy a fresh instance from the current Foundry `dev` keystore account, then
+register the final oracle and consumer compose hashes once the current Phala CVM
+has been rebuilt and verified.
+
 ## Phala
 
-### Current CVM
+### Historical CVM Record
 
 - CVM name: `tinker-email-oracle`
 - CVM id: `cvm_j2kD1EZn`
@@ -105,20 +139,20 @@ The oracle contract is still mutable. Before production freeze:
 - dstack OS: `0.5.7`
 - Gateway base domain: `dstack-pha-prod5.phala.network`
 
-### Current endpoints
+### Historical endpoints
 
 - Oracle API: `https://29d78795d77408a705d2c77c42d1bc10c59d0671-8000.dstack-pha-prod5.phala.network`
 - Delegate API: `https://29d78795d77408a705d2c77c42d1bc10c59d0671-8080.dstack-pha-prod5.phala.network`
 - Chrome CDP: `https://29d78795d77408a705d2c77c42d1bc10c59d0671-9222.dstack-pha-prod5.phala.network`
 - Neko UI: `https://29d78795d77408a705d2c77c42d1bc10c59d0671-52000.dstack-pha-prod5.phala.network`
 
-### Current images
+### Historical images
 
 - Oracle image: `ttl.sh/therealwiki-tinker-oracle-20260313-8b76c1d@sha256:6d521ae4da405250adbab51a8597ac83fdff4addfe930921293ccadad6d12352`
 - Delegate image: `ttl.sh/therealwiki-tinker-delegate-20260313-8b76c1d-r6@sha256:6563c94382f82dc43dfe4de1f615189c8c3a6806061bb366c0efd0403017e115`
-- Delegate browser sidecar: `mcr.microsoft.com/playwright:v1.58.0-noble`
+- Delegate browser sidecar: `mcr.microsoft.com/playwright:v1.58.0-noble@sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f`
 
-### Current live state
+### Historical live state
 
 - Oracle API is live and healthy at the public `:8000` endpoint.
 - The delegate stack now boots with registry images instead of local `build:` contexts.
@@ -126,7 +160,9 @@ The oracle contract is still mutable. Before production freeze:
 
 ### Important current blocker
 
-The remaining blocker is Tinker auth automation, not Phala deployment.
+The recorded March 2026 blocker was Tinker auth automation, not Phala
+deployment. This record must be revalidated with the current Phala profile and
+current image digests before being treated as a live deployment.
 
 On March 17, 2026, direct tests showed:
 
@@ -162,21 +198,33 @@ forge build
 forge test --gas-report
 ```
 
+### Compose hash verification
+
+```bash
+cd "⚙️/tinker-delegate"
+uv run python -m tinker_delegate.main verify-compose-hash \
+  --compose docker-compose.all.phala.yaml \
+  --phala-raw-compose \
+  --expected-hash EXPECTED_PHALA_COMPOSE_HASH
+```
+
+For deploy-critical TEE images, keep digest-pinned image refs literal in the
+Phala compose. Do not treat encrypted-env image substitutions as quote-bound
+deployment evidence unless a separate verifier proves the encrypted env values
+that Phala applied.
+
 ### Deploy DiligenceRoom
 
 ```bash
 cd "⚙️/tinker-delegate/contracts"
-set -a; . ../../../.env; set +a
-forge script script/DiligenceRoom.s.sol \
-  --rpc-url "$BASE_SEPOLIA_RPC_URL" \
-  --account "$FOUNDRY_KEYSTORE_ACCOUNT" \
-  --password "$FOUNDRY_PASSWORD" \
-  --broadcast \
-  --verify \
-  --etherscan-api-key "$ETHERSCAN_API_KEY" \
-  --slow \
-  --non-interactive
+./scripts/deploy-base-sepolia.sh
 ```
+
+The helper builds, tests, dry-runs, broadcasts `DiligenceRoom` and
+`EmailOracleAuth`, performs on-chain reads, and writes
+`deployments/base-sepolia.json`. If contract verification is needed, use the
+recorded addresses and constructor arguments from the manifest and Foundry
+broadcast JSON. Do not use `--private-key`.
 
 ### Useful verification reads
 
@@ -188,3 +236,50 @@ cast call 0xd21706E1AfF482F1d23664be5768ceaD63ccdBfF "owner()(address)" --rpc-ur
 cast call 0xd21706E1AfF482F1d23664be5768ceaD63ccdBfF "ORACLE_UPGRADE_DELAY()(uint256)" --rpc-url "$BASE_SEPOLIA_RPC_URL"
 cast call 0xd21706E1AfF482F1d23664be5768ceaD63ccdBfF "allowAnyDevice()(bool)" --rpc-url "$BASE_SEPOLIA_RPC_URL"
 ```
+
+## Rollback And Recovery
+
+Rollback is policy-specific because deployed contracts and CVM attestations are
+part of the verification chain.
+
+Safe to redeploy during test phases:
+
+- `DiligenceRoom` while no production deals depend on the previous address.
+- `EmailOracleAuth` while oracle code authorization is not frozen and no
+  production KMS/app policy depends on the previous address.
+- Phala CVMs that have not been advertised as the final endpoint or policy root.
+- Frontend/static verifier pages, as long as the deployment manifest is updated.
+
+Must not be silently rolled back:
+
+- A frozen `EmailOracleAuth` oracle compose-hash policy.
+- A consumer registry that reviewers or users have already relied on.
+- Any deployed `DiligenceRoom` with funded or evaluated deals.
+- A Phala CVM/image/compose hash that has been published as the attested
+  production boundary.
+- Any funding, Tinker API-key, email, or private-artifact sealed state.
+
+Rollback procedure:
+
+1. Pause new room creation and Tinker execution at the API/UI layer if those
+   controls are available.
+2. Record the failing address, CVM ID, compose hash, image digest, transaction
+   hash, or endpoint in `deployments/base-sepolia.json` before replacing it.
+3. Deploy the replacement from a Foundry keystore account, never a raw private
+   key.
+4. Verify bytecode, owner/developer addresses, compose hash, image digest, and
+   TDX quote evidence before routing users to the replacement.
+5. Leave old contracts callable for withdrawals or expiries when funds are
+   present. Do not strand user funds by hiding the old address.
+6. Notify users/reviewers when a published trust root, compose hash, image
+   digest, app ID, endpoint, or contract address changes.
+7. Update `ARCHITECTURE.md`, `STATUS.md`, and the deployment manifest in the
+   same change so docs do not imply the old trust root is still current.
+
+Emergency-only actions:
+
+- Revoke oracle consumers if OTP or account-custody policy is suspect.
+- Freeze oracle code authorization only after the intended compose hash is
+  verified, because this cannot be undone.
+- Stop or delete a CVM only after sealed data migration or intentional data
+  destruction has been decided and recorded.

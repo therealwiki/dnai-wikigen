@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from typing import Any
 
 from dstack_sdk import DstackClient
 
@@ -31,7 +32,27 @@ def derive_storage_key(path: str) -> bytes:
 
 def get_attestation(report_data: str | bytes) -> tuple[str, str, str]:
     """Return quote hex, app id, and compose hash for the running CVM."""
+    details = get_attestation_details(report_data)
+    return details["quote"], details["app_id"], details["compose_hash"]
+
+
+def get_attestation_details(report_data: str | bytes) -> dict[str, Any]:
+    """Return bounded public dstack attestation details for the running CVM."""
     client = _client()
     info = client.info()
     quote = client.get_quote(_normalize_report_data(report_data))
-    return quote.quote, info.app_id, info.compose_hash
+    tcb_info = info.tcb_info.model_dump() if hasattr(info.tcb_info, "model_dump") else {}
+    return {
+        "quote": quote.quote,
+        "event_log": quote.event_log,
+        "quote_report_data": quote.report_data,
+        "vm_config": quote.vm_config,
+        "app_id": info.app_id,
+        "instance_id": info.instance_id,
+        "app_name": info.app_name,
+        "device_id": info.device_id,
+        "mr_aggregated": info.mr_aggregated,
+        "os_image_hash": info.os_image_hash,
+        "compose_hash": info.compose_hash,
+        "tcb_info": tcb_info,
+    }

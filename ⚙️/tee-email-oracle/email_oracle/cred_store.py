@@ -2,6 +2,7 @@
 
 import json
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,7 +77,8 @@ class CredentialStore:
         nonce = os.urandom(12)
         ciphertext = self._aesgcm.encrypt(nonce, plaintext, None)
         self.path.write_bytes(nonce + ciphertext)
-        print(f"[cred_store] saved credentials for {creds.email}")
+        email_hash = hashlib.sha256(creds.email.encode("utf-8")).hexdigest()
+        print(f"[cred_store] saved credentials email_hash={email_hash}")
 
     def load(self) -> EmailCredentials | None:
         """Load and decrypt credentials, or None if not found."""
