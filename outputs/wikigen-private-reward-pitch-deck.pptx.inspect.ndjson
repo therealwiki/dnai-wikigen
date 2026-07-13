@@ -1,0 +1,287 @@
+{"kind": "deck", "id": "local/rebuild", "name": "wikigen private reward pitch deck"}
+{"kind": "image", "slide": 1, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 1, "text": "wikigen", "bbox": [77, 86, 672, 96]}
+{"kind": "textbox", "slide": 1, "text": "Private data can become verified reward without becoming public data.", "bbox": [77, 202, 614, 173]}
+{"kind": "textbox", "slide": 1, "text": "dnai-wikigen is a private evaluation, private reward, and attested settlement substrate: sealed data and verifiers inside Phala/dstack TEEs, bounded outputs and escrow on Base.", "bbox": [77, 398, 586, 125]}
+{"kind": "shape", "slide": 1, "bbox": [77, 538, 278, 36]}
+{"kind": "textbox", "slide": 1, "text": "project pitch, not a startup pitch", "bbox": [77, 540, 278, 36]}
+{"kind": "textbox", "slide": 1, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 1, "text": "01", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 1, "title": "wikigen", "textShapes": 6}
+{"kind": "image", "slide": 2, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 2, "text": "THE PROBLEM", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 2, "text": "The most valuable data cannot be shared like ordinary data.", "bbox": [77, 75, 1123, 96]}
+{"kind": "textbox", "slide": 2, "text": "Bio datasets, private benchmarks, reward functions, source accounts, and proprietary tests have value because they can evaluate something. Direct disclosure destroys that leverage.", "bbox": [77, 206, 979, 77]}
+{"kind": "shape", "slide": 2, "bbox": [82, 330, 9, 9]}
+{"kind": "textbox", "slide": 2, "text": "Data owners need proof of utility without handing over the data.", "bbox": [110, 322, 1046, 82]}
+{"kind": "shape", "slide": 2, "bbox": [82, 412, 9, 9]}
+{"kind": "textbox", "slide": 2, "text": "Optimizers need reward signals \u2014 but raw rewards, logs, and checkpoints can leak the verifier.", "bbox": [110, 403, 1046, 82]}
+{"kind": "shape", "slide": 2, "bbox": [82, 493, 9, 9]}
+{"kind": "textbox", "slide": 2, "text": "Buyers need evidence the evaluation actually ran: measured code and a quote, not a PDF promise.", "bbox": [110, 485, 1046, 82]}
+{"kind": "textbox", "slide": 2, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 2, "text": "02", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 2, "title": "THE PROBLEM", "textShapes": 8}
+{"kind": "image", "slide": 3, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 3, "text": "THE THESIS", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 3, "text": "Interaction with private data is not the same as disclosure.", "bbox": [77, 75, 1123, 96]}
+{"kind": "textbox", "slide": 3, "text": "That is only true under a constrained interface: an allowed query family, measured code, authenticated callers, budgeted and reduced outputs, and an attestable transcript.", "bbox": [77, 163, 1018, 77]}
+{"kind": "shape", "slide": 3, "bbox": [77, 293, 360, 250]}
+{"kind": "textbox", "slide": 3, "text": "sealed asset", "bbox": [104, 326, 306, 38]}
+{"kind": "textbox", "slide": 3, "text": "Raw data, reward functions, account credentials, and browser sessions live only inside the attested TEE.", "bbox": [104, 379, 306, 154]}
+{"kind": "shape", "slide": 3, "bbox": [470, 293, 360, 250]}
+{"kind": "textbox", "slide": 3, "text": "reward oracle", "bbox": [497, 326, 306, 38]}
+{"kind": "textbox", "slide": 3, "text": "Measured verifier code computes exact rewards over the sealed data \u2014 a narrow oracle, not a shell or notebook.", "bbox": [497, 379, 306, 154]}
+{"kind": "shape", "slide": 3, "bbox": [864, 293, 360, 250]}
+{"kind": "textbox", "slide": 3, "text": "bounded proof", "bbox": [891, 326, 306, 38]}
+{"kind": "textbox", "slide": 3, "text": "Only score bands, pass/hold/deny decisions, hashes, quotes, and settlement events leave the boundary.", "bbox": [891, 379, 306, 154]}
+{"kind": "textbox", "slide": 3, "text": "\u2192", "bbox": [437, 394, 34, 38]}
+{"kind": "textbox", "slide": 3, "text": "\u2192", "bbox": [830, 394, 34, 38]}
+{"kind": "textbox", "slide": 3, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 3, "text": "03", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 3, "title": "THE THESIS", "textShapes": 13}
+{"kind": "image", "slide": 4, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 4, "text": "WHAT WIKIGEN IS BUILDING", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 4, "text": "A private verified-reward substrate: four ideas in one boundary.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 4, "bbox": [77, 178, 274, 264]}
+{"kind": "textbox", "slide": 4, "text": "NDAI economics", "bbox": [100, 204, 228, 77]}
+{"kind": "textbox", "slide": 4, "text": "Reserve price, budget cap, bounded disclosure, and escrow settlement mediate every deal.", "bbox": [100, 274, 228, 154]}
+{"kind": "shape", "slide": 4, "bbox": [365, 178, 274, 264]}
+{"kind": "textbox", "slide": 4, "text": "TEE custody", "bbox": [388, 204, 228, 77]}
+{"kind": "textbox", "slide": 4, "text": "Data, credentials, reward functions, and browser sessions are sealed in dstack/Phala Intel TDX CVMs \u2014 operators get no raw access.", "bbox": [388, 274, 228, 154]}
+{"kind": "shape", "slide": 4, "bbox": [653, 178, 274, 264]}
+{"kind": "textbox", "slide": 4, "text": "private verified rewards", "bbox": [676, 204, 228, 77]}
+{"kind": "textbox", "slide": 4, "text": "Rewards come from measured code over sealed data, not from a free-form model opinion.", "bbox": [676, 274, 228, 154]}
+{"kind": "shape", "slide": 4, "bbox": [941, 178, 274, 264]}
+{"kind": "textbox", "slide": 4, "text": "DevProof verification", "bbox": [964, 204, 228, 77]}
+{"kind": "textbox", "slide": 4, "text": "Anyone can check the chain: git SHA \u2192 image digest \u2192 compose hash \u2192 TDX quote \u2192 contract.", "bbox": [964, 274, 228, 154]}
+{"kind": "textbox", "slide": 4, "text": "Two product faces share one core: the Attested Diligence Room values private artifacts; the Private Reward Lab lets optimizers actively test candidates against sealed data.", "bbox": [77, 485, 1123, 96]}
+{"kind": "textbox", "slide": 4, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 4, "text": "04", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 4, "title": "WHAT WIKIGEN IS BUILDING", "textShapes": 13}
+{"kind": "image", "slide": 5, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 5, "text": "PRODUCT MODES", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 5, "text": "One protected interface, four product modes.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 5, "bbox": [77, 173, 562, 197]}
+{"kind": "textbox", "slide": 5, "text": "A \u00b7 Diligence Room", "bbox": [102, 192, 514, 34]}
+{"kind": "textbox", "slide": 5, "text": "private artifact \u2192 bounded valuation \u2192 escrow settlement", "bbox": [102, 232, 514, 38]}
+{"kind": "textbox", "slide": 5, "text": "Price memos, code, datasets, SOPs, and model artifacts without disclosure.", "bbox": [102, 296, 514, 67]}
+{"kind": "shape", "slide": 5, "bbox": [658, 173, 562, 197]}
+{"kind": "textbox", "slide": 5, "text": "B \u00b7 Private Reward Lab", "bbox": [683, 192, 514, 34]}
+{"kind": "textbox", "slide": 5, "text": "sealed verifier + data \u2192 reward oracle \u2192 optimizer loop \u2192 bounded proof", "bbox": [683, 232, 514, 38]}
+{"kind": "textbox", "slide": 5, "text": "RLVR, TTT-style discovery, private benchmarks, reward-function licensing.", "bbox": [683, 296, 514, 67]}
+{"kind": "shape", "slide": 5, "bbox": [77, 389, 562, 197]}
+{"kind": "textbox", "slide": 5, "text": "C \u00b7 Source Custody Room", "bbox": [102, 408, 514, 34]}
+{"kind": "textbox", "slide": 5, "text": "web2 account \u2192 TEE browser/export \u2192 sealed artifact \u2192 policy-gated use", "bbox": [102, 448, 514, 38]}
+{"kind": "textbox", "slide": 5, "text": "WhatsApp, email, private repos, and data portals become sealed assets.", "bbox": [102, 512, 514, 67]}
+{"kind": "shape", "slide": 5, "bbox": [658, 389, 562, 197]}
+{"kind": "textbox", "slide": 5, "text": "D \u00b7 Multi-Owner Collaboration", "bbox": [683, 408, 514, 34]}
+{"kind": "textbox", "slide": 5, "text": "N private corpora \u2192 fan-out gates \u2192 unanimous or M-of-N consent \u2192 joint result", "bbox": [683, 448, 514, 38]}
+{"kind": "textbox", "slide": 5, "text": "Biobank collaboration, sponsor/CRO workflows, cross-institution analysis.", "bbox": [683, 512, 514, 67]}
+{"kind": "textbox", "slide": 5, "text": "The Private Reward Lab is the strongest form of the diligence room: the evaluator does not just read an artifact \u2014 it tests candidates against it while the data stays sealed.", "bbox": [77, 610, 1123, 67]}
+{"kind": "textbox", "slide": 5, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 5, "text": "05", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 5, "title": "PRODUCT MODES", "textShapes": 17}
+{"kind": "image", "slide": 6, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 6, "text": "THE ONE-LINER", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 6, "text": "Prime RL meets TEEs.", "bbox": [77, 82, 1123, 96]}
+{"kind": "textbox", "slide": 6, "text": "Community-built RL environments become sealed, attested reward oracles \u2014 royalty-bearing assets instead of donated public goods.", "bbox": [77, 178, 1018, 77]}
+{"kind": "shape", "slide": 6, "bbox": [77, 264, 360, 264]}
+{"kind": "textbox", "slide": 6, "text": "envs are assets", "bbox": [104, 293, 306, 38]}
+{"kind": "textbox", "slide": 6, "text": "An environment creator seals data and verifier in a TEE. Anyone can train against it; nobody can copy it.", "bbox": [104, 346, 306, 168]}
+{"kind": "shape", "slide": 6, "bbox": [470, 264, 360, 264]}
+{"kind": "textbox", "slide": 6, "text": "usage is provable", "bbox": [497, 293, 306, 38]}
+{"kind": "textbox", "slide": 6, "text": "Every fine-tune that touches the environment is metered by measured code, so royalties are forced by contract, not by trust.", "bbox": [497, 346, 306, 168]}
+{"kind": "shape", "slide": 6, "bbox": [864, 264, 360, 264]}
+{"kind": "textbox", "slide": 6, "text": "inference pays", "bbox": [891, 293, 306, 38]}
+{"kind": "textbox", "slide": 6, "text": "The fine-tuned model stays encumbered inside the boundary \u2014 payouts stream from those who use the model, not those who trained it.", "bbox": [891, 346, 306, 168]}
+{"kind": "textbox", "slide": 6, "text": "Bootstrap:  the account-delegated Tinker proxy makes this runnable as a DevProof MVP today \u2014 no protocol-level integration required.", "bbox": [77, 566, 1123, 72]}
+{"kind": "textbox", "slide": 6, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 6, "text": "06", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 6, "title": "THE ONE-LINER", "textShapes": 12}
+{"kind": "image", "slide": 7, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 7, "text": "CONCRETE EXAMPLE", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 7, "text": "TTT-Discover-style biology becomes a private reward environment.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 7, "bbox": [77, 168, 1123, 283]}
+{"kind": "textbox", "slide": 7, "text": "Private bio verifier", "bbox": [106, 192, 1066, 34]}
+{"kind": "shape", "slide": 7, "bbox": [110, 249, 9, 9]}
+{"kind": "textbox", "slide": 7, "text": "Candidate computational-bio code is proposed by an optimizer.", "bbox": [139, 240, 1046, 50]}
+{"kind": "shape", "slide": 7, "bbox": [110, 299, 9, 9]}
+{"kind": "textbox", "slide": 7, "text": "The TEE scores it against sealed data with hidden train / reward / final-validation splits.", "bbox": [139, 290, 1046, 50]}
+{"kind": "shape", "slide": 7, "bbox": [110, 348, 9, 9]}
+{"kind": "textbox", "slide": 7, "text": "Exact rewards can drive learning internally; public feedback is quantized, banded, or withheld.", "bbox": [139, 340, 1046, 50]}
+{"kind": "shape", "slide": 7, "bbox": [110, 398, 9, 9]}
+{"kind": "textbox", "slide": 7, "text": "A one-shot final-validation gate and query budgets stop holdout overfitting.", "bbox": [139, 390, 1046, 50]}
+{"kind": "shape", "slide": 7, "bbox": [77, 480, 1123, 149]}
+{"kind": "textbox", "slide": 7, "text": "The optimizer is swappable", "bbox": [106, 501, 1066, 34]}
+{"kind": "textbox", "slide": 7, "text": "RLVR   \u2022   test-time training   \u2022   LLM repair loop   \u2022   evolutionary search   \u2022   manual", "bbox": [106, 542, 1066, 34]}
+{"kind": "textbox", "slide": 7, "text": "The private reward boundary is the product; the optimizer is a plug-in.", "bbox": [106, 581, 1066, 38]}
+{"kind": "textbox", "slide": 7, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 7, "text": "07", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 7, "title": "CONCRETE EXAMPLE", "textShapes": 12}
+{"kind": "image", "slide": 8, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 8, "text": "SECURITY CLAIM", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 8, "text": "Only the approved reward transcript leaves the TEE.", "bbox": [77, 75, 1123, 96]}
+{"kind": "textbox", "slide": 8, "text": "Private data can be queried many times inside the boundary, but every query passes through one measured interface.", "bbox": [77, 156, 1018, 77]}
+{"kind": "shape", "slide": 8, "bbox": [77, 226, 274, 206]}
+{"kind": "textbox", "slide": 8, "text": "01", "bbox": [98, 243, 231, 24]}
+{"kind": "textbox", "slide": 8, "text": "Seal D", "bbox": [98, 270, 231, 53]}
+{"kind": "textbox", "slide": 8, "text": "Private data and verifier code live inside the attested TEE.", "bbox": [98, 320, 231, 101]}
+{"kind": "shape", "slide": 8, "bbox": [365, 226, 274, 206]}
+{"kind": "textbox", "slide": 8, "text": "02", "bbox": [386, 243, 231, 24]}
+{"kind": "textbox", "slide": 8, "text": "Run R_D(c)", "bbox": [386, 270, 231, 53]}
+{"kind": "textbox", "slide": 8, "text": "Candidate code is sandboxed and scored against hidden data.", "bbox": [386, 320, 231, 101]}
+{"kind": "shape", "slide": 8, "bbox": [653, 226, 274, 206]}
+{"kind": "textbox", "slide": 8, "text": "03", "bbox": [674, 243, 231, 24]}
+{"kind": "textbox", "slide": 8, "text": "Release Q(\u00b7)", "bbox": [674, 270, 231, 53]}
+{"kind": "textbox", "slide": 8, "text": "Only reduced feedback leaves: band, hash, hold, or final result.", "bbox": [674, 320, 231, 101]}
+{"kind": "shape", "slide": 8, "bbox": [941, 226, 274, 206]}
+{"kind": "textbox", "slide": 8, "text": "04", "bbox": [962, 243, 231, 24]}
+{"kind": "textbox", "slide": 8, "text": "Account for leakage", "bbox": [962, 270, 231, 53]}
+{"kind": "textbox", "slide": 8, "text": "The public transcript is counted before the system is trusted.", "bbox": [962, 320, 231, 101]}
+{"kind": "shape", "slide": 8, "bbox": [77, 466, 1123, 168]}
+{"kind": "textbox", "slide": 8, "text": "Theorem 1 \u2014 leakage-only realization", "bbox": [106, 485, 634, 34]}
+{"kind": "textbox", "slide": 8, "text": "Every outside view can be simulated from L(D), the declared leakage. If a fact is not in L(D), it does not appear outside the TEE \u2014 up to TEE, attestation, and standard crypto assumptions.", "bbox": [106, 528, 634, 96]}
+{"kind": "textbox", "slide": 8, "text": "I(D ; transcript) \u2264 n\u00b7k + b", "bbox": [768, 509, 403, 43]}
+{"kind": "textbox", "slide": 8, "text": "n reward queries \u00d7 k visible bits + b final-result bits", "bbox": [768, 562, 403, 38]}
+{"kind": "textbox", "slide": 8, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 8, "text": "08", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 8, "title": "SECURITY CLAIM", "textShapes": 21}
+{"kind": "image", "slide": 9, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 9, "text": "ENCUMBERED COMPUTE", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 9, "text": "Delegate the compute, never the account.", "bbox": [77, 75, 1123, 96]}
+{"kind": "textbox", "slide": 9, "text": "The upstream Tinker API key, project id, cookies, and payment state are sealed service configuration inside the CVM. Users and agents only ever hold scoped proxy credentials.", "bbox": [77, 156, 1037, 77]}
+{"kind": "shape", "slide": 9, "bbox": [77, 240, 274, 240]}
+{"kind": "textbox", "slide": 9, "text": "01", "bbox": [98, 257, 231, 24]}
+{"kind": "textbox", "slide": 9, "text": "scoped JWT", "bbox": [98, 284, 231, 53]}
+{"kind": "textbox", "slide": 9, "text": "Short-lived, signed with CVM-derived key material, delivered encrypted to the recipient's X25519 key.", "bbox": [98, 334, 231, 134]}
+{"kind": "shape", "slide": 9, "bbox": [365, 240, 274, 240]}
+{"kind": "textbox", "slide": 9, "text": "02", "bbox": [386, 257, 231, 24]}
+{"kind": "textbox", "slide": 9, "text": "policy gates", "bbox": [386, 284, 231, 53]}
+{"kind": "textbox", "slide": 9, "text": "Hash-only issue policy, verifier-signed identity registry, reviewer-signed grant lifecycle \u2014 all fail closed.", "bbox": [386, 334, 231, 134]}
+{"kind": "shape", "slide": 9, "bbox": [653, 240, 274, 240]}
+{"kind": "textbox", "slide": 9, "text": "03", "bbox": [674, 257, 231, 24]}
+{"kind": "textbox", "slide": 9, "text": "spend limits", "bbox": [674, 284, 231, 53]}
+{"kind": "textbox", "slide": 9, "text": "Per-scope caps enforced before automation, plus on-chain TinkerAccountEncumbrance approval for spend scopes.", "bbox": [674, 334, 231, 134]}
+{"kind": "shape", "slide": 9, "bbox": [941, 240, 274, 240]}
+{"kind": "textbox", "slide": 9, "text": "04", "bbox": [962, 257, 231, 24]}
+{"kind": "textbox", "slide": 9, "text": "bounded receipts", "bbox": [962, 284, 231, 53]}
+{"kind": "textbox", "slide": 9, "text": "Hashes, bands, booleans, and audit records only \u2014 raw_secret_egress=false on every response.", "bbox": [962, 334, 231, 134]}
+{"kind": "shape", "slide": 9, "bbox": [77, 514, 1123, 115]}
+{"kind": "textbox", "slide": 9, "text": "Live today:  encrypted token issuance, recipient-side decrypt, and scoped proxy calls run on the operator-validation Phala CVM, gated by an on-chain-approved compose hash \u2014 with only hashes leaving the boundary.", "bbox": [106, 533, 1066, 82]}
+{"kind": "textbox", "slide": 9, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 9, "text": "09", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 9, "title": "ENCUMBERED COMPUTE", "textShapes": 18}
+{"kind": "image", "slide": 10, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 10, "text": "WHAT EXISTS NOW", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 10, "text": "This is a running system, not a concept deck.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 10, "bbox": [77, 187, 91, 31]}
+{"kind": "textbox", "slide": 10, "text": "real", "bbox": [77, 189, 91, 29]}
+{"kind": "textbox", "slide": 10, "text": "Three contracts live on Base Sepolia with full test suites: DiligenceRoom escrow, EmailOracleAuth policy, and TinkerAccountEncumbrance spend caps.", "bbox": [192, 185, 998, 72]}
+{"kind": "shape", "slide": 10, "bbox": [77, 266, 91, 31]}
+{"kind": "textbox", "slide": 10, "text": "real", "bbox": [77, 267, 91, 29]}
+{"kind": "textbox", "slide": 10, "text": "Private reward stack: environment contract, Python candidate sandbox, hidden-holdout accounting, and a synthetic environment with a bounded demo CLI.", "bbox": [192, 264, 998, 72]}
+{"kind": "shape", "slide": 10, "bbox": [77, 345, 91, 31]}
+{"kind": "textbox", "slide": 10, "text": "real", "bbox": [77, 346, 91, 29]}
+{"kind": "textbox", "slide": 10, "text": "Chain watcher, TEE chain submitter, verifier-signed submitResult(), and a local synthetic-room-to-Anvil settlement proof that emits bounded JSON only.", "bbox": [192, 343, 998, 72]}
+{"kind": "shape", "slide": 10, "bbox": [77, 423, 91, 31]}
+{"kind": "textbox", "slide": 10, "text": "real", "bbox": [77, 425, 91, 29]}
+{"kind": "textbox", "slide": 10, "text": "Live Phala CVM: sealed Tinker login and API key, a funded $10 validation lane, and scoped proxy JWTs issued under hash-only policy plus the on-chain gate.", "bbox": [192, 421, 998, 72]}
+{"kind": "shape", "slide": 10, "bbox": [77, 502, 91, 31]}
+{"kind": "textbox", "slide": 10, "text": "partial", "bbox": [77, 504, 91, 29]}
+{"kind": "textbox", "slide": 10, "text": "Coordination layer: policy kernel, consent decisions, and reviewer queue are source-real; service wiring and production governance remain open.", "bbox": [192, 500, 998, 72]}
+{"kind": "textbox", "slide": 10, "text": "Everything public is hashes, bands, booleans, and attestations \u2014 the bounded-output rule is enforced in code and tests, not just prose.", "bbox": [77, 595, 1123, 67]}
+{"kind": "textbox", "slide": 10, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 10, "text": "10", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 10, "title": "WHAT EXISTS NOW", "textShapes": 15}
+{"kind": "image", "slide": 11, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 11, "text": "HONEST CURRENT STATE", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 11, "text": "The hard parts are named, not hidden.", "bbox": [77, 75, 1123, 96]}
+{"kind": "textbox", "slide": 11, "text": "Deployed Tinker training", "bbox": [77, 187, 326, 77]}
+{"kind": "textbox", "slide": 11, "text": "the smoke run fails closed at SDK client creation; the sealed client-config installer is deployed, first post-install run pending.", "bbox": [422, 187, 778, 82]}
+{"kind": "textbox", "slide": 11, "text": "Quote verification", "bbox": [77, 276, 326, 77]}
+{"kind": "textbox", "slide": 11, "text": "verifier signatures and dstack envelope checks are real; full TDX quote parsing and a production verifier service are not.", "bbox": [422, 276, 778, 82]}
+{"kind": "textbox", "slide": 11, "text": "Account funding", "bbox": [77, 364, 326, 77]}
+{"kind": "textbox", "slide": 11, "text": "the one-off capped $10 validation lane is real; production custody, compliance approval, and a tokenized payment route remain open.", "bbox": [422, 364, 778, 82]}
+{"kind": "textbox", "slide": 11, "text": "Bio validation", "bbox": [77, 452, 326, 77]}
+{"kind": "textbox", "slide": 11, "text": "interfaces and toy environments only; real TTT/RL loops and OS-level candidate isolation are still to build.", "bbox": [422, 452, 778, 82]}
+{"kind": "textbox", "slide": 11, "text": "Production surface", "bbox": [77, 540, 326, 77]}
+{"kind": "textbox", "slide": 11, "text": "frontend, DLP/egress enforcement, reviewer governance, and Proof-of-Cloud provenance are roadmap items.", "bbox": [422, 540, 778, 82]}
+{"kind": "textbox", "slide": 11, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 11, "text": "11", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 11, "title": "HONEST CURRENT STATE", "textShapes": 14}
+{"kind": "image", "slide": 12, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 12, "text": "WHY THIS BELONGS IN THE ETH CONVERSATION", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 12, "text": "The trust boundary becomes public infrastructure.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 12, "bbox": [82, 229, 9, 9]}
+{"kind": "textbox", "slide": 12, "text": "Attestations turn private computation into something users can verify end to end: git SHA \u2192 image digest \u2192 compose hash \u2192 TDX quote.", "bbox": [110, 221, 1046, 96]}
+{"kind": "shape", "slide": 12, "bbox": [82, 325, 9, 9]}
+{"kind": "textbox", "slide": 12, "text": "Contracts enforce reserve prices, budget caps, spend policy, result hashes, and pull-payment settlement.", "bbox": [110, 317, 1046, 96]}
+{"kind": "shape", "slide": 12, "bbox": [82, 421, 9, 9]}
+{"kind": "textbox", "slide": 12, "text": "Private rewards create markets for benchmarks, biology, audits, and RL environments \u2014 with contract-forced royalties to their creators \u2014 without dumping raw assets on-chain.", "bbox": [110, 413, 1046, 96]}
+{"kind": "shape", "slide": 12, "bbox": [82, 517, 9, 9]}
+{"kind": "textbox", "slide": 12, "text": "The Flashbots / DevProof lesson applies: name every role, freeze the measurements, publish the verification path.", "bbox": [110, 509, 1046, 96]}
+{"kind": "textbox", "slide": 12, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 12, "text": "12", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 12, "title": "WHY THIS BELONGS IN THE ETH CONVERSATION", "textShapes": 8}
+{"kind": "image", "slide": 13, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 13, "text": "BUILD PLAN", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 13, "text": "Next work turns the proof model into a demo anyone can verify.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 13, "bbox": [77, 211, 217, 298]}
+{"kind": "textbox", "slide": 13, "text": "1", "bbox": [98, 228, 175, 24]}
+{"kind": "textbox", "slide": 13, "text": "Unblock deployed training", "bbox": [98, 255, 175, 53]}
+{"kind": "textbox", "slide": 13, "text": "Seal the Tinker client config in the live CVM and pass the bounded smoke run.", "bbox": [98, 305, 175, 192]}
+{"kind": "shape", "slide": 13, "bbox": [305, 211, 217, 298]}
+{"kind": "textbox", "slide": 13, "text": "2", "bbox": [326, 228, 175, 24]}
+{"kind": "textbox", "slide": 13, "text": "Production result verifier", "bbox": [326, 255, 175, 53]}
+{"kind": "textbox", "slide": 13, "text": "Live TDX quote parsing and a deployed-CVM submitResult broadcast on Base Sepolia.", "bbox": [326, 305, 175, 192]}
+{"kind": "shape", "slide": 13, "bbox": [534, 211, 217, 298]}
+{"kind": "textbox", "slide": 13, "text": "3", "bbox": [555, 228, 175, 24]}
+{"kind": "textbox", "slide": 13, "text": "Real reward environments", "bbox": [555, 255, 175, 53]}
+{"kind": "textbox", "slide": 13, "text": "Bio benchmark, hardened OS-level candidate sandbox, and optional DP accounting.", "bbox": [555, 305, 175, 192]}
+{"kind": "shape", "slide": 13, "bbox": [762, 211, 217, 298]}
+{"kind": "textbox", "slide": 13, "text": "4", "bbox": [783, 228, 175, 24]}
+{"kind": "textbox", "slide": 13, "text": "Fail-closed enforcement", "bbox": [783, 255, 175, 53]}
+{"kind": "textbox", "slide": 13, "text": "EmailOracleAuth on every OTP request, plus DLP/egress controls.", "bbox": [783, 305, 175, 192]}
+{"kind": "shape", "slide": 13, "bbox": [991, 211, 217, 298]}
+{"kind": "textbox", "slide": 13, "text": "5", "bbox": [1012, 228, 175, 24]}
+{"kind": "textbox", "slide": 13, "text": "Public verifier UI", "bbox": [1012, 255, 175, 53]}
+{"kind": "textbox", "slide": 13, "text": "Compose hash, quote, and tx trail with a transparency log for every run.", "bbox": [1012, 305, 175, 192]}
+{"kind": "textbox", "slide": 13, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 13, "text": "13", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 13, "title": "BUILD PLAN", "textShapes": 19}
+{"kind": "image", "slide": 14, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 14, "text": "WHAT SUPPORT UNLOCKS", "bbox": [77, 40, 768, 29]}
+{"kind": "textbox", "slide": 14, "text": "This cohort can help make the project legible, verified, and real.", "bbox": [77, 75, 1123, 96]}
+{"kind": "shape", "slide": 14, "bbox": [77, 187, 552, 394]}
+{"kind": "textbox", "slide": 14, "text": "What we need", "bbox": [106, 211, 494, 34]}
+{"kind": "shape", "slide": 14, "bbox": [110, 277, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "Cryptographic critique of the leakage model and Theorem 1 assumptions.", "bbox": [139, 269, 480, 91]}
+{"kind": "shape", "slide": 14, "bbox": [110, 369, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "TEE / Flashbots / DevProof review of the deployment and provenance story.", "bbox": [139, 360, 480, 91]}
+{"kind": "shape", "slide": 14, "bbox": [110, 460, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "Tinker project entitlement, compute, and funding-rail support.", "bbox": [139, 451, 480, 91]}
+{"kind": "shape", "slide": 14, "bbox": [648, 187, 552, 394]}
+{"kind": "textbox", "slide": 14, "text": "What it unlocks", "bbox": [677, 211, 494, 34]}
+{"kind": "shape", "slide": 14, "bbox": [682, 277, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "A verifiable end-to-end demo of private reward over sealed data.", "bbox": [710, 269, 480, 91]}
+{"kind": "shape", "slide": 14, "bbox": [682, 369, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "An ETH-native template for private benchmarks and data markets.", "bbox": [710, 360, 480, 91]}
+{"kind": "shape", "slide": 14, "bbox": [682, 460, 9, 9]}
+{"kind": "textbox", "slide": 14, "text": "Bio diligence without raw disclosure, with leakage counted up front.", "bbox": [710, 451, 480, 91]}
+{"kind": "textbox", "slide": 14, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 14, "text": "14", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 14, "title": "WHAT SUPPORT UNLOCKS", "textShapes": 12}
+{"kind": "image", "slide": 15, "bbox": [0, 0, 1280, 720]}
+{"kind": "textbox", "slide": 15, "text": "wikigen.me", "bbox": [77, 154, 1123, 86]}
+{"kind": "textbox", "slide": 15, "text": "Help us make private rewards verifiable public infrastructure.", "bbox": [77, 264, 922, 77]}
+{"kind": "textbox", "slide": 15, "text": "The goal is not to sell private data. It is to let private data prove, reward, validate, and settle under a boundary the ETH community can inspect.", "bbox": [77, 370, 845, 96]}
+{"kind": "textbox", "slide": 15, "text": "Prime RL meets TEEs: environments become royalty-bearing assets, and inference pays their creators.", "bbox": [77, 475, 922, 43]}
+{"kind": "shape", "slide": 15, "bbox": [77, 533, 269, 38]}
+{"kind": "textbox", "slide": 15, "text": "Shape Rotator project", "bbox": [77, 535, 269, 38]}
+{"kind": "shape", "slide": 15, "bbox": [365, 533, 269, 38]}
+{"kind": "textbox", "slide": 15, "text": "Flashbots-aligned trust model", "bbox": [365, 535, 269, 38]}
+{"kind": "shape", "slide": 15, "bbox": [653, 533, 269, 38]}
+{"kind": "textbox", "slide": 15, "text": "ETH-verifiable settlement", "bbox": [653, 535, 269, 38]}
+{"kind": "textbox", "slide": 15, "text": "wikigen.me", "bbox": [77, 678, 288, 29]}
+{"kind": "textbox", "slide": 15, "text": "15", "bbox": [1142, 678, 62, 29]}
+{"kind": "slide", "slide": 15, "title": "wikigen.me", "textShapes": 9}

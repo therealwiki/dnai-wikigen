@@ -1,0 +1,68 @@
+{
+  "schema": "dnai-env-dataset-manifest-v1",
+  "task": "openproblems_v1_denoising",
+  "description": "OpenProblems v1 single-cell RNA-seq denoising datasets, as used by the TTT-Discover biology experiment (arXiv:2601.16175). Train on pancreas; report on held-out PBMC (and Tabula) splits.",
+  "source": {
+    "benchmark": "Open Problems in Single-Cell Analysis (Luecken et al., 2025)",
+    "benchmark_url": "https://openproblems.bio/",
+    "bucket": "s3://openproblems-data",
+    "http_base": "https://openproblems-data.s3.amazonaws.com/",
+    "prefix": "resources/denoising/datasets/",
+    "license": "Public OpenProblems benchmark redistribution; individual source datasets carry their own licenses (10x Genomics PBMC, pancreas atlas). Public research data only, not PHI. See benchmark_url.",
+    "retrieved": "2026-07-11"
+  },
+  "splits": {
+    "train_env": {
+      "role": "policy_training",
+      "dataset": "pancreas",
+      "note": "TTT-Discover trains the policy in-environment on pancreas."
+    },
+    "held_out": {
+      "role": "reporting",
+      "datasets": ["tenx_1k_pbmc", "tenx_5k_pbmc"],
+      "note": "Performance reported on held-out PBMC (and Tabula) splits."
+    }
+  },
+  "denoising_metric": {
+    "primary": "mean of normalized MSE and normalized Poisson in log-normalized space",
+    "construction": "Observed molecules of a single dataset are partitioned into train/test via binomial sampling; no external ground truth required."
+  },
+  "files": {
+    "pancreas/train.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/pancreas/log_cp10k/train.h5ad",
+      "size_bytes": 70720320,
+      "md5": "8f3904700856a2bf371aed235a4814e6",
+      "tier": "core"
+    },
+    "pancreas/test.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/pancreas/log_cp10k/test.h5ad",
+      "size_bytes": 14728416,
+      "md5": "f222c1c665547865eff4558a8ebdf7b4",
+      "tier": "core"
+    },
+    "tenx_1k_pbmc/train.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/tenx_1k_pbmc/log_cp10k/train.h5ad",
+      "size_bytes": 27741600,
+      "md5": "a3051efe1d3064f7efcb006dd188189a",
+      "tier": "core"
+    },
+    "tenx_1k_pbmc/test.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/tenx_1k_pbmc/log_cp10k/test.h5ad",
+      "size_bytes": 6217920,
+      "md5": "ee2c8cd5f6ee9998c0d15ad0293a40c6",
+      "tier": "core"
+    },
+    "tenx_5k_pbmc/train.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/tenx_5k_pbmc/log_cp10k/train.h5ad",
+      "size_bytes": 104849232,
+      "md5": "6f88ed33af8ce424eb024d92883217b9",
+      "tier": "extended"
+    },
+    "tenx_5k_pbmc/test.h5ad": {
+      "key": "resources/denoising/datasets/openproblems_v1/tenx_5k_pbmc/log_cp10k/test.h5ad",
+      "size_bytes": 22465552,
+      "md5": "c04db4de058cd64a761eb47dbcccd5cf",
+      "tier": "extended"
+    }
+  }
+}

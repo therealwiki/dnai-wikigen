@@ -1,0 +1,254 @@
+###############################################################################
+# Temporary Main-CVM Mailbox Genesis Compose — registry-image Phala deployment
+#
+# This file is purpose-built for a one-shot `phala deploy --cvm-id ...` proof
+# that the main combined CVM can create and seal its mailbox credentials.
+#
+# It intentionally reuses the production `oracle-data` volume name so a
+# successful mailbox genesis can persist when the CVM is redeployed back to
+# `docker-compose.all.phala.yaml` with ORACLE_AUTO_GENESIS disabled.
+#
+# Guardrails:
+# - registry images only; no local build contexts
+# - Tinker bootstrap remains disabled
+# - card/add-balance endpoints remain disabled
+# - credential provisioning endpoint remains disabled
+# - public logs/sysinfo must remain disabled at deploy time
+# - after the mailbox exists, redeploy the main compose with genesis disabled
+###############################################################################
+
+services:
+  neko:
+    image: ghcr.io/m1k1o/neko/google-chrome@sha256:320c62313c38fd3e6567eef6c8ee78e1d115deb0b88ba60ef02cc4ea7d6ebbea
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 2gb
+    ulimits:
+      core: 0
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "52000:8080"
+      - "9222:9223"
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-admin}
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.20.0.3
+      NEKO_CHROME_FLAGS: ${NEKO_CHROME_FLAGS:-}
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        cat >/usr/local/bin/cdp_proxy.py <<'EOF'
+        import socket
+        import threading
+
+        LISTEN = ("0.0.0.0", 9223)
+        TARGET = ("127.0.0.1", 9222)
+
+
+        def pump(src, dst):
+            try:
+                while True:
+                    chunk = src.recv(65536)
+                    if not chunk:
+                        break
+                    dst.sendall(chunk)
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+
+        def handle(client):
+            upstream = socket.create_connection(TARGET)
+            threading.Thread(target=pump, args=(client, upstream), daemon=True).start()
+            threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
+
+
+        with socket.create_server(LISTEN, reuse_port=False) as server:
+            while True:
+                client, _ = server.accept()
+                threading.Thread(target=handle, args=(client,), daemon=True).start()
+        EOF
+        cat >/etc/neko/supervisord/google-chrome.conf <<'EOF'
+        # Chrome browser with remote debugging enabled
+        [program:google-chrome]
+        environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"
+        command=/bin/sh -c "exec /usr/bin/google-chrome \
+          --remote-debugging-port=9222 \
+          --remote-debugging-address=0.0.0.0 \
+          --remote-allow-origins=* \
+          --window-position=0,0 \
+          --display=$$DISPLAY \
+          --user-data-dir=/home/neko/chrome-profile \
+          --no-first-run \
+          --start-maximized \
+          --bwsi \
+          --disable-file-system \
+          --disable-gpu \
+          --disable-software-rasterizer \
+          --disable-dev-shm-usage \
+          $$NEKO_CHROME_FLAGS"
+        stopsignal=INT
+        autorestart=true
+        priority=800
+        user=%(ENV_USER)s
+        stdout_logfile=/var/log/neko/google-chrome.log
+        stdout_logfile_maxbytes=100MB
+        stdout_logfile_backups=10
+        redirect_stderr=true
+
+        [program:cdp-proxy]
+        command=/usr/bin/python3 -u /usr/local/bin/cdp_proxy.py
+        autorestart=true
+        priority=700
+        stdout_logfile=/var/log/neko/cdp-proxy.log
+        stdout_logfile_maxbytes=100MB
+        stdout_logfile_backups=10
+        redirect_stderr=true
+
+        [program:openbox]
+        environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"
+        command=/usr/bin/openbox --config-file /etc/neko/openbox.xml
+        autorestart=true
+        priority=300
+        user=%(ENV_USER)s
+        stdout_logfile=/var/log/neko/openbox.log
+        stdout_logfile_maxbytes=100MB
+        stdout_logfile_backups=10
+        redirect_stderr=true
+        EOF
+        exec /usr/bin/supervisord -c /etc/neko/supervisord.conf
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  oracle:
+    image: ghcr.io/g-structure/dnai-wikigen/tee-email-oracle@sha256:a23063c8d6cd892be4cd82ea69a927455b41451e7e6a3f54fb3c34edad2c6673
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      neko:
+        condition: service_healthy
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.4
+    ports:
+      - "8000:8000"
+    volumes:
+      - oracle-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ${ORACLE_CRED_STORE_KEY:-}
+      ORACLE_CDP_URL: http://172.20.0.3:9223
+      ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-true}
+      ORACLE_AUTO_GENESIS: "true"
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_DSTACK_KEY_PATH: ${ORACLE_DSTACK_KEY_PATH:-email/creds}
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_KEY_PATH: ${ORACLE_RUNTIME_AUTH_KEY_PATH:-oracle/runtime-auth}
+      ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
+      ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      retries: 5
+      timeout: 5s
+      start_period: 180s
+
+  delegate:
+    image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:ff8fbb18ea96b83f8c119d2b5692f2c9e61931e91067c38e4fe59ef1cfba2d1d
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      delegate-browser:
+        condition: service_started
+      oracle:
+        condition: service_started
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.5
+    ports:
+      - "8080:8080"
+    volumes:
+      - delegate-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      TINKER_BROWSER_WS_ENDPOINT: ws://172.20.0.6:3000/
+      TINKER_CDP_URL: http://172.20.0.3:9223
+      TINKER_ORACLE_URL: http://172.20.0.4:8000
+      TINKER_ORACLE_AUTH_KEY_PATH: ${TINKER_ORACLE_AUTH_KEY_PATH:-oracle/runtime-auth}
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_DSTACK_KEY_PATH: ${TINKER_DSTACK_KEY_PATH:-tinker/api_key}
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_BROWSER_SESSION_KEY_PATH: ${TINKER_BROWSER_SESSION_KEY_PATH:-tinker/browser_session}
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_FUNDING_RECEIPT_KEY_PATH: ${TINKER_FUNDING_RECEIPT_KEY_PATH:-tinker/funding_receipts}
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_RUN_METADATA_KEY_PATH: ${TINKER_RUN_METADATA_KEY_PATH:-tinker/run_metadata}
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: "false"
+      TINKER_ALLOW_BROWSER_READINESS_ENDPOINT: "false"
+      TINKER_ALLOW_SELECTOR_PROBE_ENDPOINT: "false"
+      TINKER_BOOTSTRAP_SIGNUP: "false"
+      TINKER_BOOTSTRAP_FAIL_OPEN: "true"
+      TINKER_BOOTSTRAP_ORACLE_TIMEOUT: ${TINKER_BOOTSTRAP_ORACLE_TIMEOUT:-300}
+      TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL: ${TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL:-5}
+      TINKER_FIRST_NAME: ${TINKER_FIRST_NAME:-Tinker}
+      TINKER_LAST_NAME: ${TINKER_LAST_NAME:-Delegate}
+      TINKER_LOCAL_BROWSER_FALLBACK: "false"
+      DSTACK_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      retries: 40
+      timeout: 5s
+      start_period: 300s
+
+  delegate-browser:
+    image: mcr.microsoft.com/playwright:v1.58.0-noble@sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f
+    platform: linux/amd64
+    restart: unless-stopped
+    init: true
+    ulimits:
+      core: 0
+    ipc: host
+    working_dir: /home/pwuser
+    user: pwuser
+    networks:
+      tee-net:
+        ipv4_address: 172.20.0.6
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        exec npx -y playwright@1.58.0 run-server --port 3000 --host 0.0.0.0
+
+volumes:
+  oracle-data:
+  delegate-data:
+
+networks:
+  tee-net:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

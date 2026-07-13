@@ -1,0 +1,44 @@
+###############################################################################
+# Tinker Delegate — Local dev compose
+#
+# Requires tee-email-oracle services running (neko + oracle):
+#   cd ⚙️/tee-email-oracle && docker compose --profile browser up -d
+#
+# Then:
+#   docker compose up -d
+#
+# API:
+#   curl http://localhost:8080/health
+#   curl http://localhost:8080/billing/balance
+###############################################################################
+
+services:
+  delegate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    ports:
+      - "8080:8080"
+    volumes:
+      - delegate-data:/data
+    environment:
+      TINKER_CDP_URL: ${TINKER_CDP_URL:-http://host.docker.internal:9222}
+      TINKER_ORACLE_URL: ${TINKER_ORACLE_URL:-http://host.docker.internal:8000}
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
+      TINKER_FUNDING_RECEIPT_STORE_PATH: /data/funding_receipts.enc
+      TINKER_RUN_METADATA_STORE_PATH: /data/run_metadata.enc
+      TINKER_FUNDING_MODE: ${TINKER_FUNDING_MODE:-manual_prefund}
+      TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
+      TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
+      TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}
+      TINKER_BOOTSTRAP_SIGNUP: ${TINKER_BOOTSTRAP_SIGNUP:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  delegate-data:

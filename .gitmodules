@@ -109,3 +109,15 @@
 [submodule "🔬/jameslbarnes/dshield"]
 	path = 🔬/jameslbarnes/dshield
 	url = https://github.com/jameslbarnes/dshield.git
+[submodule "🔬/thinking-machines/tinker-cookbook"]
+	path = 🔬/thinking-machines/tinker-cookbook
+	url = https://github.com/thinking-machines-lab/tinker-cookbook.git
+[submodule "🔬/thinking-machines/tinker"]
+	path = 🔬/thinking-machines/tinker
+	url = https://github.com/thinking-machines-lab/tinker.git
+[submodule "🔬/thinking-machines/tinker-project-ideas"]
+	path = 🔬/thinking-machines/tinker-project-ideas
+	url = https://github.com/thinking-machines-lab/tinker-project-ideas.git
+[submodule "🔬/tv"]
+	path = 🔬/tv
+	url = https://github.com/G-structure/tv

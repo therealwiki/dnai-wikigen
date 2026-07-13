@@ -1,0 +1,93 @@
+###############################################################################
+# TEE Email Oracle — Local PoC (dstack-deployable structure)
+#
+# Architecture:
+#   Custom neko + Google Chrome + CDP image (amd64, runs via Rosetta on ARM Mac)
+#   Oracle service with playwright fallback + IMAP + pin extraction API
+#
+# Usage (local dev — fast, no browser):
+#   docker compose up -d oracle
+#
+# Usage (with neko browser for visual debugging):
+#   docker compose --profile browser up -d
+#   open http://localhost:52000   # neko web UI — watch the browser live
+#
+# Usage (Phala deployment):
+#   docker compose -f docker-compose.yaml -f docker-compose.dstack.yaml up
+#
+# API:
+#   curl http://localhost:8000/health
+#   curl -X POST http://localhost:8000/pin \
+#     -H 'Content-Type: application/json' \
+#     -d '{"target_service":"tinker","expected_sender":"no-reply@thinkingmachines.ai","expected_subject_contains":"","max_age_seconds":300,"extract_pattern":"\\b\\d{6}\\b","nonce":"dev-nonce-123","caller_identity":"tinker-delegate.dev","reason":"tinker-auth"}'
+###############################################################################
+
+services:
+  # ─── Google Chrome + neko + CDP (visual browser + automation target) ──
+  # Custom image: neko base + Google Chrome stable + nginx CDP proxy
+  # amd64 only (Google Chrome has no ARM64 Linux build)
+  # On Apple Silicon: runs via OrbStack Rosetta emulation
+  neko:
+    build:
+      context: ./neko-chrome
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    profiles: ["browser"]
+    restart: unless-stopped
+    shm_size: 2gb
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      oracle-net:
+        ipv4_address: 172.30.0.3
+    ports:
+      - "52000:8080"    # Neko web UI (view browser)
+      - "9222:9222"     # CDP proxy (nginx → Chrome DevTools)
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: neko
+      NEKO_PASSWORD_ADMIN: admin
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.30.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  # ─── Email Oracle service ─────────────────────────────────────────────
+  oracle:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - oracle-net
+    ports:
+      - "8000:8000"
+    volumes:
+      - oracle-data:/data
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ${ORACLE_CRED_STORE_KEY:-}
+      ORACLE_CDP_URL: http://172.30.0.3:9222
+      ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-false}
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-firemail.cc}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_DSTACK_ENABLED: "false"
+      ORACLE_DSTACK_KEY_PATH: "email/creds"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      retries: 5
+      timeout: 5s
+
+volumes:
+  oracle-data:
+
+networks:
+  oracle-net:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

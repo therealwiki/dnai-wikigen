@@ -1,0 +1,86 @@
+###############################################################################
+# WhatsApp Delegate — Neko Chrome + sealed data export
+#
+# Quick start:
+#   docker compose up -d
+#   open http://localhost:52200   # watch the browser live (password: admin)
+#
+# Login flow (from host):
+#   curl -X POST http://localhost:8200/login \
+#     -H 'Content-Type: application/json' \
+#     -d '{"phone_number": "+1234567890"}'
+#   # Enter the code you receive via SMS:
+#   curl -X POST http://localhost:8200/verify \
+#     -H 'Content-Type: application/json' \
+#     -d '{"code": "123456"}'
+#   # Export and seal:
+#   curl -X POST http://localhost:8200/export \
+#     -H 'Content-Type: application/json' \
+#     -d '{"max_chats": 50}'
+#
+# For Phala Cloud TEE deployment:
+#   docker compose -f docker-compose.yaml -f docker-compose.dstack.yaml up
+###############################################################################
+
+services:
+  # ─── Neko Chrome + CDP ─────────────────────────────────────────────────
+  # Reuses the same neko-chrome image from cdp-playground / tee-email-oracle
+  neko:
+    build:
+      context: ../cdp-playground/neko-chrome
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 2gb
+    cap_add:
+      - SYS_ADMIN
+    networks:
+      wa-net:
+        ipv4_address: 172.32.0.3
+    ports:
+      - "52200:8080"    # Neko web UI (watch browser live)
+      - "9422:9222"     # CDP proxy (connect from host)
+    environment:
+      NEKO_SCREEN: 1920x1080@30
+      NEKO_PASSWORD: neko
+      NEKO_PASSWORD_ADMIN: admin
+      NEKO_ICELITE: 0
+      NEKO_NAT1TO1: 172.32.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      retries: 5
+      timeout: 5s
+
+  # ─── WhatsApp delegate app ────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    depends_on:
+      neko:
+        condition: service_healthy
+    networks:
+      - wa-net
+    ports:
+      - "${WA_APP_PORT:-8200}:8000"
+    environment:
+      WA_CDP_URL: http://172.32.0.3:9222
+      WA_HOST: 0.0.0.0
+      WA_PORT: "8000"
+      WA_DATA_DIR: /data
+      WA_DSTACK_ENABLED: "false"
+    volumes:
+      - wa-data:/data
+      - ./whatsapp_delegate:/app/whatsapp_delegate:ro  # Live-reload in dev
+
+volumes:
+  wa-data:
+
+networks:
+  wa-net:
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24
