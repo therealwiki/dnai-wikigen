@@ -190,6 +190,11 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
   ].join("\n"),
 });
 
+const WEB_STATIC_MODULE_SOURCES = Object.freeze({
+  "web/functions/_middleware.js":
+    "export function onRequest(context) { return context.next(); }\n",
+});
+
 const WEB_SOURCE_CONSUMERS = Object.freeze({
   "web/src/productTruth.test.ts": [
     'import architecture from "../../ARCHITECTURE.md?raw";',
@@ -237,6 +242,7 @@ async function createFixture() {
   for (const [relative, content] of Object.entries({
     ...MODULE_SOURCES,
     ...WEB_SCRIPT_SOURCES,
+    ...WEB_STATIC_MODULE_SOURCES,
     ...WEB_SOURCE_CONSUMERS,
     ...RESOURCE_BYTES,
   })) {
@@ -588,6 +594,93 @@ test("external module parser rejects dynamic loading, CommonJS, bare packages, a
   });
 });
 
+test("web modules reject absolute, URI, unaudited, and unenumerated static imports", async () => {
+  const rejectedSpecifiers = [
+    "/tmp/absolute-escape.mjs",
+    "file:///tmp/file-escape.mjs",
+    "data:text/javascript,export default true",
+    "http://example.invalid/escape.mjs",
+    "https://example.invalid/escape.mjs",
+    "custom+transport:escape",
+    "node:sqlite",
+    "already-installed-transitive-package",
+  ];
+  for (const specifier of rejectedSpecifiers) {
+    await withFixture(async (root) => {
+      await writeFixtureFile(
+        root,
+        "web/scripts/static-import-escape.mjs",
+        `import ${JSON.stringify(specifier)};\n`,
+      );
+      await assert.rejects(
+        projectCloudflareExternalBuildClosure(root),
+        /absolute static module specifier|unsupported or unaudited URI module specifier|unaudited bare package import/,
+      );
+    });
+  }
+
+  await withFixture(async (root) => {
+    await writeFixtureFile(
+      root,
+      "web/scripts/static-import-escape.mjs",
+      'import "./missing-but-relative.mjs";\n',
+    );
+    await assert.rejects(
+      projectCloudflareExternalBuildClosure(root),
+      /outside the enumerated module set/,
+    );
+  });
+
+  await withFixture(async (root) => {
+    await writeFixtureFile(
+      root,
+      "web/scripts/audited-static-imports.mjs",
+      [
+        'import "node:crypto";',
+        'import "viem";',
+        "export const audited = true;",
+        "",
+      ].join("\n"),
+    );
+    await projectCloudflareExternalBuildClosure(root);
+  });
+});
+
+test("TypeScript consumers reject absolute, URI, and unaudited package imports", async () => {
+  const rejectedSpecifiers = [
+    "/tmp/browser-absolute-escape.ts",
+    "file:///tmp/browser-file-escape.ts",
+    "data:text/javascript,export default true",
+    "http://example.invalid/browser-escape.ts",
+    "https://example.invalid/browser-escape.ts",
+    "custom+transport:browser-escape",
+    "node:fs",
+    "already-installed-transitive-package",
+  ];
+  for (const specifier of rejectedSpecifiers) {
+    await withFixture(async (root) => {
+      await writeFixtureFile(
+        root,
+        "web/src/static-import-escape.ts",
+        `import ${JSON.stringify(specifier)};\nexport const escaped = true;\n`,
+      );
+      await assert.rejects(
+        projectCloudflareExternalBuildClosure(root),
+        /absolute static module specifier|unsupported or unaudited URI module specifier|unaudited bare package import/,
+      );
+    });
+  }
+
+  await withFixture(async (root) => {
+    await writeFixtureFile(
+      root,
+      "web/src/audited-static-import.ts",
+      'import "solid-js";\nexport const audited = true;\n',
+    );
+    await projectCloudflareExternalBuildClosure(root);
+  });
+});
+
 test("real checked-in external bytes match the final release projection KAT", async () => {
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
@@ -610,6 +703,53 @@ test("real checked-in external bytes match the final release projection KAT", as
     "@noble/curves/secp256k1",
     "@noble/hashes/sha3",
     "@noble/hashes/utils",
+  ]);
+  assert.deepEqual(closureTest.MODULE_NODE_BUILTIN_IMPORTS, [
+    "node:child_process",
+    "node:crypto",
+    "node:fs",
+    "node:fs/promises",
+    "node:path",
+    "node:url",
+    "node:util",
+  ]);
+  assert.deepEqual(closureTest.WEB_MODULE_BARE_PACKAGE_IMPORTS, [
+    "@noble/curves/secp256k1",
+    "@noble/hashes/sha3",
+    "@noble/hashes/utils",
+    "typescript",
+    "viem",
+    "viem/accounts",
+    "vite",
+  ]);
+  assert.deepEqual(closureTest.WEB_MODULE_NODE_BUILTIN_IMPORTS, [
+    "node:assert/strict",
+    "node:child_process",
+    "node:crypto",
+    "node:fs",
+    "node:fs/promises",
+    "node:net",
+    "node:os",
+    "node:path",
+    "node:process",
+    "node:test",
+    "node:url",
+    "node:vm",
+  ]);
+  assert.deepEqual(closureTest.WEB_SOURCE_BARE_PACKAGE_IMPORTS, [
+    "@fontsource-variable/jetbrains-mono",
+    "@fontsource-variable/manrope",
+    "@walletconnect/ethereum-provider",
+    "lucide-solid",
+    "solid-js",
+    "solid-js/web",
+    "viem",
+    "viem/accounts",
+    "viem/chains",
+    "vitest",
+  ]);
+  assert.deepEqual(closureTest.WEB_STATIC_MODULE_PATHS, [
+    "web/functions/_middleware.js",
   ]);
   assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 7);
 });

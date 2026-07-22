@@ -75,6 +75,65 @@ const MODULE_BARE_PACKAGE_IMPORTS = Object.freeze([
   "@noble/hashes/utils",
 ]);
 
+const MODULE_NODE_BUILTIN_IMPORTS = Object.freeze([
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:fs/promises",
+  "node:path",
+  "node:url",
+  "node:util",
+]);
+
+// These are exact upper bounds for static imports in the build-time web
+// modules. Package bytes are independently bound by the installed dependency
+// projection; this list prevents an already-installed transitive dependency
+// from silently becoming a new build input.
+const WEB_MODULE_BARE_PACKAGE_IMPORTS = Object.freeze([
+  "@noble/curves/secp256k1",
+  "@noble/hashes/sha3",
+  "@noble/hashes/utils",
+  "typescript",
+  "viem",
+  "viem/accounts",
+  "vite",
+]);
+
+const WEB_MODULE_NODE_BUILTIN_IMPORTS = Object.freeze([
+  "node:assert/strict",
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:fs/promises",
+  "node:net",
+  "node:os",
+  "node:path",
+  "node:process",
+  "node:test",
+  "node:url",
+  "node:vm",
+]);
+
+const WEB_SOURCE_BARE_PACKAGE_IMPORTS = Object.freeze([
+  "@fontsource-variable/jetbrains-mono",
+  "@fontsource-variable/manrope",
+  "@walletconnect/ethereum-provider",
+  "lucide-solid",
+  "solid-js",
+  "solid-js/web",
+  "viem",
+  "viem/accounts",
+  "viem/chains",
+  "vitest",
+]);
+
+// This file is imported by a build-time test but lives outside web/scripts.
+// Keeping the target explicit lets relative imports be checked against a
+// complete enumerated set rather than accepting every path below web/.
+const WEB_STATIC_MODULE_PATHS = Object.freeze([
+  "web/functions/_middleware.js",
+]);
+
 const RESOURCE_DEFINITIONS = Object.freeze([
   Object.freeze({ kind: "sandbox_config", path: ".gitignore", maximumBytes: 64 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "ARCHITECTURE.md", maximumBytes: 4 * 1024 * 1024 }),
@@ -744,6 +803,47 @@ function parseStaticModuleRequests(modules) {
   return result;
 }
 
+const STATIC_SPECIFIER_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+function classifyStaticModuleSpecifier(specifier, {
+  allowedBarePackages,
+  allowedNodeBuiltins,
+  label,
+  allowRelativeSuffix = false,
+}) {
+  if (
+    typeof specifier !== "string"
+    || specifier.length < 1
+    || specifier.includes("\0")
+    || specifier.includes("\\")
+  ) {
+    throw new Error(`${label} contains an invalid static module specifier`);
+  }
+  if (specifier.startsWith(".")) {
+    if (
+      !allowRelativeSuffix
+      && (specifier.includes("?") || specifier.includes("#"))
+    ) {
+      throw new Error(`${label} contains a suffixed relative module specifier`);
+    }
+    return "relative";
+  }
+  if (specifier.startsWith("/") || specifier.startsWith("//")) {
+    throw new Error(`${label} contains an absolute static module specifier`);
+  }
+  if (STATIC_SPECIFIER_SCHEME.test(specifier)) {
+    if (
+      specifier.startsWith("node:")
+      && allowedNodeBuiltins.has(specifier)
+    ) {
+      return "node";
+    }
+    throw new Error(`${label} contains an unsupported or unaudited URI module specifier`);
+  }
+  if (allowedBarePackages.has(specifier)) return "bare";
+  throw new Error(`${label} contains an unaudited bare package import`);
+}
+
 function resolveRelativeModule(importer, specifier) {
   if (
     specifier.includes("\\")
@@ -773,6 +873,7 @@ function assertExactExternalModuleGraph(moduleRequests) {
   ];
   const allowed = new Set(graphPaths);
   const allowedBarePackages = new Set(MODULE_BARE_PACKAGE_IMPORTS);
+  const allowedNodeBuiltins = new Set(MODULE_NODE_BUILTIN_IMPORTS);
   const discoveredBarePackages = new Set();
   const graph = new Map();
   for (const modulePath of graphPaths) {
@@ -782,11 +883,13 @@ function assertExactExternalModuleGraph(moduleRequests) {
     }
     const edges = [];
     for (const specifier of requests) {
-      if (specifier.startsWith("node:")) continue;
-      if (!specifier.startsWith(".")) {
-        if (!allowedBarePackages.has(specifier)) {
-          throw new Error("Cloudflare external module graph refuses an unexpected bare package");
-        }
+      const kind = classifyStaticModuleSpecifier(specifier, {
+        allowedBarePackages,
+        allowedNodeBuiltins,
+        label: "Cloudflare external module graph",
+      });
+      if (kind === "node") continue;
+      if (kind === "bare") {
         discoveredBarePackages.add(specifier);
         continue;
       }
@@ -836,15 +939,28 @@ function resolveConsumerSpecifier(consumer, specifier) {
   ));
 }
 
-function assertExactWebScriptEntrypoints(moduleRequests, webScriptPaths) {
+function assertExactWebScriptEntrypoints(moduleRequests, webModulePaths) {
   const discovered = new Set();
   const expected = new Set(MODULE_ENTRYPOINT_PATHS);
-  for (const consumer of webScriptPaths) {
+  const allowedWebModules = new Set(webModulePaths);
+  const allowedBarePackages = new Set(WEB_MODULE_BARE_PACKAGE_IMPORTS);
+  const allowedNodeBuiltins = new Set(WEB_MODULE_NODE_BUILTIN_IMPORTS);
+  for (const consumer of webModulePaths) {
     const requests = moduleRequests.get(consumer) || [];
     for (const specifier of requests) {
-      if (!specifier.startsWith(".")) continue;
+      const kind = classifyStaticModuleSpecifier(specifier, {
+        allowedBarePackages,
+        allowedNodeBuiltins,
+        label: "Cloudflare web module",
+      });
+      if (kind !== "relative") continue;
       const resolved = resolveConsumerSpecifier(consumer, specifier);
-      if (resolved.startsWith("web/")) continue;
+      if (resolved.startsWith("web/")) {
+        if (!allowedWebModules.has(resolved)) {
+          throw new Error("Cloudflare web module contains a relative import outside the enumerated module set");
+        }
+        continue;
+      }
       if (!expected.has(resolved)) {
         throw new Error("Cloudflare web script contains an undeclared external import");
       }
@@ -905,10 +1021,18 @@ async function assertExactResourceConsumers(repoRoot, sourceConsumers) {
   const permitted = new Set(
     CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.map((entry) => entry.path),
   );
+  const allowedBarePackages = new Set(WEB_SOURCE_BARE_PACKAGE_IMPORTS);
+  const allowedNodeBuiltins = new Set();
   for (const [consumer, source] of sourceByPath) {
     if (!new Set([".ts", ".tsx"]).has(path.posix.extname(consumer))) continue;
     for (const specifier of typescriptModuleSpecifiers(source)) {
-      if (!specifier.startsWith(".")) continue;
+      const kind = classifyStaticModuleSpecifier(specifier, {
+        allowedBarePackages,
+        allowedNodeBuiltins,
+        label: "Cloudflare web source",
+        allowRelativeSuffix: true,
+      });
+      if (kind !== "relative") continue;
       const resolved = resolveConsumerSpecifier(consumer, specifier);
       if (!resolved.startsWith("web/") && !permitted.has(resolved)) {
         throw new Error("Cloudflare web source contains an undeclared external resource import");
@@ -958,15 +1082,28 @@ export async function projectCloudflareExternalBuildClosure(repoRoot) {
     );
     webScriptFiles.push({ path: consumerPath, bytes: file.bytes });
   }
+  const webStaticModuleFiles = [];
+  for (const modulePath of WEB_STATIC_MODULE_PATHS) {
+    const file = await readStableRepositoryFile(
+      canonicalRoot,
+      modulePath,
+      MAX_WEB_CONSUMER_BYTES,
+      "Cloudflare enumerated web module",
+    );
+    webStaticModuleFiles.push({ path: modulePath, bytes: file.bytes });
+  }
+  const webModuleFiles = [...webScriptFiles, ...webStaticModuleFiles]
+    .sort((left, right) => compareCanonical(left.path, right.path));
+  const webModulePaths = webModuleFiles.map((entry) => entry.path);
   const parsedRequests = parseStaticModuleRequests([
     ...MODULE_CLOSURE_PATHS.map((modulePath) => ({
       path: modulePath,
       bytes: sourceFiles.get(modulePath).bytes,
     })),
-    ...webScriptFiles,
+    ...webModuleFiles,
   ]);
   assertExactExternalModuleGraph(parsedRequests);
-  assertExactWebScriptEntrypoints(parsedRequests, webScriptPaths);
+  assertExactWebScriptEntrypoints(parsedRequests, webModulePaths);
 
   const webSourcePaths = await collectFiles(
     canonicalRoot,
@@ -1008,9 +1145,14 @@ export const __test = Object.freeze({
   MODULE_BARE_PACKAGE_IMPORTS,
   MODULE_CLOSURE_PATHS,
   MODULE_ENTRYPOINT_PATHS,
+  MODULE_NODE_BUILTIN_IMPORTS,
   MODULE_WEB_BACKEDGE_PATHS,
   RECEIPT_DOMAIN,
   RESOURCE_CONSUMER_BINDINGS,
   RESOURCE_DEFINITIONS,
+  WEB_MODULE_BARE_PACKAGE_IMPORTS,
+  WEB_MODULE_NODE_BUILTIN_IMPORTS,
+  WEB_SOURCE_BARE_PACKAGE_IMPORTS,
+  WEB_STATIC_MODULE_PATHS,
   parseStaticModuleRequests,
 });
