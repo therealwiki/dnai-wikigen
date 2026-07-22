@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { main as validateReleaseEnvironment } from "./build-release-env.mjs";
 import {
+  CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+  CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_SCHEMA,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_TRUTH_STATUS,
   assertCloudflareBuildSandboxIsolation,
@@ -61,6 +63,8 @@ const RELEASE_GIT_ENV = Object.freeze({
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_OPTIONAL_LOCKS: "0",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LITERAL_PATHSPECS: "1",
 });
 const PINNED_WRANGLER_RUNTIME = Object.freeze({
   version: "4.110.0",
@@ -190,8 +194,12 @@ function readEnvironment() {
 
 async function readDeploymentSnapshot() {
   const externalBuildClosure = await projectCloudflareExternalBuildClosure(rootDir);
+  const objectFormat = git(["rev-parse", "--show-object-format"]);
+  const gitTreeOid = `sha1:${git(["rev-parse", "HEAD^{tree}"])}`;
   return Object.freeze({
+    objectFormat,
     headSha: git(["rev-parse", "HEAD"]),
+    gitTreeOid,
     dirty: git([
       "status",
       "--porcelain=v1",
@@ -208,7 +216,11 @@ async function readDeploymentSnapshot() {
 
 function assertSameInputs(baseline, current, baselineEnvDigest, currentEnvDigest, checkpoint) {
   if (
-    baseline.headSha !== current.headSha
+    baseline.objectFormat !== "sha1"
+    || current.objectFormat !== "sha1"
+    || !/^sha1:[0-9a-f]{40}$/.test(String(baseline.gitTreeOid || ""))
+    || baseline.gitTreeOid !== current.gitTreeOid
+    || baseline.headSha !== current.headSha
     || baseline.dirty !== current.dirty
     || baseline.sourceSha256 !== current.sourceSha256
     || baseline.uploadControlManifestSha256
@@ -224,6 +236,29 @@ function assertSameInputs(baseline, current, baselineEnvDigest, currentEnvDigest
   if (baselineEnvDigest !== currentEnvDigest) {
     throw new Error(`Cloudflare release environment changed ${checkpoint}; upload was not attempted`);
   }
+}
+
+function cloudflareBuildSource(policy, baseline) {
+  if (policy?.mode === "live") {
+    if (
+      baseline?.objectFormat !== "sha1"
+      || !/^[0-9a-f]{40}$/.test(String(baseline.headSha || ""))
+      || !/^sha1:[0-9a-f]{40}$/.test(String(baseline.gitTreeOid || ""))
+    ) {
+      throw new Error("live Cloudflare build requires exact immutable Git provenance");
+    }
+    return Object.freeze({
+      sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+      sourceCommitSha: baseline.headSha,
+      expectedGitTreeOid: baseline.gitTreeOid,
+    });
+  }
+  if (policy?.mode === "modeled") {
+    return Object.freeze({
+      sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+    });
+  }
+  throw new Error("Cloudflare build source policy is not explicit");
 }
 
 function assertSamePrivateReleaseArtifacts(baseline, current, checkpoint) {
@@ -396,6 +431,7 @@ export async function runCloudflareDeployment({
     releaseArguments,
     validateReleaseEnvironment: validateRelease,
   });
+  const buildSource = cloudflareBuildSource(policy, baseline);
   assertCloudflareControlEnvironment(controlEnv);
 
   const afterAuthority = await snapshotDeploymentInputs();
@@ -428,6 +464,7 @@ export async function runCloudflareDeployment({
     const verificationWorkspace = await createBuildWorkspace({
       repositoryRoot: rootDir,
       buildRoot: verificationHome,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -452,6 +489,7 @@ export async function runCloudflareDeployment({
     );
     await assertBuildWorkspaceIntegrity({
       workspace: verificationWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -467,6 +505,7 @@ export async function runCloudflareDeployment({
     assertCloudflareControlEnvironment(controlEnv);
     await assertBuildWorkspaceIntegrity({
       workspace: verificationWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -508,6 +547,7 @@ export async function runCloudflareDeployment({
     const buildWorkspace = await createBuildWorkspace({
       repositoryRoot: rootDir,
       buildRoot: buildHome,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -532,6 +572,7 @@ export async function runCloudflareDeployment({
     );
     await assertBuildWorkspaceIntegrity({
       workspace: buildWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -565,6 +606,7 @@ export async function runCloudflareDeployment({
     assertCloudflareControlEnvironment(controlEnv);
     await assertBuildWorkspaceIntegrity({
       workspace: buildWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceSha256,
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256,
@@ -657,6 +699,7 @@ export async function runCloudflareDeployment({
         const uploadWorkspace = await createBuildWorkspace({
           repositoryRoot: rootDir,
           buildRoot: uploadHome,
+          ...buildSource,
           expectedSourceSha256: baseline.sourceSha256,
           expectedUploadControlManifestSha256:
             baseline.uploadControlManifestSha256,
@@ -681,6 +724,7 @@ export async function runCloudflareDeployment({
         );
         await assertBuildWorkspaceIntegrity({
           workspace: uploadWorkspace,
+          ...buildSource,
           expectedSourceSha256: baseline.sourceSha256,
           expectedUploadControlManifestSha256:
             baseline.uploadControlManifestSha256,
@@ -743,6 +787,7 @@ export async function runCloudflareDeployment({
         reverifyReleaseRuntime("before Wrangler invocation");
 
         output(`cloudflare_release_mode=${policy.mode}`);
+        output(`cloudflare_build_source_kind=${buildSource.sourceKind}`);
         output(`cloudflare_release_branch=${policy.branch}`);
         output(`cloudflare_node_version=${releaseRuntimeProof.nodeVersion}`);
         output(`cloudflare_node_sha256=${releaseRuntimeProof.nodeExecutableSha256}`);
@@ -767,6 +812,7 @@ export async function runCloudflareDeployment({
         }));
         return Object.freeze({
           policy,
+          buildSource,
           audit,
           stagedBundleAudit,
           releaseRuntimeProof,

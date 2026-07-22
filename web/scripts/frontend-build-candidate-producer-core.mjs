@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_SCHEMA,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_TRUTH_STATUS,
   assertCloudflareBuildSandboxIsolation,
@@ -51,6 +52,8 @@ const PINNED_GIT_ENVIRONMENT = Object.freeze({
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_OPTIONAL_LOCKS: "0",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LITERAL_PATHSPECS: "1",
 });
 const SEMANTIC_PROJECTION_FIELDS = Object.freeze([
   "authorityBinding",
@@ -329,6 +332,11 @@ export async function runFrontendBuildCandidateProduction({
     await snapshotCandidateInputs(),
     projection.releaseSha,
   );
+  const buildSource = Object.freeze({
+    sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+    sourceCommitSha: baseline.headSha,
+    expectedGitTreeOid: baseline.gitTreeOid,
+  });
 
   let installedDependencyProof;
   const verificationHome = await createVerificationHome();
@@ -342,6 +350,7 @@ export async function runFrontendBuildCandidateProduction({
     const verificationWorkspace = await createBuildWorkspace({
       repositoryRoot: rootDir,
       buildRoot: verificationHome,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -366,6 +375,7 @@ export async function runFrontendBuildCandidateProduction({
     );
     await assertBuildWorkspaceIntegrity({
       workspace: verificationWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -379,6 +389,7 @@ export async function runFrontendBuildCandidateProduction({
     });
     await assertBuildWorkspaceIntegrity({
       workspace: verificationWorkspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -417,6 +428,7 @@ export async function runFrontendBuildCandidateProduction({
     const workspace = await createBuildWorkspace({
       repositoryRoot: rootDir,
       buildRoot: buildHome,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -441,6 +453,7 @@ export async function runFrontendBuildCandidateProduction({
     );
     await assertBuildWorkspaceIntegrity({
       workspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -461,6 +474,7 @@ export async function runFrontendBuildCandidateProduction({
 
     await assertBuildWorkspaceIntegrity({
       workspace,
+      ...buildSource,
       expectedSourceSha256: baseline.sourceFingerprintSha256.slice("sha256:".length),
       expectedUploadControlManifestSha256:
         baseline.uploadControlManifestSha256.slice("sha256:".length),
@@ -521,6 +535,8 @@ export async function runFrontendBuildCandidateProduction({
       installedDependencyProof,
       privateInputAuditFingerprintSha256: privateInputAudit.fingerprintSha256,
       sourceSnapshot: Object.freeze({
+        sourceKind: buildSource.sourceKind,
+        sourceCommitSha: buildSource.sourceCommitSha,
         gitTreeOid: baseline.gitTreeOid,
         sourceFingerprintSha256: baseline.sourceFingerprintSha256,
         externalBuildClosureSha256: baseline.externalBuildClosureSha256,

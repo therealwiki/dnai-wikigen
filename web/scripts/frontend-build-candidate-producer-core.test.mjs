@@ -169,8 +169,24 @@ function dependencies(overrides = {}) {
   const source = snapshot();
   const audit = privateAudit(semantic);
   const events = [];
+  const workspaceCreations = [];
+  const integrityChecks = [];
   let snapshots = 0;
   let privateAudits = 0;
+  const expectedBuildSource = Object.freeze({
+    sourceKind: "git_commit",
+    sourceCommitSha: RELEASE_SHA,
+    expectedGitTreeOid: source.gitTreeOid,
+  });
+  const captureBuildSource = (value, calls) => {
+    const captured = Object.freeze({
+      sourceKind: value.sourceKind,
+      sourceCommitSha: value.sourceCommitSha,
+      expectedGitTreeOid: value.expectedGitTreeOid,
+    });
+    assert.deepEqual(captured, expectedBuildSource);
+    calls.push(captured);
+  };
   const values = {
     releaseArguments: ["--release", "/private/prebuild-release.json"],
     loadSemanticProjection: async () => semantic,
@@ -196,10 +212,16 @@ function dependencies(overrides = {}) {
     removeBuildHome: async () => {
       events.push("build-home:remove");
     },
-    createBuildWorkspace: async ({ buildRoot }) => ({
-      rootDir: `${buildRoot}/workspace`,
-      webDir: `${buildRoot}/workspace/web`,
-    }),
+    createBuildWorkspace: async (options) => {
+      captureBuildSource(options, workspaceCreations);
+      return {
+        rootDir: `${options.buildRoot}/workspace`,
+        webDir: `${options.buildRoot}/workspace/web`,
+        sourceKind: options.sourceKind,
+        sourceCommitSha: options.sourceCommitSha,
+        gitTreeOid: options.expectedGitTreeOid,
+      };
+    },
     createBuildSandbox: async ({ buildRoot }) => ({ profile: `test-profile:${buildRoot}` }),
     assertBuildSandboxIsolation: async ({ buildRoot }) => {
       events.push(buildRoot.includes("verification")
@@ -212,7 +234,9 @@ function dependencies(overrides = {}) {
         : "build:install");
     },
     projectInstalledDependencyTree: async () => INSTALLED_DEPENDENCY_PROOF,
-    assertBuildWorkspaceIntegrity: async ({ workspace }) => {
+    assertBuildWorkspaceIntegrity: async (options) => {
+      captureBuildSource(options, integrityChecks);
+      const { workspace } = options;
       events.push(workspace.webDir.includes("verification")
         ? "verification-workspace:checked"
         : "build-workspace:checked");
@@ -245,7 +269,16 @@ function dependencies(overrides = {}) {
     semantic,
     source,
     audit,
-    counters: () => ({ snapshots, privateAudits }),
+    counters: () => ({
+      snapshots,
+      privateAudits,
+      workspaceCreations: workspaceCreations.length,
+      integrityChecks: integrityChecks.length,
+    }),
+    sourceProvenanceCalls: () => ({
+      workspaceCreations: [...workspaceCreations],
+      integrityChecks: [...integrityChecks],
+    }),
   };
 }
 
@@ -270,7 +303,26 @@ test("D producer runs exact35 -> isolated verify -> independent fresh build -> a
     "audit",
     "build-home:remove",
   ]);
-  assert.deepEqual(fixture.counters(), { snapshots: 4, privateAudits: 4 });
+  assert.deepEqual(fixture.counters(), {
+    snapshots: 4,
+    privateAudits: 4,
+    workspaceCreations: 2,
+    integrityChecks: 4,
+  });
+  const expectedBuildSource = {
+    sourceKind: "git_commit",
+    sourceCommitSha: RELEASE_SHA,
+    expectedGitTreeOid: fixture.source.gitTreeOid,
+  };
+  assert.deepEqual(fixture.sourceProvenanceCalls(), {
+    workspaceCreations: [expectedBuildSource, expectedBuildSource],
+    integrityChecks: [
+      expectedBuildSource,
+      expectedBuildSource,
+      expectedBuildSource,
+      expectedBuildSource,
+    ],
+  });
   assert.equal(result.receipt.release_sha, RELEASE_SHA);
   assert.equal(result.receipt.frontend_build_sha256, pin("dist"));
   assert.equal(result.receipt.release_env_sha256,
@@ -283,6 +335,14 @@ test("D producer runs exact35 -> isolated verify -> independent fresh build -> a
   assert.equal(result.privateInputAuditFingerprintSha256,
     fixture.audit.fingerprintSha256);
   assert.deepEqual(result.installedDependencyProof, INSTALLED_DEPENDENCY_PROOF);
+  assert.equal(Object.isFrozen(result.sourceSnapshot), true);
+  assert.deepEqual(result.sourceSnapshot, {
+    sourceKind: "git_commit",
+    sourceCommitSha: RELEASE_SHA,
+    gitTreeOid: fixture.source.gitTreeOid,
+    sourceFingerprintSha256: fixture.source.sourceFingerprintSha256,
+    externalBuildClosureSha256: fixture.source.externalBuildClosureSha256,
+  });
 });
 
 test("D producer rejects projection extras and private-byte drift before creating a HOME", async () => {
@@ -304,6 +364,22 @@ test("D producer rejects projection extras and private-byte drift before creatin
     );
     assert.deepEqual(fixture.events, []);
   }
+});
+
+test("D producer has no working-tree fallback when immutable Git provenance is missing", async () => {
+  const fixture = dependencies();
+  delete fixture.source.gitTreeOid;
+  await assert.rejects(
+    runFrontendBuildCandidateProduction(fixture.values),
+    /exact clean release commit and source closure/,
+  );
+  assert.deepEqual(fixture.events, []);
+  assert.deepEqual(fixture.counters(), {
+    snapshots: 1,
+    privateAudits: 1,
+    workspaceCreations: 0,
+    integrityChecks: 0,
+  });
 });
 
 test("D producer rejects source or private-input mutation before the fresh build", async () => {
@@ -427,6 +503,8 @@ test("D producer freezes its exact Git/runtime/semantic API contract", () => {
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_LITERAL_PATHSPECS: "1",
   });
   assert.deepEqual(__test.SEMANTIC_PROJECTION_FIELDS, [
     "authorityBinding",

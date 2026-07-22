@@ -30,9 +30,13 @@ export const CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_SCHEMA =
   "dnai.cloudflare-installed-dependency-tree.v1";
 export const CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_TRUTH_STATUS =
   "pinned_npm_ci_offline_ignore_scripts_lock_projection";
+export const CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT = "git_commit";
+export const CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE = "working_tree";
 const CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_DOMAIN =
   "dnai-wikigen/cloudflare-installed-dependency-tree/v1\0";
 const PINNED_GIT_EXECUTABLE = "/usr/bin/git";
+const GIT_SHA1 = /^[0-9a-f]{40}$/;
+const GIT_TREE_OID = /^sha1:[0-9a-f]{40}$/;
 const MAX_SOURCE_FILES = 20_000;
 const MAX_SOURCE_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_TOTAL_BYTES = 512 * 1024 * 1024;
@@ -52,6 +56,8 @@ const GIT_ENVIRONMENT = Object.freeze({
   GIT_CONFIG_NOSYSTEM: "1",
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_OPTIONAL_LOCKS: "0",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LITERAL_PATHSPECS: "1",
   GIT_AUTHOR_NAME: "Wikigen isolated release",
   GIT_AUTHOR_EMAIL: "release@invalid.local",
   GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
@@ -492,6 +498,345 @@ function git(cwd, args, options = {}) {
   }).trim();
 }
 
+function gitBuffer(cwd, args, maximumBytes) {
+  return execFileSync(PINNED_GIT_EXECUTABLE, [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-C",
+    cwd,
+    ...args,
+  ], {
+    encoding: null,
+    env: GIT_ENVIRONMENT,
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: maximumBytes,
+  });
+}
+
+function canonicalGitPath(pathBytes) {
+  if (!Buffer.isBuffer(pathBytes) || pathBytes.length < 1) {
+    throw new Error("immutable Cloudflare Git source contains an empty path");
+  }
+  const relative = pathBytes.toString("utf8");
+  if (
+    !Buffer.from(relative, "utf8").equals(pathBytes)
+    || relative.normalize("NFC") !== relative
+    || relative !== path.posix.normalize(relative)
+    || relative.startsWith("/")
+    || relative.includes("\\")
+    || /\p{Cc}/u.test(relative)
+    || relative.split("/").some((part) => !part || part === "." || part === "..")
+  ) {
+    throw new Error("immutable Cloudflare Git source contains a noncanonical path");
+  }
+  return relative;
+}
+
+function parseGitTreeEntries(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.at(-1) !== 0) {
+    throw new Error("immutable Cloudflare Git source tree listing is invalid");
+  }
+  const entries = [];
+  const seen = new Set();
+  let offset = 0;
+  while (offset < bytes.length - 1) {
+    const terminator = bytes.indexOf(0, offset);
+    if (terminator < 0) {
+      throw new Error("immutable Cloudflare Git source tree listing is truncated");
+    }
+    const record = bytes.subarray(offset, terminator);
+    offset = terminator + 1;
+    const separator = record.indexOf(0x09);
+    if (separator < 0) {
+      throw new Error("immutable Cloudflare Git source tree entry is malformed");
+    }
+    const header = record.subarray(0, separator).toString("ascii").split(" ");
+    if (header.length !== 3) {
+      throw new Error("immutable Cloudflare Git source tree entry is malformed");
+    }
+    const [mode, type, oid] = header;
+    const relative = canonicalGitPath(record.subarray(separator + 1));
+    if (seen.has(relative)) {
+      throw new Error("immutable Cloudflare Git source tree contains a duplicate path");
+    }
+    seen.add(relative);
+    entries.push({ mode, type, oid, relative });
+  }
+  entries.sort((left, right) => left.relative.localeCompare(right.relative, "en"));
+  return entries;
+}
+
+function gitObjectSha1(type, content) {
+  return createHash("sha1")
+    .update(`${type} ${content.length}\0`, "utf8")
+    .update(content)
+    .digest("hex");
+}
+
+function ignoredGitPaths(bytes) {
+  if (!Buffer.isBuffer(bytes)) {
+    throw new Error("modeled Cloudflare ignored-source listing is invalid");
+  }
+  if (bytes.length === 0) return [];
+  if (bytes.at(-1) !== 0) {
+    throw new Error("modeled Cloudflare ignored-source listing is truncated");
+  }
+  const paths = [];
+  const externalPaths = new Set(
+    CLOUDFLARE_EXTERNAL_BUILD_FILES.map((entry) => entry.path),
+  );
+  let offset = 0;
+  while (offset < bytes.length - 1) {
+    const terminator = bytes.indexOf(0, offset);
+    if (terminator < 0) {
+      throw new Error("modeled Cloudflare ignored-source listing is truncated");
+    }
+    const relative = canonicalGitPath(bytes.subarray(offset, terminator));
+    if (
+      relative !== "web"
+      && !relative.startsWith("web/")
+      && !externalPaths.has(relative)
+    ) {
+      throw new Error("modeled Cloudflare ignored-source listing escaped the build source");
+    }
+    paths.push(relative);
+    offset = terminator + 1;
+  }
+  return paths;
+}
+
+/**
+ * A modeled preview may intentionally include ordinary dirty worktree bytes,
+ * but ignored build-reachable files are an unsafe implicit input: Git does not
+ * report them in the release dirty projection and Vite can copy public files
+ * verbatim. Reject rather than omit them so tracked source cannot silently
+ * depend on a local ignored module or asset.
+ */
+export async function assertModeledCloudflareWorkingTreeHasNoIgnoredBuildSource(
+  repositoryRoot,
+) {
+  const canonicalRepository = await realpath(repositoryRoot);
+  if (canonicalRepository !== repositoryRoot || !path.isAbsolute(repositoryRoot)) {
+    throw new Error("modeled Cloudflare source repository root is not canonical");
+  }
+  let listing;
+  try {
+    listing = gitBuffer(repositoryRoot, [
+      "ls-files",
+      "-z",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--",
+      "web",
+      ...CLOUDFLARE_EXTERNAL_BUILD_FILES.map((entry) => entry.path),
+    ], 64 * 1024 * 1024);
+  } catch {
+    throw new Error("modeled Cloudflare ignored source could not be inspected safely");
+  }
+  const ignored = ignoredGitPaths(listing);
+  for (const relative of ignored) {
+    if (relative !== "web" && !relative.startsWith("web/")) {
+      throw new Error(
+        "modeled Cloudflare working-tree source contains an ignored build-reachable file",
+      );
+    }
+    const webRelative = relative === "web" ? "" : relative.slice("web/".length);
+    if (
+      WEB_TOP_LEVEL_EXCLUSIONS.has(webRelative.split("/", 1)[0])
+      || GENERATED_ENV_PATH.test(webRelative)
+    ) continue;
+    throw new Error(
+      "modeled Cloudflare working-tree source contains an ignored build-reachable file",
+    );
+  }
+}
+
+/**
+ * Materialize only exact raw blobs from one immutable Git commit. This path
+ * never consults the index or working-tree bytes and never invokes checkout,
+ * archive attributes, or clean/smudge filters.
+ */
+export async function materializeImmutableCloudflareGitSource({
+  repositoryRoot,
+  workspaceRoot,
+  sourceCommitSha,
+  expectedGitTreeOid,
+} = {}) {
+  const canonicalRepository = await realpath(repositoryRoot);
+  if (
+    canonicalRepository !== repositoryRoot
+    || !path.isAbsolute(repositoryRoot)
+    || !GIT_SHA1.test(String(sourceCommitSha || ""))
+    || !GIT_TREE_OID.test(String(expectedGitTreeOid || ""))
+  ) {
+    throw new Error("immutable Cloudflare Git source identity is invalid");
+  }
+  await assertCanonicalPrivateDirectory(
+    workspaceRoot,
+    "immutable Cloudflare Git workspace",
+  );
+  if ((await readdir(workspaceRoot)).length !== 0) {
+    throw new Error("immutable Cloudflare Git workspace must start empty");
+  }
+  if (git(repositoryRoot, ["rev-parse", "--show-object-format"]) !== "sha1") {
+    throw new Error("immutable Cloudflare Git source requires SHA-1 object format");
+  }
+  const resolvedCommit = git(repositoryRoot, [
+    "rev-parse",
+    "--verify",
+    `${sourceCommitSha}^{commit}`,
+  ]);
+  const resolvedTree = git(repositoryRoot, [
+    "rev-parse",
+    "--verify",
+    `${sourceCommitSha}^{tree}`,
+  ]);
+  if (
+    resolvedCommit !== sourceCommitSha
+    || `sha1:${resolvedTree}` !== expectedGitTreeOid
+  ) {
+    throw new Error("immutable Cloudflare Git source commit and tree do not match");
+  }
+  const commitBytes = gitBuffer(
+    repositoryRoot,
+    ["cat-file", "commit", sourceCommitSha],
+    4 * 1024 * 1024,
+  );
+  const rootTreeBytes = gitBuffer(
+    repositoryRoot,
+    ["cat-file", "tree", resolvedTree],
+    16 * 1024 * 1024,
+  );
+  if (
+    gitObjectSha1("commit", commitBytes) !== sourceCommitSha
+    || !commitBytes.subarray(0, 46).equals(
+      Buffer.from(`tree ${resolvedTree}\n`, "ascii"),
+    )
+    || gitObjectSha1("tree", rootTreeBytes) !== resolvedTree
+  ) {
+    throw new Error("immutable Cloudflare Git source commit or root tree is corrupt");
+  }
+
+  const externalPaths = CLOUDFLARE_EXTERNAL_BUILD_FILES.map((entry) => entry.path);
+  const externalPathSet = new Set(externalPaths);
+  const externalMaximumBytes = new Map(
+    CLOUDFLARE_EXTERNAL_BUILD_FILES.map((entry) => [entry.path, entry.maximumBytes]),
+  );
+  if (
+    externalPathSet.size !== externalPaths.length
+    || externalPaths.some((relative) => relative === "web" || relative.startsWith("web/"))
+  ) {
+    throw new Error("immutable Cloudflare Git source selection is not disjoint");
+  }
+  const treeBytes = gitBuffer(repositoryRoot, [
+    "ls-tree",
+    "-rz",
+    "-t",
+    "--full-tree",
+    sourceCommitSha,
+    "--",
+    "web",
+    ...externalPaths,
+  ], 16 * 1024 * 1024);
+  const entries = parseGitTreeEntries(treeBytes);
+  const materializedExternalPaths = new Set();
+  const counters = { files: 0, bytes: 0 };
+  let webFileCount = 0;
+  for (const entry of entries) {
+    const inWeb = entry.relative.startsWith("web/");
+    if (entry.type === "tree") {
+      if (
+        entry.mode !== "040000"
+        || !GIT_SHA1.test(entry.oid)
+        || !(
+          entry.relative === "web"
+          || inWeb
+          || externalPaths.some((relative) => (
+            relative.startsWith(`${entry.relative}/`)
+          ))
+        )
+      ) {
+        throw new Error("immutable Cloudflare Git source contains an unsupported tree");
+      }
+      const content = gitBuffer(
+        repositoryRoot,
+        ["cat-file", "tree", entry.oid],
+        16 * 1024 * 1024,
+      );
+      if (gitObjectSha1("tree", content) !== entry.oid) {
+        throw new Error("immutable Cloudflare Git source tree does not match its object ID");
+      }
+      continue;
+    }
+    if (!inWeb && !externalPathSet.has(entry.relative)) {
+      throw new Error("immutable Cloudflare Git source contains an undeclared path");
+    }
+    if (inWeb) {
+      webFileCount += 1;
+      const webRelative = entry.relative.slice("web/".length);
+      if (
+        WEB_TOP_LEVEL_EXCLUSIONS.has(webRelative.split("/", 1)[0])
+        || GENERATED_ENV_PATH.test(webRelative)
+      ) {
+        throw new Error("immutable Cloudflare Git source tracks a forbidden generated path");
+      }
+    } else {
+      materializedExternalPaths.add(entry.relative);
+    }
+    if (
+      entry.type !== "blob"
+      || !new Set(["100644", "100755"]).has(entry.mode)
+      || !GIT_SHA1.test(entry.oid)
+    ) {
+      throw new Error("immutable Cloudflare Git source contains an unsupported object or mode");
+    }
+    const content = gitBuffer(
+      repositoryRoot,
+      ["cat-file", "blob", entry.oid],
+      MAX_SOURCE_FILE_BYTES + 1,
+    );
+    if (
+      content.length > MAX_SOURCE_FILE_BYTES
+      || (!inWeb && content.length > externalMaximumBytes.get(entry.relative))
+    ) {
+      throw new Error("immutable Cloudflare Git source contains an oversized blob");
+    }
+    if (gitObjectSha1("blob", content) !== entry.oid) {
+      throw new Error("immutable Cloudflare Git source blob does not match its object ID");
+    }
+    counters.files += 1;
+    counters.bytes += content.length;
+    if (
+      counters.files > MAX_SOURCE_FILES
+      || counters.bytes > MAX_SOURCE_TOTAL_BYTES
+    ) {
+      throw new Error("immutable Cloudflare Git source exceeds its bounded manifest");
+    }
+    await writeExclusiveFile(
+      path.join(workspaceRoot, ...entry.relative.split("/")),
+      content,
+      entry.mode === "100755" ? 0o755 : 0o644,
+    );
+  }
+  if (
+    webFileCount < 1
+    || materializedExternalPaths.size !== externalPathSet.size
+    || externalPaths.some((relative) => !materializedExternalPaths.has(relative))
+  ) {
+    throw new Error("immutable Cloudflare Git source is missing a required path");
+  }
+  return Object.freeze({
+    sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+    sourceCommitSha,
+    gitTreeOid: expectedGitTreeOid,
+    fileCount: counters.files,
+    totalBytes: counters.bytes,
+  });
+}
+
 async function initializeSyntheticSourceRepository(workspaceRoot) {
   git(workspaceRoot, ["init", "-q", "--initial-branch=main", "--template="]);
   git(workspaceRoot, ["add", "-A"]);
@@ -506,6 +851,9 @@ async function initializeSyntheticSourceRepository(workspaceRoot) {
 export async function createIsolatedCloudflareBuildWorkspace({
   repositoryRoot,
   buildRoot,
+  sourceKind,
+  sourceCommitSha,
+  expectedGitTreeOid,
   expectedSourceSha256,
   expectedUploadControlManifestSha256,
   expectedExternalBuildClosure,
@@ -518,38 +866,72 @@ export async function createIsolatedCloudflareBuildWorkspace({
   const expectedClosure = normalizeCloudflareExternalBuildClosure(
     expectedExternalBuildClosure,
   );
-  const sourceClosure = await projectCloudflareExternalBuildClosure(repositoryRoot);
+  if (!new Set([
+    CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+    CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+  ]).has(sourceKind)) {
+    throw new Error("Cloudflare build source kind must be explicit");
+  }
   if (
-    cloudflareExternalBuildClosureSha256(sourceClosure)
-      !== cloudflareExternalBuildClosureSha256(expectedClosure)
-    || canonicalCloudflareExternalBuildClosureText(sourceClosure)
-      !== canonicalCloudflareExternalBuildClosureText(expectedClosure)
+    sourceKind === CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT
+      ? (!GIT_SHA1.test(String(sourceCommitSha || ""))
+        || !GIT_TREE_OID.test(String(expectedGitTreeOid || "")))
+      : sourceCommitSha !== undefined || expectedGitTreeOid !== undefined
   ) {
-    throw new Error("Cloudflare external build inputs changed before isolation");
+    throw new Error("Cloudflare build source provenance is invalid");
   }
   const workspaceRoot = path.join(buildRoot, "workspace");
   await mkdir(workspaceRoot, { mode: 0o700 });
   const counters = { files: 0, bytes: 0 };
   try {
-    for (const external of sourceClosure.files) {
-      await copyStableRelativeFile(
+    let sourceProvenance;
+    if (sourceKind === CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT) {
+      sourceProvenance = await materializeImmutableCloudflareGitSource({
         repositoryRoot,
         workspaceRoot,
-        external.path,
-        counters,
+        sourceCommitSha,
+        expectedGitTreeOid,
+      });
+    } else {
+      await assertModeledCloudflareWorkingTreeHasNoIgnoredBuildSource(
+        repositoryRoot,
       );
+      const sourceClosure = await projectCloudflareExternalBuildClosure(repositoryRoot);
+      if (
+        cloudflareExternalBuildClosureSha256(sourceClosure)
+          !== cloudflareExternalBuildClosureSha256(expectedClosure)
+        || canonicalCloudflareExternalBuildClosureText(sourceClosure)
+          !== canonicalCloudflareExternalBuildClosureText(expectedClosure)
+      ) {
+        throw new Error("Cloudflare external build inputs changed before isolation");
+      }
+      for (const external of sourceClosure.files) {
+        await copyStableRelativeFile(
+          repositoryRoot,
+          workspaceRoot,
+          external.path,
+          counters,
+        );
+      }
+      await copyStableTree(
+        path.join(repositoryRoot, "web"),
+        path.join(workspaceRoot, "web"),
+        {
+          counters,
+          exclude: (relative) => (
+            WEB_TOP_LEVEL_EXCLUSIONS.has(relative.split("/", 1)[0])
+            || GENERATED_ENV_PATH.test(relative)
+          ),
+        },
+      );
+      sourceProvenance = Object.freeze({
+        sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+        sourceCommitSha: null,
+        gitTreeOid: null,
+        fileCount: counters.files,
+        totalBytes: counters.bytes,
+      });
     }
-    await copyStableTree(
-      path.join(repositoryRoot, "web"),
-      path.join(workspaceRoot, "web"),
-      {
-        counters,
-        exclude: (relative) => (
-          WEB_TOP_LEVEL_EXCLUSIONS.has(relative.split("/", 1)[0])
-          || GENERATED_ENV_PATH.test(relative)
-        ),
-      },
-    );
     const isolatedWebDir = path.join(workspaceRoot, "web");
     const stagedSourceSha256 = await cloudflareSourceFingerprint(isolatedWebDir);
     if (stagedSourceSha256 !== expectedSourceSha256) {
@@ -573,6 +955,9 @@ export async function createIsolatedCloudflareBuildWorkspace({
     return Object.freeze({
       rootDir: workspaceRoot,
       webDir: isolatedWebDir,
+      sourceKind: sourceProvenance.sourceKind,
+      sourceCommitSha: sourceProvenance.sourceCommitSha,
+      gitTreeOid: sourceProvenance.gitTreeOid,
       sourceSha256: stagedSourceSha256,
       uploadControlManifestSha256: stagedControlSha256,
       externalBuildClosure: isolatedClosure,
@@ -587,6 +972,9 @@ export async function createIsolatedCloudflareBuildWorkspace({
 
 export async function assertCloudflareBuildWorkspaceIntegrity({
   workspace,
+  sourceKind,
+  sourceCommitSha,
+  expectedGitTreeOid,
   expectedSourceSha256,
   expectedUploadControlManifestSha256,
   expectedExternalBuildClosure,
@@ -599,6 +987,30 @@ export async function assertCloudflareBuildWorkspaceIntegrity({
     || await realpath(workspace.webDir) !== workspace.webDir
   ) {
     throw new Error("Cloudflare build workspace is not the exact canonical isolated tree");
+  }
+  if (
+    !new Set([
+      CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+      CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+    ]).has(sourceKind)
+    || workspace.sourceKind !== sourceKind
+    || (
+      sourceKind === CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT
+        ? (
+          !GIT_SHA1.test(String(sourceCommitSha || ""))
+          || !GIT_TREE_OID.test(String(expectedGitTreeOid || ""))
+          || workspace.sourceCommitSha !== sourceCommitSha
+          || workspace.gitTreeOid !== expectedGitTreeOid
+        )
+        : (
+          sourceCommitSha !== undefined
+          || expectedGitTreeOid !== undefined
+          || workspace.sourceCommitSha !== null
+          || workspace.gitTreeOid !== null
+        )
+    )
+  ) {
+    throw new Error("Cloudflare build workspace source provenance changed");
   }
   const expectedClosure = normalizeCloudflareExternalBuildClosure(
     expectedExternalBuildClosure,

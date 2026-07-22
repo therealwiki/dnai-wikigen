@@ -9,6 +9,8 @@ import test from "node:test";
 
 import { semanticValidationReceipt } from "./build-release-env.mjs";
 import {
+  CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+  CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_SCHEMA,
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_TRUTH_STATUS,
 } from "./cloudflare-build-sandbox-core.mjs";
@@ -34,6 +36,7 @@ import {
 } from "./frontend-build-candidate-core.mjs";
 
 const SHA = "1".repeat(40);
+const GIT_TREE_OID = `sha1:${"2".repeat(40)}`;
 const EXTERNAL_BUILD_CLOSURE_SHA256 = `sha256:${"9".repeat(64)}`;
 const SIGNED_DIST_MANIFEST = "b".repeat(64);
 const INSTALLED_DEPENDENCY_PROOF = Object.freeze({
@@ -120,6 +123,8 @@ test("release uploader is the exact reviewed Wrangler runtime", () => {
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_LITERAL_PATHSPECS: "1",
   });
   assert.equal(deployRunnerTest.PINNED_WRANGLER_RUNTIME.version, "4.110.0");
   assert.equal(
@@ -247,28 +252,57 @@ test("verification HOME is fresh, private, owner-controlled, and removable", asy
 
 function snapshot(sourceSha256 = "a".repeat(64)) {
   return {
+    objectFormat: "sha1",
     headSha: SHA,
+    gitTreeOid: GIT_TREE_OID,
     dirty: "?? modeled-change.txt",
     sourceSha256,
     externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
   };
 }
 
-function isolatedBuildTestDependencies() {
+function isolatedBuildTestDependencies(sourceRequests = []) {
   return {
     assertReleaseRuntime: () => deployRunnerTest.PINNED_RELEASE_RUNTIME_PROOF,
     createVerificationHome: async () => "/tmp/fake-verification-home",
     removeVerificationHome: async () => {},
-    createBuildWorkspace: async ({ buildRoot }) => ({
-      rootDir: `${buildRoot}/workspace`,
-      webDir: `${buildRoot}/workspace/web`,
-    }),
+    createBuildWorkspace: async ({
+      buildRoot,
+      sourceKind,
+      sourceCommitSha,
+      expectedGitTreeOid,
+    }) => {
+      sourceRequests.push({
+        operation: "create",
+        sourceKind,
+        sourceCommitSha,
+        expectedGitTreeOid,
+      });
+      return {
+        rootDir: `${buildRoot}/workspace`,
+        webDir: `${buildRoot}/workspace/web`,
+        sourceKind,
+        sourceCommitSha: sourceCommitSha ?? null,
+        gitTreeOid: expectedGitTreeOid ?? null,
+      };
+    },
     createBuildSandbox: async ({ buildRoot }) => ({
       npmCacheRoot: "/tmp/fake-npm-cache",
       profile: `fake-sandbox-profile:${buildRoot}`,
     }),
     assertBuildSandboxIsolation: async () => {},
-    assertBuildWorkspaceIntegrity: async () => {},
+    assertBuildWorkspaceIntegrity: async ({
+      sourceKind,
+      sourceCommitSha,
+      expectedGitTreeOid,
+    }) => {
+      sourceRequests.push({
+        operation: "integrity",
+        sourceKind,
+        sourceCommitSha,
+        expectedGitTreeOid,
+      });
+    },
     installBuildDependencies: async () => {},
     projectInstalledDependencyTree: async () => INSTALLED_DEPENDENCY_PROOF,
     createUploadHome: async () => "/tmp/fake-upload-home",
@@ -278,9 +312,11 @@ function isolatedBuildTestDependencies() {
 
 function successfulDependencies(overrides = {}) {
   const events = [];
+  const sourceRequests = [];
   let wranglerCalls = 0;
   return {
     events,
+    sourceRequests,
     wranglerCalls: () => wranglerCalls,
     dependencies: {
       releaseArguments: [],
@@ -322,7 +358,7 @@ function successfulDependencies(overrides = {}) {
       output: () => {},
       sensitiveEnv: {},
       controlEnv: {},
-      ...isolatedBuildTestDependencies(),
+      ...isolatedBuildTestDependencies(sourceRequests),
       ...overrides,
     },
   };
@@ -336,7 +372,19 @@ test("runner destroys verification state, builds in a fresh workspace, audits st
   const result = await runCloudflareDeployment(setup.dependencies);
   assert.equal(result.policy.mode, "modeled");
   assert.equal(result.policy.branch, CLOUDFLARE_MODELED_PREVIEW_BRANCH);
+  assert.deepEqual(result.buildSource, {
+    sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+  });
   assert.equal(setup.wranglerCalls(), 1);
+  assert.equal(setup.sourceRequests.length, 8);
+  for (const request of setup.sourceRequests) {
+    assert.deepEqual(request, {
+      operation: request.operation,
+      sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
+      sourceCommitSha: undefined,
+      expectedGitTreeOid: undefined,
+    });
+  }
   assert.deepEqual(setup.events, [
     "verify",
     "build",
@@ -353,6 +401,10 @@ test("runner destroys verification state, builds in a fresh workspace, audits st
     outputLines.includes(
       `cloudflare_staged_bundle_manifest_sha256=${"c".repeat(64)}`,
     ),
+    true,
+  );
+  assert.equal(
+    outputLines.includes("cloudflare_build_source_kind=working_tree"),
     true,
   );
   assert.equal(
@@ -576,13 +628,16 @@ test("runner strips operator credentials from the fresh frontend build subproces
 
 test("live runner preserves signed D and binds signed C to the fresh dist manifest", async () => {
   const events = [];
+  const sourceRequests = [];
   let wranglerCalls = 0;
   const dependencies = {
-    ...isolatedBuildTestDependencies(),
+    ...isolatedBuildTestDependencies(sourceRequests),
     releaseArguments: ["--release", "/tmp/release.json"],
     loadReleaseEnvironment: async () => LIVE_ENV,
     snapshotDeploymentInputs: async () => ({
+      objectFormat: "sha1",
       headSha: SHA,
+      gitTreeOid: GIT_TREE_OID,
       dirty: "",
       sourceSha256: "a".repeat(64),
       externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
@@ -638,7 +693,21 @@ test("live runner preserves signed D and binds signed C to the fresh dist manife
     LIVE_AUTHORITY_BINDING.frontendBuildCandidateReceiptSha256,
   );
   assert.equal(result.policy.frontendBuildSha256, `sha256:${SIGNED_DIST_MANIFEST}`);
+  assert.deepEqual(result.buildSource, {
+    sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+    sourceCommitSha: SHA,
+    expectedGitTreeOid: GIT_TREE_OID,
+  });
   assert.equal(wranglerCalls, 1);
+  assert.equal(sourceRequests.length, 8);
+  for (const request of sourceRequests) {
+    assert.deepEqual(request, {
+      operation: request.operation,
+      sourceKind: CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
+      sourceCommitSha: SHA,
+      expectedGitTreeOid: GIT_TREE_OID,
+    });
+  }
   assert.deepEqual(events, [
     "validate-live",
     "verify",
@@ -670,6 +739,51 @@ test("live runner preserves signed D and binds signed C to the fresh dist manife
   assert.deepEqual(events, ["validate-live", "verify", "build", "audit-build"]);
 });
 
+test("live immutable Git materialization has no working-tree fallback and fails before install or upload", async () => {
+  const events = [];
+  let wranglerCalls = 0;
+  await assert.rejects(
+    runCloudflareDeployment({
+      ...isolatedBuildTestDependencies(),
+      releaseArguments: ["--release", "/tmp/release.json"],
+      loadReleaseEnvironment: async () => LIVE_ENV,
+      snapshotDeploymentInputs: async () => ({
+        ...snapshot(),
+        dirty: "",
+      }),
+      loadPrivateReleaseAudit: async () => ({
+        fingerprintSha256: "e".repeat(64),
+      }),
+      validateRelease: async () => semanticValidationReceipt(
+        SHA,
+        serializeEnv(LIVE_ENV),
+        LIVE_AUTHORITY_BINDING,
+      ),
+      createBuildWorkspace: async ({
+        sourceKind,
+        sourceCommitSha,
+        expectedGitTreeOid,
+      }) => {
+        events.push("materialize");
+        assert.equal(sourceKind, CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT);
+        assert.equal(sourceCommitSha, SHA);
+        assert.equal(expectedGitTreeOid, GIT_TREE_OID);
+        throw new Error("immutable Git object is unavailable");
+      },
+      installBuildDependencies: async () => { events.push("install"); },
+      verify: async () => { events.push("verify"); },
+      build: async () => { events.push("build"); },
+      invokeWrangler: async () => { wranglerCalls += 1; },
+      output: () => {},
+      sensitiveEnv: {},
+      controlEnv: {},
+    }),
+    /immutable Git object is unavailable/,
+  );
+  assert.deepEqual(events, ["materialize"]);
+  assert.equal(wranglerCalls, 0);
+});
+
 test("current O-derived D without signed C reaches neither build authority nor Wrangler", async () => {
   const events = [];
   let wranglerCalls = 0;
@@ -683,7 +797,9 @@ test("current O-derived D without signed C reaches neither build authority nor W
       ],
       loadReleaseEnvironment: async () => LIVE_ENV,
       snapshotDeploymentInputs: async () => ({
+        objectFormat: "sha1",
         headSha: SHA,
+        gitTreeOid: GIT_TREE_OID,
         dirty: "",
         sourceSha256: "a".repeat(64),
         externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
@@ -741,7 +857,9 @@ test("live runner rejects private authority input drift before build or upload",
       releaseArguments: ["--release", "/tmp/release.json"],
       loadReleaseEnvironment: async () => LIVE_ENV,
       snapshotDeploymentInputs: async () => ({
+        objectFormat: "sha1",
         headSha: SHA,
+        gitTreeOid: GIT_TREE_OID,
         dirty: "",
         sourceSha256: "a".repeat(64),
         externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
@@ -779,6 +897,27 @@ test("full verification fails closed on source or O-derived environment mutation
       snapshotDeploymentInputs: async () => {
         snapshots += 1;
         return snapshot(snapshots >= 3 ? "c".repeat(64) : "a".repeat(64));
+      },
+    });
+    await assert.rejects(
+      runCloudflareDeployment(setup.dependencies),
+      /source changed during the full release verification; upload was not attempted/,
+    );
+    assert.equal(setup.wranglerCalls(), 0);
+    assert.deepEqual(setup.events, ["verify"]);
+  });
+
+  await context.test("Git tree provenance mutation", async () => {
+    let snapshots = 0;
+    const setup = successfulDependencies({
+      snapshotDeploymentInputs: async () => {
+        snapshots += 1;
+        return {
+          ...snapshot(),
+          gitTreeOid: snapshots >= 3
+            ? `sha1:${"3".repeat(40)}`
+            : GIT_TREE_OID,
+        };
       },
     });
     await assert.rejects(
@@ -842,7 +981,9 @@ test("changing the private O artifact after C validation invokes Wrangler zero t
       ],
       loadReleaseEnvironment: async () => LIVE_ENV,
       snapshotDeploymentInputs: async () => ({
+        objectFormat: "sha1",
         headSha: SHA,
+        gitTreeOid: GIT_TREE_OID,
         dirty: "",
         sourceSha256: "a".repeat(64),
         externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
@@ -904,7 +1045,9 @@ test("control environment cannot be redirected after validation, verification, b
       loadReleaseEnvironment: async () => LIVE_ENV,
       loadPrivateReleaseAudit: async () => ({ fingerprintSha256: "e".repeat(64) }),
       snapshotDeploymentInputs: async () => ({
+        objectFormat: "sha1",
         headSha: SHA,
+        gitTreeOid: GIT_TREE_OID,
         dirty: "",
         sourceSha256: "a".repeat(64),
         externalBuildClosureSha256: EXTERNAL_BUILD_CLOSURE_SHA256,
