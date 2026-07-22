@@ -49,6 +49,16 @@ function usedLabel(value: number | null): string {
   return new Date(value * 1_000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function rotateUnavailableReason(credential: ArenaAgentCredential, hasDeviceKey: boolean): string {
+  if (credential.status !== "active") {
+    return `Rotation is unavailable while this credential is ${credential.status}.`;
+  }
+  if (!hasDeviceKey) {
+    return "Rotation is unavailable in this tab because its non-exportable device key is not here. Revoke this credential and issue a replacement from the device that will use it.";
+  }
+  return "";
+}
+
 export function ArenaAgentAccess(props: {
   challengeId: string;
   challengeVersion: string;
@@ -73,6 +83,7 @@ export function ArenaAgentAccess(props: {
   const [revealToken, setRevealToken] = createSignal(false);
   const [example, setExample] = createSignal<"curl" | "python">("curl");
   const [copied, setCopied] = createSignal<"token" | "example" | "">("");
+  const [copyError, setCopyError] = createSignal("");
   const [managementSession, setManagementSession] = createSignal<ArenaAgentManagementTokenResponse>();
   const [authorizationState, setAuthorizationState] = createSignal<"locked" | "authorizing" | "ready" | "error">("locked");
   const deviceKeys = props.deviceKeys;
@@ -198,6 +209,7 @@ export function ArenaAgentAccess(props: {
     setOneTimeCredential(undefined);
     setRevealToken(false);
     setCopied("");
+    setCopyError("");
   }
 
   function closeDialog(): void {
@@ -246,6 +258,7 @@ export function ArenaAgentAccess(props: {
     setOneTimeCredential(undefined);
     setRevealToken(false);
     setCopied("");
+    setCopyError("");
     setError("");
     setDialogOpen(true);
   };
@@ -316,6 +329,7 @@ export function ArenaAgentAccess(props: {
       setOneTimeToken(plaintext);
       setRevealToken(true);
       setCopied("");
+      setCopyError("");
       setDialogOpen(true);
       setNotice("Prior generation revoked. Copy the rotated token once.");
       await load(token);
@@ -363,9 +377,28 @@ export function ArenaAgentAccess(props: {
         ? arenaAgentCurlQuickstart(props.challengeId, props.challengeVersion)
         : arenaAgentPythonQuickstart(props.challengeId, props.challengeVersion);
     if (!value) return;
-    await navigator.clipboard.writeText(value);
-    setCopied(kind);
-    window.setTimeout(() => setCopied(""), 1_400);
+    setCopyError("");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(value);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(""), 1_400);
+    } catch {
+      setCopied("");
+      setCopyError("Clipboard access was blocked. Select the visible token or focused code example and copy it manually.");
+    }
+  };
+
+  const selectExampleFromKeyboard = (event: KeyboardEvent, current: "curl" | "python"): void => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home"
+      ? "curl"
+      : event.key === "End"
+        ? "python"
+        : current === "curl" ? "python" : "curl";
+    setExample(next);
+    document.getElementById(`arena-agent-example-tab-${next}`)?.focus();
   };
 
   const quickstart = () => example() === "curl"
@@ -413,8 +446,10 @@ export function ArenaAgentAccess(props: {
 
         <Show when={state() === "loading" && credentials().length === 0}><div class="agent-loading"><LoaderCircle class="spin" size={17} /> Loading bounded credential records…</div></Show>
         <div class="agent-credential-grid">
-          <For each={credentials()}>{(credential) => (
-            <article class="agent-credential-card">
+          <For each={credentials()}>{(credential) => {
+            const rotationReason = () => rotateUnavailableReason(credential, deviceKeys.has(credential.device_id));
+            const rotationReasonId = `arena-agent-rotate-reason-${credential.credential_id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+            return <article class="agent-credential-card">
               <div class="agent-credential-title"><KeyRound size={16} /><span><strong>{credential.name}</strong><code>{credential.prefix}</code></span><em>{credential.status}</em></div>
               <dl>
                 <div><dt>Binding</dt><dd>{credential.challenge_id}@{credential.challenge_version}</dd></div>
@@ -424,12 +459,15 @@ export function ArenaAgentAccess(props: {
                 <div><dt>Last used</dt><dd>{usedLabel(credential.last_used_at)}</dd></div>
               </dl>
               <div class="agent-scope-list"><For each={credential.scopes}>{(scope) => <span><Braces size={11} /> {scope}</span>}</For></div>
+              <Show when={rotationReason()}>
+                <p id={rotationReasonId} class="agent-rotate-reason"><TriangleAlert size={12} /> {rotationReason()}</p>
+              </Show>
               <div class="agent-card-actions">
-                <button type="button" onClick={() => void rotate(credential)} disabled={credential.status !== "active" || Boolean(busy())} title={deviceKeys.has(credential.device_id) ? "Rotate in this tab" : "This tab does not hold the non-exportable device key"}><RotateCcw size={13} /> Rotate</button>
+                <button type="button" onClick={() => void rotate(credential)} disabled={Boolean(rotationReason()) || Boolean(busy())} aria-describedby={rotationReason() ? rotationReasonId : undefined} title={rotationReason() || "Rotate in this tab"}><RotateCcw size={13} /> Rotate</button>
                 <button type="button" onClick={() => void revoke(credential)} disabled={credential.status !== "active" || Boolean(busy())}><Ban size={13} /> Revoke</button>
               </div>
-            </article>
-          )}</For>
+            </article>;
+          }}</For>
         </div>
         <Show when={state() === "ready" && credentials().length === 0}><div class="agent-empty"><Bot size={21} /><strong>No agent keys for this version</strong><span>Create one without exporting the browser-generated device private key.</span></div></Show>
       </Show>
@@ -458,10 +496,17 @@ export function ArenaAgentAccess(props: {
               </>
             }>
               <p>The token was decrypted in this tab. Store it in a secret manager or process environment, then close this dialog to clear the plaintext view. If a request loses its response, refresh the wallet-owned list and revoke any credential you cannot account for.</p>
-              <div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time Arena agent credential" : "Reveal one-time Arena agent credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" aria-label="Copy Arena agent credential" onClick={() => void copy("token")}><Copy size={15} /></button></div>
+              <div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time Arena agent credential" : "Reveal one-time Arena agent credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" aria-label="Copy Arena agent credential" aria-describedby={copyError() ? "arena-agent-copy-error" : undefined} onClick={() => void copy("token")}><Copy size={15} /></button></div>
               <div class="agent-token-binding"><Fingerprint size={14} /><span><strong>{oneTimeCredential()?.name}</strong><code>{oneTimeCredential()?.challenge_id}@{oneTimeCredential()?.challenge_version} · generation {oneTimeCredential()?.generation}</code></span><em>{copied() === "token" ? "Copied" : "Not stored by Wikigen"}</em></div>
-              <div class="agent-example-tabs"><button type="button" class={example() === "curl" ? "active" : ""} onClick={() => setExample("curl")}><TerminalSquare size={13} /> curl</button><button type="button" class={example() === "python" ? "active" : ""} onClick={() => setExample("python")}><Braces size={13} /> Python</button><button type="button" onClick={() => void copy("example")}><Copy size={13} /> {copied() === "example" ? "Copied" : "Copy"}</button></div>
-              <pre class="agent-quickstart"><code>{quickstart()}</code></pre>
+              <div class="agent-example-toolbar">
+                <div class="agent-example-tabs" role="tablist" aria-label="Agent request examples">
+                  <button id="arena-agent-example-tab-curl" type="button" class={example() === "curl" ? "active" : ""} role="tab" aria-selected={example() === "curl"} aria-controls="arena-agent-example-panel" tabindex={example() === "curl" ? 0 : -1} onClick={() => setExample("curl")} onKeyDown={(event) => selectExampleFromKeyboard(event, "curl")}><TerminalSquare size={13} /> curl</button>
+                  <button id="arena-agent-example-tab-python" type="button" class={example() === "python" ? "active" : ""} role="tab" aria-selected={example() === "python"} aria-controls="arena-agent-example-panel" tabindex={example() === "python" ? 0 : -1} onClick={() => setExample("python")} onKeyDown={(event) => selectExampleFromKeyboard(event, "python")}><Braces size={13} /> Python</button>
+                </div>
+                <button class="agent-example-copy" type="button" aria-label={`Copy ${example()} agent request example`} aria-describedby={copyError() ? "arena-agent-copy-error" : undefined} onClick={() => void copy("example")}><Copy size={13} /> {copied() === "example" ? "Copied" : "Copy"}</button>
+              </div>
+              <pre id="arena-agent-example-panel" class="agent-quickstart" role="tabpanel" aria-labelledby={`arena-agent-example-tab-${example()}`} tabindex="0"><code>{quickstart()}</code></pre>
+              <Show when={copyError()}><p id="arena-agent-copy-error" class="agent-copy-error" role="alert" aria-live="assertive"><TriangleAlert size={13} /> {copyError()}</p></Show>
               <p class="modeled-note"><ShieldCheck size={13} /> Examples read the token from <code>WIKIGEN_ARENA_TOKEN</code>; they never paste it into source. This copied JWT is a bearer, not proof-of-possession or device attestation. The submission example accepts only the existing ciphertext envelope schema.</p>
               <button class="primary-button large full" type="button" onClick={closeDialog}><Check size={16} /> I stored it safely; clear this view</button>
             </Show>

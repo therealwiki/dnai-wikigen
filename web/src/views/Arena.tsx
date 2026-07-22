@@ -838,7 +838,7 @@ export function Arena(props: {
           <h1>DNA + bio challenge arena</h1>
           <p>Humans and agents can prepare submissions for synthetic public tasks. Private DNA, assay, or cohort holdouts may enter only after the exact release and per-job verification gates pass.</p>
         </div>
-        <button class="primary-button large" type="button" disabled={!challenge().apiBacked} title={challenge().apiBacked ? undefined : challenge().version ? "Submission requires the fresh API, frozen contract gate, and release-bound CVM" : "Modeled challenge previews cannot accept submissions"} onClick={() => setSubmitOpen(true)}><Plus size={17} /> Submit program</button>
+        <button class="primary-button large" type="button" disabled={!challenge().apiBacked} title={challenge().apiBacked ? "Prepare ciphertext ingress; queue acceptance does not authorize execution" : challenge().version ? "Submission requires the fresh API, frozen contract gate, and release-bound CVM" : "Modeled challenge previews cannot accept submissions"} onClick={() => setSubmitOpen(true)}><Plus size={17} /> Prepare ciphertext ingress</button>
       </header>
 
       <div class={`environment-banner ${safeIrWorkerPresenceMatchesPreflight() ? "live" : "modeled"}`} role="status" aria-live="polite"><Sparkles size={17} /><div>
@@ -927,7 +927,7 @@ export function Arena(props: {
                 <div class="leaderboard-controls">
                   <label class="search-field"><Search size={15} /><span class="sr-only">Search ranking handle or wallet hash</span><input type="search" value={search()} onInput={(event) => setSearch(event.currentTarget.value)} placeholder="Search handle or wallet" /></label>
                   <div class="worker-presence-indicator" role="status" aria-live="polite" title="Worker presence is not proof for any result row">
-                    <Activity size={14} /><span>{safeIrWorkerPresenceMatchesPreflight() ? "Worker present · inspect each row" : "Worker absent · rows remain explicit"}</span>
+                    <Activity size={14} /><span>{safeIrWorkerPresenceMatchesPreflight() ? "service observed · execution per row" : "service not observed · execution per row"}</span>
                   </div>
                   <Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh"}</button></Show>
                 </div>
@@ -1019,22 +1019,25 @@ export function Arena(props: {
 
           <Show when={tab() === "queue"}>
             <section id="arena-panel-queue" class="queue-panel" role="tabpanel" aria-labelledby="arena-tab-queue" tabindex="0">
-              <div class="queue-head"><div><p class="overline">{challenge().apiBacked ? "Bounded public projection" : "Modeled scheduler"}</p><h3>{challenge().apiBacked ? "Versioned evaluation queue" : "Evaluation queue preview"}</h3></div><div class="projection-actions"><div class="queue-stat"><TimerReset size={17} /><span><small>{challenge().apiBacked ? "DISCLOSED" : "SAMPLE MEDIAN"}</small><strong>{challenge().apiBacked ? publicQueue()?.submission_count ?? "—" : "6m 18s"}</strong></span></div><Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh"}</button></Show></div></div>
+              <div class="queue-head"><div><p class="overline">{challenge().apiBacked ? "Ciphertext ingress · execution per row" : "Modeled scheduler · no execution"}</p><h3>{challenge().apiBacked ? "Versioned evaluation queue" : "Evaluation queue preview"}</h3></div><div class="projection-actions"><div class="queue-stat"><TimerReset size={17} /><span><small>{challenge().apiBacked ? "INGRESS RECORDS" : "MODELED MEDIAN"}</small><strong>{challenge().apiBacked ? publicQueue()?.submission_count ?? "—" : "6m 18s"}</strong></span></div><Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh"}</button></Show></div></div>
+              <div class="leaderboard-notice queue-ingress-notice"><LockKeyhole size={15} /><span><strong>{challenge().apiBacked ? "Ciphertext accepted is not code executed." : "This queue is an unexecuted product model."}</strong> {challenge().apiBacked ? "Ingress records can be live while execution remains absent; inspect the status and evidence on every row." : "Sample rows demonstrate scheduling and disclosure boundaries only. No evaluator, TDX job, or reward ran."}</span></div>
               <Show when={challenge().apiBacked && projectionState() === "error"}><div class="projection-error" role="alert"><TriangleAlert size={15} /><span><strong>Queue status could not be refreshed.</strong> {projectionError()} {publicQueue() ? "The last bounded projection remains visible and may be stale." : "No queue data is being presented as an empty queue."}</span><button class="secondary-button" type="button" disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}>Retry</button></div></Show>
               <Show when={challenge().apiBacked && projectionState() === "loading" && !publicQueue()}><div class="projection-loading" role="status" aria-live="polite"><LoaderCircle class="spin" size={16} /> Loading the bounded public queue…</div></Show>
-              <For each={queueRows()}>
-                {(run, index) => (
-                  <div class="queue-row">
-                    <span class="queue-position">{index() + 1}</span>
-                    <div class={`queue-state ${run.status}`}>{run.status === "running" || run.status === "checking" ? <LoaderCircle class="spin" size={15} /> : <CircleDot size={15} />}</div>
-                    <div><strong>{run.id}</strong><small>{run.who}</small></div>
-                    <div><small>STAGE</small><strong>{run.stage}</strong></div>
-                    <div><small>UPDATED</small><strong>{run.eta}</strong></div>
-                    <div><small>CREDITS</small><strong>{run.spend}</strong></div>
-                    <span class="queue-detail-state"><LockKeyhole size={13} /> {run.evidence}</span>
-                  </div>
-                )}
-              </For>
+              <div class="queue-list" role="list" aria-label={`${challenge().title} evaluation queue`}>
+                <For each={queueRows()}>
+                  {(run, index) => (
+                    <article class="queue-row" role="listitem">
+                      <span class="queue-position">{index() + 1}</span>
+                      <div class={`queue-state ${run.status}`} aria-label={`Status: ${run.status}`}>{run.status === "running" || run.status === "checking" ? <LoaderCircle class="spin" size={15} /> : <CircleDot size={15} />}<span class="queue-state-label">{run.status}</span></div>
+                      <div><strong>{run.id}</strong><small>{run.who}</small></div>
+                      <div><small>STAGE</small><strong>{run.stage}</strong></div>
+                      <div><small>UPDATED</small><strong>{run.eta}</strong></div>
+                      <div><small>CREDITS</small><strong>{run.spend}</strong></div>
+                      <span class="queue-detail-state"><LockKeyhole size={13} /> {run.evidence}</span>
+                    </article>
+                  )}
+                </For>
+              </div>
               <Show when={queueRows().length === 0 && projectionState() !== "loading" && projectionState() !== "error"}>
                 <div class="empty-state compact-empty"><ListChecks size={24} /><h3>{challenge().apiBacked ? "The public queue is empty" : "The modeled queue is empty"}</h3><p>No encrypted candidate commitments have entered this challenge version.</p></div>
               </Show>
@@ -1091,7 +1094,7 @@ export function Arena(props: {
                   </For>
                 </div>
                 <Show when={ownerState() === "ready" && ownerSubmissions().length === 0}>
-                  <div class="empty-state compact-empty"><FileCode2 size={24} /><h3>No submissions for this wallet</h3><p>This exact challenge version has no records owned by the authenticated address.</p><button class="primary-button" type="button" onClick={() => setSubmitOpen(true)}><Send size={16} /> Prepare encrypted submission</button></div>
+                  <div class="empty-state compact-empty"><FileCode2 size={24} /><h3>No submissions for this wallet</h3><p>This exact challenge version has no records owned by the authenticated address.</p><button class="primary-button" type="button" onClick={() => setSubmitOpen(true)}><Send size={16} /> Prepare ciphertext ingress</button></div>
                 </Show>
                 <div class="owner-submissions-actions">
                   <button class="secondary-button" type="button" onClick={() => void refreshOwnerView()} disabled={ownerState() === "loading"}><Activity size={14} /> Refresh bounded status</button>

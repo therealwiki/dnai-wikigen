@@ -668,7 +668,7 @@ export function ComputeWorkloadPanel(props: {
           </div></Show>
         }>
           {(confirmed) => <article class="workload-receipt-card">
-            <div class="workload-receipt-head"><span><Check size={18} /></span><div><small>CIPHERTEXT-ONLY INGRESS RECEIPT</small><h3>{confirmed().created ? "Sealed workload accepted" : "Existing sealed workload recovered"}</h3><code>{confirmed().workload_id}</code></div><span class="workload-mode-chip live">LIVE RECEIPT</span></div>
+            <div class="workload-receipt-head"><span><Check size={18} /></span><div><small>CIPHERTEXT-ONLY INGRESS RECEIPT</small><h3>{confirmed().created ? "Sealed workload accepted" : "Existing sealed workload recovered"}</h3><code>{confirmed().workload_id}</code></div><span class="workload-mode-chip live">LIVE INGRESS · NO EXECUTION</span></div>
             <div class="workload-receipt-grid">
               <div><small>WORKLOAD</small><strong>{confirmed().workload_schema.endsWith("inference.v1") ? "Inference" : "SFT training"}</strong><code>{shortCommitment(confirmed().workload_commitment)}</code></div>
               <div><small>MANIFEST</small><strong>{payloadClassLabel(props.activeHandoff?.payloadSizeClass ?? payloadSizeClass())} cover class</strong><code>{shortCommitment(confirmed().manifest_commitment)}</code></div>

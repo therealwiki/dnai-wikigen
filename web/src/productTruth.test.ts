@@ -61,7 +61,9 @@ describe("public product truth boundary", () => {
     expect(computeWorkloadSource).toContain("Modeled locally");
     expect(computeWorkloadSource).toContain("Provider dispatch remains disabled");
     expect(computeWorkloadSource).toContain("CIPHERTEXT-ONLY INGRESS RECEIPT");
+    expect(computeWorkloadSource).toContain("LIVE INGRESS · NO EXECUTION");
     expect(computeWorkloadSource).toContain("Continue to asset authorization");
+    expect(computeWorkloadSource).not.toContain("LIVE RECEIPT");
     expect(computeWorkloadSource).not.toContain("Intel TDX evidence verified");
   });
 });

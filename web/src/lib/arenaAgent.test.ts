@@ -601,4 +601,19 @@ describe("Arena agent credential protocol", () => {
     expect(arenaViewSource).toContain("session.expires_at * 1_000 - Date.now() - 5_000");
   });
 
+  it("makes one-time examples and rotation blockers accessible without changing authority", () => {
+    expect(componentSource).toContain('class="agent-example-tabs" role="tablist"');
+    expect(componentSource).toContain('role="tab" aria-selected={example() === "curl"}');
+    expect(componentSource).toContain('role="tab" aria-selected={example() === "python"}');
+    expect(componentSource).toContain('aria-controls="arena-agent-example-panel"');
+    expect(componentSource).toContain('class="agent-quickstart" role="tabpanel"');
+    expect(componentSource).toContain('aria-labelledby={`arena-agent-example-tab-${example()}`} tabindex="0"');
+    expect(componentSource).toContain("selectExampleFromKeyboard");
+    expect(componentSource).toContain('class="agent-copy-error" role="alert"');
+    expect(componentSource).toContain("Clipboard access was blocked.");
+    expect(componentSource).toContain('aria-describedby={rotationReason() ? rotationReasonId : undefined}');
+    expect(componentSource).toContain("Rotation is unavailable in this tab");
+    expect(componentSource).not.toContain("challenge:agents:manage bearer");
+  });
+
 });

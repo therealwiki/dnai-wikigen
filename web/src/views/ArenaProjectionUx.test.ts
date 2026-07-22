@@ -24,6 +24,22 @@ describe("Arena public projection freshness", () => {
     expect(arenaSource).toContain("The last bounded projection remains visible and may be stale.");
   });
 
+  it("separates observed service presence, ciphertext ingress, and row execution", () => {
+    expect(arenaSource).toContain("service observed · execution per row");
+    expect(arenaSource).toContain("service not observed · execution per row");
+    expect(arenaSource).toContain("Prepare ciphertext ingress");
+    expect(arenaSource).toContain("Ciphertext accepted is not code executed.");
+    expect(arenaSource).toContain("This queue is an unexecuted product model.");
+    expect(arenaSource).toContain("Ingress records can be live while execution remains absent");
+  });
+
+  it("exposes queue rows as a labeled list with a mobile-visible status label", () => {
+    expect(arenaSource).toContain('class="queue-list" role="list"');
+    expect(arenaSource).toContain('class="queue-row" role="listitem"');
+    expect(arenaSource).toContain('aria-label={`Status: ${run.status}`}');
+    expect(arenaSource).toContain('class="queue-state-label">{run.status}</span>');
+  });
+
   it("binds Arena preparation, wallet authorization, and submission to one wallet generation", () => {
     expect(arenaSource).toContain("const walletVersion = wallet.authorizationVersion()");
     expect(arenaSource).toContain("wallet.authorizationVersion() !== walletVersion");

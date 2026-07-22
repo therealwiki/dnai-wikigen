@@ -292,7 +292,8 @@ function RoleChip(props: { deal: ChainDeal }) {
 
 function DealActions(props: {
   deal: ChainDeal;
-  live: boolean;
+  chainBacked: boolean;
+  writeReady: boolean;
   transact: (label: string, action: (authorize: AuthorizeWrite) => Promise<Hex>) => Promise<boolean>;
   operationLock: DealRoomOperationLock;
   operationBusy: () => boolean;
@@ -420,7 +421,7 @@ function DealActions(props: {
   };
 
   const upload = async (retry = false) => {
-    if (!props.live || !deployment.artifactUploadEnabled || retry !== uploadRecoveryPending()) return;
+    if (!props.writeReady || !deployment.artifactUploadEnabled || retry !== uploadRecoveryPending()) return;
     if ((!retry && props.mutationLocked()) || (retry && props.operationBusy())) return;
     const file = uploadFile();
     const receipt = uploadReceipt();
@@ -581,7 +582,7 @@ function DealActions(props: {
             if (draftMutationIsAllowed()) setAmount(event.currentTarget.value);
           }} /><span>CAP</span></div>
         </label>
-          <button class="primary-button" type="button" disabled={!props.live || !trustedPaymentToken() || props.mutationLocked()} onClick={() => void props.transact("Fund room", fund)}>
+          <button class="primary-button" type="button" disabled={!props.writeReady || !trustedPaymentToken() || props.mutationLocked()} onClick={() => void props.transact("Fund room", fund)}>
           <HandCoins size={16} /> Fund room
         </button>
         <Show when={!trustedPaymentToken()}><p class="modeled-note"><TriangleAlert size={13} /> This room names a token outside this deployment's frontend allowlist. Inspect it on-chain; this UI will not approve or fund it.</p></Show>
@@ -599,7 +600,7 @@ function DealActions(props: {
             <span><strong>{uploadReceiptName() || "2. Select its private recovery receipt"}</strong><small>The secret is verified locally, then sealed inside the TEE ciphertext</small></span>
           </label>
           <Show when={!uploadRecoveryPending()}>
-            <button class="primary-button full" type="button" disabled={!props.live || !deployment.artifactUploadEnabled || !uploadFile() || !uploadReceiptMatches() || props.mutationLocked()} onClick={() => void upload()}>
+            <button class="primary-button full" type="button" disabled={!props.writeReady || !deployment.artifactUploadEnabled || !uploadFile() || !uploadReceiptMatches() || props.mutationLocked()} onClick={() => void upload()}>
             {uploadState() === "authorizing" || uploadState() === "encrypting" ? <LoaderCircle class="spin" size={16} /> : <LockKeyhole size={16} />}
             {uploadState() === "authorizing" ? "Authorize in wallet…" : uploadState() === "encrypting" ? "Verify, encrypt, and upload…" : "Authorize encrypted ingress"}
             </button>
@@ -609,7 +610,7 @@ function DealActions(props: {
               <RefreshCw size={16} />
               <div><strong>Unresolved artifact delivery retained</strong><span>The exact original file and private recovery receipt are locked in memory. Stay on this page; retry that pair, or discard it before selecting anything else.</span></div>
               <div class="artifact-recovery-actions">
-                <button class="secondary-button" type="button" disabled={!props.live || !deployment.artifactUploadEnabled || props.operationBusy()} onClick={() => void upload(true)}>Retry retained pair</button>
+                <button class="secondary-button" type="button" disabled={!props.writeReady || !deployment.artifactUploadEnabled || props.operationBusy()} onClick={() => void upload(true)}>Retry retained pair</button>
                 <button class="ghost-button" type="button" disabled={props.operationBusy()} onClick={discardUploadRecovery}>Discard retained pair</button>
               </div>
             </div>
@@ -626,15 +627,17 @@ function DealActions(props: {
           }} /><span>OFFER</span></div>
         </label>
         <div class="action-pair">
-          <button class="primary-button" type="button" disabled={!props.live || props.mutationLocked()} onClick={() => void props.transact("Accept result", accept)}><CheckCircle2 size={16} /> Accept</button>
-          <button class="danger-button" type="button" disabled={!props.live || props.mutationLocked()} onClick={() => void props.transact("Reject result", (authorize) => simpleWrite("rejectDeal", authorize))}><XCircle size={16} /> Reject</button>
+          <button class="primary-button" type="button" disabled={!props.writeReady || props.mutationLocked()} onClick={() => void props.transact("Accept result", accept)}><CheckCircle2 size={16} /> Accept</button>
+          <button class="danger-button" type="button" disabled={!props.writeReady || props.mutationLocked()} onClick={() => void props.transact("Reject result", (authorize) => simpleWrite("rejectDeal", authorize))}><XCircle size={16} /> Reject</button>
         </div>
       </Show>
       <Show when={canExpire()}>
-        <button class="secondary-button" type="button" disabled={!props.live || props.mutationLocked()} onClick={() => void props.transact("Expire room", (authorize) => simpleWrite("expireDeal", authorize))}><Clock3 size={16} /> Expire and settle refund</button>
+        <button class="secondary-button" type="button" disabled={!props.writeReady || props.mutationLocked()} onClick={() => void props.transact("Expire room", (authorize) => simpleWrite("expireDeal", authorize))}><Clock3 size={16} /> Expire and settle refund</button>
       </Show>
-      <Show when={!props.live && !TERMINAL.includes(props.deal.state)}>
-        <p class="modeled-note"><Sparkles size={13} /> Modeled preview—writes unlock after the fresh deployment is verified.</p>
+      <Show when={!props.writeReady && !TERMINAL.includes(props.deal.state)}>
+        <p class="modeled-note"><Sparkles size={13} /> {props.chainBacked
+          ? "Live chain read · writes locked"
+          : "Modeled preview—writes unlock after the fresh deployment is verified."}</p>
       </Show>
     </div>
   );
@@ -642,7 +645,8 @@ function DealActions(props: {
 
 function DealCard(props: {
   deal: ChainDeal;
-  live: boolean;
+  chainBacked: boolean;
+  writeReady: boolean;
   modeled: boolean;
   inspectEvidence: (context: VerificationContext) => void;
   transact: (label: string, action: (authorize: AuthorizeWrite) => Promise<Hex>) => Promise<boolean>;
@@ -715,7 +719,8 @@ function DealCard(props: {
       </div>
       <DealActions
         deal={props.deal}
-        live={props.live}
+        chainBacked={props.chainBacked}
+        writeReady={props.writeReady}
         transact={props.transact}
         operationLock={props.operationLock}
         operationBusy={props.operationBusy}
@@ -730,6 +735,7 @@ function DealCard(props: {
 
 export function DealRoom(props: { inspectEvidence: (context: VerificationContext) => void }) {
   const [deals, setDeals] = createSignal<ChainDeal[]>(deployment.contractAddress ? [] : DEMO_DEALS);
+  const [chainBacked, setChainBacked] = createSignal(false);
   const [loading, setLoading] = createSignal(Boolean(deployment.contractAddress));
   const [loadError, setLoadError] = createSignal("");
   const [filter, setFilter] = createSignal<DealFilter>("all");
@@ -755,7 +761,7 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
   let artifactPreparation = 0;
 
   const contractConfigured = () => Boolean(deployment.contractAddress);
-  const writesReady = () => deployment.contractWritesEnabled && Boolean(writePolicy());
+  const writesReady = () => chainBacked() && deployment.contractWritesEnabled && Boolean(writePolicy());
   const operationBusy = () => activeOperation() !== undefined;
   const mutationLocked = () => operationBusy() || artifactUploadRecovery() !== undefined || loading();
   const draftMutationIsAllowed = () => dealRoomDraftMutationIsAllowed({
@@ -954,11 +960,14 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
 
   const refresh = async () => {
     if (!deployment.contractAddress) return;
+    setChainBacked(false);
     setLoading(true);
     setLoadError("");
     try {
       try {
-        setDeals(await loadDeals());
+        const chainDeals = await loadDeals();
+        setDeals(chainDeals);
+        setChainBacked(true);
       } catch (cause) {
         setLoadError(cause instanceof Error ? cause.message : "Unable to read the contract");
       }
@@ -1222,7 +1231,13 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
       <Show when={contractConfigured()}>
         <div id="deal-room-write-status" class={`environment-banner ${writesReady() ? "live" : "warning"}`} role="status">
           {writesReady() ? <ShieldCheck size={17} /> : <LockKeyhole size={17} />}
-          <div><strong>{writesReady() ? "Release write policy matched" : "Contract configured · writes locked"}</strong><span>{policyMessage() || "Inspecting runtime bytecode, roles, mandatory approval gates, compose binding, and TEE identity…"}</span></div>
+          <div><strong>{writesReady()
+            ? "Release write policy matched"
+            : chainBacked()
+              ? "Live chain read · writes locked"
+              : loading()
+                ? "Checking live chain read · writes locked"
+                : "Chain read unavailable · writes locked"}</strong><span>{policyMessage() || "Inspecting runtime bytecode, roles, mandatory approval gates, compose binding, and TEE identity…"}</span></div>
         </div>
       </Show>
 
@@ -1311,7 +1326,8 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
         <div class="deal-grid">
           <For each={filtered()}>{(deal) => <DealCard
             deal={deal}
-            live={writesReady()}
+            chainBacked={chainBacked()}
+            writeReady={writesReady()}
             modeled={!contractConfigured()}
             inspectEvidence={props.inspectEvidence}
             transact={transact}

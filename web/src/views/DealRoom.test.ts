@@ -153,12 +153,21 @@ describe("Deal Room exclusive operations", () => {
   });
 
   it("accepts no private artifact while release-authorized room creation is locked", () => {
+    expect(dealRoomSource).toContain("const [chainBacked, setChainBacked] = createSignal(false)");
+    expect(dealRoomSource).toContain("const writesReady = () => chainBacked() && deployment.contractWritesEnabled && Boolean(writePolicy())");
+    expect(dealRoomSource).toContain("setChainBacked(true)");
+    expect(dealRoomSource).toContain("Live chain read · writes locked");
+    expect(dealRoomSource).toContain("Checking live chain read · writes locked");
+    expect(dealRoomSource).toContain("Chain read unavailable · writes locked");
+    expect(dealRoomSource).toContain('chainBacked={chainBacked()}');
+    expect(dealRoomSource).toContain('writeReady={writesReady()}');
     expect(dealRoomSource).toContain("const creationDraftIsAllowed = () => writesReady() && draftMutationIsAllowed()");
     expect(dealRoomSource).toContain("const creationLocked = () => !writesReady() || mutationLocked()");
     expect(dealRoomSource).toContain('disabled={creationLocked()} onClick={() => {\n          if (creationDraftIsAllowed()) setShowCreate(!showCreate());');
     expect(dealRoomSource).toContain('{writesReady() ? "Create room" : "Room creation locked"}');
     expect(dealRoomSource).toContain('type="file" disabled={creationLocked()}');
     expect(dealRoomSource).toContain("No private artifact selector is enabled in this state.");
+    expect(dealRoomSource).not.toContain("Contract configured · writes locked");
   });
 
   it("hands result-bearing rooms to Trust Center without presenting commitments as verified attestation", () => {

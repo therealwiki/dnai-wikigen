@@ -149,11 +149,13 @@ describe("Compute sealed workload panel", () => {
       activeHandoff: handoff,
     });
     expect(html).toContain("CIPHERTEXT-ONLY INGRESS RECEIPT");
+    expect(html).toContain("LIVE INGRESS · NO EXECUTION");
     expect(html).toContain(handoff.receipt.workload_id);
     expect(html).toContain("No inference or training has run");
     expect(html).toContain("Continue to asset authorization");
     expect(html).toContain("4 KiB");
     expect(html).toContain("cover class");
+    expect(html).not.toContain("LIVE RECEIPT");
   });
 
   it("resets exact public caps across inference, training, and inference again", () => {
