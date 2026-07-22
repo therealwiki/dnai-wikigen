@@ -150,48 +150,81 @@ describe("wallet signing boundary", () => {
     })).toThrow(/invalid wallet challenge/);
   });
 
-  it("binds an Arena session to the exact submit and owner-read resources", () => {
+  it("keeps ordinary Arena consent separate from agent-management consent", () => {
     const address = "0x5555555555555555555555555555555555555555" as Address;
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + 300;
-    const statement = "Authorize encrypted candidate submissions and read only your bounded submission status for the specified Arena challenge version during this short session. This request will not trigger a blockchain transaction.";
-    const resources = [
+    const ordinaryStatement = "Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.";
+    const ordinaryResources = [
       "- urn:dnai:arena:challenge:synthetic-bio-assay-qc:version:1.0.0",
       "- urn:dnai:scope:challenge:submit",
       "- urn:dnai:scope:challenge:submissions:read",
     ];
-    const message = buildApprovedWalletSigningMessage({
+    const ordinaryMessage = buildApprovedWalletSigningMessage({
       address,
       nonce: "11111111111111111111111111111111",
       issuedAt,
       expiresAt,
-      statement,
-      resources,
+      statement: ordinaryStatement,
+      resources: ordinaryResources,
     });
-    const challenge: SigningChallengeResponse = {
+    const ordinary: SigningChallengeResponse = {
       address,
       scope: "challenge:submit challenge:submissions:read",
       nonce: "11111111111111111111111111111111",
       issued_at: issuedAt,
       expires_at: expiresAt,
-      message,
+      message: ordinaryMessage,
     };
-    const expected = {
+    const ordinaryExpected = {
       address,
       scope: "challenge:submit challenge:submissions:read",
-      statement,
-      resources,
+      statement: ordinaryStatement,
+      resources: ordinaryResources,
       maximumTtlSeconds: 600,
     };
-    expect(() => validateSigningChallenge(challenge, expected)).not.toThrow();
+    expect(() => validateSigningChallenge(ordinary, ordinaryExpected)).not.toThrow();
+    expect(ordinaryMessage).not.toContain("agents:manage");
+
+    const managementStatement = "Authorize management of delegated Arena agent credentials for the specified challenge version during this short session. Management may issue a submit + owner-read bearer valid for up to 24 hours, or list, rotate, and revoke those credentials. This request will not trigger a blockchain transaction.";
+    const managementResources = [
+      "- urn:dnai:arena:challenge:synthetic-bio-assay-qc:version:1.0.0",
+      "- urn:dnai:scope:challenge:agents:manage",
+    ];
+    const managementMessage = buildApprovedWalletSigningMessage({
+      address,
+      nonce: "22222222222222222222222222222222",
+      issuedAt,
+      expiresAt,
+      statement: managementStatement,
+      resources: managementResources,
+    });
+    const management: SigningChallengeResponse = {
+      address,
+      scope: "challenge:agents:manage",
+      nonce: "22222222222222222222222222222222",
+      issued_at: issuedAt,
+      expires_at: expiresAt,
+      message: managementMessage,
+    };
+    const managementExpected = {
+      address,
+      scope: "challenge:agents:manage",
+      statement: managementStatement,
+      resources: managementResources,
+      maximumTtlSeconds: 600,
+    };
+    expect(() => validateSigningChallenge(management, managementExpected)).not.toThrow();
+    expect(managementMessage).not.toContain("urn:dnai:scope:challenge:submit");
+    expect(managementMessage).not.toContain("urn:dnai:scope:challenge:submissions:read");
     expect(() => validateSigningChallenge({
-      ...challenge,
-      scope: "challenge:submit",
-    }, expected)).toThrow(/invalid wallet challenge/);
+      ...management,
+      scope: ordinary.scope,
+    }, managementExpected)).toThrow(/invalid wallet challenge/);
     expect(() => validateSigningChallenge({
-      ...challenge,
-      message: `${message}\n- urn:dnai:scope:compute:console`,
-    }, expected)).toThrow(/exact approved signing request/);
+      ...ordinary,
+      message: `${ordinaryMessage}\n- urn:dnai:scope:challenge:agents:manage`,
+    }, ordinaryExpected)).toThrow(/exact approved signing request/);
   });
 
   it("uses direct EIP-1193 personal_sign with the exact UTF-8 approval message", async () => {

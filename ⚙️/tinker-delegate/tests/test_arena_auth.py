@@ -5,6 +5,8 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from tinker_delegate.arena_auth import (
+    ARENA_AGENT_MANAGE_SCOPE,
+    ARENA_AGENT_MANAGEMENT_SCOPES,
     ARENA_OWNER_READ_SCOPE,
     ARENA_SESSION_SCOPES,
     ARENA_SUBMIT_SCOPE,
@@ -12,6 +14,8 @@ from tinker_delegate.arena_auth import (
     ArenaAuthUnavailable,
     ArenaWalletAuthService,
     ArenaWalletChallengeStore,
+    _decode_token,
+    _encode_token,
     arena_token_signing_key,
 )
 from tinker_delegate.config import Settings
@@ -86,6 +90,7 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
         self.assertIn("urn:dnai:scope:challenge:submit", challenge.message)
         self.assertEqual(claims.scopes, ARENA_SESSION_SCOPES)
         self.assertIn(f"urn:dnai:scope:{ARENA_OWNER_READ_SCOPE}", challenge.message)
+        self.assertNotIn(ARENA_AGENT_MANAGE_SCOPE, challenge.message)
         verified = self.service.verify_token(
             token,
             required_scope=ARENA_SUBMIT_SCOPE,
@@ -102,6 +107,14 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
             now=150,
         )
         self.assertEqual(owner_verified.scopes, ARENA_SESSION_SCOPES)
+        with self.assertRaisesRegex(ArenaAuthError, "missing required"):
+            self.service.verify_token(
+                token,
+                required_scope=ARENA_AGENT_MANAGE_SCOPE,
+                challenge_id="synthetic-assay-qc",
+                challenge_version="1.0.0",
+                now=150,
+            )
 
         with self.assertRaisesRegex(ArenaAuthError, "different challenge version"):
             self.service.verify_token(
@@ -111,6 +124,42 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
                 challenge_version="2.0.0",
                 now=150,
             )
+
+    def test_agent_management_requires_a_separate_exact_wallet_consent(self):
+        challenge = self.service.issue_challenge(
+            address=self.submitter.address,
+            challenge_id="synthetic-assay-qc",
+            challenge_version="1.0.0",
+            purpose="agent_management",
+            now=100,
+        )
+        self.assertEqual(challenge.scope, ARENA_AGENT_MANAGE_SCOPE)
+        self.assertIn(f"urn:dnai:scope:{ARENA_AGENT_MANAGE_SCOPE}", challenge.message)
+        self.assertNotIn(f"urn:dnai:scope:{ARENA_SUBMIT_SCOPE}", challenge.message)
+        claims, token = self.service.exchange_signature(
+            nonce=challenge.nonce,
+            signature=_signature(challenge.message, SUBMITTER_KEY),
+            now=101,
+        )
+        self.assertEqual(claims.scopes, ARENA_AGENT_MANAGEMENT_SCOPES)
+        verified = self.service.verify_token(
+            token,
+            required_scope=ARENA_AGENT_MANAGE_SCOPE,
+            challenge_id="synthetic-assay-qc",
+            challenge_version="1.0.0",
+            now=120,
+        )
+        self.assertEqual(verified.scopes, ARENA_AGENT_MANAGEMENT_SCOPES)
+        for disallowed in (ARENA_SUBMIT_SCOPE, ARENA_OWNER_READ_SCOPE):
+            with self.subTest(disallowed=disallowed):
+                with self.assertRaisesRegex(ArenaAuthError, "missing required"):
+                    self.service.verify_token(
+                        token,
+                        required_scope=disallowed,
+                        challenge_id="synthetic-assay-qc",
+                        challenge_version="1.0.0",
+                        now=120,
+                    )
 
     def test_nonce_is_single_use_and_wrong_signer_does_not_consume_it(self):
         challenge = self.service.issue_challenge(
@@ -172,6 +221,36 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
                 challenge_version="1.0.0",
                 now=120,
             )
+
+    def test_signed_wallet_claims_require_exact_schema_types_and_scope_text(self):
+        _challenge, _claims, token = self._issue_and_exchange()
+        signing_key = arena_token_signing_key(self.settings)
+        original = _decode_token(token, signing_key)
+        mutations = (
+            {**original, "future_authority": True},
+            {**original, "iat": True},
+            {**original, "nbf": "101"},
+            {**original, "exp": 191.0},
+            {**original, "scope": "  " + original["scope"]},
+            {**original, "scope": original["scope"].replace(" ", "  ", 1)},
+            {
+                **original,
+                "scope": (
+                    f"{ARENA_SUBMIT_SCOPE} {ARENA_OWNER_READ_SCOPE} "
+                    f"{ARENA_AGENT_MANAGE_SCOPE}"
+                ),
+            },
+        )
+        for payload in mutations:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ArenaAuthError):
+                    self.service.verify_token(
+                        _encode_token(payload, signing_key),
+                        required_scope=ARENA_SUBMIT_SCOPE,
+                        challenge_id="synthetic-assay-qc",
+                        challenge_version="1.0.0",
+                        now=120,
+                    )
 
     def test_arena_and_deal_tokens_are_not_interchangeable(self):
         _challenge, _claims, arena_token = self._issue_and_exchange()

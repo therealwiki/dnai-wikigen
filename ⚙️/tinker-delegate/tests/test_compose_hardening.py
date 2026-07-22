@@ -403,6 +403,51 @@ class ComposeHardeningTest(unittest.TestCase):
                 compose = (ROOT / compose_name).read_text()
                 self.assertNotIn("  arena-worker:", compose)
 
+    def test_modeled_arena_agent_store_and_keys_are_bounded_to_local_composes(self):
+        for compose_name in (
+            "docker-compose.yaml",
+            "docker-compose.all.yaml",
+        ):
+            with self.subTest(compose_name=compose_name):
+                delegate = _service_block(
+                    (ROOT / compose_name).read_text(),
+                    "delegate",
+                )
+                self.assertIn(
+                    "TINKER_ARENA_AGENT_STORE_PATH: "
+                    "${TINKER_ARENA_AGENT_STORE_PATH:-/data/arena_agent_credentials.json}",
+                    delegate,
+                )
+                self.assertIn(
+                    "TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH: "
+                    "${TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH:-tinker/arena_agent_credentials}",
+                    delegate,
+                )
+                self.assertIn(
+                    "TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH: "
+                    "${TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH:-tinker/arena_agent_store_integrity}",
+                    delegate,
+                )
+
+        # Release rendering copies new dstack-overlay keys into the canonical
+        # Phala descriptor. Keep this modeled surface out of both overlays until
+        # a later release review explicitly adds it to the launch contract.
+        for compose_name in (
+            "docker-compose.dstack.yaml",
+            "docker-compose.all.dstack.yaml",
+            "docker-compose.all.phala.yaml",
+        ):
+            with self.subTest(compose_name=compose_name):
+                delegate = _service_block(
+                    (ROOT / compose_name).read_text(),
+                    "delegate",
+                )
+                self.assertNotIn("TINKER_ARENA_AGENT_STORE_PATH", delegate)
+                self.assertNotIn(
+                    "TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH",
+                    delegate,
+                )
+
     def test_local_delegate_defaults_match_the_vite_wallet_auth_contract(self):
         for compose_name in ("docker-compose.yaml", "docker-compose.all.yaml"):
             with self.subTest(compose_name=compose_name):

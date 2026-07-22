@@ -102,6 +102,17 @@ class Settings(BaseSettings):
     arena_wallet_auth_issuer: str = "dnai-wikigen:arena-wallet-auth"
     arena_wallet_auth_audience: str = "dnai-wikigen:arena"
 
+    # Challenge-version-scoped device credentials for autonomous Arena clients.
+    # Their JWT, delivery, and persistence keys are separate from the wallet
+    # session, Deal, Compute, and upstream proxy domains. Explicit secrets are
+    # local-development only; CVMs derive the independent dstack paths.
+    arena_agent_credential_signing_key: str = ""
+    arena_agent_credential_key_path: str = "tinker/arena_agent_credentials"
+    arena_agent_credential_max_ttl_seconds: int = 86400
+    arena_agent_store_path: str = ""
+    arena_agent_store_integrity_key: str = ""
+    arena_agent_store_integrity_key_path: str = "tinker/arena_agent_store_integrity"
+
     # Independent ChallengeRegistry admission for Arena ciphertext ingress.
     # These are public release pins plus an operator-owned HTTPS Base Sepolia
     # RPC.  The browser sends a proposed finalized-block snapshot, but the API

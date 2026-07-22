@@ -735,21 +735,28 @@ export interface ComputeWalletTokenResponse {
   expires_at: number;
 }
 
-export interface ArenaWalletTokenResponse {
+interface ArenaWalletTokenBase {
   access_token: string;
   token_type: "Bearer";
   address: string;
   challenge_id: string;
   challenge_version: string;
-  scopes: ["challenge:submit", "challenge:submissions:read"];
   issued_at: number;
   expires_at: number;
+}
+
+export interface ArenaWalletTokenResponse extends ArenaWalletTokenBase {
+  scopes: ["challenge:submit", "challenge:submissions:read"];
+}
+
+export interface ArenaAgentManagementTokenResponse extends ArenaWalletTokenBase {
+  scopes: ["challenge:agents:manage"];
 }
 
 interface ArenaWalletChallengeResponse extends SigningChallengeResponse {
   challenge_id: string;
   challenge_version: string;
-  scope: "challenge:submit challenge:submissions:read";
+  scope: "challenge:submit challenge:submissions:read" | "challenge:agents:manage";
   issued_at: number;
   expires_at: number;
 }
@@ -1018,7 +1025,11 @@ async function authorizeComputeConsole(): Promise<ComputeWalletTokenResponse> {
   return token;
 }
 
-async function authorizeArenaSession(challengeId: string, challengeVersion: string): Promise<ArenaWalletTokenResponse> {
+async function authorizeArenaProfile(
+  challengeId: string,
+  challengeVersion: string,
+  profile: "session" | "agent_management",
+): Promise<ArenaWalletTokenBase & { scopes: string[] }> {
   if (!deployment.delegateUrl) throw new Error("Fresh delegate endpoint is not configured");
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(challengeId) || !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(challengeVersion)) {
     throw new Error("Arena challenge version is malformed");
@@ -1030,25 +1041,40 @@ async function authorizeArenaSession(challengeId: string, challengeVersion: stri
     method: "POST",
     credentials: "omit",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address: expectedAddress, challenge_id: challengeId, challenge_version: challengeVersion }),
+    body: JSON.stringify({
+      address: expectedAddress,
+      challenge_id: challengeId,
+      challenge_version: challengeVersion,
+      purpose: profile,
+    }),
     signal: AbortSignal.timeout(10_000),
   }));
   if (challenge.challenge_id !== challengeId || challenge.challenge_version !== challengeVersion) {
     throw new Error("Arena challenge is bound to a different challenge version");
   }
+  const expected = profile === "session"
+    ? {
+      scope: "challenge:submit challenge:submissions:read",
+      statement: "Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.",
+      scopes: ["challenge:submit", "challenge:submissions:read"] as const,
+    }
+    : {
+      scope: "challenge:agents:manage",
+      statement: "Authorize management of delegated Arena agent credentials for the specified challenge version during this short session. Management may issue a submit + owner-read bearer valid for up to 24 hours, or list, rotate, and revoke those credentials. This request will not trigger a blockchain transaction.",
+      scopes: ["challenge:agents:manage"] as const,
+    };
   validateSigningChallenge(challenge, {
     address: expectedAddress,
-    scope: "challenge:submit challenge:submissions:read",
-    statement: "Authorize encrypted candidate submissions and read only your bounded submission status for the specified Arena challenge version during this short session. This request will not trigger a blockchain transaction.",
+    scope: expected.scope,
+    statement: expected.statement,
     resources: [
       `- urn:dnai:arena:challenge:${challengeId}:version:${challengeVersion}`,
-      "- urn:dnai:scope:challenge:submit",
-      "- urn:dnai:scope:challenge:submissions:read",
+      ...expected.scopes.map((scope) => `- urn:dnai:scope:${scope}`),
     ],
     maximumTtlSeconds: 600,
   });
   const signature = await signAuthorizationMessage(context, challenge.message);
-  const token = await responseJson<ArenaWalletTokenResponse>(await fetch(`${baseUrl}/auth/arena/token`, {
+  const token = await responseJson<ArenaWalletTokenBase & { scopes: string[] }>(await fetch(`${baseUrl}/auth/arena/token`, {
     method: "POST",
     credentials: "omit",
     headers: { "Content-Type": "application/json" },
@@ -1056,10 +1082,21 @@ async function authorizeArenaSession(challengeId: string, challengeVersion: stri
     signal: AbortSignal.timeout(10_000),
   }));
   assertWalletAuthorizationContext(context);
-  validateWalletToken(token, expectedAddress, ["challenge:submit", "challenge:submissions:read"]);
+  validateWalletToken(token, expectedAddress, expected.scopes);
   if (token.challenge_id !== challengeId || token.challenge_version !== challengeVersion) throw new Error("Delegate returned a token for a different Arena challenge version");
-  setSessionProof(`${challengeId} ${challengeVersion} · submit + my status`);
+  setSessionProof(`${challengeId} ${challengeVersion} · ${profile === "session" ? "submit + my status" : "agent credential management"}`);
   return token;
+}
+
+async function authorizeArenaSession(challengeId: string, challengeVersion: string): Promise<ArenaWalletTokenResponse> {
+  return authorizeArenaProfile(challengeId, challengeVersion, "session") as Promise<ArenaWalletTokenResponse>;
+}
+
+async function authorizeArenaAgentManagementSession(
+  challengeId: string,
+  challengeVersion: string,
+): Promise<ArenaAgentManagementTokenResponse> {
+  return authorizeArenaProfile(challengeId, challengeVersion, "agent_management") as Promise<ArenaAgentManagementTokenResponse>;
 }
 
 function disconnect(): void {
@@ -1115,6 +1152,7 @@ export const wallet = {
   authorizeDealUpload,
   authorizeComputeConsole,
   authorizeArenaSession,
+  authorizeArenaAgentManagementSession,
   authorizeArenaSubmission: authorizeArenaSession,
   signPersonalMessage,
   disconnect,

@@ -72,8 +72,12 @@ agent compute tokens; one token type is never accepted as another:
   both configured; unpinned `X-Forwarded-For` is never trusted.
 - Arena submission auth is a fourth, separate token domain. A wallet signs an
   exact challenge ID/version at `POST /auth/arena/challenge`, exchanges the
-  nonce at `POST /auth/arena/token`, and receives only the exact pair
-  `challenge:submit` plus `challenge:submissions:read`.
+  nonce at `POST /auth/arena/token`, and receives one of two mutually exclusive
+  short-session profiles: ordinary `challenge:submit` +
+  `challenge:submissions:read`, or an on-demand `challenge:agents:manage`
+  session used only to issue, list, rotate, or revoke credentials for that
+  same challenge version. Management consent is never ambient on an ordinary
+  submission/read session.
   Arena tokens have a distinct issuer, audience, JWT key ID, and dstack-derived
   key path and cannot authorize seller upload, operator routes, or Tinker proxy
   calls. The durable Arena accepts only a SHA-256 candidate commitment, a
@@ -93,6 +97,20 @@ agent compute tokens; one token type is never accepted as another:
   General Python and hostile execution remain disabled. See
   `docs/ARENA-RUNTIME.md` for the exact language,
   commitment, resource, worker, and residual deployment boundaries.
+- Arena Agent Access is a separate, modeled credential domain. An authorized
+  wallet can register one browser-generated X25519 public key and receive the
+  bearer only inside a one-time encrypted capsule. The agent bearer has exactly
+  `challenge:submit` plus `challenge:submissions:read`, a daily submission-
+  attempt cap, and a lifetime of at most 24 hours; it cannot manage credentials
+  or authorize Deal, Compute, proxy, worker, reward, or settlement operations.
+  The browser private key is non-exportable, memory-only, and the application
+  does not retain a recovery copy: copy the decrypted bearer directly into the
+  agent process environment, clear the reveal, and use a fresh explicit
+  management signature to revoke or replace a device whose tab/key was lost.
+  Management-session refresh retains the same-wallet device key in tab memory;
+  closing/reloading the Arena route loses it. The durable JSON store is
+  HMAC-authenticated, but restoration of an older valid file is not detected;
+  this is not hardware anti-rollback, TDX evidence, or execution authority.
 - Compute Console wallet and device credentials form two additional isolated
   token domains. Wallet-authenticated members manage projects, X25519 device
   keys, and scoped short-lived credentials; plaintext credentials and the
@@ -590,10 +608,14 @@ GET  /attestation?context=ingress|artifact|billing|arena — context-bound quote
 POST /auth/wallet/challenge — issue a one-time deal-bound personal-sign message
 POST /auth/wallet/token   — exchange seller signature for artifact-upload token
 POST /auth/arena/challenge — issue an exact challenge-version personal-sign message
-POST /auth/arena/token    — exchange signature for exact submit + owner-read token
+POST /auth/arena/token    — exchange signature for one exact submit/read or management-only token
 GET  /arena/candidate-encryption-contract — current recipient + exact browser crypto/AAD contract
 GET  /arena/challenges    — bounded immutable challenge catalog
 GET  /arena/challenges/{id}/versions/{version} — exact public manifest
+POST /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-only issue; encrypted token capsule
+GET  /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-only bounded list
+POST /arena/challenges/{id}/versions/{version}/agent-credentials/{credential_id}/rotate — wallet-only replacement capsule
+POST /arena/challenges/{id}/versions/{version}/agent-credentials/{credential_id}/revoke — wallet-only revocation
 POST /arena/challenges/{id}/versions/{version}/submissions — authenticated commitment + browser ciphertext
 GET  /arena/challenges/{id}/versions/{version}/queue — bounded modeled queue projection
 GET  /arena/challenges/{id}/versions/{version}/leaderboard — accepted Ladder releases only
@@ -790,8 +812,14 @@ All settings use the `TINKER_` env prefix:
 | `TINKER_ARENA_STORE_PATH` | *(empty)* | Durable bounded Arena JSON path; empty leaves catalog readable but disables submission/queue/leaderboard writes and reads |
 | `TINKER_ARENA_WALLET_AUTH_KEY_PATH` | `tinker/arena_wallet_auth` | Distinct dstack key path for challenge-version-bound Arena tokens |
 | `TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS` | `300` | Arena personal-sign nonce lifetime, capped at 600 seconds |
-| `TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS` | `300` | Exact Arena submit + owner-read token lifetime, capped at 900 seconds |
+| `TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS` | `300` | Either exact Arena submit/read or management-only wallet-token lifetime, capped at 900 seconds |
 | `TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES` | `1024` | Process-local pending Arena nonce capacity; new challenges fail closed at capacity |
+| `TINKER_ARENA_AGENT_CREDENTIAL_SIGNING_KEY` | *(empty)* | Local-development-only signing input; keep empty in dstack so its distinct key path is used |
+| `TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH` | `tinker/arena_agent_credentials` | Distinct dstack derivation path for modeled Arena agent bearer signing |
+| `TINKER_ARENA_AGENT_CREDENTIAL_MAX_TTL_SECONDS` | `86400` | Hard maximum credential lifetime; requests must be between 60 seconds and 24 hours |
+| `TINKER_ARENA_AGENT_STORE_PATH` | *(empty)* | HMAC-authenticated credential/device state; local composes set `/data/arena_agent_credentials.json`, while empty disables the surface |
+| `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY` | *(empty)* | Local-development-only HMAC input; never a rollback-resistant counter or anchor |
+| `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH` | `tinker/arena_agent_store_integrity` | Separate dstack derivation path for store integrity; never reuse the credential-signing path |
 | `TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS` | `600` | Shared sliding window; must cover the longest Deal/Arena/Compute challenge TTL |
 | `TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT` | `768` | Accepted challenges across all three surfaces per window; must remain below every nonce-store capacity |
 | `TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT` | `64` | Canonical wallet-address challenge admissions per shared window |
@@ -829,7 +857,8 @@ tinker_delegate/
 ├── session.py         # IsolatedTinkerSession: sandboxed SDK wrapper + cost meter
 ├── control_plane.py   # Deal lifecycle orchestration + output bounding
 ├── evaluator.py       # Stub + SFT evaluator agents
-├── arena_auth.py      # Challenge-version wallet auth; exact submit + owner-read tokens
+├── arena_auth.py      # Challenge-version wallet auth plus isolated agent-credential tokens
+├── arena_agent_store.py # Modeled device/credential state; HMAC integrity without anti-rollback
 ├── arena_ingress.py   # Stable attested recipient + strict browser ciphertext persistence
 ├── arena_store.py     # Durable bounded modeled queue + Ladder leaderboard projection
 ├── api.py             # FastAPI server: billing, attestation, deal lifecycle

@@ -63,6 +63,8 @@ import {
 import { wallet, type ArenaWalletTokenResponse } from "../lib/wallet";
 import { nextRovingTab } from "../lib/tabs";
 import { useModalFocus, type RouteKey } from "../components/AppShell";
+import { ArenaAgentAccess } from "../components/ArenaAgentAccess";
+import type { ArenaAgentDeviceKey } from "../lib/arenaAgent";
 import { deployment } from "../config";
 import {
   createArenaRankingVerificationContext,
@@ -290,7 +292,16 @@ export function Arena(props: {
   const [registryPreflightState, setRegistryPreflightState] = createSignal<RegistryPreflightState>("not_applicable");
   const [registryBrowserPreflight, setRegistryBrowserPreflight] = createSignal<ArenaChallengeRegistryBrowserPreflight>();
   const [registryPreflightError, setRegistryPreflightError] = createSignal("");
+  const arenaAgentDeviceKeys = new Map<string, ArenaAgentDeviceKey>();
   let submissionDialogRef: HTMLElement | undefined;
+
+  createEffect(() => {
+    const custodyIdentity = `${wallet.account()?.toLowerCase() ?? ""}:${wallet.authorizationVersion()}:${challengeId()}@${challengeVersion() ?? ""}`;
+    void custodyIdentity;
+    arenaAgentDeviceKeys.clear();
+  });
+
+  onCleanup(() => arenaAgentDeviceKeys.clear());
 
   const challenges = createMemo(() => {
     const liveCatalog = catalog();
@@ -543,6 +554,18 @@ export function Arena(props: {
       setOwnerError("");
       setOwnerState("signed_out");
     }
+  });
+
+  createEffect(() => {
+    const session = arenaSession();
+    if (!session) return;
+    const delay = Math.max(0, session.expires_at * 1_000 - Date.now() - 5_000);
+    const timer = window.setTimeout(() => {
+      if (arenaSession()?.access_token !== session.access_token) return;
+      setArenaSession(undefined);
+      setArenaSessionWalletVersion(undefined);
+    }, delay);
+    onCleanup(() => window.clearTimeout(timer));
   });
 
   createEffect(() => {
@@ -1039,7 +1062,7 @@ export function Arena(props: {
               <Show when={challenge().apiBacked && wallet.account() && !arenaSession()}>
                 <div class="owner-auth-card">
                   {ownerState() === "authorizing" ? <LoaderCircle class="spin" size={25} /> : <Fingerprint size={25} />}
-                  <div><h4>Authorize this challenge version</h4><p>Sign once to create a short-lived token carrying only <code>challenge:submit</code> and <code>challenge:submissions:read</code> for {challenge().id} {challenge().version}.</p></div>
+                  <div><h4>Authorize this challenge version</h4><p>Sign once for a short, least-privilege session with only <code>challenge:submit</code> and <code>challenge:submissions:read</code>. It can submit encrypted candidates and read your bounded status for {challenge().id} {challenge().version}; agent management requires a separate explicit signature below.</p></div>
                   <button class="primary-button" type="button" onClick={() => void authorizeOwnerView()} disabled={ownerState() === "authorizing"}>
                     {ownerState() === "authorizing" ? <LoaderCircle class="spin" size={15} /> : <ShieldCheck size={15} />}
                     {ownerState() === "authorizing" ? "Waiting for signature…" : "Sign and load mine"}
@@ -1076,6 +1099,18 @@ export function Arena(props: {
                     <button class="primary-button" type="button" onClick={() => void loadMoreOwnerSubmissions()} disabled={ownerState() === "loading"}>{ownerState() === "loading" ? <LoaderCircle class="spin" size={14} /> : <ArrowDown size={14} />} Load next 25</button>
                   </Show>
                 </div>
+              </Show>
+
+              <Show when={challenge().apiBacked && wallet.account()}>
+                <ArenaAgentAccess
+                  challengeId={challenge().id}
+                  challengeVersion={challenge().version ?? ""}
+                  walletAddress={wallet.account()}
+                  walletAuthorizationVersion={wallet.authorizationVersion()}
+                  authorizeManagement={() => wallet.authorizeArenaAgentManagementSession(challenge().id, challenge().version ?? "")}
+                  deviceKeys={arenaAgentDeviceKeys}
+                  releaseBoundWorker={safeIrWorkerPresenceMatchesPreflight()}
+                />
               </Show>
             </section>
           </Show>

@@ -8,6 +8,8 @@ Endpoints:
   POST /auth/wallet/token         — exchange one-time signature for scoped token
   POST /auth/arena/challenge      — issue challenge-version-bound personal-sign challenge
   POST /auth/arena/token          — exchange signature for exact Arena session token
+  POST /arena/challenges/{id}/versions/{version}/agent-credentials — issue encrypted agent token
+  GET  /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-owned credential list
   GET  /arena/candidate-encryption-contract — current recipient + browser crypto contract
   GET  /arena/challenges          — immutable bounded challenge catalog
   GET  /arena/challenges/{id}/versions/{version} — exact public manifest
@@ -64,11 +66,13 @@ Endpoints:
 """
 import hashlib
 import hmac
+import json
 import math
 import os
 import re
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
@@ -152,6 +156,8 @@ from tinker_delegate.wallet_auth import (
     normalize_wallet_address,
 )
 from tinker_delegate.arena_auth import (
+    ARENA_AGENT_MANAGE_SCOPE,
+    ARENA_AGENT_SCOPES,
     ARENA_OWNER_READ_SCOPE,
     ARENA_SUBMIT_SCOPE,
     ArenaAuthError,
@@ -159,6 +165,11 @@ from tinker_delegate.arena_auth import (
     ArenaChallengeCapacityError,
     ArenaWalletAuthService,
     ArenaWalletChallengeStore,
+    arena_agent_store_integrity_key,
+    classify_arena_token,
+    encrypt_arena_agent_credential_token,
+    issue_arena_agent_credential_token,
+    verify_arena_agent_credential_token,
 )
 from tinker_delegate.compute_auth import (
     COMPUTE_CONSOLE_SCOPE,
@@ -226,6 +237,8 @@ _wallet_challenge_limiter = WalletChallengeAdmissionLimiter.from_settings(settin
 _wallet_challenge_peer_policy = WalletChallengePeerPolicy.from_settings(settings)
 _arena_store_instance = None
 _arena_store_instance_path = ""
+_arena_agent_store_instance = None
+_arena_agent_store_instance_identity: tuple[str, str] | None = None
 _arena_ingress_service_instance = None
 _arena_ingress_service_identity: tuple[str, ...] | None = None
 _compute_store_instance = None
@@ -784,6 +797,46 @@ def _get_arena_store():
     return _arena_store_instance
 
 
+def _get_arena_agent_store():
+    """Return the independent, integrity-protected Arena credential store."""
+
+    global _arena_agent_store_instance, _arena_agent_store_instance_identity
+
+    from tinker_delegate.arena_agent_store import (
+        ArenaAgentStore,
+        ArenaAgentStoreCorruptError,
+    )
+
+    path = str(settings.arena_agent_store_path or "").strip()
+    if not path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Arena agent credential store is not configured",
+        )
+    try:
+        integrity_key = arena_agent_store_integrity_key(settings)
+    except ArenaAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Arena agent credential integrity key is unavailable",
+        ) from exc
+    identity = (path, hashlib.sha256(integrity_key).hexdigest())
+    if (
+        _arena_agent_store_instance is None
+        or _arena_agent_store_instance_identity != identity
+    ):
+        try:
+            instance = ArenaAgentStore(path, integrity_key=integrity_key)
+        except (ArenaAgentStoreCorruptError, OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Arena agent credential store is unavailable",
+            ) from exc
+        _arena_agent_store_instance = instance
+        _arena_agent_store_instance_identity = identity
+    return _arena_agent_store_instance
+
+
 def _get_arena_ingress():
     """Return the stable-key, ciphertext-only Arena ingress service."""
 
@@ -919,6 +972,155 @@ def _require_arena_wallet_auth(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+@dataclass(frozen=True)
+class ArenaPrincipal:
+    kind: Literal["wallet", "agent"]
+    address: str
+    credential_id: str | None = None
+
+
+def _require_arena_principal(
+    authorization: str,
+    *,
+    challenge_id: str,
+    challenge_version: str,
+    required_scope: str,
+    submission_idempotency_key: str | None = None,
+    submission_request_commitment: str | None = None,
+) -> ArenaPrincipal:
+    """Accept exactly an Arena wallet session or an Arena-agent credential.
+
+    Header routing is not authority: the selected verifier still authenticates
+    its purpose-specific signature, claims, durable generation, revocation
+    status, challenge/version, and scope. Compute, Deal, proxy, and runtime
+    tokens have unsupported headers and never reach either verifier.
+    """
+
+    import time as _time
+
+    token = _bearer_token(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Arena bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        kind = classify_arena_token(token)
+        if kind == "wallet":
+            claims = _arena_wallet_auth_service().verify_token(
+                token,
+                required_scope=required_scope,
+                challenge_id=challenge_id,
+                challenge_version=challenge_version,
+            )
+            return ArenaPrincipal(kind="wallet", address=claims.address)
+        claims = verify_arena_agent_credential_token(
+            settings,
+            token,
+            required_scope=required_scope,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+        )
+        _get_arena_agent_store().authorize_credential(
+            claims,
+            required_scope=required_scope,
+            used_at=int(_time.time()),
+            submission_idempotency_key=submission_idempotency_key,
+            submission_request_commitment=submission_request_commitment,
+        )
+        return ArenaPrincipal(
+            kind="agent",
+            address=claims.owner_address,
+            credential_id=claims.credential_id,
+        )
+    except ArenaAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Arena authentication is unavailable",
+        ) from exc
+    except ArenaAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from tinker_delegate.arena_agent_store import (
+            ArenaAgentAuthorizationError,
+            ArenaAgentCapExceeded,
+            ArenaAgentDailyCapExceeded,
+            ArenaAgentStoreCapacityError,
+            ArenaAgentStoreCorruptError,
+            ArenaAgentStoreError,
+            ArenaAgentStoreUnavailableError,
+        )
+
+        if isinstance(exc, ArenaAgentDailyCapExceeded):
+            now = int(_time.time())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(exc),
+                headers={"Retry-After": str(max(1, 86_400 - now % 86_400))},
+            ) from exc
+        if isinstance(exc, ArenaAgentAuthorizationError):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(exc),
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+        if isinstance(
+            exc,
+            (
+                ArenaAgentStoreCapacityError,
+                ArenaAgentStoreUnavailableError,
+                ArenaAgentStoreCorruptError,
+                ArenaAgentCapExceeded,
+                OSError,
+            ),
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Arena agent credential store is unavailable",
+            ) from exc
+        if isinstance(exc, ArenaAgentStoreError):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
+
+
+def _raise_arena_agent_store_error(exc: Exception) -> None:
+    from tinker_delegate.arena_agent_store import (
+        ArenaAgentAuthorizationError,
+        ArenaAgentCapExceeded,
+        ArenaAgentStoreCapacityError,
+        ArenaAgentStoreCorruptError,
+        ArenaAgentStoreError,
+        ArenaAgentStoreUnavailableError,
+    )
+
+    if isinstance(exc, ArenaAgentAuthorizationError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if isinstance(
+        exc,
+        (
+            ArenaAgentStoreCapacityError,
+            ArenaAgentStoreUnavailableError,
+            ArenaAgentStoreCorruptError,
+            ArenaAgentCapExceeded,
+            OSError,
+        ),
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Arena agent credential store is unavailable",
+        ) from exc
+    if isinstance(exc, ArenaAgentStoreError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
 
 
 def _require_compute_wallet_auth(authorization: str):
@@ -1260,6 +1462,7 @@ class ArenaWalletChallengeRequest(BaseModel):
     address: str = Field(min_length=42, max_length=42)
     challenge_id: str = Field(min_length=1, max_length=128)
     challenge_version: str = Field(min_length=1, max_length=64)
+    purpose: Literal["session", "agent_management"] = "session"
 
 
 class ArenaWalletChallengeResponse(BaseModel):
@@ -1293,6 +1496,31 @@ class ArenaWalletTokenResponse(BaseModel):
     scopes: list[str]
     issued_at: int
     expires_at: int
+
+
+class ArenaAgentCredentialIssueRequest(BaseModel):
+    """One new device plus one exact challenge-scoped credential."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_label: str = Field(min_length=1, max_length=64)
+    device_kind: Literal["developer_device", "ci_service", "autonomous_agent"]
+    public_key: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+    name: str = Field(min_length=1, max_length=64)
+    scopes: list[str] = Field(min_length=2, max_length=2)
+    expires_in_seconds: int = Field(ge=60, le=86_400, strict=True)
+    daily_submission_cap: int = Field(ge=1, le=32, strict=True)
+
+
+class ArenaAgentCredentialRotateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expires_in_seconds: int = Field(ge=60, le=86_400, strict=True)
+    expected_generation: int = Field(ge=1, le=1_000_000, strict=True)
 
 
 class ComputeWalletChallengeRequest(BaseModel):
@@ -2232,6 +2460,7 @@ def arena_wallet_auth_challenge(
             address=payload.address,
             challenge_id=payload.challenge_id,
             challenge_version=payload.challenge_version,
+            purpose=payload.purpose,
         )
         return ArenaWalletChallengeResponse.model_validate(challenge.to_public_dict())
     except WalletChallengeRateLimited as exc:
@@ -2248,7 +2477,10 @@ def arena_wallet_auth_challenge(
 
 
 @app.post("/auth/arena/token", response_model=ArenaWalletTokenResponse)
-def arena_wallet_auth_token(payload: ArenaWalletTokenRequest) -> ArenaWalletTokenResponse:
+def arena_wallet_auth_token(
+    payload: ArenaWalletTokenRequest,
+    response: Response,
+) -> ArenaWalletTokenResponse:
     """Exchange one signature for the exact short-lived Arena session scopes."""
 
     try:
@@ -2264,6 +2496,7 @@ def arena_wallet_auth_token(payload: ArenaWalletTokenRequest) -> ArenaWalletToke
             str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     return ArenaWalletTokenResponse(
         access_token=token,
         address=claims.address,
@@ -2273,6 +2506,265 @@ def arena_wallet_auth_token(payload: ArenaWalletTokenRequest) -> ArenaWalletToke
         issued_at=claims.issued_at,
         expires_at=claims.expires_at,
     )
+
+
+@app.post(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}/agent-credentials"
+)
+def arena_issue_agent_credential(
+    challenge_id: str,
+    challenge_version: str,
+    payload: ArenaAgentCredentialIssueRequest,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Register one X25519 device and return only an encrypted agent token."""
+
+    import secrets as _secrets
+    import time as _time
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    wallet_claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_AGENT_MANAGE_SCOPE,
+    )
+    store = _get_arena_agent_store()
+    try:
+        now = int(_time.time())
+        expires_at = now + payload.expires_in_seconds
+        device_id = f"adev_{_secrets.token_hex(12)}"
+        credential_id = f"acred_{_secrets.token_hex(12)}"
+        credential_claims, token = issue_arena_agent_credential_token(
+            settings,
+            credential_id=credential_id,
+            device_id=device_id,
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            generation=1,
+            scopes=payload.scopes,
+            daily_submission_cap=payload.daily_submission_cap,
+            expires_at=expires_at,
+            now=now,
+        )
+        capsule = encrypt_arena_agent_credential_token(
+            token,
+            recipient_public_key_hex=payload.public_key.lower(),
+            claims=credential_claims,
+        )
+        jwt_id_hash = hashlib.sha256(
+            b"arena_agent_credential_jti:" + credential_claims.jwt_id.encode()
+        ).hexdigest()
+        device, credential = store.issue_device_credential(
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            device_id=device_id,
+            credential_id=credential_id,
+            label=payload.device_label,
+            kind=payload.device_kind,
+            public_key_hex=payload.public_key,
+            name=payload.name,
+            scopes=credential_claims.scopes,
+            daily_submission_cap=payload.daily_submission_cap,
+            generation=1,
+            jwt_id_hash=jwt_id_hash,
+            issued_at=now,
+            expires_at=expires_at,
+        )
+    except ArenaAuthUnavailable as exc:
+        raise HTTPException(
+            503, "Arena agent credential issuance is unavailable"
+        ) from exc
+    except ArenaAuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        _raise_arena_agent_store_error(exc)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "surface": "arena_agent_credential_issuance",
+        "schema_version": 1,
+        "device": device,
+        "credential": credential,
+        "capsule": capsule,
+        "plaintext_token_returned": False,
+        "cross_domain_authority": False,
+        "product_status": "modeled",
+        "execution_authority": False,
+        "tdx_attestation": False,
+    }
+
+
+@app.get(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}/agent-credentials"
+)
+def arena_list_agent_credentials(
+    challenge_id: str,
+    challenge_version: str,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    import time as _time
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    wallet_claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_AGENT_MANAGE_SCOPE,
+    )
+    try:
+        credentials = _get_arena_agent_store().list_credentials(
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            now=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_arena_agent_store_error(exc)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "surface": "arena_agent_credentials",
+        "schema_version": 1,
+        "challenge_id": challenge_id,
+        "challenge_version": challenge_version,
+        "credentials": credentials,
+        "product_status": "modeled",
+        "execution_authority": False,
+        "tdx_attestation": False,
+        "plaintext_token_egress": False,
+        "cross_domain_authority": False,
+    }
+
+
+@app.post(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}/agent-credentials/{credential_id}/rotate"
+)
+def arena_rotate_agent_credential(
+    challenge_id: str,
+    challenge_version: str,
+    credential_id: str,
+    payload: ArenaAgentCredentialRotateRequest,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    import time as _time
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    wallet_claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_AGENT_MANAGE_SCOPE,
+    )
+    store = _get_arena_agent_store()
+    try:
+        now = int(_time.time())
+        current, device = store.credential_for_rotation(
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            credential_id=credential_id,
+            expected_generation=payload.expected_generation,
+            now=now,
+        )
+        expires_at = now + payload.expires_in_seconds
+        credential_claims, token = issue_arena_agent_credential_token(
+            settings,
+            credential_id=credential_id,
+            device_id=current["device_id"],
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            generation=current["generation"] + 1,
+            scopes=current["scopes"],
+            daily_submission_cap=current["daily_submission_cap"],
+            expires_at=expires_at,
+            now=now,
+        )
+        capsule = encrypt_arena_agent_credential_token(
+            token,
+            recipient_public_key_hex=device["public_key_hex"],
+            claims=credential_claims,
+        )
+        jwt_id_hash = hashlib.sha256(
+            b"arena_agent_credential_jti:" + credential_claims.jwt_id.encode()
+        ).hexdigest()
+        credential = store.rotate_credential(
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            credential_id=credential_id,
+            expected_generation=current["generation"],
+            new_jwt_id_hash=jwt_id_hash,
+            issued_at=now,
+            expires_at=expires_at,
+        )
+    except ArenaAuthUnavailable as exc:
+        raise HTTPException(
+            503, "Arena agent credential rotation is unavailable"
+        ) from exc
+    except ArenaAuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        _raise_arena_agent_store_error(exc)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "surface": "arena_agent_credential_rotation",
+        "schema_version": 1,
+        "credential": credential,
+        "capsule": capsule,
+        "prior_generation_revoked": True,
+        "plaintext_token_returned": False,
+        "cross_domain_authority": False,
+        "product_status": "modeled",
+        "execution_authority": False,
+        "tdx_attestation": False,
+    }
+
+
+@app.post(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}/agent-credentials/{credential_id}/revoke"
+)
+def arena_revoke_agent_credential(
+    challenge_id: str,
+    challenge_version: str,
+    credential_id: str,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    import time as _time
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    wallet_claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_AGENT_MANAGE_SCOPE,
+    )
+    try:
+        credential = _get_arena_agent_store().revoke_credential(
+            owner_address=wallet_claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            credential_id=credential_id,
+            revoked_at=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_arena_agent_store_error(exc)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "surface": "arena_agent_credential",
+        "schema_version": 1,
+        "credential": credential,
+        "product_status": "modeled",
+        "execution_authority": False,
+        "tdx_attestation": False,
+        "plaintext_token_returned": False,
+        "cross_domain_authority": False,
+    }
 
 
 @app.post(
@@ -3489,10 +3981,10 @@ def arena_create_submission(
 ):
     """Persist browser ciphertext, then queue its server-generated sealed ref.
 
-    The wallet token is bound to this exact challenge version. The API derives
-    the identity from that token, uses server time, never accepts a source/code
-    or caller-supplied object-reference field, and returns only public
-    projections without the sealed reference.
+    The Arena wallet or agent token is bound to this exact challenge version.
+    The API derives identity from that token, uses server time, never accepts a
+    source/code or caller-supplied object-reference field, and returns only
+    public projections without the sealed reference.
     """
 
     import time as _time
@@ -3528,10 +4020,29 @@ def arena_create_submission(
         raise HTTPException(
             status_code=404, detail="Unknown Arena challenge version"
         ) from exc
-    claims = _require_arena_wallet_auth(
+    canonical_request = json.dumps(
+        {
+            "challenge_id": challenge_id,
+            "challenge_version": challenge_version,
+            "payload": payload.model_dump(mode="json"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(canonical_request) > 128 * 1024:
+        raise HTTPException(status_code=400, detail="Arena submission request is oversized")
+    request_commitment = hashlib.sha256(
+        b"arena_agent_submission_request:\x00" + canonical_request
+    ).hexdigest()
+    claims = _require_arena_principal(
         authorization,
         challenge_id=challenge_id,
         challenge_version=challenge_version,
+        required_scope=ARENA_SUBMIT_SCOPE,
+        submission_idempotency_key=idempotency_key,
+        submission_request_commitment=request_commitment,
     )
     # There is not yet a project-membership registry, so the first slice uses a
     # deterministic personal project ID rather than trusting a caller-supplied
@@ -3704,7 +4215,7 @@ def arena_owner_submissions(
     from tinker_delegate.arena_store import ArenaStoreError
 
     _require_arena_challenge(challenge_id, challenge_version)
-    claims = _require_arena_wallet_auth(
+    claims = _require_arena_principal(
         authorization,
         challenge_id=challenge_id,
         challenge_version=challenge_version,

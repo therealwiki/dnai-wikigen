@@ -26,6 +26,10 @@ from tinker_delegate.arena_ingress import (
     arena_candidate_aad,
     build_arena_candidate_binding,
 )
+from tinker_delegate.arena_auth import (
+    ARENA_AGENT_CREDENTIAL_HKDF_INFO,
+    ARENA_AGENT_SCOPES,
+)
 from tinker_delegate.arena_store import (
     BIO_CANDIDATE_KIND,
     BIO_CHALLENGE_ID,
@@ -55,9 +59,12 @@ from tinker_delegate.arena_registry_admission import (
     ArenaRegistryIngressAuthorization,
 )
 from tinker_delegate.config import Settings
+from tinker_delegate.crypto import _derive_aes_key
 
 
 LOCAL_SIGNING_KEY = "local-test-arena-api-wallet-key-" + ("9" * 48)
+AGENT_SIGNING_KEY = "local-test-arena-agent-key-" + ("7" * 48)
+AGENT_STORE_KEY = "local-test-arena-agent-store-key-" + ("6" * 48)
 SUBMITTER_KEY = "0x" + ("55" * 32)
 RUNTIME_TOKEN = "arena-runtime-operator-token-" + ("8" * 40)
 
@@ -75,11 +82,14 @@ class ArenaApiTest(unittest.TestCase):
         self.store_path = Path(self.tempdir.name) / "arena.json"
         self.ingress_path = Path(self.tempdir.name) / "arena-candidates"
         self.ingress_key_path = Path(self.tempdir.name) / "arena-ingress.key"
+        self.agent_store_path = Path(self.tempdir.name).resolve() / "arena-agent.json"
         self.original_settings = api.settings
         self.original_store = api._arena_store_instance
         self.original_store_path = api._arena_store_instance_path
         self.original_ingress = api._arena_ingress_service_instance
         self.original_ingress_identity = api._arena_ingress_service_identity
+        self.original_agent_store = api._arena_agent_store_instance
+        self.original_agent_identity = api._arena_agent_store_instance_identity
         self.registry_gate_patcher = patch(
             "tinker_delegate.arena_registry_admission.authorize_arena_registry_submission",
             side_effect=self._authorize_registry_snapshot,
@@ -93,6 +103,9 @@ class ArenaApiTest(unittest.TestCase):
             arena_store_path=str(self.store_path),
             arena_candidate_ingress_store_path=str(self.ingress_path),
             arena_candidate_ingress_local_key_file=str(self.ingress_key_path),
+            arena_agent_credential_signing_key=AGENT_SIGNING_KEY,
+            arena_agent_store_integrity_key=AGENT_STORE_KEY,
+            arena_agent_store_path=str(self.agent_store_path),
             runtime_auth_required=True,
             runtime_auth_token=RUNTIME_TOKEN,
         )
@@ -100,6 +113,8 @@ class ArenaApiTest(unittest.TestCase):
         api._arena_store_instance_path = ""
         api._arena_ingress_service_instance = None
         api._arena_ingress_service_identity = None
+        api._arena_agent_store_instance = None
+        api._arena_agent_store_instance_identity = None
         api._arena_wallet_challenges.clear()
         api._wallet_challenges.clear()
         self.client = TestClient(api.app)
@@ -113,6 +128,8 @@ class ArenaApiTest(unittest.TestCase):
         api._arena_store_instance_path = self.original_store_path
         api._arena_ingress_service_instance = self.original_ingress
         api._arena_ingress_service_identity = self.original_ingress_identity
+        api._arena_agent_store_instance = self.original_agent_store
+        api._arena_agent_store_instance_identity = self.original_agent_identity
         api.settings = self.original_settings
         self.tempdir.cleanup()
 
@@ -185,6 +202,7 @@ class ArenaApiTest(unittest.TestCase):
                 "address": self.submitter.address,
                 "challenge_id": challenge_id,
                 "challenge_version": challenge_version,
+                "purpose": "session",
             },
         )
         self.assertEqual(challenge.status_code, 200, challenge.text)
@@ -198,10 +216,39 @@ class ArenaApiTest(unittest.TestCase):
             },
         )
         self.assertEqual(exchanged.status_code, 200, exchanged.text)
+        self.assertEqual(exchanged.headers["cache-control"], "no-store, max-age=0")
         self.assertEqual(
             exchanged.json()["scopes"],
-            ["challenge:submit", "challenge:submissions:read"],
+            [
+                "challenge:submit",
+                "challenge:submissions:read",
+            ],
         )
+        return exchanged.json()["access_token"]
+
+    def _arena_management_token(self) -> str:
+        challenge = self.client.post(
+            "/auth/arena/challenge",
+            json={
+                "address": self.submitter.address,
+                "challenge_id": BIO_CHALLENGE_ID,
+                "challenge_version": BIO_CHALLENGE_VERSION,
+                "purpose": "agent_management",
+            },
+        )
+        self.assertEqual(challenge.status_code, 200, challenge.text)
+        body = challenge.json()
+        self.assertEqual(body["scope"], "challenge:agents:manage")
+        exchanged = self.client.post(
+            "/auth/arena/token",
+            json={
+                "nonce": body["nonce"],
+                "signature": _signature(body["message"], SUBMITTER_KEY),
+            },
+        )
+        self.assertEqual(exchanged.status_code, 200, exchanged.text)
+        self.assertEqual(exchanged.headers["cache-control"], "no-store, max-age=0")
+        self.assertEqual(exchanged.json()["scopes"], ["challenge:agents:manage"])
         return exchanged.json()["access_token"]
 
     def _deal_token(self) -> str:
@@ -220,6 +267,60 @@ class ArenaApiTest(unittest.TestCase):
         )
         self.assertEqual(exchanged.status_code, 200, exchanged.text)
         return exchanged.json()["access_token"]
+
+    @staticmethod
+    def _decrypt_agent_delivery(
+        body: dict, private_key: X25519PrivateKey
+    ) -> str:
+        capsule = body["capsule"]
+        encrypted = capsule["encrypted_token"]
+        shared = private_key.exchange(
+            X25519PublicKey.from_public_bytes(
+                bytes.fromhex(encrypted["ephemeral_public_key"])
+            )
+        )
+        return AESGCM(
+            _derive_aes_key(shared, info=ARENA_AGENT_CREDENTIAL_HKDF_INFO)
+        ).decrypt(
+            bytes.fromhex(encrypted["nonce"]),
+            bytes.fromhex(encrypted["ciphertext"]),
+            bytes.fromhex(capsule["associated_data"]),
+        ).decode()
+
+    def _arena_agent_token(
+        self, *, daily_cap: int = 1
+    ) -> tuple[str, dict, X25519PrivateKey, str]:
+        wallet_token = self._arena_management_token()
+        private_key = X25519PrivateKey.generate()
+        issued = self.client.post(
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/{BIO_CHALLENGE_VERSION}/agent-credentials",
+            headers={"Authorization": f"Bearer {wallet_token}"},
+            json={
+                "device_label": "arena-api-agent",
+                "device_kind": "autonomous_agent",
+                "public_key": private_key.public_key().public_bytes_raw().hex(),
+                "name": "arena-api-agent",
+                "scopes": list(ARENA_AGENT_SCOPES),
+                "expires_in_seconds": 3_600,
+                "daily_submission_cap": daily_cap,
+            },
+        )
+        self.assertEqual(issued.status_code, 200, issued.text)
+        body = issued.json()
+        token = self._decrypt_agent_delivery(body, private_key)
+        return token, body, private_key, wallet_token
+
+    def _ingress_snapshot(self) -> list[tuple[str, str]]:
+        if not self.ingress_path.exists():
+            return []
+        return [
+            (
+                str(path.relative_to(self.ingress_path)),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+            for path in sorted(self.ingress_path.rglob("*"))
+            if path.is_file()
+        ]
 
     def _manifest(
         self,
@@ -401,6 +502,159 @@ class ArenaApiTest(unittest.TestCase):
         self.assertFalse(safe_ir["execution_capability"]["worker_connected"])
         self.assertIn("Execution remains disabled", safe_ir["execution_capability"]["warning"])
         self.assertNotIn("seed", json.dumps(body).lower())
+
+    def test_agent_post_cap_counts_canonical_body_and_blocks_ingress_writes(self):
+        agent_token, issuance, private_key, wallet_token = self._arena_agent_token(
+            daily_cap=1
+        )
+        path = (
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+            f"{BIO_CHALLENGE_VERSION}/submissions"
+        )
+        payload = self._submission_payload(key="agent-cap-one")
+        headers = {
+            "Authorization": f"Bearer {agent_token}",
+            "Idempotency-Key": "agent-cap-one",
+        }
+
+        first = self.client.post(path, json=payload, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()["created"])
+        replay = self.client.post(path, json=payload, headers=headers)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        admitted_snapshot = self._ingress_snapshot()
+        admitted_registry_calls = self.registry_gate.call_count
+
+        changed_payload = self._submission_payload(
+            key="agent-cap-one", commitment_byte="b"
+        )
+        changed = self.client.post(path, json=changed_payload, headers=headers)
+        self.assertEqual(changed.status_code, 429, changed.text)
+        self.assertIn("daily submission-attempt cap", changed.json()["detail"])
+        self.assertIn("retry-after", changed.headers)
+
+        for bad_headers in (
+            {"Authorization": f"Bearer {agent_token}"},
+            {
+                "Authorization": f"Bearer {agent_token}",
+                "Idempotency-Key": "contains whitespace",
+            },
+        ):
+            rejected = self.client.post(path, json=payload, headers=bad_headers)
+            self.assertEqual(rejected.status_code, 403, rejected.text)
+            self.assertIn("idempotency key", rejected.json()["detail"])
+
+        self.assertEqual(self.registry_gate.call_count, admitted_registry_calls)
+        self.assertEqual(self._ingress_snapshot(), admitted_snapshot)
+
+        credential_id = issuance["credential"]["credential_id"]
+        rotated = self.client.post(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/agent-credentials/{credential_id}/rotate"
+            ),
+            headers={"Authorization": f"Bearer {wallet_token}"},
+            json={"expires_in_seconds": 3_600, "expected_generation": 1},
+        )
+        self.assertEqual(rotated.status_code, 200, rotated.text)
+        self.assertEqual(
+            rotated.json()["credential"]["submission_attempts_used_today"], 1
+        )
+        self.assertIsNone(rotated.json()["credential"]["last_used_at"])
+        rotated_token = self._decrypt_agent_delivery(rotated.json(), private_key)
+
+        old_bearer = self.client.get(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/submissions/mine"
+            ),
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
+        self.assertEqual(old_bearer.status_code, 403, old_bearer.text)
+        rotated_replay = self.client.post(
+            path,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {rotated_token}",
+                "Idempotency-Key": "agent-cap-one",
+            },
+        )
+        self.assertEqual(rotated_replay.status_code, 200, rotated_replay.text)
+        self.assertTrue(rotated_replay.json()["idempotent_replay"])
+        rotated_over_cap = self.client.post(
+            path,
+            json=self._submission_payload(key="agent-cap-two"),
+            headers={
+                "Authorization": f"Bearer {rotated_token}",
+                "Idempotency-Key": "agent-cap-two",
+            },
+        )
+        self.assertEqual(rotated_over_cap.status_code, 429, rotated_over_cap.text)
+        self.assertEqual(self._ingress_snapshot(), admitted_snapshot)
+
+    def test_arena_wallet_session_profiles_are_mutually_least_privilege(self):
+        ordinary = self._arena_token()
+        management = self._arena_management_token()
+        agent_list_path = (
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+            f"{BIO_CHALLENGE_VERSION}/agent-credentials"
+        )
+        ordinary_cannot_manage = self.client.get(
+            agent_list_path,
+            headers={"Authorization": f"Bearer {ordinary}"},
+        )
+        self.assertEqual(ordinary_cannot_manage.status_code, 401)
+        ordinary_cannot_issue = self.client.post(
+            agent_list_path,
+            headers={"Authorization": f"Bearer {ordinary}"},
+            json={
+                "device_label": "must-not-issue",
+                "device_kind": "ci_service",
+                "public_key": X25519PrivateKey.generate().public_key().public_bytes_raw().hex(),
+                "name": "must-not-issue",
+                "scopes": list(ARENA_AGENT_SCOPES),
+                "expires_in_seconds": 3_600,
+                "daily_submission_cap": 1,
+            },
+        )
+        self.assertEqual(ordinary_cannot_issue.status_code, 401)
+        management_cannot_read = self.client.get(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/submissions/mine"
+            ),
+            headers={"Authorization": f"Bearer {management}"},
+        )
+        self.assertEqual(management_cannot_read.status_code, 401)
+        submission_path = (
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+            f"{BIO_CHALLENGE_VERSION}/submissions"
+        )
+        submission_payload = self._submission_payload(key="management-cannot-submit")
+        ingress_before = self._ingress_snapshot()
+        registry_before = self.registry_gate.call_count
+        management_cannot_submit = self.client.post(
+            submission_path,
+            json=submission_payload,
+            headers={
+                "Authorization": f"Bearer {management}",
+                "Idempotency-Key": "management-cannot-submit",
+            },
+        )
+        self.assertEqual(management_cannot_submit.status_code, 401)
+        self.assertEqual(self.registry_gate.call_count, registry_before)
+        self.assertEqual(self._ingress_snapshot(), ingress_before)
+        unsupported = self.client.post(
+            "/auth/arena/challenge",
+            json={
+                "address": self.submitter.address,
+                "challenge_id": BIO_CHALLENGE_ID,
+                "challenge_version": BIO_CHALLENGE_VERSION,
+                "purpose": "submit_read_and_manage",
+            },
+        )
+        self.assertEqual(unsupported.status_code, 422)
 
     def test_worker_capability_is_modeled_until_release_and_fresh_evidence_match(self):
         safe_path = (

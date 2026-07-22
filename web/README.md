@@ -41,6 +41,34 @@ bounded schema v2.
 That provenance is explicitly not independent browser verification of Intel
 TDX: raw quotes, signatures, exact scores, and exact timing do not egress.
 
+### Modeled Arena Agent Access
+
+The Agent Access panel asks for a second, on-demand wallet signature whose
+short session contains only `challenge:agents:manage`; the ordinary Arena
+submit/read session never carries that authority. The delegated bearer gets
+only `challenge:submit` and `challenge:submissions:read`, expires within 24
+hours, and has a daily submission-attempt cap. It cannot authorize Compute,
+Deal, proxy, worker, reward, or settlement actions.
+
+The browser generates a non-exportable X25519 key and receives the bearer only
+as a one-time encrypted capsule. Neither the private key nor the decrypted
+bearer is written to browser storage. Copy the bearer directly into the agent's
+`WIKIGEN_ARENA_TOKEN` process environment, then clear the reveal. Closing or
+management-session expiry clears its bearer and one-time plaintext but retains
+the same-wallet device key in tab memory, so a fresh explicit signature can
+rotate it. Closing/reloading the Arena route loses the key and
+recovery/rotation capability; use the wallet to revoke that credential and
+issue a new device. The displayed
+curl and Python examples reference environment variables and never print or
+embed a sample secret.
+
+This entire surface remains hard-labeled **Modeled auth**. Key separation,
+encrypted delivery, and a durable HMAC-authenticated server store are not TDX
+evidence, proof that a job ran, or rollback protection; an older valid store
+file can still be restored. See
+[`docs/ARENA-BACKEND.md`](../⚙️/tinker-delegate/docs/ARENA-BACKEND.md#modeled-arena-agent-access)
+for the exact API and custody boundary.
+
 ## Stack
 
 - SolidJS, TypeScript, and Vite. React is not used.

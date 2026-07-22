@@ -91,6 +91,15 @@ POST /auth/arena/challenge
 POST /auth/arena/token
 ```
 
+Wallet-managed, modeled agent credentials for that exact version:
+
+```text
+POST /arena/challenges/{challenge_id}/versions/{version}/agent-credentials
+GET  /arena/challenges/{challenge_id}/versions/{version}/agent-credentials
+POST /arena/challenges/{challenge_id}/versions/{version}/agent-credentials/{credential_id}/rotate
+POST /arena/challenges/{challenge_id}/versions/{version}/agent-credentials/{credential_id}/revoke
+```
+
 Authenticated/idempotent submission:
 
 ```text
@@ -146,7 +155,9 @@ max-age=0` so a browser cannot carry a recipient across a CVM rotation.
 Arena authentication is cryptographically separate from diligence-deal seller
 upload authentication:
 
-- exact scopes: `challenge:submit challenge:submissions:read`
+- two mutually exclusive exact short wallet-session profiles:
+  `challenge:submit challenge:submissions:read`, or the separately requested
+  `challenge:agents:manage`
 - challenge resource: exact challenge ID and semantic version
 - Base Sepolia chain ID: `84532`
 - separate JWT issuer and audience
@@ -179,7 +190,8 @@ Challenge and token request shapes:
 {
   "address": "0x1111111111111111111111111111111111111111",
   "challenge_id": "synthetic-bio-assay-qc",
-  "challenge_version": "1.0.0"
+  "challenge_version": "1.0.0",
+  "purpose": "session"
 }
 ```
 
@@ -202,7 +214,7 @@ breaks are significant):
 {domain} wants you to sign in with your Ethereum account:
 {normalized_lowercase_wallet}
 
-Authorize encrypted candidate submissions and read only your bounded submission status for the specified Arena challenge version during this short session. This request will not trigger a blockchain transaction.
+Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.
 
 URI: {uri}
 Version: 1
@@ -216,17 +228,134 @@ Resources:
 - urn:dnai:scope:challenge:submissions:read
 ```
 
+Agent management is never included above. The user explicitly requests
+`"purpose":"agent_management"` and signs a different transcript whose only
+scope resource is `urn:dnai:scope:challenge:agents:manage`; its statement
+discloses that it may issue a submit + owner-read bearer valid for up to 24
+hours, or list, rotate, and revoke those credentials. Token exchange derives
+the profile only from the server-held nonce record, not caller-supplied scopes.
+
 The challenge response is exactly `address`, `challenge_id`,
 `challenge_version`, `scope`, `nonce`, `message`, `issued_at`, and
 `expires_at`. The token response is exactly `access_token`, `token_type`,
 `address`, `challenge_id`, `challenge_version`, `scopes`, `issued_at`, and
 `expires_at`. The HS256 JWT has `kid=dstack-arena-wallet-v1`; its payload is
 limited to the configured issuer/audience, wallet subject, exact challenge ID
-and version, the two exact ordered Arena scopes, `iat=nbf`, `exp`, and a 32-hex
-`jti`.
+and version, one exact canonical wallet-scope profile, `iat=nbf`, `exp`, and
+a 32-hex `jti`.
 Challenge TTL is at most 600 seconds; token TTL is at most 900 seconds. The
 configured defaults are 300 seconds for each. A challenge nonce is consumed
 atomically and cannot be exchanged twice.
+
+## Modeled Arena Agent Access
+
+Arena Agent Access delegates only the two data-plane permissions needed by an
+agent working on one exact challenge ID and version:
+
+```text
+challenge:submissions:read
+challenge:submit
+```
+
+It never delegates `challenge:agents:manage`. Issue, list, rotate, and revoke
+always require a separate short wallet token's explicit management consent. The agent
+bearer has its own JWT key ID, issuer/audience, signing-key domain, device ID,
+generation, expiry, and token commitment. Deal, Compute, Tinker proxy,
+operator, runtime-worker, reward, and settlement paths reject it. Issuing this
+credential creates no job and proves no code execution, TDX attestation,
+reward eligibility, or live worker availability: every response is hard
+labeled `product_status=modeled`, `execution_authority=false`, and
+`tdx_attestation=false`.
+
+The browser creates a non-exportable X25519 key pair. Only its public key is
+registered; the server returns the plaintext bearer exclusively inside a
+one-time X25519/HKDF-SHA256/AES-256-GCM capsule bound to the credential,
+device, owner hash, challenge/version, generation, expiry, and token
+commitment. The UI decrypts it once and never writes the bearer or private key
+to local storage. X25519 protects this delivery only: the decrypted JWT is an
+ordinary bearer, not proof-of-possession or device attestation. Anyone who
+copies it can use it until expiry or revocation. The operator/user is responsible for moving the revealed
+bearer directly into the intended agent's process environment and clearing the
+reveal. A management-session refresh retains the key for the same wallet and
+challenge in tab memory. Reloading or closing the Arena route destroys it and
+there is no recovery export. If that happens, use a fresh wallet session to
+revoke the credential and issue a new device; rotation is available only while
+the original tab still holds its private key.
+
+An issue request has the exact bounded shape below. `scopes` is fixed and
+cannot be widened; TTL is 60 through 86,400 seconds, and the daily submission-
+attempt cap is 1 through 32:
+
+```json
+{
+  "device_label": "local research agent",
+  "device_kind": "autonomous_agent",
+  "public_key": "<64 lowercase hex characters from the browser X25519 public key>",
+  "name": "assay optimizer",
+  "scopes": ["challenge:submissions:read", "challenge:submit"],
+  "expires_in_seconds": 21600,
+  "daily_submission_cap": 8
+}
+```
+
+Rotation accepts exactly `{"expires_in_seconds": 21600,
+"expected_generation": 1}` and advances the token generation, immediately
+invalidating the older bearer. A stale or replayed expected generation fails
+before a replacement token is minted or state is changed. Revocation invalidates
+the active generation. The cap counts distinct admitted submission attempts
+per UTC day using both the idempotency key and canonical request commitment; an
+exact replay counts once, while a changed request cannot reuse a key to evade
+the cap.
+
+Expired records are compacted only inside a locked issue transaction, and
+revocation has reserved bounded file headroom. There is still no independent
+per-wallet credential-issuance rate limiter or rollback-resistant monotonic
+anchor; those remain explicit blockers for a live/Phala authority boundary.
+
+The following examples never place a token literal in source or command
+history. `WIKIGEN_ARENA_TOKEN` must already be present in the agent process
+environment, populated from the one-time reveal:
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer ${WIKIGEN_ARENA_TOKEN}" \
+  "${WIKIGEN_DELEGATE_URL}/arena/challenges/dnaseq-variant-qc-safe-ir/versions/1.0.0/submissions/mine?limit=25"
+
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer ${WIKIGEN_ARENA_TOKEN}" \
+  -H "Idempotency-Key: ${WIKIGEN_SUBMISSION_IDEMPOTENCY_KEY}" \
+  -H "Content-Type: application/json" \
+  --data-binary @encrypted-submission.json \
+  "${WIKIGEN_DELEGATE_URL}/arena/challenges/dnaseq-variant-qc-safe-ir/versions/1.0.0/submissions"
+```
+
+```python
+import os
+
+import httpx
+
+root = os.environ["WIKIGEN_DELEGATE_URL"].rstrip("/")
+token = os.environ["WIKIGEN_ARENA_TOKEN"]
+url = f"{root}/arena/challenges/dnaseq-variant-qc-safe-ir/versions/1.0.0/submissions/mine"
+response = httpx.get(
+    url,
+    params={"limit": 25},
+    headers={"Authorization": f"Bearer {token}"},
+    timeout=10.0,
+)
+response.raise_for_status()
+print(response.json())
+```
+
+The durable JSON stores public device metadata, token commitments, generation,
+revocation state, and bounded attempt hashes; it does not store the plaintext
+bearer, browser private key, candidate, ciphertext, score, or provider secret.
+Writes use a same-directory lock, atomic replace, fsync, mode `0600`, and an
+HMAC derived separately from the credential-signing key. That HMAC detects
+tampering, not rollback: restoring an older internally valid store can restore
+older revocation/cap state. No deployment may call this boundary live or
+rollback-resistant until an external monotonic anchor or equivalent reviewed
+storage closes that gap.
 
 ## Submission boundary
 
@@ -531,6 +660,12 @@ TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS=300
 TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES=1024
 TINKER_ARENA_WALLET_AUTH_ISSUER=dnai-wikigen:arena-wallet-auth
 TINKER_ARENA_WALLET_AUTH_AUDIENCE=dnai-wikigen:arena
+TINKER_ARENA_AGENT_CREDENTIAL_SIGNING_KEY=<local development only; empty in dstack>
+TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH=tinker/arena_agent_credentials
+TINKER_ARENA_AGENT_CREDENTIAL_MAX_TTL_SECONDS=86400
+TINKER_ARENA_AGENT_STORE_PATH=/data/arena_agent_credentials.json
+TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY=<local development only; empty in dstack>
+TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH=tinker/arena_agent_store_integrity
 TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH=/data/arena_candidates
 TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH=tinker/arena_candidate_ingress
 TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE=/data/arena_candidate_ingress.key
@@ -557,6 +692,17 @@ development must use a dedicated `0600` key file so queued ciphertext survives
 a restart. Dstack ignores local/explicit key material and derives at the
 distinct Arena path. The production compose mounts both stores under the
 delegate data volume.
+
+The local compose descriptors put the modeled Arena agent store on that same
+durable `/data` volume and configure two distinct future dstack derivation
+paths: one for JWT signing and one for store HMAC integrity. In a dstack-enabled
+process the runtime ignores explicit local key inputs and derives those paths.
+The checked-in dstack overlays and Phala launch descriptor intentionally omit
+this new surface, so release rendering cannot silently add it to the canonical
+launch contract; enabling it there requires a separately reviewed release
+change. Neither a durable volume nor dstack-derived keys upgrades this modeled
+credential service into execution authority, TDX evidence, or anti-rollback
+storage.
 
 The `dnai.arena.safe-worker-release.v3` manifest carries the complete finite
 `approved_challenge_bindings` map plus its domain-separated
