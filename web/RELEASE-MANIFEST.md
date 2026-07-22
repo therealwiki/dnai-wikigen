@@ -1,59 +1,38 @@
 # Production web release manifest
 
-The browser release is generated from evidence; operators do not hand-edit live
-`VITE_ENABLE_*` flags. `npm run release:env` writes only the ignored
-`web/.env.production.local` file and exits without writing if any trust binding
-is missing or mismatched.
+The browser release is intended to be generated from evidence; operators do
+not hand-edit live `VITE_ENABLE_*` flags. In this revision,
+`npm run release:env` is deliberately sealed before output: it authenticates
+the exact 37-input Model-A boundary and then exits without writing
+`web/.env.production.local`. That boundary must remain visibly distinct from
+the operational argument-free modeled preview.
 
 The existing `deployments/base-sepolia.json` ledger is an input, not an
 authorization. In particular, its historical `currentOperatorControlled`
 markers and service-produced attestation envelopes can never enable a browser
 mutation by themselves.
 
-## Release command
+## Current live-release boundary
 
-Run this only after the exact reviewed source is committed, the images are
-built from that commit, the fresh contracts and non-dev CVM are deployed, the
-on-chain approval/freeze transactions are final, and fresh independent
-DCAP/QVL verdicts have been issued:
+There is currently no supported production release command. Do not reconstruct
+one from an older eight-artifact example, and do not bypass the wrapper with a
+raw Wrangler upload. The parser intentionally rejects the retired
+`--authority-review-envelope` option; after loading all exact-37 inputs,
+`build-release-env.mjs` terminates with
+`Model-A exact-37 semantic validator integration is incomplete` before any
+dotenv write or Cloudflare invocation.
 
-```bash
-cd web
-export BASE_SEPOLIA_RPC_URL="<operator RPC; never written to Vite output>"
-export TRUSTED_ATTESTATION_VERIFIER_ADDRESSES="0x<reviewed-diligence-qvl>,0x<reviewed-arena-qvl>,0x<reviewed-anchor-writer-qvl>,0x<reviewed-compute-metering-qvl>"
-npm run release:env -- \
-  --release /absolute/path/dnai-web-release.json \
-  --release-core /absolute/path/final-release-authority-core.json \
-  --deployment-intent /absolute/path/deployment-intent.json \
-  --authority-review-envelope /absolute/path/final-authority.review.json \
-  --artifact-evidence /absolute/path/artifact-deployment-evidence.json \
-  --arena-evidence /absolute/path/arena-deployment-evidence.json \
-  --anchor-writer-evidence /absolute/path/anchor-writer-qvl-evidence.json \
-  --email-oracle-evidence /absolute/path/email-oracle-external-evidence.json
-npm run deploy:cloudflare -- \
-  --release /absolute/path/dnai-web-release.json \
-  --release-core /absolute/path/final-release-authority-core.json \
-  --deployment-intent /absolute/path/deployment-intent.json \
-  --authority-review-envelope /absolute/path/final-authority.review.json \
-  --artifact-evidence /absolute/path/artifact-deployment-evidence.json \
-  --arena-evidence /absolute/path/arena-deployment-evidence.json \
-  --anchor-writer-evidence /absolute/path/anchor-writer-qvl-evidence.json \
-  --email-oracle-evidence /absolute/path/email-oracle-external-evidence.json
-```
-
-The live deploy does not trust a pre-existing dotenv file by itself. After its
-full check/build gate, it re-runs the canonical release validator in
-`--check-only` mode with the evidence arguments above, consumes the hash-only
-receipt in the same process, and requires that receipt's SHA-256 digest to equal
-the exact allowlisted `VITE_*` environment being deployed. The same exact
-receipt also carries the stable deployment-intent and final-authority hashes
-plus the current review-envelope and review-evidence hashes. The validator
-rereads all three canonical artifacts, enforces the active review window, and
-requires every hash and release binding to match the candidate. Semantic drift,
-an expired or substituted envelope, an extra Vite key, missing
-evidence, a dirty worktree, or a SHA mismatch aborts before Wrangler runs. The
-argument-free path is reserved for an explicitly modeled preview and cannot
-consume live evidence.
+A production command can be documented only after the exact reviewed source is
+committed, images are built from that commit, fresh contracts and all seven
+non-dev CVMs are deployed, on-chain approval/freeze transactions are final,
+fresh independent DCAP/QVL verdicts exist, and the Model-A exact-37 validator
+can emit its in-process hash-only semantic receipt. The live runner is designed
+to require that receipt to equal the exact allowlisted `VITE_*` environment and
+to bind the stable deployment intent, final authority, current review evidence,
+clean release SHA, and production branch. Semantic drift, stale review,
+unexpected Vite keys, a dirty worktree, or SHA mismatch must abort before
+Wrangler runs. The argument-free path remains reserved for the explicitly
+modeled preview and cannot consume live evidence.
 
 `TRUSTED_ATTESTATION_VERIFIER_ADDRESSES` is deliberately external to the JSON
 manifest. It is the human-reviewed trust-root input established only after the

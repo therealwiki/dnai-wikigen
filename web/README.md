@@ -68,11 +68,13 @@ The development server defaults to `http://127.0.0.1:5175` when started with `np
 
 Copy `example.env` to `.env.local` only for public values. Never place a private key, runtime bearer, API key, Stripe secret, Phala key, or upstream Tinker credential in a Vite variable—Vite embeds it in browser assets.
 
-Production live gates must not be edited by hand. Use the fail-closed
-[`RELEASE-MANIFEST.md`](./RELEASE-MANIFEST.md) workflow and `npm run release:env`
-to generate the ignored `.env.production.local` only after the fresh ledger,
-live chain, hardened CVM, GitHub image provenance, exact Arena registry
-bindings, and independently signed DCAP/QVL verdicts all agree.
+Production live gates must not be edited by hand. The intended fail-closed
+workflow is documented in [`RELEASE-MANIFEST.md`](./RELEASE-MANIFEST.md), but
+the live release generator is currently sealed: it authenticates the exact
+37-input Model-A boundary and then stops before writing
+`.env.production.local`. Until that semantic integration is complete, only the
+argument-free modeled-preview command below is supported; there is no valid
+production Pages command to copy or improvise.
 
 The release topology is exactly seven CVMs: the main private runtime, five
 independently controlled QVL CVMs (Diligence, Arena, anchor writer, Compute
@@ -197,27 +199,16 @@ branch with:
 npm run deploy:cloudflare
 ```
 
-A live release must pass the same canonical evidence set used to generate
-`.env.production.local`; the deploy command re-runs that validator in-process
-and requires its SHA-256 receipt to match the exact effective allowlisted
-`VITE_*` environment:
-
-```bash
-npm run deploy:cloudflare -- \
-  --release /absolute/path/dnai-web-release.json \
-  --release-core /absolute/path/final-release-authority-core.json \
-  --deployment-intent /absolute/path/deployment-intent.json \
-  --authority-review-envelope /absolute/path/final-authority.review.json \
-  --artifact-evidence /absolute/path/artifact-deployment-evidence.json \
-  --arena-evidence /absolute/path/arena-deployment-evidence.json \
-  --anchor-writer-evidence /absolute/path/anchor-writer-qvl-evidence.json \
-  --email-oracle-evidence /absolute/path/email-oracle-external-evidence.json
-```
-
-Live mode fails closed if those arguments are missing, semantic validation
-fails, the effective env has an extra `VITE_*` key, its digest differs, or the
-release SHA and clean `HEAD` are not identical. Modeled mode accepts no release
-evidence arguments and never receives a live validation receipt.
+Production upload is intentionally unavailable in this revision. The release
+generator loads the exact 37 authority inputs and then exits with
+`Model-A exact-37 semantic validator integration is incomplete` before it can
+write a browser environment or invoke Wrangler. The retired eight-artifact
+example is not a fallback: options such as `--authority-review-envelope` are
+explicitly rejected. When the exact-37 integration is implemented, live mode
+must still bind the in-process semantic receipt to the allowlisted `VITE_*`
+environment, the exact clean release SHA, and the reviewed production branch.
+Modeled mode accepts no release-evidence arguments and never receives a live
+validation receipt.
 
 The stable review URL for the current modeled branch is
 `https://modeled-preview.wikigenme.pages.dev`. The edge admits only this
