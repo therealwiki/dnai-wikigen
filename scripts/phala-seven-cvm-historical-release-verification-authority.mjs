@@ -197,10 +197,10 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     "freshContractDeploymentReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
-    "reviewerStatusHistory",
+    "stageBReviewerStatusHistory",
   ], "historical signed-B dependency set");
-  if (!Array.isArray(dependencies.reviewerStatusHistory)) {
-    throw new TypeError("historical signed-B reviewer status history must be an array");
+  if (!Array.isArray(dependencies.stageBReviewerStatusHistory)) {
+    throw new TypeError("historical signed-B Stage-B reviewer status history must be an array");
   }
 
   const [
@@ -271,7 +271,7 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
       dependencies.freshContractDeploymentReceipt,
     reviewerGenesis: dependencies.reviewerGenesis,
     reviewerGenesisAcceptance: dependencies.reviewerGenesisAcceptance,
-    reviewerStatusHistory: dependencies.reviewerStatusHistory,
+    reviewerStatusHistory: dependencies.stageBReviewerStatusHistory,
     preCeremonyRuntimeAuthority: runtime,
     checkedAtMs: stageOneSignedAtMs,
     enforceFreshness: false,

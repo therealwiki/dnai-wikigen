@@ -20,6 +20,78 @@ const RUNTIME_SOURCE = fs.readFileSync(
   "utf8",
 );
 
+test("post-measurement signed-B dependencies preserve the complete reviewer lineage", () => {
+  const projectorStart = RUNTIME_SOURCE.indexOf(
+    "function signedBDeferredAuthorizationDependencies",
+  );
+  const projectorEnd = RUNTIME_SOURCE.indexOf(
+    "function sessionPublic",
+    projectorStart,
+  );
+  assert.ok(projectorStart >= 0 && projectorEnd > projectorStart);
+  const projector = RUNTIME_SOURCE.slice(projectorStart, projectorEnd);
+  for (const field of [
+    "deploymentIntent",
+    "freshContractDeploymentReceipt",
+    "reviewerGenesis",
+    "reviewerGenesisAcceptance",
+    "stageBReviewerStatusHistory",
+  ]) {
+    assert.match(projector, new RegExp(`${field}: value\\.${field}`));
+  }
+  const environmentSource = fs.readFileSync(
+    new URL("./phala-production-environment-authority.mjs", import.meta.url),
+    "utf8",
+  );
+  const authorizationStart = environmentSource.indexOf(
+    "export async function authorizePhalaDeferredPublicEnvironmentAuthority",
+  );
+  const authorizationEnd = environmentSource.indexOf(
+    "export function deferredPublicEnvironmentAuthorityDigest",
+    authorizationStart,
+  );
+  const authorization = environmentSource.slice(
+    authorizationStart,
+    authorizationEnd > authorizationStart
+      ? authorizationEnd
+      : environmentSource.length,
+  );
+  assert.match(authorization, /"stageBReviewerStatusHistory"/);
+  assert.match(
+    authorization,
+    /Array\.isArray\(dependencies\.stageBReviewerStatusHistory\)/,
+  );
+  assert.match(
+    authorization,
+    /reviewerStatusHistory: dependencies\.stageBReviewerStatusHistory/,
+  );
+  assert.doesNotMatch(authorization, /"reviewerStatusHistory"/);
+
+  for (const moduleName of [
+    "phala-post-measurement-activation-runtime.mjs",
+    "phala-production-environment-authority.mjs",
+    "phala-post-measurement-activation-receipt.mjs",
+    "phala-seven-cvm-historical-release-verification-authority.mjs",
+  ]) {
+    const source = fs.readFileSync(new URL(`./${moduleName}`, import.meta.url), "utf8");
+    assert.match(
+      source,
+      /"stageBReviewerStatusHistory"/,
+      `${moduleName} must exact-name the Stage-B carrier`,
+    );
+    assert.match(
+      source,
+      /reviewerStatusHistory: dependencies\.stageBReviewerStatusHistory/,
+      `${moduleName} must explicitly remap only at the B normalizer`,
+    );
+    assert.doesNotMatch(
+      source,
+      /"reviewerStatusHistory"/,
+      `${moduleName} must reject the ambiguous legacy carrier field`,
+    );
+  }
+});
+
 function loadExactRuntimeLeaseHelpers({ nowMs, afterPersist } = {}) {
   let controlledNowMs = nowMs;
   let persistCalls = 0;

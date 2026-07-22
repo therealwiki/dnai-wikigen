@@ -21,8 +21,10 @@ BASE_SEPOLIA_RPC_URL=...
 BASE_SEPOLIA_SECONDARY_RPC_URL=... # HTTPS; normalized host:port must differ from primary
 FOUNDRY_KEYSTORE_ACCOUNT=dev
 RELEASE_SHA=... # exact nonzero lowercase 40-hex reviewed commit
-DEPLOYMENT_MANIFEST_PATH=/absolute/repository/deployments/fresh-contract-suites/<RELEASE_SHA>/base-sepolia.json
-DEPLOYMENT_INTENT_PATH=/absolute/path/deployment-intent.core.json
+# Optional absolute override. Empty derives the release-scoped repository path
+# deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json.
+DEPLOYMENT_MANIFEST_PATH=
+DEPLOYMENT_INTENT_PATH=/absolute/path/deployment-intent-core.json
 DEPLOYMENT_INTENT_SHA256=sha256:... # immutable reviewed pre-deployment intent
 # These legacy-named variables carry the exact deployment-intent review
 # envelope; they never identify an operator-policy packet or projection.
@@ -37,6 +39,8 @@ TINKER_ENCUMBRANCE_MAX_SPEND_WEI=5000000000000000000 # policy units; not ETH
 EMAIL_ORACLE_UPGRADE_DELAY=172800 # explicit; minimum 2 days
 BROADCAST=false
 VERIFY=false
+# Safe process/default environment value. The reviewed production renderer
+# replaces this with the release-pinned deterministic, no-network lane.
 TINKER_EVALUATOR_MODE=disabled
 ```
 
@@ -171,7 +175,7 @@ hash with the image descriptor produced in its build job. GitHub then attests
 the aggregate manifest and the release artifact carries the resulting Sigstore
 bundle under the deterministic name above. The renderer treats that bundle as
 opaque signed evidence, copies it with a no-follow bounded read, and records its
-SHA-256 in the v5 topology. The online activation preflight is the cryptographic
+SHA-256 in the v6 topology. The online activation preflight is the cryptographic
 gate: it verifies the exact copied manifest bytes against that bundle, the
 pinned workflow, source SHA/ref, SLSA predicate, and GitHub-hosted runner policy.
 
@@ -253,7 +257,7 @@ committing to evidence that can only be created after that descriptor launches.
 
 ### Resident production activation driver
 
-Prepare the driver's three private filesystem authorities with a canonical,
+Prepare the driver's four private filesystem authorities with a canonical,
 recursively key-sorted request containing exactly one trailing newline:
 
 ```json
@@ -261,9 +265,10 @@ recursively key-sorted request containing exactly one trailing newline:
   "authorities": {
     "evidenceExchangePath": "/absolute/private/evidence",
     "outputPath": "/absolute/private/outputs",
+    "postlaunchAuthorityExchangePath": "/absolute/private/postlaunch-authority",
     "signingExchangePath": "/absolute/private/signing"
   },
-  "schema": "dnai.phala-production-authority-workspace-prepare-request.v1"
+  "schema": "dnai.phala-production-authority-workspace-prepare-request.v2"
 }
 ```
 
@@ -275,7 +280,7 @@ node scripts/phala-production-authority-workspace-prepare.mjs \
   --prepare-request /absolute/private-workspace-request.json
 ```
 
-The tool creates or strictly reopens only three empty mode-`0700` directories,
+The tool creates or strictly reopens only four empty mode-`0700` directories,
 pins their filesystem identities, and prints a path-plus-anchor receipt. It
 mints no capability, authorizes no activation mutation, automatic retry, or
 live traffic, and proves no deployment or TDX evidence. Independently review
@@ -287,14 +292,105 @@ node scripts/phala-production-activation-driver.mjs \
   --execute-request /absolute/private-resident-request.json
 ```
 
-The request must be canonical recursively sorted JSON in an owned, single-link,
-mode-`0600` file. The process retains the non-serializable authority chain from
-the non-live seven-CVM launch through five QVL-identity proofs, two workload
-verdict proofs, externally supplied Stage-B signatures, encrypted environment
+The `dnai.phala-production-activation-driver-request.v3` resident request must
+be canonical recursively sorted JSON in an owned, single-link, mode-`0600` file
+and contain only prelaunch bindings. It has no `reviewerStatusHistory` field;
+request v2 and a v3 request carrying that legacy extra field are
+non-authorizing. Stage A consumes exactly the epoch-one genesis acceptance with
+an empty predecessor array. The request also excludes every reviewed
+final-authority, deferred-review, ceremony, and immutable-manifest dependency.
+The process retains the non-serializable authority chain from the non-live
+seven-CVM launch through five QVL-identity proofs and two workload verdict
+proofs, then durably persists L and its private historical transcript before
+its first final-authority read.
+
+The driver then publishes only canonical L plus the allowlisted non-authorizing
+`postlaunch-final-authority-input.json` and
+`postlaunch-authority-request.json` files in the evidence exchange. The latter
+is `dnai.phala-production-postlaunch-authority-request.v2` and requires
+`dnai.phala-production-postlaunch-activation-input-manifest.v2`. It waits for
+one exact canonical mode-`0600`
+`postlaunch-activation-input-manifest.json` in the independently pinned,
+initially empty postlaunch exchange. That manifest binds the reviewed
+final-authority, deferred-review, ceremony, and immutable-manifest paths and
+digests plus `stageBReviewerStatusHistory` to the exact release, batch,
+evidence, L, projection, and request lineage. The history binding names an
+operator-owned, regular, single-link, exact mode-`0600` canonical bare array,
+not the wrapped reviewer-history CLI artifact. Use exactly `[]` while the
+epoch-one root is current; selecting a successor requires the exact pinned root
+followed by every guardian-signed successor through the current head. The
+detailed exact manifest shape is in
+`deployments/operator-authority-artifacts.md`.
+
+The driver computes one exact canonical-millisecond
+`manifest_acceptance_deadline` before request publication as the
+earlier of the configured postlaunch-authority timeout and L's minimum evidence
+lease expiry. It writes that same timestamp to the request and public
+checkpoint. Copy it byte-for-byte into manifest v2: the waiter and helper do
+not recompute or refresh it, and arrival at or after the deadline fails closed.
+Manifest v1 cannot mint the one-shot capability.
+
+Build the complete canonical manifest as an owned, single-link, exact
+mode-`0600` source file outside the exchange, then use only the non-signing
+attachment helper to validate and publish it:
+
+```bash
+node scripts/phala-production-postlaunch-attach.mjs \
+  --source /absolute/private/postlaunch-activation-input-manifest.source.json \
+  --request /absolute/private/evidence/postlaunch-authority-request.json \
+  --projection /absolute/private/evidence/postlaunch-final-authority-input.json \
+  --exchange /absolute/private/postlaunch-authority \
+  --expected-anchor-sha256 'sha256:<exact-workspace-receipt-anchor>'
+```
+
+The helper computes the exact raw request/projection digests, validates every
+bound dependency including the retained history raw digest, and accepts no key,
+signer, RPC, credential, callback, or raw secret. Its final basename is created
+once at mode `0200`; the exact bytes and directory entry are fsynced before the
+same inode changes to `0600` as the readiness commit. The resident waiter never
+parses `0200`. The helper checks the fixed deadline immediately before the
+readiness transition; because the clock check and `chmod` are not one
+kernel-atomic operation, the resident reader independently rechecks that same
+deadline and rejects a scheduler-delayed transition. An interrupted pending
+inode, inode replacement, wrong mode, unexpected entry, or deadline is terminal
+for that evidence session; do not edit, remove, replace, or retry it.
+
+Only after stable no-follow validation of that manifest and all dependencies
+does the same process enter externally signed Stage B, encrypted-environment
 mutation and restart, post-restart Compute recipient activation, finalization,
-and bounded-output publication. Proofs and signatures arrive only through its
-pinned private exchanges. Its ordered checkpoints forbid automatic retry and
-live traffic; its final result also records `capability_serialized=false` and
+and bounded-output publication. Raw quotes remain confined to the private
+evidence exchange and durable private historical transcript; none enter L's
+public projection or the postlaunch request. Phase secrets, raw private
+artifacts, and encrypted-environment ciphertext never enter that projection.
+The validated manifest becomes only an opaque same-process one-shot capability
+bound to the exact evidence session and persisted L checkpoint. The coordinator
+burns it before interpreting proof-array references and before reading reviewed
+final authority. Any timeout, extra exchange entry, symlink,
+mode/hash/lineage drift, dependency mutation, post-mint driver failure, or
+coordinator rejection burns that capability and disposes the session before
+post-measurement mutation.
+
+After capability consumption and semantic validation against the reviewed
+deployment intent, the resident driver publishes
+`dnai.phala-production-stage-b-attachment-manifest.v2` in the pinned signing
+exchange. It binds the retained history's raw file digest and the Stage-B
+review payload's exact current reviewer-status epoch and digest. Supply the two
+external signatures in the code-named canonical input, then attach them with:
+
+```bash
+node scripts/phala-production-stage-b-attach.mjs \
+  --exchange /absolute/private/signing \
+  --expected-anchor-sha256 'sha256:<exact-workspace-receipt-anchor>'
+```
+
+The resulting `dnai.phala-production-stage-b-attachment-receipt.v2` repeats
+those three values only as transport/replay bindings. The helper does not sign,
+accept key material, deploy, activate, or establish TDX evidence; the same
+process must still validate signed B, whose expiry is capped by the selected
+reviewer status's signed expiry.
+
+Checkpoints forbid automatic retry and live traffic; the final result also
+records `capability_serialized=false` and
 `signer_key_material_accepted=false`.
 
 This driver is implemented and locally tested. It has not run against a fresh
@@ -330,11 +426,13 @@ of these launch values from browser state or an earlier deployment.
 
 The email oracle is not release-ready merely because `EmailOracleAuth` was
 deployed or because its CVM produced a quote. The final runtime descriptor must
-bind the oracle to one exact, nonzero contract address, the Ethereum
-`keccak256` hash of the code returned by `eth_getCode` for that address, one
-nonzero consumer app address, and one nonzero consumer compose hash. Do not use
-the creation bytecode hash, deployment transaction hash, source hash, or a hash
-copied from an older deployment as
+bind `EMAIL_ORACLE_AUTH_ADDRESS` to one exact, nonzero contract address,
+`EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH` to the Ethereum `keccak256` hash of the
+code returned by `eth_getCode` for that address,
+`EMAIL_ORACLE_CONSUMER_APP_ID` to one nonzero consumer app address, and
+`EMAIL_ORACLE_CONSUMER_COMPOSE_HASH` to one nonzero consumer compose hash. Do
+not use the creation bytecode hash, deployment transaction hash, source hash,
+or a hash copied from an older deployment as
 `EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH`.
 
 `BASE_SEPOLIA_RPC_URL` and `BASE_SEPOLIA_RPC_URL_SECONDARY` must be HTTPS
@@ -417,17 +515,39 @@ monotonic anchor or equivalent independently durable state; until then record
 this persistent-volume rollback capability as an explicit trust assumption.
 
 Before any contract broadcast, CVM deployment, release activation, or
-Cloudflare Pages deployment, run the bounded repository-root preflight:
+Cloudflare Pages deployment, run the bounded repository-root preflight for the
+exact next authority stage. `--stage` is mandatory at the CLI boundary; the
+tool never guesses that a predeployment checkout is already at live activation:
 
 ```bash
 node scripts/activation-preflight.mjs \
-  --release /absolute/path/dnai-web-release.json \
-  --artifact-evidence /absolute/path/artifact-deployment-evidence.json \
-  --arena-evidence /absolute/path/arena-deployment-evidence.json \
-  --anchor-writer-evidence /absolute/path/anchor-writer-qvl-evidence.json
+  --stage fresh-deployment \
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH" \
+  --authority-review-envelope "$OPERATOR_POLICY_REVIEW_ENVELOPE_PATH" \
+  --authority-review-evidence /absolute/path/deployment-intent.review-evidence.json
 ```
 
-By default the preflight reads the generated files under `.release`. Use
+After each irreversible boundary, rerun the same command with exactly one of
+`--stage cvm-launch`, `--stage release-ceremony`, or
+`--stage live-activation` and the artifacts for that stage. A final-stage
+report is not a substitute for the earlier transition gates, and expected
+postdeployment evidence must not be fabricated to make an earlier report look
+complete.
+
+By default the preflight reads the exact producer filenames
+`.release/deployment-intent-core.json`,
+`.release/cvm-launch-intent-core.json`, the stage-specific
+`*.review-envelope.json`, and the generated files under `.release`. When
+`DEPLOYMENT_INTENT_PATH`, `OPERATOR_POLICY_REVIEW_ENVELOPE_PATH`, or
+`DEPLOYMENT_MANIFEST_PATH` is populated, it is an absolute-path fallback. A
+different explicit CLI path and environment path is an ambiguity failure; the
+operator must choose one exact input. When neither `--ledger` nor
+`DEPLOYMENT_MANIFEST_PATH` is supplied, the preflight derives
+`deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json` only after
+`RELEASE_SHA` exactly matches Git HEAD. The historical root
+`deployments/base-sepolia.json` is rejected even when named explicitly.
+
+Use
 `--compose`, `--diligence-qvl-compose`, `--arena-qvl-compose`,
 `--anchor-writer-qvl-compose`, `--compute-workload-qvl-compose`,
 `--compute-metering-qvl-compose`,
@@ -448,6 +568,16 @@ structural report. A blocked report exits 1; a preflight-internal failure exits
 2. The report is deliberately bounded and contains check IDs rather than
 credential values, wallet addresses, RPC URLs, CLI stderr, or remote account
 details.
+
+`VERIFY=true` is blocking only at `fresh-deployment`, where source verification
+must accompany the reviewed broadcast. It is informational and ignored at
+later stages, whose authority comes from the immutable receipt and independent
+chain evidence. `BROADCAST` remains ignored by preflight at every stage.
+
+The legacy assignment names `JUDGE_PRIVATE_KEY` and `KMS_PRIVATE_KEY` are
+forbidden even when empty. Their presence fails environment hygiene without
+reading or printing either value. Remove the assignments and use the encrypted
+Foundry `dev` keystore plus the documented dstack derivation paths.
 
 The probe command has a source-level command allowlist. It reads git state,
 checks that the encrypted `dev` alias exists without unlocking it, reads the
@@ -845,14 +975,24 @@ independently verified:
 7. Read every resulting value back on-chain and append the governance
 transactions to the deployment ledger before calling the email path live.
 
-Production Phala composes pin `TINKER_EVALUATOR_MODE=disabled`, and the API
-resolver rejects `sft` in every custody mode. The current SFT implementation
-sends artifact-derived tokens to a non-attested external provider; real dstack
-custody does not make that egress confidential. Deal settlement therefore
-remains `disabled_confidential_evaluator_required` until an attested provider
-preserves the boundary end to end. Never replace the production value with
-`stub` or `sft`. Local compose defaults to `stub` only for deterministic
-developer flows, while the process-wide default remains `disabled`.
+Production Phala composes pin `TINKER_EVALUATOR_MODE=deterministic`. That lane
+runs the release-pinned three-recipe evaluator inside the main CVM, accepts only
+the buyer's exact on-chain policy commitment, and performs no provider,
+network, subprocess, filesystem, clock, randomness, or logging I/O while
+evaluating private artifact bytes. The Deal runtime remains profile- and
+release-gated as `release_pinned_deterministic_evaluator`; this label describes
+the reviewed executable lane, not proof that a CVM has been deployed or that
+settlement is live.
+
+The API resolver rejects `sft` in every custody mode because that retained
+research helper sends artifact-derived tokens to a non-attested external
+provider. It also rejects `stub` whenever dstack custody is active. Never replace
+the production value with `stub` or `sft`. Local compose may default to `stub`
+for developer flows, and the process/environment safe default remains
+`disabled`; only the reviewed release renderer pins `deterministic`. Deal
+settlement must remain unavailable until the exact evaluator manifest and
+policy root, clean image, topology-v6 descriptor set, fresh contract bindings,
+measured main CVM, independent QVL evidence, and ceremony authority all agree.
 
 ## Base Sepolia
 

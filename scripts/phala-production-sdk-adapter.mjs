@@ -102,6 +102,12 @@ const REQUIRED_CLOUD_ACTION_EXPORTS = Object.freeze([
   "getCvmInfo",
   "getCvmAttestation",
 ]);
+const HISTORICAL_CONTINUITY_READ_ONLY_METHODS = Object.freeze([
+  "getCurrentUser",
+  "getAppEnvEncryptPubKey",
+  "getCvmInfo",
+  "getCvmAttestation",
+]);
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -852,6 +858,29 @@ export async function encryptExactEnvironmentWithPinnedDstack({
 }
 
 function assertAdapterAuthorityFresh(state) {
+  if (state.historical_continuity_read_only === true) {
+    const compatibilitySha256 = phalaCompatibilityReceiptDigest(
+      state.compatibility,
+    );
+    const stagingSha256 = phalaSdkWireTransformStagingReceiptDigest(
+      state.staging,
+      { compatibilityReceipt: state.compatibility },
+    );
+    const targetSha256 = phalaProductionTargetAuthorityDigest(
+      state.target,
+      {
+        compatibilityReceipt: state.compatibility,
+        sdkWireTransformStagingReceipt: state.staging,
+      },
+    );
+    if (compatibilitySha256 !== state.identity.compatibility_receipt_sha256
+      || stagingSha256
+        !== state.identity.sdk_wire_transform_staging_receipt_sha256
+      || targetSha256 !== state.identity.production_target_authority_sha256) {
+      throw new Error("historical read-only Phala authority drifted after observer creation");
+    }
+    return true;
+  }
   const now = Date.now();
   const windows = [
     [state.compatibility.checked_at, state.compatibility.expires_at],
@@ -1357,6 +1386,10 @@ async function invokeSdkAction(state, {
   beforeObservation,
   expectedPostTransformBodySha256,
 } = {}) {
+  if (state.historical_continuity_read_only === true
+    && !HISTORICAL_CONTINUITY_READ_ONLY_METHODS.includes(method)) {
+    throw new Error("historical continuity observer forbids every non-continuity SDK action");
+  }
   if (state.in_flight) throw new Error("pinned SDK adapter forbids concurrent calls");
   assertSafePhalaSdkProcessEnvironment();
   assertAdapterAuthorityFresh(state);
@@ -1412,6 +1445,16 @@ export function assertPinnedPhalaProductionSdkAdapter(value) {
   return value;
 }
 
+export function assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver(value) {
+  const adapter = assertPinnedPhalaProductionSdkAdapter(value);
+  if (PRODUCTION_ADAPTERS.get(adapter).historical_continuity_read_only !== true
+    || Object.keys(adapter).sort().join(",")
+      !== [...HISTORICAL_CONTINUITY_READ_ONLY_METHODS].sort().join(",")) {
+    throw new Error("a locally created historical-continuity read-only Phala observer is required");
+  }
+  return adapter;
+}
+
 export function projectPinnedPhalaProductionSdkAdapterIdentity(value) {
   const adapter = assertPinnedPhalaProductionSdkAdapter(value);
   return structuredClone(PRODUCTION_ADAPTERS.get(adapter).identity);
@@ -1456,7 +1499,9 @@ export function readAuthenticatedPhalaSdkObservationResponse(value, options) {
  * Its credential source is the stable-read canonical current CLI profile and
  * its SDK action module is the exact locally pinned file graph.
  */
-export async function createPinnedPhalaProductionSdkAdapter(value) {
+async function createPinnedPhalaSdkAdapter(value, {
+  historicalContinuityReadOnly = false,
+} = {}) {
   assertProductionExecutionPolicyAvailable();
   assertSafePhalaSdkProcessEnvironment();
   const { compatibility, staging, target } = exactAuthorityInputs(value);
@@ -1510,7 +1555,7 @@ export async function createPinnedPhalaProductionSdkAdapter(value) {
     sdk_manifest_sha256: identity.cloud.manifest_sha256,
     sdk_npm_dist_integrity_sha512: identity.cloud.npm_dist_integrity_sha512,
   });
-  const adapter = Object.freeze({
+  const adapterMethods = {
     async getCurrentUser() {
       return invokeSdkAction(state, {
         method: "getCurrentUser",
@@ -1622,7 +1667,12 @@ export async function createPinnedPhalaProductionSdkAdapter(value) {
         actionArguments: [{ id: cvmId }],
       });
     },
-  });
+  };
+  const adapter = Object.freeze(historicalContinuityReadOnly
+    ? Object.fromEntries(HISTORICAL_CONTINUITY_READ_ONLY_METHODS.map(
+      (method) => [method, adapterMethods[method]],
+    ))
+    : adapterMethods);
   const state = {
     adapter,
     actions,
@@ -1636,10 +1686,32 @@ export async function createPinnedPhalaProductionSdkAdapter(value) {
     workspace_verified: false,
     in_flight: false,
     next_call_sequence: 1,
+    historical_continuity_read_only: historicalContinuityReadOnly,
   };
   assertAdapterAuthorityFresh(state);
   PRODUCTION_ADAPTERS.set(adapter, state);
   return adapter;
+}
+
+export async function createPinnedPhalaProductionSdkAdapter(value) {
+  return createPinnedPhalaSdkAdapter(value, {
+    historicalContinuityReadOnly: false,
+  });
+}
+
+/**
+ * Reopens an expired launch target only as historical identity authority for
+ * current, authenticated reconciliation. The returned object exposes exactly
+ * four GET-backed methods and cannot reserve, provision, commit, update, or
+ * restart a CVM. Historical timestamps are not renewed by this constructor.
+ */
+export async function createPinnedPhalaHistoricalContinuityReadOnlySdkObserver(
+  value,
+) {
+  const observer = await createPinnedPhalaSdkAdapter(value, {
+    historicalContinuityReadOnly: true,
+  });
+  return assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver(observer);
 }
 
 export function assertProductionExecutionRemainsSealed() {

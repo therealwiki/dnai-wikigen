@@ -4,6 +4,12 @@ import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import {
+  acquirePhalaPinnedPrivateFileIdentity,
+  assertPinnedPhalaPrivateDirectoryPathIdentity,
+  closePhalaPinnedPrivatePendingReadyFileHold,
+  inspectPhalaPinnedPrivatePendingReadyFileHold,
+  listPhalaPinnedPrivateEntries,
+  openPhalaPinnedPrivatePendingReadyFileHold,
   readPhalaPinnedPrivateFile,
 } from "./phala-pinned-private-directory.mjs";
 
@@ -257,6 +263,37 @@ export function parsePinnedCanonicalResident0600Json(
   return parseCanonicalJsonBytes(bytes, label);
 }
 
+/**
+ * Acquire and retain a pinned file identity before parsing canonical JSON.
+ * The second fd-relative read is constrained to that exact inode, timestamps,
+ * size, and digest, so callers can safely carry the identity across a later
+ * authority-boundary recheck.
+ */
+export function parsePinnedCanonicalResident0600JsonWithIdentity(
+  handle,
+  fileName,
+  label,
+  { maximum = MAXIMUM_JSON_BYTES, allowMissing = false } = {},
+) {
+  const identity = acquirePhalaPinnedPrivateFileIdentity(handle, fileName, {
+    mode: 0o600,
+    maximum,
+    minimum: 2,
+    allowMissing,
+  });
+  if (identity === null) return null;
+  const bytes = readPhalaPinnedPrivateFile(handle, fileName, {
+    mode: 0o600,
+    maximum,
+    minimum: 2,
+    expectedIdentity: identity,
+  });
+  return Object.freeze({
+    ...parseCanonicalJsonBytes(bytes, label),
+    identity,
+  });
+}
+
 export async function waitForPinnedCanonicalResident0600Json({
   handle,
   fileName,
@@ -265,27 +302,141 @@ export async function waitForPinnedCanonicalResident0600Json({
   pollIntervalMilliseconds,
   maximum = MAXIMUM_JSON_BYTES,
 } = {}) {
+  const assertDeadlineActive = () => {
+    if (Date.now() >= deadlineMs) {
+      throw new Error(
+        `${label} was not supplied before the bounded deadline; automatic retry is forbidden`,
+      );
+    }
+  };
   if (!Number.isFinite(deadlineMs) || deadlineMs <= Date.now()
     || !Number.isSafeInteger(pollIntervalMilliseconds)
     || pollIntervalMilliseconds < 25 || pollIntervalMilliseconds > 1_000) {
     throw new Error(`${label} wait deadline or polling interval is invalid`);
   }
   while (true) {
+    assertDeadlineActive();
     const observed = parsePinnedCanonicalResident0600Json(
       handle,
       fileName,
       label,
       { maximum, allowMissing: true },
     );
-    if (observed !== null) return observed;
+    if (observed !== null) {
+      assertDeadlineActive();
+      return observed;
+    }
     const remaining = deadlineMs - Date.now();
     if (remaining <= 0) {
-      throw new Error(
-        `${label} was not supplied before the bounded deadline; automatic retry is forbidden`,
-      );
+      assertDeadlineActive();
     }
     await new Promise((resolve) => {
       setTimeout(resolve, Math.min(pollIntervalMilliseconds, remaining));
     });
+  }
+}
+
+/**
+ * Manifest-only readiness waiter for the no-replace 0200 -> 0600 publication
+ * protocol. An exact single-link 0200 inode is pending authority and is never
+ * opened for reading or parsed. A persistent isolated helper holds it O_WRONLY
+ * without writing, preventing unlink/recreate inode-number reuse while the same
+ * inode transitions once to 0600. Every other mode, namespace change,
+ * disappearance, or inode replacement is terminal. A reader that first
+ * observes the already-committed 0600 state retains the same descriptor hold
+ * through the canonical bounded read.
+ */
+export async function waitForPinnedCanonicalResident0600JsonPendingReady({
+  handle,
+  fileName,
+  label,
+  deadlineMs,
+  pollIntervalMilliseconds,
+  maximum = MAXIMUM_JSON_BYTES,
+} = {}) {
+  const assertDeadlineActive = () => {
+    if (Date.now() >= deadlineMs) {
+      throw new Error(
+        `${label} was not supplied before the bounded deadline; automatic retry is forbidden`,
+      );
+    }
+  };
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= Date.now()
+    || !Number.isSafeInteger(pollIntervalMilliseconds)
+    || pollIntervalMilliseconds < 25 || pollIntervalMilliseconds > 1_000
+    || !Number.isSafeInteger(maximum) || maximum < 2
+    || maximum > MAXIMUM_JSON_BYTES) {
+    throw new Error(`${label} wait deadline or polling interval is invalid`);
+  }
+  const expectedEntries = JSON.stringify([fileName]);
+  let observedAuthorityEntry = false;
+  let descriptorHold = null;
+  let heldPosture = null;
+  try {
+    while (true) {
+      assertDeadlineActive();
+      assertPinnedPhalaPrivateDirectoryPathIdentity(handle);
+      const entries = listPhalaPinnedPrivateEntries(handle);
+      if (entries.length === 0) {
+        if (observedAuthorityEntry) {
+          throw new Error(`${label} disappeared after its authority inode was observed`);
+        }
+      } else if (JSON.stringify(entries) !== expectedEntries) {
+        throw new Error(`${label} exchange contains unexpected entries`);
+      } else {
+        observedAuthorityEntry = true;
+        if (descriptorHold === null) {
+          const opened = await openPhalaPinnedPrivatePendingReadyFileHold(
+            handle,
+            fileName,
+            { maximum, minimum: 0, deadlineMs },
+          );
+          descriptorHold = opened.hold;
+          heldPosture = opened.posture;
+        } else {
+          heldPosture = await inspectPhalaPinnedPrivatePendingReadyFileHold(
+            descriptorHold,
+            { deadlineMs },
+          );
+        }
+        assertDeadlineActive();
+        if (heldPosture.mode === "0600") {
+          const observed = parsePinnedCanonicalResident0600JsonWithIdentity(
+            handle,
+            fileName,
+            label,
+            { maximum },
+          );
+          if (observed.identity.device !== descriptorHold.device
+            || observed.identity.inode !== descriptorHold.inode
+            || observed.identity.device !== heldPosture.device
+            || observed.identity.inode !== heldPosture.inode) {
+            throw new Error(`${label} ready authority inode changed during acceptance`);
+          }
+          assertPinnedPhalaPrivateDirectoryPathIdentity(handle);
+          if (JSON.stringify(listPhalaPinnedPrivateEntries(handle))
+              !== expectedEntries) {
+            throw new Error(`${label} exchange changed during acceptance`);
+          }
+          assertDeadlineActive();
+          return observed;
+        }
+        if (heldPosture.mode !== "0200") {
+          throw new Error(
+            `${label} has invalid ${heldPosture.mode} readiness mode; expected pending 0200 or ready 0600`,
+          );
+        }
+      }
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) assertDeadlineActive();
+      await new Promise((resolve) => {
+        setTimeout(resolve, Math.min(pollIntervalMilliseconds, remaining));
+      });
+    }
+  } catch (error) {
+    if (Date.now() >= deadlineMs) assertDeadlineActive();
+    throw error;
+  } finally {
+    await closePhalaPinnedPrivatePendingReadyFileHold(descriptorHold);
   }
 }

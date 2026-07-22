@@ -8,11 +8,15 @@ import test from "node:test";
 import {
   assertPinnedPhalaPrivateDirectoryPathIdentity,
   closePhalaPinnedPrivateDirectory,
+  closePhalaPinnedPrivatePendingReadyFileHold,
   createExclusivePhalaPinnedPrivateFile,
+  inspectPhalaPinnedPrivatePendingReadyFileHold,
+  openPhalaPinnedPrivatePendingReadyFileHold,
   phalaPinnedPrivateDirectoryIdentityAnchorPath,
   phalaPinnedPrivateDirectoryIdentityAnchorSha256,
   pinPhalaPrivateDirectory,
   publishPhalaPinnedPrivateFile,
+  publishPhalaPinnedPrivateFilePendingReady,
   readPhalaPinnedPrivateFile,
   unlinkPhalaPinnedPrivateFile,
 } from "./phala-pinned-private-directory.mjs";
@@ -83,6 +87,116 @@ test("descriptor-relative writes stay on the pinned inode after cross-process pa
   assert.throws(
     () => pinPhalaPrivateDirectory(directory),
     /identity changed|automatic rebind is forbidden/,
+  );
+});
+
+test("pending-ready create exposes exact 0200 despite umask and commits the same inode at 0600", (t) => {
+  const { directory } = fixture(t);
+  const handle = pinPhalaPrivateDirectory(directory);
+  t.after(() => closePhalaPinnedPrivateDirectory(handle));
+  const pendingPath = path.join(directory, "pending-manifest.json");
+  const readyPath = path.join(directory, "ready-manifest.json");
+  const bytes = Buffer.from('{"ready":true}\n');
+
+  const originalUmask = process.umask(0o277);
+  try {
+    assert.throws(
+      () => publishPhalaPinnedPrivateFilePendingReady(
+        handle,
+        "pending-manifest.json",
+        bytes,
+        { faultStage: "before-ready" },
+      ),
+      /before readiness transition/,
+    );
+  } finally {
+    process.umask(originalUmask);
+  }
+  const pending = fs.statSync(pendingPath, { bigint: true });
+  assert.equal(pending.mode & 0o777n, 0o200n);
+  assert.equal(pending.nlink, 1n);
+  assert.equal(pending.size, BigInt(bytes.length));
+
+  const strictUmask = process.umask(0o077);
+  let identity;
+  try {
+    identity = publishPhalaPinnedPrivateFilePendingReady(
+      handle,
+      "ready-manifest.json",
+      bytes,
+    );
+  } finally {
+    process.umask(strictUmask);
+  }
+  const ready = fs.statSync(readyPath, { bigint: true });
+  assert.equal(ready.mode & 0o777n, 0o600n);
+  assert.equal(ready.nlink, 1n);
+  assert.equal(identity.inode, String(ready.ino));
+  assert.equal(identity.mode, "0600");
+  assert.deepEqual(fs.readFileSync(readyPath), bytes);
+
+  const expiredPath = path.join(directory, "expired-manifest.json");
+  assert.throws(
+    () => publishPhalaPinnedPrivateFilePendingReady(
+      handle,
+      "expired-manifest.json",
+      bytes,
+      { readyDeadlineMs: Date.now() - 1 },
+    ),
+    /deadline expired before readiness transition/,
+  );
+  const expired = fs.statSync(expiredPath, { bigint: true });
+  assert.equal(expired.mode & 0o777n, 0o200n);
+  assert.equal(expired.nlink, 1n);
+});
+
+test("pending descriptor hold makes disappearance/recreate inode reuse impossible", async (t) => {
+  const { directory } = fixture(t);
+  const handle = pinPhalaPrivateDirectory(directory);
+  t.after(() => closePhalaPinnedPrivateDirectory(handle));
+  const filePath = path.join(directory, "held-pending.json");
+  const bytes = Buffer.from('{"pending":true}\n');
+  const fd = fs.openSync(
+    filePath,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+    0o200,
+  );
+  fs.fchmodSync(fd, 0o200);
+  fs.writeFileSync(fd, bytes);
+  fs.fsyncSync(fd);
+  fs.closeSync(fd);
+
+  const opened = await openPhalaPinnedPrivatePendingReadyFileHold(
+    handle,
+    "held-pending.json",
+    {
+      maximum: 64 * 1024,
+      deadlineMs: Date.now() + 1_000,
+    },
+  );
+  assert.equal(opened.posture.mode, "0200");
+  const originalInode = fs.statSync(filePath).ino;
+  assert.equal(opened.hold.inode, String(originalInode));
+
+  fs.unlinkSync(filePath);
+  fs.writeFileSync(filePath, bytes, { mode: 0o200 });
+  fs.chmodSync(filePath, 0o200);
+  const replacementInode = fs.statSync(filePath).ino;
+  assert.notEqual(
+    replacementInode,
+    originalInode,
+    "the live held descriptor must prevent reuse of the unlinked inode number",
+  );
+  await assert.rejects(
+    inspectPhalaPinnedPrivatePendingReadyFileHold(opened.hold, {
+      deadlineMs: Date.now() + 1_000,
+    }),
+    /single-link|replaced|disappeared/,
+  );
+  assert.equal(
+    await closePhalaPinnedPrivatePendingReadyFileHold(opened.hold),
+    false,
+    "an inspection failure must already have closed and retired the hold",
   );
 });
 

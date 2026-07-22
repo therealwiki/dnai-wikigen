@@ -559,6 +559,8 @@ export async function validateExact37ModelAHistoricalAuthority({
   const reviewerAuthority = {
     reviewer_authority_genesis_sha256: genesisSha256,
     reviewer_authority_genesis_acceptance_sha256: acceptanceSha256,
+    reviewer_authority_current_status_not_before: carriedStatus.not_before,
+    reviewer_authority_current_status_expires_at: carriedStatus.expires_at,
     ...activeReviewerAuthority,
   };
   const contract = normalizeFreshContractDeploymentReceipt(input.contractReceipt, {

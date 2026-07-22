@@ -1048,7 +1048,7 @@ class ReleaseComposeTest(unittest.TestCase):
             self.assertTrue(topology["checks"]["purpose_separated_qvl_descriptors"])
             self.assertEqual(
                 topology["trust_domains"]["main_runtime_cvm"]["deal_settlement"],
-                "disabled_confidential_evaluator_required",
+                "release_pinned_deterministic_evaluator",
             )
             self.assertEqual(
                 topology["trust_domains"]["main_runtime_cvm"][
@@ -1240,6 +1240,51 @@ class ReleaseComposeTest(unittest.TestCase):
             self.assertEqual(launch["schema"], "dnai.cvm-launch-intent-core.v3")
             self.assertEqual(len(launch["descriptors"]), 7)
             self.assertTrue(receipt_path.is_file())
+
+    def test_rendered_topology_is_accepted_by_activation_preflight(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            manifest_path = root / "input.json"
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            rendered = render_release_composes(
+                manifest_path,
+                root / "release",
+                manifest_attestation_bundle_path=_write_bundle(root),
+                deployment_intent_path=_write_intent(root),
+                expected_release_sha=SHA,
+                repository_root=REPOSITORY_ROOT,
+            )
+            completed = subprocess.run(
+                [
+                    "node",
+                    "--input-type=module",
+                    "--eval",
+                    (
+                        "import { readFileSync } from 'node:fs';"
+                        "import { inspectCvmTopology } from "
+                        "'./scripts/activation-preflight-core.mjs';"
+                        "const value = JSON.parse(readFileSync(process.argv[1], 'utf8'));"
+                        "process.stdout.write(JSON.stringify(inspectCvmTopology(value)));"
+                    ),
+                    str(rendered.topology),
+                ],
+                cwd=REPOSITORY_ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                shell=False,
+                timeout=30,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stderr.decode("utf-8", errors="replace"),
+            )
+            result = json.loads(completed.stdout.decode("utf-8"))
+            self.assertTrue(result["valid"], result)
+            self.assertEqual(result["releaseSha"], SHA)
+            self.assertEqual(len(result["domains"]), 7)
 
     def test_output_is_deterministic_and_contains_no_absolute_paths(self):
         manifest = _manifest()

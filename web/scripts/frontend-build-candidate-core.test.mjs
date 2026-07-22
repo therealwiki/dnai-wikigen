@@ -200,7 +200,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   // producer/validator recipe drift.
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:9826d596207c258861536e9ed8658a7691c2c5ba50d5172f900a3be01c814e56",
+    "sha256:732617cba420d343ab58d58e5cd7e494df493d3d10a354e8483f10593d92e859",
   );
 });
 

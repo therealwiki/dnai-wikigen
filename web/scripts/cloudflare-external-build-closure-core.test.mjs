@@ -193,12 +193,12 @@ const WEB_SOURCE_CONSUMERS = Object.freeze({
     "",
   ].join("\n"),
   "web/src/views/Overview.tsx": [
-    'import image from "../../../outputs/wikigen-pitch-assets/private-reward-oracle.webp";',
+    'import image from "../assets/pitch/private-reward-oracle.webp";',
     "export const Overview = () => image;",
     "",
   ].join("\n"),
   "web/src/views/Verify.tsx": [
-    'import image from "../../../outputs/wikigen-pitch-assets/attested-network.webp";',
+    'import image from "../assets/pitch/attested-network.webp";',
     "export const Verify = () => image;",
     "",
   ].join("\n"),
@@ -209,8 +209,6 @@ const RESOURCE_BYTES = Object.freeze({
   "ARCHITECTURE.md": "# Architecture\nBound fixture.\n",
   "PROJECT.md": "# Project\nBound fixture.\n",
   "README.md": "# Readme\nBound fixture.\n",
-  "outputs/wikigen-pitch-assets/attested-network.webp": "fixture-webp-attested-network\n",
-  "outputs/wikigen-pitch-assets/private-reward-oracle.webp": "fixture-webp-private-oracle\n",
   "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq":
     ". as $manifest | $manifest\n",
 });
@@ -280,11 +278,11 @@ test("external closure is exact, typed, canonical, and domain separated", async 
     // checked-in source projection KAT at the end of this file.
     assert.equal(
       closure.aggregate_sha256,
-      "sha256:7fc06562be3b694a5680291e81cbc3e26f2b17f557acea85601d8644d07d951b",
+      "sha256:d27c82d8196b1ea9fe8ca60bffb7033ecc45d9338331c542c077cc6923ea7cd2",
     );
     assert.equal(
       cloudflareExternalBuildClosureSha256(closure),
-      "sha256:221d3f2e1c2a7c9a6dce43088d67842480b33d5ca5eb7f7c07f5f774423793e3",
+      "sha256:ed35b3badf8e1fa8ef5ba7a05389f53285703b141b9ae45c269856eb7ebab804",
     );
   });
 });
@@ -347,22 +345,7 @@ test("closure rejects omission, undeclared transitive imports, extras, and back-
   });
 });
 
-test("asset, jq, content, mode, and aggregate substitutions cannot preserve authority", async () => {
-  await withFixture(async (root) => {
-    const baseline = await projectCloudflareExternalBuildClosure(root);
-    await writeFixtureFile(
-      root,
-      "outputs/wikigen-pitch-assets/attested-network.webp",
-      "substituted-asset\n",
-    );
-    const substituted = await projectCloudflareExternalBuildClosure(root);
-    assert.notEqual(substituted.aggregate_sha256, baseline.aggregate_sha256);
-    assert.notEqual(
-      cloudflareExternalBuildClosureSha256(substituted),
-      cloudflareExternalBuildClosureSha256(baseline),
-    );
-  });
-
+test("jq, content, mode, and aggregate substitutions cannot preserve authority", async () => {
   await withFixture(async (root) => {
     const baseline = await projectCloudflareExternalBuildClosure(root);
     await writeFixtureFile(
@@ -598,15 +581,15 @@ test("external module parser rejects dynamic loading, CommonJS, bare packages, a
 test("real checked-in external bytes match the final release projection KAT", async () => {
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
-  assert.equal(closure.entrypoints.length, 17);
-  assert.equal(closure.files.length, 29);
+  assert.equal(closure.entrypoints.length, 15);
+  assert.equal(closure.files.length, 27);
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:5925564340ef22e2d468f3e22e89168fb925985b5acd0d244c6d15e89084886d",
+    "sha256:9020f8b94af2cf176e391f6a3cac7325a57cc9afc8398451058bcc4b853e742f",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:083e2f6132fc8b060f8e657d312a809757253b92e957e0e0f2bc3714e85a42f7",
+    "sha256:b6760391961abc0759fbdf550caff9e9eebadbc5b73d1b2981c37a800b3fea87",
   );
   assert.equal(closureTest.MODULE_ENTRYPOINT_PATHS.length, 10);
   assert.equal(closureTest.MODULE_CLOSURE_PATHS.length, 22);
@@ -618,5 +601,5 @@ test("real checked-in external bytes match the final release projection KAT", as
     "@noble/hashes/sha3",
     "@noble/hashes/utils",
   ]);
-  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 7);
+  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 5);
 });

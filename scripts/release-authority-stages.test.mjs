@@ -20,6 +20,7 @@ import {
   commonFinalizedBlockRpcObservationSha256,
   executionPolicyAnchorRpcReadSha256,
   liveActivationAuthoritySha256,
+  liveActivationReviewSigningPayload,
   liveActivationFrontendBindingSha256,
   normalizeCeremonyAuthorizationCore,
   normalizeLiveActivationAuthority,
@@ -72,6 +73,10 @@ async function resignSyntheticStageOne(value, {
       prior.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       prior.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      prior.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      prior.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: prior.approved_reviewer_hashes,
     reviewer_root_hash: prior.reviewer_root_hash,
     reviewer_set_sha256: prior.reviewer_set_sha256,
@@ -97,6 +102,50 @@ async function resignSyntheticStageOne(value, {
     },
   };
 }
+
+async function resignSyntheticStageTwo(value, {
+  signedAt,
+  expiresAt,
+  options = value.stageTwoOptions,
+} = {}) {
+  const body = structuredClone(value.stageTwo);
+  delete body.review;
+  const prior = value.stageTwo.review;
+  const payload = liveActivationReviewSigningPayload(body, {
+    reviewer_authority_genesis_sha256:
+      prior.reviewer_authority_genesis_sha256,
+    reviewer_authority_genesis_acceptance_sha256:
+      prior.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      prior.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      prior.reviewer_authority_current_status_sha256,
+    approved_reviewer_hashes: prior.approved_reviewer_hashes,
+    reviewer_root_hash: prior.reviewer_root_hash,
+    reviewer_set_sha256: prior.reviewer_set_sha256,
+    signed_at: signedAt,
+    expires_at: expiresAt,
+  }, options);
+  const message = releaseAuthorityReviewSigningMessage(payload);
+  const accounts = new Map(
+    value.accounts.map((account) => [account.address.toLowerCase(), account]),
+  );
+  return {
+    ...body,
+    review: {
+      ...payload,
+      schema: prior.schema,
+      signing_payload_sha256:
+        releaseAuthorityReviewSigningPayloadSha256(payload),
+      signatures: await Promise.all(value.reviewers.map(async (reviewer) => ({
+        ...reviewer,
+        signature: (await accounts.get(reviewer.address)
+          .signMessage({ message })).toLowerCase(),
+      }))),
+    },
+  };
+}
+
 test("signed Stage 1 flows into separately signed Stage 2 without digest cycles", async () => {
   const value = await syntheticReleaseAuthorityStagesFixture();
   const stageOne = normalizeCeremonyAuthorizationCore(value.stageOne, value.stageOneOptions);
@@ -131,6 +180,13 @@ test("signed Stage 1 flows into separately signed Stage 2 without digest cycles"
     canonicalLiveActivationAuthorityArtifactText(stageTwo, value.stageTwoOptions),
   );
   assert.equal(JSON.stringify(value.stageTwo).includes("liveActivationAuthoritySha256"), false);
+  assert.throws(
+    () => normalizeLiveActivationAuthority(value.stageTwo, {
+      ...value.stageTwoOptions,
+      reviewerStatusHistory: [],
+    }),
+    /ambiguous legacy reviewerStatusHistory/,
+  );
 });
 
 test("Stage B requires original reviewer/R timing and production signing requires a live R brand", async () => {
@@ -142,6 +198,10 @@ test("Stage B requires original reviewer/R timing and production signing require
       value.stageOne.review.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       value.stageOne.review.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      value.stageOne.review.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      value.stageOne.review.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: value.stageOne.review.approved_reviewer_hashes,
     reviewer_root_hash: value.stageOne.review.reviewer_root_hash,
     reviewer_set_sha256: value.stageOne.review.reviewer_set_sha256,
@@ -196,6 +256,53 @@ test("Stage B requires original reviewer/R timing and production signing require
       preCeremonyRuntimeAuthority: shortRuntimeAuthority,
     }),
     /outside the pre-ceremony runtime-authority proof window/,
+  );
+
+  // Equality at the selected status expiry is valid and is exercised by the
+  // fixture's original review. Any extension beyond it is not.
+  assert.equal(
+    normalizeCeremonyAuthorizationCore(
+      value.stageOne,
+      value.stageOneOptions,
+    ).review.expires_at,
+    value.currentStatus.expires_at.replace("Z", ".000Z"),
+  );
+  const statusExpiryExtension = await resignSyntheticStageOne(value, {
+    signedAt: "2026-07-21T12:00:00.000Z",
+    expiresAt: "2026-07-21T12:10:00.001Z",
+  });
+  assert.throws(
+    () => normalizeCeremonyAuthorizationCore(
+      statusExpiryExtension,
+      value.stageOneOptions,
+    ),
+    /selected reviewer-status validity window/,
+  );
+  const signedAtStatusExpiry = await resignSyntheticStageOne(value, {
+    signedAt: "2026-07-21T12:10:00.000Z",
+    expiresAt: "2026-07-21T12:10:00.001Z",
+  });
+  assert.throws(
+    () => normalizeCeremonyAuthorizationCore(
+      signedAtStatusExpiry,
+      value.stageOneOptions,
+    ),
+    /selected reviewer-status validity window/,
+  );
+});
+
+test("Stage C review expiry is capped by its independently selected reviewer head", async () => {
+  const value = await syntheticReleaseAuthorityStagesFixture();
+  const statusExpiryExtension = await resignSyntheticStageTwo(value, {
+    signedAt: "2026-07-21T12:00:10.000Z",
+    expiresAt: "2026-07-21T12:10:00.001Z",
+  });
+  assert.throws(
+    () => normalizeLiveActivationAuthority(
+      statusExpiryExtension,
+      value.stageTwoOptions,
+    ),
+    /selected reviewer-status validity window/,
   );
 });
 

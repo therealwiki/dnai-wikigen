@@ -597,7 +597,7 @@ test("live activation requires one exact staged authority chain and signed-live 
     "pass",
   );
   const rawCheckCount = Object.values(report.summary).reduce((total, count) => total + count, 0);
-  assert.equal(rawCheckCount, 102);
+  assert.equal(rawCheckCount, 103);
   assert.equal(report.checks.length, rawCheckCount);
   assert.equal(report.checks.at(-1)?.id, "image.provenance_sbom");
 });
@@ -763,7 +763,7 @@ test("release ceremony and live activation require all five roles to be distinct
   }
 });
 
-test("all four stage reports stay bounded to the exact 102-check contract", () => {
+test("all four stage reports stay bounded to the exact 103-check contract", () => {
   for (const snapshot of [
     freshSnapshot(),
     cvmLaunchSnapshot(),
@@ -773,8 +773,8 @@ test("all four stage reports stay bounded to the exact 102-check contract", () =
     const report = buildPreflightReport(snapshot);
     const rawCheckCount = Object.values(report.summary)
       .reduce((total, count) => total + count, 0);
-    assert.equal(rawCheckCount, 102, snapshot.authorityStage);
-    assert.equal(report.checks.length, 102, snapshot.authorityStage);
+    assert.equal(rawCheckCount, 103, snapshot.authorityStage);
+    assert.equal(report.checks.length, 103, snapshot.authorityStage);
     assert.equal(report.checks.at(-1)?.id, "image.provenance_sbom");
   }
 });

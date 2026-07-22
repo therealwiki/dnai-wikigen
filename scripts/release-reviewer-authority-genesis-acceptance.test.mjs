@@ -437,11 +437,33 @@ test("complete history rejects epoch rollback, predecessor fork, and controller 
     /never add or reactivate controllers|cannot activate a revoked/,
   );
 
+  await assert.rejects(
+    () => currentStatus(core, {
+      epoch: 3,
+      statusHistory: [first, second],
+      activeReviewers: activeWithoutCharlie,
+      revokedControllerIds: [],
+      notBefore: "2026-07-21T12:30:00Z",
+      expiresAt: "2026-07-21T12:45:00Z",
+    }),
+    /revocations are monotonic/,
+  );
+
   const sibling = await currentStatus(core, {
     epoch: 2,
     statusHistory: [first],
     activeReviewers: selections(core, 0, ["reviewer-alpha", "reviewer-bravo"]),
   });
+  await assert.rejects(
+    () => currentStatus(core, {
+      epoch: 3,
+      statusHistory: [first, sibling],
+      activeReviewers: selections(core, 0),
+      notBefore: "2026-07-21T12:30:00Z",
+      expiresAt: "2026-07-21T12:45:00Z",
+    }),
+    /never add or reactivate controllers/,
+  );
   assert.throws(
     () => normalizeReleaseReviewerAuthorityCurrentStatus(
       sibling,

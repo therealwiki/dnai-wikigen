@@ -21,13 +21,14 @@ import {
 } from "./phala-production-resident-io.mjs";
 
 export const PHALA_PRODUCTION_AUTHORITY_WORKSPACE_PREPARE_REQUEST_SCHEMA =
-  "dnai.phala-production-authority-workspace-prepare-request.v1";
+  "dnai.phala-production-authority-workspace-prepare-request.v2";
 export const PHALA_PRODUCTION_AUTHORITY_WORKSPACE_PREPARATION_RECEIPT_SCHEMA =
-  "dnai.phala-production-authority-workspace-preparation-receipt.v1";
+  "dnai.phala-production-authority-workspace-preparation-receipt.v2";
 
 const AUTHORITY_FIELDS = Object.freeze([
   "evidenceExchangePath",
   "outputPath",
+  "postlaunchAuthorityExchangePath",
   "signingExchangePath",
 ]);
 
@@ -38,7 +39,7 @@ function usage() {
     "    --prepare-request /absolute/private-workspace-request.json",
     "",
     "This is non-authorizing filesystem setup. It initializes or strictly",
-    "reopens three empty 0700 directories, prints their observed identity-anchor",
+    "reopens four empty 0700 directories, prints their observed identity-anchor",
     "digests, and does not authorize CVM mutation, activation, or live traffic.",
     "The printed receipt must be independently reviewed before its exact",
     "path+anchor pairs are sealed into the resident activation request.",
@@ -125,6 +126,10 @@ export function preparePhalaProductionAuthorityWorkspace(value) {
       "evidence exchange authority",
     ));
     opened.push(prepareOne(
+      paths.postlaunchAuthorityExchangePath,
+      "postlaunch final-authority exchange authority",
+    ));
+    opened.push(prepareOne(
       paths.signingExchangePath,
       "Stage-B signing exchange authority",
     ));
@@ -147,8 +152,9 @@ export function preparePhalaProductionAuthorityWorkspace(value) {
         "local_empty_directory_and_identity_anchor_observation_only_not_activation_authority",
       resident_activation_authorities: Object.freeze({
         evidenceExchangeAuthority: opened[0].authority,
-        outputAuthority: opened[2].authority,
-        signingExchangeAuthority: opened[1].authority,
+        outputAuthority: opened[3].authority,
+        postlaunchAuthorityExchangeAuthority: opened[1].authority,
+        signingExchangeAuthority: opened[2].authority,
       }),
       directories_empty_at_observation: true,
       externally_reviewed_and_sealed_into_activation_request: false,

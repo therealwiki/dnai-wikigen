@@ -112,10 +112,15 @@ agent compute tokens; one token type is never accepted as another:
   for a remote Tinker provider, so merely calling it from a CVM would not keep
   the raw artifact inside the attested boundary. It remains research/test code
   but the production runtime rejects `sft` in every custody mode. The rendered
-  dstack and Phala releases force `disabled`, and the Deal capability remains
-  `disabled_confidential_evaluator_required` until a separately attested
-  confidential provider contract exists. Any unsupported mode returns one
-  fixed 503 before the control plane loads credentials or artifact state.
+  dstack and Phala releases instead pin `deterministic`: an in-main-CVM,
+  release-pinned three-policy registry whose recipes perform no provider,
+  network, subprocess, filesystem, clock, randomness, or logging I/O over the
+  private artifact. The Deal service remains profile- and release-gated as
+  `release_pinned_deterministic_evaluator`; that source capability is not a
+  live claim until the clean image, manifest/policy root, topology-v6
+  descriptor set, fresh contracts, measured CVM, QVL evidence, and ceremony
+  authority all agree. Any unsupported mode returns one fixed 503 before the
+  control plane loads credentials or artifact state.
 - Deal evaluation, Arena execution, and Compute dispatch now share a durable
   execution-policy gate. Internal bearer possession can record a safer
   hold/deny but cannot create a pass: pass requires an allowlisted independent
@@ -1029,9 +1034,9 @@ a 20-second verification phase. Their 25-second combined server budget leaves
 headroom inside every QVL consumer's 30-second end-to-end request timeout.
 
 Do not deploy the source-development compose directly. Generate the exact
-digest-pinned `dnai-main-runtime.phala.yaml` plus its six independent
-descriptors from the signed five-image release manifest. The main descriptor
-contains the internal service wiring, including:
+topology-v6, digest-pinned `dnai-main-runtime.phala.yaml` plus its six
+independent descriptors from the signed five-image release manifest. The main
+descriptor contains the internal service wiring, including:
 
 ```yaml
 services:
@@ -1039,15 +1044,18 @@ services:
     environment:
       TINKER_CDP_URL: http://neko:9223
       TINKER_ORACLE_URL: http://oracle:8000
-      TINKER_EVALUATOR_MODE: disabled
+      TINKER_EVALUATOR_MODE: deterministic
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
 ```
 
-The upstream API key is sealed through a purpose-separated dstack derivation
-path. Possession of that key does not enable Deal evaluation: production Deal
-settlement remains disabled until an attested confidential evaluator can keep
-the raw seller artifact inside its complete provider boundary.
+The deterministic Deal evaluator does not consume the upstream Tinker API key;
+that credential remains purpose-separated for the product surfaces that need
+it. Merely rendering this service does not enable settlement. Production Deal
+settlement remains unavailable until the exact deterministic evaluator
+manifest and policy root, clean image, topology-v6 descriptor set, fresh
+contract bindings, measured main CVM, independent QVL evidence, and ceremony
+authority have all been verified.
 
 ## What's Next
 

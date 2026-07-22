@@ -33,7 +33,7 @@ import {
 } from "./phala-production-resident-io.mjs";
 
 export const PHALA_PRODUCTION_STAGE_B_ATTACHMENT_MANIFEST_SCHEMA =
-  "dnai.phala-production-stage-b-attachment-manifest.v1";
+  "dnai.phala-production-stage-b-attachment-manifest.v2";
 export const PHALA_PRODUCTION_STAGE_B_EXTERNAL_SIGNATURES_SCHEMA =
   "dnai.phala-production-stage-b-external-signatures.v1";
 export const PHALA_PRODUCTION_STAGE_B_ATTACHMENT_MANIFEST_BASENAME =
@@ -47,6 +47,8 @@ const RELEASE_SHA = /^(?!0{40}$)[0-9a-f]{40}$/;
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const CONTROLLER = /^[a-z0-9][a-z0-9._-]{7,63}$/;
 const MAXIMUM_FUTURE_SKEW_MS = 5 * 60 * 1_000;
+const LEGACY_STAGE_B_ATTACHMENT_MANIFEST_SCHEMA =
+  "dnai.phala-production-stage-b-attachment-manifest.v1";
 
 function usage() {
   return [
@@ -135,6 +137,12 @@ export function normalizePhalaProductionStageBAttachmentManifest(
   value,
   expectedAnchorSha256,
 ) {
+  if (value && typeof value === "object" && !Array.isArray(value)
+    && value.schema === LEGACY_STAGE_B_ATTACHMENT_MANIFEST_SCHEMA) {
+    throw new Error(
+      "legacy Stage-B attachment manifest v1 is not accepted by the live v2 transport",
+    );
+  }
   const parsed = exactResidentRecord(value, [
     "activation_mutation_authorized",
     "automatic_retry_authorized",
@@ -148,6 +156,9 @@ export function normalizePhalaProductionStageBAttachmentManifest(
     "signing_message",
     "signing_payload_file",
     "signing_payload_sha256",
+    "stage_b_review_reviewer_authority_current_status_epoch",
+    "stage_b_review_reviewer_authority_current_status_sha256",
+    "stage_b_reviewer_status_history_raw_file_sha256",
     "status",
     "truth_status",
     "unsigned_body_file",
@@ -178,6 +189,16 @@ export function normalizePhalaProductionStageBAttachmentManifest(
     || !SHA256.test(parsed.signing_payload_sha256)
     || parsed.signing_exchange_directory_identity_anchor_sha256
       !== expectedAnchorSha256
+    || !SHA256.test(
+      parsed.stage_b_reviewer_status_history_raw_file_sha256,
+    )
+    || !Number.isSafeInteger(
+      parsed.stage_b_review_reviewer_authority_current_status_epoch,
+    )
+    || parsed.stage_b_review_reviewer_authority_current_status_epoch < 1
+    || !SHA256.test(
+      parsed.stage_b_review_reviewer_authority_current_status_sha256,
+    )
     || typeof parsed.signing_message !== "string"
     || parsed.signing_message.length < 32 || parsed.signing_message.length > 512
     || parsed.automatic_retry_authorized !== false
@@ -227,6 +248,10 @@ function stageBReviewMetadata(payload) {
       payload.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       payload.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      payload.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      payload.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: payload.approved_reviewer_hashes,
     reviewer_root_hash: payload.reviewer_root_hash,
     reviewer_set_sha256: payload.reviewer_set_sha256,
@@ -323,6 +348,14 @@ export function attachPhalaProductionStageB({
       throw new Error("Stage-B unsigned body must not already contain a review");
     }
     const payload = reviewSigningPayload(payloadRead.value);
+    if (manifest.stage_b_review_reviewer_authority_current_status_epoch
+        !== payload.reviewer_authority_current_status_epoch
+      || manifest.stage_b_review_reviewer_authority_current_status_sha256
+        !== payload.reviewer_authority_current_status_sha256) {
+      throw new Error(
+        "Stage-B attachment manifest reviewer-status head differs from the exact signed review payload",
+      );
+    }
     const recomputedPayload = ceremonyAuthorizationReviewSigningPayload(
       bodyRead.value,
       stageBReviewMetadata(payload),
@@ -368,13 +401,19 @@ export function attachPhalaProductionStageB({
       { mode: 0o600, maximum: MAXIMUM_SIGNING_BYTES },
     );
     return Object.freeze({
-      schema: "dnai.phala-production-stage-b-attachment-receipt.v1",
+      schema: "dnai.phala-production-stage-b-attachment-receipt.v2",
       status: "candidate_signed_b_attached_pending_same_process_coordinator_validation",
       truth_status:
         "two_external_signatures_independently_replayed_no_signing_key_or_activation_capability_accepted",
       release_sha: manifest.release_sha,
       batch_id: manifest.batch_id,
       signing_payload_sha256: payloadSha256,
+      stage_b_reviewer_status_history_raw_file_sha256:
+        manifest.stage_b_reviewer_status_history_raw_file_sha256,
+      stage_b_review_reviewer_authority_current_status_epoch:
+        payload.reviewer_authority_current_status_epoch,
+      stage_b_review_reviewer_authority_current_status_sha256:
+        payload.reviewer_authority_current_status_sha256,
       signed_b_output_basename: manifest.signed_b_output.basename,
       signed_b_output_sha256: identity.sha256,
       signature_count: 2,

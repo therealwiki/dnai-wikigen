@@ -39,13 +39,14 @@ function fixture(t) {
       authorities: {
         evidenceExchangePath: path.join(root, "evidence"),
         outputPath: path.join(root, "outputs"),
+        postlaunchAuthorityExchangePath: path.join(root, "postlaunch-authority"),
         signingExchangePath: path.join(root, "signing"),
       },
     },
   };
 }
 
-test("workspace preparation emits three strict empty authorities and no activation claim", (t) => {
+test("workspace preparation emits four strict empty authorities and no activation claim", (t) => {
   const { request } = fixture(t);
   const receipt = preparePhalaProductionAuthorityWorkspace(request);
   assert.equal(
@@ -55,6 +56,15 @@ test("workspace preparation emits three strict empty authorities and no activati
   assert.equal(receipt.activation_mutation_authorized, false);
   assert.equal(receipt.live_traffic_authorized, false);
   assert.equal(receipt.externally_reviewed_and_sealed_into_activation_request, false);
+  assert.deepEqual(
+    Object.keys(receipt.resident_activation_authorities),
+    [
+      "evidenceExchangeAuthority",
+      "outputAuthority",
+      "postlaunchAuthorityExchangeAuthority",
+      "signingExchangeAuthority",
+    ],
+  );
 
   for (const authority of Object.values(receipt.resident_activation_authorities)) {
     const handle = pinPhalaPrivateDirectory(authority.path, {
@@ -66,6 +76,29 @@ test("workspace preparation emits three strict empty authorities and no activati
       closePhalaPinnedPrivateDirectory(handle);
     }
   }
+});
+
+test("all four authority roots are pairwise distinct and non-nesting", (t) => {
+  const { root, request } = fixture(t);
+  const equal = structuredClone(request);
+  equal.authorities.postlaunchAuthorityExchangePath =
+    equal.authorities.evidenceExchangePath;
+  assert.throws(
+    () => preparePhalaProductionAuthorityWorkspace(equal),
+    /pairwise distinct/,
+  );
+
+  const nested = structuredClone(request);
+  nested.authorities.postlaunchAuthorityExchangePath = path.join(
+    nested.authorities.evidenceExchangePath,
+    "postlaunch",
+  );
+  assert.throws(
+    () => preparePhalaProductionAuthorityWorkspace(nested),
+    /must not contain one another/,
+  );
+
+  assert.equal(fs.existsSync(path.join(root, "evidence")), false);
 });
 
 test("workspace preparation is idempotent only through the exact observed anchors", (t) => {

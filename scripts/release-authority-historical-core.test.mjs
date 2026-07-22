@@ -9,6 +9,7 @@ import {
   HISTORICAL_LIVE_ACTIVATION_EXPECTED_CONTEXT_TRUTH,
   RELEASE_AUTHORITY_CRYPTOGRAPHIC_REVIEW_SCHEMA,
   RELEASE_AUTHORITY_REVIEW_MESSAGE_PREFIX,
+  historicalCeremonyAuthorizationReviewSigningPayload,
   historicalCeremonyAuthorizationCoreSha256,
   historicalLiveActivationAuthoritySha256,
   historicalLiveActivationFrontendBindingSha256,
@@ -49,6 +50,12 @@ function reviewerAuthority(value) {
       value.stageOne.review.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       value.stageOne.review.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      value.stageOne.review.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_not_before: status.not_before,
+    reviewer_authority_current_status_expires_at: status.expires_at,
+    reviewer_authority_current_status_sha256:
+      value.stageOne.review.reviewer_authority_current_status_sha256,
     approved_reviewers: clone(value.reviewers),
     approved_reviewer_hashes: clone(status.approved_reviewer_hashes),
     reviewer_root_hash: status.reviewer_root_hash,
@@ -81,6 +88,53 @@ function ceremonyOptions(value) {
     reviewerAuthority: reviewerAuthority(value),
     expectedSignatureVerifier: value.stageOne.review.signature_verifier,
     verifyReviewSignatures: exactReviewVerifier(value.stageOne.review),
+  };
+}
+
+async function resignedHistoricalStageOne(value, { signedAt, expiresAt }) {
+  const options = ceremonyOptions(value);
+  const body = clone(value.stageOne);
+  delete body.review;
+  const prior = value.stageOne.review;
+  const payload = historicalCeremonyAuthorizationReviewSigningPayload(body, {
+    reviewer_authority_genesis_sha256:
+      prior.reviewer_authority_genesis_sha256,
+    reviewer_authority_genesis_acceptance_sha256:
+      prior.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      prior.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      prior.reviewer_authority_current_status_sha256,
+    approved_reviewer_hashes: clone(prior.approved_reviewer_hashes),
+    reviewer_root_hash: prior.reviewer_root_hash,
+    reviewer_set_sha256: prior.reviewer_set_sha256,
+    signed_at: signedAt,
+    expires_at: expiresAt,
+  }, options);
+  const signingPayloadSha256 =
+    historicalReleaseAuthorityReviewSigningPayloadSha256(payload, {
+      expectedSignatureVerifier: prior.signature_verifier,
+    });
+  const message = `${RELEASE_AUTHORITY_REVIEW_MESSAGE_PREFIX}${signingPayloadSha256}`;
+  const accounts = new Map(
+    value.accounts.map((account) => [account.address.toLowerCase(), account]),
+  );
+  const review = {
+    ...payload,
+    schema: RELEASE_AUTHORITY_CRYPTOGRAPHIC_REVIEW_SCHEMA,
+    signing_payload_sha256: signingPayloadSha256,
+    signatures: await Promise.all(value.reviewers.map(async (reviewer) => ({
+      ...reviewer,
+      signature: (await accounts.get(reviewer.address)
+        .signMessage({ message })).toLowerCase(),
+    }))),
+  };
+  return {
+    artifact: { ...body, review },
+    options: {
+      ...options,
+      verifyReviewSignatures: exactReviewVerifier(review),
+    },
   };
 }
 
@@ -119,7 +173,10 @@ function syntheticLaunchProjection(value) {
   };
 }
 
-async function liveFixture() {
+async function liveFixture({
+  cSignedAt,
+  cExpiresAt,
+} = {}) {
   const value = await syntheticReleaseAuthorityStagesFixture();
   const bOptions = ceremonyOptions(value);
   const b = normalizeHistoricalCeremonyAuthorizationCore(value.stageOne, bOptions);
@@ -194,11 +251,15 @@ async function liveFixture() {
       value.stageTwo.review.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       value.stageTwo.review.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      value.stageTwo.review.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      value.stageTwo.review.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: clone(value.stageTwo.review.approved_reviewer_hashes),
     reviewer_root_hash: value.stageTwo.review.reviewer_root_hash,
     reviewer_set_sha256: value.stageTwo.review.reviewer_set_sha256,
-    signed_at: value.stageTwo.review.signed_at,
-    expires_at: value.stageTwo.review.expires_at,
+    signed_at: cSignedAt ?? value.stageTwo.review.signed_at,
+    expires_at: cExpiresAt ?? value.stageTwo.review.expires_at,
   };
   const commonOptions = {
     ceremonyAuthorization: value.stageOne,
@@ -268,6 +329,21 @@ test("historical B exact-binds the independently reconstructed signed-A receipt"
   );
 });
 
+test("historical B review cannot outlive its authenticated reviewer status", async () => {
+  const value = await syntheticReleaseAuthorityStagesFixture();
+  const overflow = await resignedHistoricalStageOne(value, {
+    signedAt: "2026-07-21T12:00:00.000Z",
+    expiresAt: "2026-07-21T12:10:00.001Z",
+  });
+  assert.throws(
+    () => normalizeHistoricalCeremonyAuthorizationCore(
+      overflow.artifact,
+      overflow.options,
+    ),
+    /selected reviewer-status validity window/,
+  );
+});
+
 test("historical C binds its full receipt and all seven CVMs to L, R, plan, and release authority", async () => {
   const fixture = await liveFixture();
   const normalized = normalizeHistoricalLiveActivationAuthority(
@@ -319,6 +395,49 @@ test("historical C binds its full receipt and all seven CVMs to L, R, plan, and 
   assert.throws(
     () => normalizeHistoricalLiveActivationAuthority(finalCvmDrift, fixture.options),
     /differs from historical L descriptor/,
+  );
+});
+
+test("historical B and C consume independent authenticated status-window projections", async () => {
+  const fixture = await liveFixture();
+  const lateC = clone(fixture.options.reviewerAuthority);
+  lateC.reviewer_authority_current_status_not_before =
+    "2026-07-21T12:00:11Z";
+  assert.throws(
+    () => normalizeHistoricalLiveActivationAuthority(fixture.stageTwo, {
+      ...fixture.options,
+      reviewerAuthority: lateC,
+    }),
+    /selected reviewer-status validity window/,
+  );
+
+  const expiredB = clone(
+    fixture.options.ceremonyAuthorizationOptions.reviewerAuthority,
+  );
+  expiredB.reviewer_authority_current_status_expires_at =
+    "2026-07-21T12:00:00Z";
+  assert.throws(
+    () => normalizeHistoricalLiveActivationAuthority(fixture.stageTwo, {
+      ...fixture.options,
+      ceremonyAuthorizationOptions: {
+        ...fixture.options.ceremonyAuthorizationOptions,
+        reviewerAuthority: expiredB,
+      },
+    }),
+    /selected reviewer-status validity window/,
+  );
+});
+
+test("historical C review cannot outlive its independently projected reviewer status", async () => {
+  const fixture = await liveFixture({
+    cExpiresAt: "2026-07-21T12:10:00.001Z",
+  });
+  assert.throws(
+    () => normalizeHistoricalLiveActivationAuthority(
+      fixture.stageTwo,
+      fixture.options,
+    ),
+    /selected reviewer-status validity window/,
   );
 });
 

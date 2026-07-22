@@ -104,11 +104,27 @@ ceremony/settlement profiles cannot be smuggled into the same update.
 
 The production activation coordinator is deliberately a same-process
 authority chain. It retains branded, non-serializable dependencies from the
-completed seven-CVM launch and reviewed final authority; projects the deferred
-public environment; builds the exact activation plan and pre-ceremony runtime
-authority; opens a pinned private Stage-B signing exchange; and consumes only
-the exact canonical signed B before the first mutation. Serialized receipts
-remain evidence, not authority that another process can reload and use.
+completed seven-CVM launch, durably persists its private historical transcript
+and launch-completion receipt L, and only then accepts reviewed final authority
+through a distinct pinned postlaunch exchange. After that exact manifest is
+validated it projects the deferred public environment, builds the activation
+plan and pre-ceremony runtime authority, opens the pinned private Stage-B
+signing exchange, and consumes only the exact canonical signed B before the
+first mutation. Serialized receipts remain evidence, not authority that
+another process can reload and use.
+
+The resident boundary is versioned to preserve that causal order. Driver
+request v3 contains no reviewer-status history: Stage A is exactly the
+epoch-one acceptance with an empty predecessor sequence. Only after L exists
+does postlaunch request v2 publish one non-refreshing
+`manifest_acceptance_deadline`, capped by both its configured timeout and L's
+evidence lease, and require activation-input manifest v2. That manifest
+late-binds `stageBReviewerStatusHistory` as an owned, single-link, exact
+mode-`0600` canonical bare array (`[]` for a still-current root, otherwise the
+exact root plus every successor). Stage-B attachment manifest/receipt v2 carry
+only the history raw digest and selected current-status epoch/digest across the
+external-signature transport. They do not prove deployment, activation, TDX
+verification, or live-traffic authority.
 
 After the signed environment patch and restart, the runtime records an
 authenticated Phala CVM-info/attestation observation. Quote presence in that
@@ -127,10 +143,12 @@ The source-real resident driver,
 operator for that chain. It accepts exactly one owned canonical mode-`0600`
 request via `--execute-request`, performs the non-live seven-CVM launch, waits
 in pinned private exchanges for five QVL-identity proofs, two workload-verdict
-proofs, external Stage-B signatures, and post-restart recipient activation,
-then publishes bounded outputs with its manifest written last. Its ordered
-checkpoints never authorize automatic retry or live traffic; the final result
-also records `capability_serialized=false` and
+proofs, persists L, publishes a non-authorizing postlaunch projection, and
+waits for one exact postlaunch final-authority input manifest before external
+Stage-B signatures and post-restart recipient activation. It then publishes
+bounded outputs with its manifest written last. Its ordered checkpoints never
+authorize automatic retry or live traffic; the final result also records
+`capability_serialized=false` and
 `signer_key_material_accepted=false`. This driver is implemented and locally
 tested, but it has not run against a fresh project-owned production topology
 and is not a deployment claim.
@@ -3080,16 +3098,22 @@ TTT/RL bio-validation binding — a source-controlled program candidate space an
 Tinker-backed optimizer — is not. The current evaluator code is:
 
 ```
-stub_evaluate()       deterministic synthetic result for testing
-sft_evaluate()        LoRA/SFT-oriented evaluator shape using Tinker SDK
+stub_evaluate()                         synthetic local-integration result
+sft_evaluate()                          research-only remote-provider shape
+deterministic diligence registry       three bounded no-I/O production recipes
 ```
 
 Evaluator selection is now an enforced runtime boundary rather than an API
 comment. `TINKER_EVALUATOR_MODE` defaults to `disabled`; `stub` is accepted
-only outside dstack, and `sft` requires a real dstack CVM and rejects the local
-simulator. The Phala release compose selects `sft` explicitly. This prevents a
-valid TDX envelope from being used to relabel deterministic synthetic output as
-a live evaluation; a mode/custody mismatch fails before control-plane creation.
+only outside dstack, and `sft` is rejected in every custody mode because it
+would send artifact-derived tokens to a non-attested provider. The topology-v6
+Phala release selects `deterministic` explicitly. That lane resolves the
+buyer's exact on-chain policy commitment through a release-pinned three-recipe
+manifest and evaluates the artifact inside the main CVM without provider,
+network, subprocess, filesystem, clock, randomness, or logging I/O. This
+prevents a valid TDX envelope from relabeling either synthetic output or remote
+provider egress as confidential evaluation; a mode/custody or manifest/policy
+mismatch fails before execution.
 
 The private reward contract is:
 
@@ -4886,9 +4910,12 @@ bounded aggregate results
 2. The five challenge-v2 / verdict-v4 QVL roots, live measurements, independent
    operator review, and one live bounded proof per profile remain deployment
    requirements. Local QVL tests are not Intel TDX evidence.
-3. Production Deal evaluation is intentionally disabled because the historical
-   remote Tinker SFT helper sends seller-derived tokens outside the CVM. A
-   separately attested confidential evaluator/provider boundary is required.
+3. The production Deal lane is implemented as the release-pinned deterministic
+   evaluator inside the main CVM; the historical remote Tinker SFT helper
+   remains unselectable because it would send seller-derived tokens outside the
+   CVM. Deal settlement is still not live until a clean topology-v6 release,
+   evaluator manifest/policy root, fresh contract binding, measured CVM,
+   independent QVL evidence, and ceremony authority are deployed and verified.
 4. Paid Compute dispatch remains disabled because the pinned Tinker SDK does
    not expose sufficient stable idempotency and exact restart-recovery semantics
    to rule out duplicate spend or a lost provider receipt.

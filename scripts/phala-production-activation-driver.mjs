@@ -10,6 +10,7 @@ import {
   beginPhalaProductionActivationFromSignedB,
   completePhalaProductionActivation,
   disposePhalaProductionActivationSession,
+  persistPhalaProductionActivationLaunchCompletion,
   phalaProductionActivationSigningExchangePaths,
   preparePhalaProductionActivationEvidence,
   readPhalaProductionActivationRuntimeDeadlines,
@@ -61,9 +62,33 @@ import {
   readStableCanonicalResident0600Json,
   waitForPinnedCanonicalResident0600Json,
 } from "./phala-production-resident-io.mjs";
+import {
+  PHALA_PRODUCTION_POSTLAUNCH_INPUT_MANIFEST_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_PROJECTION_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_REQUEST_BASENAME,
+  disposePhalaProductionPostlaunchActivationCapability,
+  publishPhalaProductionPostlaunchHandoff,
+  waitForPhalaProductionPostlaunchActivationCapability,
+} from "./phala-production-postlaunch-activation-capability.mjs";
+export {
+  PHALA_PRODUCTION_POSTLAUNCH_CAPABILITY_SCHEMA,
+  PHALA_PRODUCTION_POSTLAUNCH_COMPLETION_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_INPUT_MANIFEST_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_INPUT_MANIFEST_SCHEMA,
+  PHALA_PRODUCTION_POSTLAUNCH_PROJECTION_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_PROJECTION_SCHEMA,
+  PHALA_PRODUCTION_POSTLAUNCH_REQUEST_BASENAME,
+  PHALA_PRODUCTION_POSTLAUNCH_REQUEST_SCHEMA,
+  createPhalaProductionPostlaunchProjection,
+  disposePhalaProductionPostlaunchActivationCapability,
+  normalizePhalaProductionPostlaunchInputManifest,
+  publishPhalaProductionPostlaunchHandoff,
+  waitForPhalaProductionPostlaunchActivationCapability,
+  waitForPostlaunchActivationInputs,
+} from "./phala-production-postlaunch-activation-capability.mjs";
 
 export const PHALA_PRODUCTION_ACTIVATION_DRIVER_REQUEST_SCHEMA =
-  "dnai.phala-production-activation-driver-request.v1";
+  "dnai.phala-production-activation-driver-request.v3";
 export const PHALA_PRODUCTION_ACTIVATION_DRIVER_CHECKPOINT_SCHEMA =
   "dnai.phala-production-activation-driver-checkpoint.v1";
 export const PHALA_PRODUCTION_ACTIVATION_DRIVER_RESULT_SCHEMA =
@@ -79,6 +104,8 @@ export const PHALA_PRODUCTION_ACTIVATION_DRIVER_STATES = Object.freeze([
   "seven_cvm_launch_complete_non_live",
   "collecting_five_qvl_identity_proofs",
   "collecting_two_workload_verdict_proofs",
+  "launch_completion_persisted_non_live",
+  "waiting_for_postlaunch_activation_inputs",
   "waiting_for_external_stage_b_signatures",
   "post_measurement_runtime_mutated_non_live",
   "waiting_for_compute_recipient_activation",
@@ -115,36 +142,24 @@ const LAUNCH_FIELDS = Object.freeze([
   "reviewerAuthorityGenesisPath",
   "sdkWireTransformStagingReceiptPath",
 ]);
-const REVIEWED_FINAL_FIELDS = Object.freeze([
-  "cvmLaunchIntent",
-  "deploymentIntent",
-  "finalAuthority",
-  "reviewEnvelope",
-  "reviewEvidence",
-]);
 const ACTIVATION_FIELDS = Object.freeze([
   "bootstrapPhaseInput",
-  "ceremonyLedgerInitial",
-  "ceremonyLedgerInitializationReceipt",
-  "ceremonyTransactionPlan",
-  "deferredAuthorityReview",
   "descriptorSetReceipt",
   "evidenceExchangeAuthority",
   "evidenceTimeoutSeconds",
   "finalPhaseInput",
   "freshContractDeploymentReceipt",
-  "immutableDeploymentManifest",
   "independentMeteringPolicySetHash",
   "measurementPolicySet",
   "outputAuthority",
   "pollIntervalMilliseconds",
+  "postlaunchAuthorityExchangeAuthority",
+  "postlaunchAuthorityTimeoutSeconds",
   "qvlIdentityTtlSeconds",
   "recipientTimeoutSeconds",
   "releaseManifestSigstoreVerificationReceipt",
-  "reviewedFinalAuthorityFiles",
   "reviewerGenesis",
   "reviewerGenesisAcceptance",
-  "reviewerStatusHistory",
   "signingExchangeAuthority",
   "signingTimeoutSeconds",
 ]);
@@ -161,9 +176,11 @@ function usage() {
     "    --execute-request /absolute/private-resident-request.json",
     "",
     "The request must be canonical recursively sorted JSON in one owned 0600",
-    "single-link file. The process remains resident through launch, verifier",
-    "proof collection, Stage-B, restart, recipient activation, and final output",
-    "publication so opaque WeakMap authority is never serialized or recovered.",
+    "single-link file. It contains only prelaunch bindings. The process persists",
+    "L, publishes a non-authorizing public postlaunch projection, then waits in",
+    "the separately pinned authority exchange for reviewed final-authority and",
+    "ceremony bindings before Stage-B. It remains resident throughout so opaque",
+    "WeakMap authority is never serialized or recovered.",
   ].join("\n");
 }
 
@@ -204,26 +221,15 @@ function normalizeActivationRequest(value) {
     ACTIVATION_FIELDS,
     "resident activation request",
   );
-  const reviewed = exactResidentRecord(
-    parsed.reviewedFinalAuthorityFiles,
-    REVIEWED_FINAL_FIELDS,
-    "resident reviewed final-authority files",
-  );
   const bindingFields = Object.freeze([
     "bootstrapPhaseInput",
-    "ceremonyLedgerInitial",
-    "ceremonyLedgerInitializationReceipt",
-    "ceremonyTransactionPlan",
-    "deferredAuthorityReview",
     "descriptorSetReceipt",
     "finalPhaseInput",
     "freshContractDeploymentReceipt",
-    "immutableDeploymentManifest",
     "measurementPolicySet",
     "releaseManifestSigstoreVerificationReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
-    "reviewerStatusHistory",
   ]);
   const normalized = {};
   for (const field of bindingFields) {
@@ -232,17 +238,9 @@ function normalizeActivationRequest(value) {
       `resident activation ${field}`,
     );
   }
-  normalized.reviewedFinalAuthorityFiles = Object.freeze(Object.fromEntries(
-    REVIEWED_FINAL_FIELDS.map((field) => [
-      field,
-      normalizeResidentFileBinding(
-        reviewed[field],
-        `resident reviewed ${field}`,
-      ),
-    ]),
-  ));
   for (const field of [
     "evidenceExchangeAuthority",
+    "postlaunchAuthorityExchangeAuthority",
     "signingExchangeAuthority",
     "outputAuthority",
   ]) {
@@ -272,6 +270,12 @@ function normalizeActivationRequest(value) {
   normalized.signingTimeoutSeconds = integerInRange(
     parsed.signingTimeoutSeconds,
     "resident Stage-B timeout",
+    20,
+    240,
+  );
+  normalized.postlaunchAuthorityTimeoutSeconds = integerInRange(
+    parsed.postlaunchAuthorityTimeoutSeconds,
+    "resident postlaunch authority timeout",
     20,
     240,
   );
@@ -319,26 +323,17 @@ function assertDisjointPrivatePaths(paths, recoveryDirectory) {
 
 function preflightActivationBindings(activation) {
   const ordinary = Object.freeze([
-    "ceremonyTransactionPlan",
-    "deferredAuthorityReview",
     "descriptorSetReceipt",
     "freshContractDeploymentReceipt",
     "measurementPolicySet",
     "releaseManifestSigstoreVerificationReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
-    "reviewerStatusHistory",
   ]);
   for (const field of ordinary) {
     preflightResidentBoundFile(
       activation[field],
       `resident activation ${field}`,
-    );
-  }
-  for (const field of REVIEWED_FINAL_FIELDS) {
-    preflightResidentBoundFile(
-      activation.reviewedFinalAuthorityFiles[field],
-      `resident reviewed ${field}`,
     );
   }
   preflightResidentBoundFile(
@@ -350,21 +345,6 @@ function preflightActivationBindings(activation) {
     activation.finalPhaseInput,
     "resident final phase input",
     { exactMode: 0o600, maximum: MAXIMUM_SECRET_BYTES },
-  );
-  preflightResidentBoundFile(
-    activation.ceremonyLedgerInitializationReceipt,
-    "resident ceremony ledger initialization receipt",
-    { exactMode: 0o444 },
-  );
-  preflightResidentBoundFile(
-    activation.immutableDeploymentManifest,
-    "resident immutable deployment manifest",
-    { exactMode: 0o444 },
-  );
-  preflightResidentBoundFile(
-    activation.ceremonyLedgerInitial,
-    "resident initial ceremony ledger",
-    { exactMode: 0o600 },
   );
 }
 
@@ -381,6 +361,7 @@ export function normalizePhalaProductionActivationDriverRequest(value) {
   const activation = normalizeActivationRequest(parsed.activation);
   assertDisjointPrivatePaths([
     activation.evidenceExchangeAuthority.path,
+    activation.postlaunchAuthorityExchangeAuthority.path,
     activation.signingExchangeAuthority.path,
     activation.outputAuthority.path,
   ], launch.recoveryDirectory);
@@ -394,6 +375,7 @@ function checkpoint(state, detail = {}) {
     schema: PHALA_PRODUCTION_ACTIVATION_DRIVER_CHECKPOINT_SCHEMA,
     state,
     automatic_retry_authorized: false,
+    activation_mutation_authorized: false,
     live_traffic_authorized: false,
   };
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -513,6 +495,12 @@ function createStageBAttachmentManifest(signingHandle, signingSession) {
     batch_id: signingSession.batch_id,
     signing_payload_sha256: signingSession.signing_payload_sha256,
     signing_message: signingSession.signing_message,
+    stage_b_reviewer_status_history_raw_file_sha256:
+      signingSession.stage_b_reviewer_status_history_raw_file_sha256,
+    stage_b_review_reviewer_authority_current_status_epoch:
+      signingSession.stage_b_review_reviewer_authority_current_status_epoch,
+    stage_b_review_reviewer_authority_current_status_sha256:
+      signingSession.stage_b_review_reviewer_authority_current_status_sha256,
     signing_exchange_directory_identity_anchor_sha256:
       signingSession.signing_exchange_directory_identity_anchor_sha256,
     unsigned_body_file: signingSession.unsigned_body_file,
@@ -782,15 +770,21 @@ async function executeResidentRequest(request) {
   const { launch, activation } = request;
   const state = new ResidentActivationStateMachine();
   let evidenceHandle;
+  let postlaunchAuthorityHandle;
   let signingHandle;
   let outputHandle;
   let challengeLedger;
   let liveSession = null;
+  let postlaunchActivationCapability = null;
   let completed = false;
   try {
     evidenceHandle = attachEmptyResidentPrivateAuthority(
       activation.evidenceExchangeAuthority,
       "resident evidence exchange authority",
+    );
+    postlaunchAuthorityHandle = attachEmptyResidentPrivateAuthority(
+      activation.postlaunchAuthorityExchangeAuthority,
+      "resident postlaunch authority exchange",
     );
     signingHandle = attachEmptyResidentPrivateAuthority(
       activation.signingExchangeAuthority,
@@ -810,6 +804,8 @@ async function executeResidentRequest(request) {
     );
     state.advance("request_preflight_complete", {
       evidence_exchange_authority: activation.evidenceExchangeAuthority,
+      postlaunch_authority_exchange_authority:
+        activation.postlaunchAuthorityExchangeAuthority,
       signing_exchange_authority: activation.signingExchangeAuthority,
       output_authority: activation.outputAuthority,
     });
@@ -832,7 +828,6 @@ async function executeResidentRequest(request) {
         activation.releaseManifestSigstoreVerificationReceipt,
       reviewerGenesis: activation.reviewerGenesis,
       reviewerGenesisAcceptance: activation.reviewerGenesisAcceptance,
-      reviewerStatusHistory: activation.reviewerStatusHistory,
     });
     const { releaseVerificationAuthority } =
       readPhalaProductionActivationEvidenceDependencies(liveSession);
@@ -985,25 +980,82 @@ async function executeResidentRequest(request) {
     challengeLedger.close();
     challengeLedger = null;
 
+    const launchCompletionCheckpoint =
+      await persistPhalaProductionActivationLaunchCompletion({
+        qvlIdentityEvidence,
+        session: liveSession,
+        workloadVerdictEvidence,
+      });
+    const postlaunchHandoff = publishPhalaProductionPostlaunchHandoff({
+      checkpointValue: launchCompletionCheckpoint,
+      evidenceHandle,
+      evidenceSession: liveSession,
+      postlaunchAuthorityTimeoutSeconds:
+        activation.postlaunchAuthorityTimeoutSeconds,
+      postlaunchAuthorityHandle,
+    });
+    state.advance("launch_completion_persisted_non_live", {
+      release_sha: launchCompletionCheckpoint.release_sha,
+      batch_id: launchCompletionCheckpoint.batch_id,
+      seven_cvm_launch_completion_receipt_sha256:
+        postlaunchHandoff.projection
+          .seven_cvm_launch_completion_receipt_sha256,
+      postlaunch_projection_path: phalaPinnedPrivatePathForDisplay(
+        evidenceHandle,
+        PHALA_PRODUCTION_POSTLAUNCH_PROJECTION_BASENAME,
+      ),
+      postlaunch_request_path: phalaPinnedPrivatePathForDisplay(
+        evidenceHandle,
+        PHALA_PRODUCTION_POSTLAUNCH_REQUEST_BASENAME,
+      ),
+      manifest_acceptance_deadline:
+        postlaunchHandoff.request.manifest_acceptance_deadline,
+    });
+    state.advance("waiting_for_postlaunch_activation_inputs", {
+      postlaunch_authority_exchange_directory:
+        activation.postlaunchAuthorityExchangeAuthority.path,
+      postlaunch_authority_exchange_identity_anchor_sha256:
+        activation.postlaunchAuthorityExchangeAuthority.identity_anchor_sha256,
+      required_manifest_path: phalaPinnedPrivatePathForDisplay(
+        postlaunchAuthorityHandle,
+        PHALA_PRODUCTION_POSTLAUNCH_INPUT_MANIFEST_BASENAME,
+      ),
+      manifest_acceptance_deadline:
+        postlaunchHandoff.request.manifest_acceptance_deadline,
+      final_authority_first_read_permitted: false,
+      manifest_validation_required_before_final_authority_read: true,
+    });
+    postlaunchActivationCapability =
+      await waitForPhalaProductionPostlaunchActivationCapability({
+        evidenceSession: liveSession,
+        handle: postlaunchAuthorityHandle,
+        handoff: postlaunchHandoff,
+        launchCompletionReceipt:
+          launchCompletionCheckpoint.launchCompletionReceipt,
+        pollIntervalMilliseconds: activation.pollIntervalMilliseconds,
+        releaseVerificationAuthority:
+          launchCompletionCheckpoint.releaseVerificationAuthority,
+        verifiedEvidenceSet: launchCompletionCheckpoint.verifiedEvidenceSet,
+      });
+
     assertPinnedPhalaPrivateDirectoryPathIdentity(evidenceHandle);
+    assertPinnedPhalaPrivateDirectoryPathIdentity(postlaunchAuthorityHandle);
     assertPinnedPhalaPrivateDirectoryPathIdentity(signingHandle);
     assertPinnedPhalaPrivateDirectoryPathIdentity(outputHandle);
     const signingSession = await resumePhalaProductionActivationWithPinnedSigningExchange({
       bootstrapPhaseInput: activation.bootstrapPhaseInput,
-      ceremonyLedgerInitializationReceipt:
-        activation.ceremonyLedgerInitializationReceipt,
-      ceremonyLedgerInitial: activation.ceremonyLedgerInitial,
-      ceremonyTransactionPlan: activation.ceremonyTransactionPlan,
-      deferredAuthorityReview: activation.deferredAuthorityReview,
       finalPhaseInput: activation.finalPhaseInput,
-      immutableDeploymentManifest: activation.immutableDeploymentManifest,
+      postlaunchActivationCapability,
       qvlIdentityEvidence,
-      reviewedFinalAuthorityFiles: activation.reviewedFinalAuthorityFiles,
       session: liveSession,
       signingExchangeAuthority: signingHandle,
       signingExchangeDirectory: activation.signingExchangeAuthority.path,
       workloadVerdictEvidence,
     });
+    // The coordinator either consumed and retired the exact capability or
+    // threw. Retain it only until this one handoff returns so the outer finally
+    // can burn it if any post-mint/pre-claim driver assertion fails.
+    postlaunchActivationCapability = null;
     liveSession = signingSession;
     const signingPaths = phalaProductionActivationSigningExchangePaths(
       signingSession,
@@ -1139,9 +1191,15 @@ async function executeResidentRequest(request) {
     process.stdout.write(canonicalResidentJsonText(final));
     return 0;
   } finally {
+    disposePhalaProductionPostlaunchActivationCapability(
+      postlaunchActivationCapability,
+    );
     if (!completed) safeDispose(liveSession);
     if (challengeLedger) challengeLedger.close();
     if (evidenceHandle) closePhalaPinnedPrivateDirectory(evidenceHandle);
+    if (postlaunchAuthorityHandle) {
+      closePhalaPinnedPrivateDirectory(postlaunchAuthorityHandle);
+    }
     if (signingHandle) closePhalaPinnedPrivateDirectory(signingHandle);
     if (outputHandle) closePhalaPinnedPrivateDirectory(outputHandle);
   }

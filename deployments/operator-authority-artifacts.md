@@ -21,11 +21,38 @@ Reviewer authority is a three-artifact model:
    intent independently pins that status epoch and digest plus the acceptance
    digest.
 
-This design does **not** claim an instant-revocation oracle. A successor cannot
-overlap the pinned status, and omitting a successor cannot extend the pinned
-status beyond its signed expiry. The maximum reviewer-revocation latency is
-therefore 15 minutes. A later status requires its complete history and a new
-deployment-intent head for the release that consumes it.
+This design does **not** claim an instant-revocation oracle. The deployment
+intent pins an immutable reviewer-status root, and signed non-live bootstrap A
+must consume exactly that root. A successor cannot overlap its predecessor,
+and omitting a successor cannot extend any status beyond its signed expiry.
+The maximum reviewer-revocation latency is therefore 15 minutes. Ceremony
+authorization B may consume a later status only by validating the complete
+guardian-signed lineage that explicitly replays the pinned root and every
+successor through the current head. Its review v2 signs the exact current epoch,
+status digest, reviewer root, and reviewer-set digest. Replacing the immutable
+root itself still requires a new deployment intent. Review v1 artifacts are
+legacy, non-authorizing inputs and must be regenerated as review v2 artifacts
+under this rooted protocol.
+
+`dnai.phala-production-activation-driver-request.v3` deliberately contains no
+`reviewerStatusHistory` field. Request v2 is legacy and non-authorizing, and an
+extra legacy history field is rejected rather than ignored. Stage A is exactly
+the epoch-one genesis acceptance evaluated with an empty predecessor array; no
+successor status is read, selected, or retained before launch.
+
+Stage B receives reviewer history only through the later
+`stageBReviewerStatusHistory` dependency in
+`dnai.phala-production-postlaunch-activation-input-manifest.v2`. That dependency
+is a canonical bare JSON array, not the CLI's wrapped
+`dnai.release-reviewer-authority-current-status-history.v1` artifact. When the
+epoch-one deployment-intent root remains current, the array is exactly `[]`.
+To select a successor, it contains the exact pinned root followed by every
+guardian-signed successor through the selected current head; a lone repeated
+root, omitted intermediate status, or unrooted later status is noncanonical.
+The coordinator receives the retained bytes only when it consumes the opaque
+postlaunch capability, then validates their meaning against the reviewed
+deployment intent. This late binding changes neither Stage A nor the immutable
+deployment-intent root.
 
 The canonical live dependency direction is:
 
@@ -37,6 +64,12 @@ deployment intent -> fresh contract receipt -> signed non-live bootstrap A
                                                                |
                                                                v
                            seven-CVM launch completion L
+                                                               |
+                                                               v
+           public non-authorizing postlaunch evidence projection
+                                                               |
+                                                               v
+       reviewed final authority + deferred review (external inputs)
                                                                |
                                                                v
                   pre-ceremony runtime authority R (separate from release core)
@@ -222,8 +255,9 @@ address or either reviewer key.
 The intent contains only facts available before deployment:
 
 - exact release SHA and Base Sepolia network;
-- the exact signed reviewer-authority genesis acceptance and current-status
-  epoch/head that must still be current at the later ceremony boundary;
+- the exact signed reviewer-authority genesis acceptance and immutable
+  current-status root required by Stage A and replayed as the root of any
+  complete guardian-signed successor lineage used at Stage B;
 - the canonical seven-contract and seven-CVM scope;
 - the encrypted Foundry `dev` deployment operator and public controller ID;
 - the exact immutable `ComputeCreditVault` developer address;
@@ -253,7 +287,7 @@ pre-deployment intent.
 
 ## 3. Build and validate the post-contract CVM launch intent
 
-After the fresh contract ledger and canonical `dnai.cvm-topology.v5` generation
+After the fresh contract ledger and canonical `dnai.cvm-topology.v6` generation
 exist, build the immutable pre-Phala authority:
 
 ```bash
@@ -383,7 +417,7 @@ reviewer-genesis acceptance and anchor, cryptographic non-live bootstrap
 authorization, and a durable recovery journal. It records each prepare and
 commit transition and fails closed on replay or incomplete recovery.
 
-Before running the resident production activation driver, prepare its three
+Before running the resident production activation driver, prepare its four
 private filesystem authorities with the dedicated non-authorizing setup tool.
 Create a recursively key-sorted canonical JSON request with exactly one
 trailing newline:
@@ -393,9 +427,10 @@ trailing newline:
   "authorities": {
     "evidenceExchangePath": "/absolute/private/evidence",
     "outputPath": "/absolute/private/outputs",
+    "postlaunchAuthorityExchangePath": "/absolute/private/postlaunch-authority",
     "signingExchangePath": "/absolute/private/signing"
   },
-  "schema": "dnai.phala-production-authority-workspace-prepare-request.v1"
+  "schema": "dnai.phala-production-authority-workspace-prepare-request.v2"
 }
 ```
 
@@ -406,17 +441,264 @@ node scripts/phala-production-authority-workspace-prepare.mjs \
   --prepare-request /absolute/private-workspace-request.json
 ```
 
-This operation creates or strictly reopens only three empty mode-`0700`
+This operation creates or strictly reopens only four empty mode-`0700`
 directories, pins their filesystem identities, and prints a path-plus-anchor
 preparation receipt. It mints no capability, authorizes no activation mutation,
 automatic retry, or live traffic, and proves no Phala deployment or TDX
 evidence. Independently review the receipt and seal its exact path-plus-anchor
-pairs into the resident activation request before invoking the driver:
+pairs into the `dnai.phala-production-activation-driver-request.v3` resident
+activation request before invoking the driver. All four paths must be pairwise
+distinct, non-nesting, and disjoint from the launch recovery directory. Each
+directory must still be empty when the resident process pins it.
+
+The v3 request is deliberately prelaunch-only. Its `activation` object contains
+the descriptor, fresh-contract, measurement-policy, Sigstore, reviewer,
+bootstrap-phase, final-phase, and independent-metering-policy bindings plus the
+four pinned authorities and bounded evidence, postlaunch-authority, Stage-B,
+recipient, and polling timeouts. It must **not** contain
+`reviewerStatusHistory`,
+`reviewedFinalAuthorityFiles`, `deferredAuthorityReview`,
+`ceremonyTransactionPlan`, `ceremonyLedgerInitializationReceipt`,
+`ceremonyLedgerInitial`, or `immutableDeploymentManifest`. Those artifacts
+depend on CVM IDs, compose hashes, OS facts, and verified TDX measurements that
+do not exist until the first seven-CVM launch has completed.
+
+Invoke the driver only after sealing that prelaunch request:
 
 ```bash
 node scripts/phala-production-activation-driver.mjs \
   --execute-request /absolute/private-resident-request.json
 ```
+
+The same resident process launches all seven CVMs, collects five QVL identity
+proofs and two independent workload-verdict proofs, durably persists the exact
+private historical transcript, and creates launch-completion receipt L before
+it reads any final-authority or ceremony dependency. Raw quote bytes remain in
+the private historical transcript. The driver never places raw quotes, phase
+secrets, private artifacts, or encrypted-environment ciphertext in either
+postlaunch transport surface.
+
+After L is durable, the driver create-new publishes these exact mode-`0600`
+files into the pinned evidence exchange:
+
+- `seven-cvm-launch-completion-receipt.json`
+- `postlaunch-final-authority-input.json`
+- `postlaunch-authority-request.json`
+
+The second file is an allowlisted public projection of the seven CVM IDs, app
+IDs, compose and OS hashes, resource facts, TEE identity, and evidence digests.
+It is suitable as input to the external final-authority review workflow, but it
+is explicitly not a review signature, activation mutation authority, live
+traffic authority, or an export of the private transcript. The postlaunch
+request is `dnai.phala-production-postlaunch-authority-request.v2`. It binds the
+raw file digests of L and the projection, the independently pinned
+postlaunch-exchange identity anchor, and requires exactly
+`dnai.phala-production-postlaunch-activation-input-manifest.v2`.
+
+Before publishing the request, the resident driver computes one
+canonical millisecond UTC `manifest_acceptance_deadline` as the earlier of the
+configured postlaunch-authority timeout and L's minimum activation-evidence
+lease expiry. That exact timestamp is copied into the request and public driver
+checkpoint. The waiter, manifest validator, capability, and attachment helper
+all consume the same timestamp; none recomputes, slides, or refreshes it. A
+manifest arriving at or after that instant is rejected even if all bytes and
+signatures otherwise match.
+
+The external authority workflow must write exactly one file named
+`postlaunch-activation-input-manifest.json` into the otherwise empty pinned
+postlaunch authority exchange. It must be canonical JSON in a regular,
+single-link, operator-owned exact mode-`0600` file and have this exact shape
+(every placeholder is replaced by its reviewed value or stable file binding):
+
+```json
+{
+  "activation_mutation_authorized": false,
+  "automatic_retry_authorized": false,
+  "batch_id": "<exact L batch ID>",
+  "cvm_launch_intent_sha256": "sha256:<64 lowercase hex>",
+  "dependencies": {
+    "ceremonyLedgerInitial": {
+      "path": "/absolute/private/ceremony-ledger-initial.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    },
+    "ceremonyLedgerInitializationReceipt": {
+      "path": "/absolute/private/ceremony-ledger-initialization-receipt.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    },
+    "ceremonyTransactionPlan": {
+      "path": "/absolute/private/ceremony-transaction-plan.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    },
+    "deferredAuthorityReview": {
+      "path": "/absolute/private/deferred-authority-review.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    },
+    "immutableDeploymentManifest": {
+      "path": "/absolute/private/immutable-deployment-manifest.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    },
+    "reviewedFinalAuthorityFiles": {
+      "cvmLaunchIntent": {
+        "path": "/absolute/private/cvm-launch-intent.json",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "deploymentIntent": {
+        "path": "/absolute/private/deployment-intent.json",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "finalAuthority": {
+        "path": "/absolute/private/final-authority.json",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "reviewEnvelope": {
+        "path": "/absolute/private/review-envelope.json",
+        "sha256": "sha256:<64 lowercase hex>"
+      },
+      "reviewEvidence": {
+        "path": "/absolute/private/review-evidence.json",
+        "sha256": "sha256:<64 lowercase hex>"
+      }
+    },
+    "stageBReviewerStatusHistory": {
+      "path": "/absolute/private/stage-b-reviewer-status-history.json",
+      "sha256": "sha256:<64 lowercase hex>"
+    }
+  },
+  "deployment_intent_sha256": "sha256:<64 lowercase hex>",
+  "live_traffic_authorized": false,
+  "manifest_acceptance_deadline": "<exact request timestamp, YYYY-MM-DDTHH:mm:ss.sssZ>",
+  "postlaunch_projection_raw_file_sha256": "sha256:<64 lowercase hex>",
+  "postlaunch_request_raw_file_sha256": "sha256:<64 lowercase hex>",
+  "release_sha": "<exact 40 lowercase hex release SHA>",
+  "release_verification_authority_sha256": "sha256:<64 lowercase hex>",
+  "schema": "dnai.phala-production-postlaunch-activation-input-manifest.v2",
+  "seven_cvm_launch_completion_receipt_sha256": "sha256:<64 lowercase hex>",
+  "seven_cvm_verified_evidence_set_sha256": "sha256:<64 lowercase hex>",
+  "status": "postlaunch_activation_inputs_ready_for_validation",
+  "truth_status": "file_bindings_only_pending_same_process_validation_not_mutation_or_live_authority"
+}
+```
+
+Copy the lineage fields, including `manifest_acceptance_deadline`, that are
+present in the canonical postlaunch request; do not recompute or substitute
+them. The one exception is
+`postlaunch_request_raw_file_sha256`: the request cannot contain its own raw
+digest, so this field is the SHA-256 of the exact canonical request file bytes,
+with the `sha256:` prefix. Do not hand-copy that digest or publish the watched
+basename with an editor, shell redirect, copy, or create-then-chmod sequence.
+
+The `stageBReviewerStatusHistory` target must already be an operator-owned,
+regular, single-link, exact mode-`0600`, canonical bare-array file. `[]` is the
+only root-current representation. A successor representation is the complete
+`[pinnedRoot, successor1, ..., currentHead]` chain. The manifest binds the raw
+file digest, and the same process retains its exact binding, bytes, and parsed
+array until the capability is consumed. Missing or extra dependencies,
+noncanonical bytes, a symlink, wrong owner/link count/mode, digest drift, or a
+change between validation and consumption fails closed. Manifest v1 cannot
+mint a capability.
+
+Prepare the complete manifest as a recursively key-sorted, two-space JSON file
+with exactly one trailing newline, outside the exchange, owned by the current
+operator, single-link, and exact mode `0600`. Publish it only with the
+non-signing attachment helper:
+
+```bash
+node scripts/phala-production-postlaunch-attach.mjs \
+  --source /absolute/private/postlaunch-activation-input-manifest.source.json \
+  --request /absolute/private/evidence/postlaunch-authority-request.json \
+  --projection /absolute/private/evidence/postlaunch-final-authority-input.json \
+  --exchange /absolute/private/postlaunch-authority \
+  --expected-anchor-sha256 'sha256:<exact-workspace-receipt-anchor>'
+```
+
+The helper accepts no signer, wallet, RPC, callback, credential, or raw-secret
+argument. It stable-reads the source, request, projection, and every dependency;
+checks the request/projection raw digests and exact lineage; pins the already
+existing exchange by its externally reviewed identity-anchor digest; and
+refuses a pre-existing target or any extra entry. It creates the final basename
+once with `O_EXCL|O_NOFOLLOW` at mode `0200`, writes and fsyncs the exact bytes,
+fsyncs the directory, and changes that same inode to mode `0600` as the
+irrevocable readiness commit. It then fsyncs the ready file and directory. No
+temporary or hard-linked exchange entry is exposed.
+
+The helper checks the fixed acceptance deadline immediately before it starts
+that readiness transition. An ordinary userspace clock check and `chmod` are
+not one kernel-atomic operation, so scheduler delay could make the filesystem
+observe `0600` just after the timestamp. The resident reader independently
+rechecks the same deadline while retaining the original inode and will not
+accept such a delayed transition as authority.
+
+The resident waiter treats the exact owned, regular, single-link mode-`0200`
+inode as pending and never opens or parses it. It will accept only the same
+inode after its mode-`0600` readiness transition. Replacement, disappearance,
+another mode, or another namespace entry is terminal. A helper interruption
+before readiness therefore leaves one non-authorizing pending inode; it does
+not authorize retry, removal, replacement, or reuse of that evidence session.
+The resident process reaches its hard deadline and disposes the session.
+
+The driver requires the initialization receipt and immutable deployment
+manifest to be exact mode `0444`, the initial ledger to be exact mode `0600`,
+and every dependency to survive a stable no-follow path/identity/digest read.
+After validation it mints one opaque, same-process, one-shot capability bound to
+the exact evidence-session object, release, batch, release-verification
+authority, evidence set, persisted L, request/projection/manifest raw digests,
+pinned directory identity, manifest inode, deadline, and private dependency
+view. The coordinator burns that capability against its stored L checkpoint
+before interpreting caller proof arrays and before its first reviewed
+final-authority read. Any coordinator failure, or any driver failure after mint
+but before the claim, destroys the capability and disposes the same evidence
+session. Direct dependency-shaped resume calls, serialized/cloned
+capabilities, wrong-session use, replay, manifest replacement, and dependency
+substitution are non-authorizing.
+
+After the capability is consumed and the reviewed deployment intent is known,
+the coordinator validates the retained Stage-B history and publishes
+`dnai.phala-production-stage-b-attachment-manifest.v2` in the pinned signing
+exchange. That transport manifest binds the history's raw digest and the
+Stage-B review payload's exact current-status epoch and digest. Put the two
+external reviewer signatures only in the code-named canonical input, then run:
+
+```bash
+node scripts/phala-production-stage-b-attach.mjs \
+  --exchange /absolute/private/signing \
+  --expected-anchor-sha256 'sha256:<exact-workspace-receipt-anchor>'
+```
+
+The helper verifies the external signatures but accepts no signing key,
+account, wallet, RPC, or credential. Its
+`dnai.phala-production-stage-b-attachment-receipt.v2` repeats the retained
+history raw digest plus the signed payload's current reviewer-status epoch and
+digest. Those are transport/replay bindings only: the coordinator still
+revalidates signed B in the same process, and the maximum Stage-B review expiry
+is capped by the selected current status's signed expiry. Neither the
+attachment manifest nor its receipt is activation authority, deployment
+evidence, TDX evidence, or permission for live traffic.
+
+A missing manifest, extra directory entry, path substitution, symlink,
+mode/digest/lineage drift, or timeout fails closed before any post-measurement
+mutation. There is no automatic retry. An incomplete, ambiguous, partially
+committed, or post-measurement launch still has no crash continuation path.
+
+For the narrower case where the original non-live launch had already completed
+all seven commits, an operator may invoke the source-level
+`resumeCompletedPhalaSevenCvmProductionLaunch(...)` continuation primitive.
+It accepts only canonical persisted launch-completion receipt L v4, the exact
+terminal recovery journal v2, the immutable exact-14 historical transcript,
+and independently reconstructed historical signed A whose original validity
+window contains every recorded provision and commit mutation second. It then
+performs exactly 22 authenticated read-only Phala observations: current user,
+plus CVM info, attestation, and signed environment public key for each of the
+seven CVMs. Current app/CVM identity, compose, KMS, OS, resource, privacy
+posture, and environment key must equal L and the terminal journal exactly.
+
+Success writes a separate current-continuity receipt and mints a new
+same-process, one-shot continuation capability and executor-runtime result. It
+does not refresh or remint L, renew historical evidence or signed A, call
+`nextAppIds`, `provisionCvm`, or `commitCvmProvision`, authorize live traffic,
+or turn serialized JSON into authority. A prior continuity receipt, active
+launch lock, activation artifact, file/lineage drift, observation reordering,
+or second adoption attempt fails closed. This is explicit operator recovery
+from an already complete immutable launch, not automatic retry of launch work.
 
 That driver is source- and test-real, but it has not run against a fresh
 project-owned seven-CVM production topology. The commands above are preparation
@@ -632,7 +914,7 @@ CVM-launch-intent review uses:
   1. `deployment_intent_and_release_source`
   2. `verified_contract_poststate`
   3. `exact_image_subjects`
-  4. `six_descriptor_hashes`
+  4. `seven_descriptor_hashes`
   5. `production_phala_posture`
   6. `public_runtime_numeric_policy`
   7. `encrypted_env_key_contract`

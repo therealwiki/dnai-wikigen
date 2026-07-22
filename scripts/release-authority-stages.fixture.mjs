@@ -102,7 +102,9 @@ import {
 
 const CHECKED_AT = Date.parse("2026-07-21T12:00:00.000Z");
 const ALPHA = privateKeyToAccount(`0x${"11".repeat(32)}`);
+const ALPHA_SUCCESSOR = privateKeyToAccount(`0x${"12".repeat(32)}`);
 const BRAVO = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const BRAVO_SUCCESSOR = privateKeyToAccount(`0x${"23".repeat(32)}`);
 const GUARDIAN_ALPHA = privateKeyToAccount(`0x${"44".repeat(32)}`);
 const GUARDIAN_BRAVO = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const FORGED = privateKeyToAccount(`0x${"33".repeat(32)}`);
@@ -192,18 +194,36 @@ function validQvlPolicy() {
 }
 
 function reviewerFixture() {
-  const accounts = [ALPHA, BRAVO].sort((left, right) =>
+  const accounts = [
+    ALPHA, ALPHA_SUCCESSOR, BRAVO, BRAVO_SUCCESSOR,
+  ].sort((left, right) =>
     left.address.toLowerCase().localeCompare(right.address.toLowerCase()));
-  const reviewers = accounts.map((account) => ({
+  const reviewers = [ALPHA, BRAVO].map((account) => ({
     address: account.address.toLowerCase(),
     controller_id: account.address.toLowerCase() === ALPHA.address.toLowerCase()
       ? "reviewer-alpha"
       : "reviewer-bravo",
-  }));
-  const reviewerControllers = reviewers.map((entry) => ({
-    controller_id: entry.controller_id,
-    preauthorized_addresses: [entry.address],
-  })).sort((left, right) => left.controller_id.localeCompare(right.controller_id));
+  })).sort((left, right) => left.address.localeCompare(right.address));
+  const successorReviewers = [ALPHA_SUCCESSOR, BRAVO_SUCCESSOR]
+    .map((account) => ({
+      address: account.address.toLowerCase(),
+      controller_id: account.address.toLowerCase()
+        === ALPHA_SUCCESSOR.address.toLowerCase()
+        ? "reviewer-alpha"
+        : "reviewer-bravo",
+    })).sort((left, right) => left.address.localeCompare(right.address));
+  const reviewerControllers = [
+    {
+      controller_id: "reviewer-alpha",
+      preauthorized_addresses: [ALPHA, ALPHA_SUCCESSOR]
+        .map((account) => account.address.toLowerCase()).sort(),
+    },
+    {
+      controller_id: "reviewer-bravo",
+      preauthorized_addresses: [BRAVO, BRAVO_SUCCESSOR]
+        .map((account) => account.address.toLowerCase()).sort(),
+    },
+  ];
   const guardianAccounts = [GUARDIAN_ALPHA, GUARDIAN_BRAVO];
   const statusGuardians = guardianAccounts.map((account, index) => ({
     address: account.address.toLowerCase(),
@@ -224,7 +244,9 @@ function reviewerFixture() {
     status_guardian_root_hash: executionPolicyReviewerRootHash(guardianHashes),
     status_guardian_set_sha256: reviewerSetSha256(statusGuardians),
   };
-  return { accounts, genesis, guardianAccounts, reviewers };
+  return {
+    accounts, genesis, guardianAccounts, reviewers, successorReviewers,
+  };
 }
 
 function validIntent(genesis, currentStatus, genesisAcceptance) {
@@ -274,6 +296,12 @@ function reviewMetadata(genesis, genesisAcceptance, {
     reviewer_authority_genesis_acceptance_sha256:
       releaseReviewerAuthorityGenesisAcceptanceSha256(
         genesisAcceptance,
+        { reviewerGenesis: genesis },
+      ),
+    reviewer_authority_current_status_epoch: status.epoch,
+    reviewer_authority_current_status_sha256:
+      releaseReviewerAuthorityCurrentStatusSha256(
+        status,
         { reviewerGenesis: genesis },
       ),
     approved_reviewer_hashes: status.approved_reviewer_hashes,
@@ -817,7 +845,12 @@ export async function syntheticReleaseAuthorityStagesFixture() {
       frontend_build_sha256: pin("64"),
     },
   };
-  const stageTwoOptions = { ...stageOneOptions, ceremonyAuthorization: stageOne };
+  const stageTwoOptions = {
+    ...stageOneOptions,
+    ceremonyAuthorization: stageOne,
+    stageBReviewerStatusHistory: [],
+    stageCReviewerStatusHistory: [],
+  };
   const stageTwoPayload = liveActivationReviewSigningPayload(
     stageTwoBody,
     reviewMetadata(reviewers.genesis, genesisAcceptance, {

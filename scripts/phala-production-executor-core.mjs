@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
 import {
+  assertCanonicalPlainDataGraph,
+} from "./canonical-authority-graph.mjs";
+import {
   PHALA_OS_IMAGE_CATALOG_ENTRY,
 } from "./cvm-launch-intent-core.mjs";
 import {
@@ -1047,6 +1050,124 @@ export async function registerProvenanceVerifiedCompletedPhalaExecutorState(
   }
   PROVENANCE_VERIFIED_COMPLETED_STATES.set(parsed.state, stateDigest);
   return parsed.state;
+}
+
+/**
+ * Re-establish the same completed-state provenance brand after a process
+ * restart, but only through the module-private completed-launch continuation
+ * capability. This path never recreates a mutation gate or renews historical
+ * launch authority: the capability has already bound immutable L, the exact
+ * terminal recovery journal/transcript, historical signed A at the recorded
+ * mutation seconds, and a separately labelled current read-only continuity
+ * receipt.
+ */
+export async function registerContinuityVerifiedCompletedPhalaExecutorState(
+  options = {},
+) {
+  const parsed = exactRecord(options, [
+    "continuationCapability",
+  ], "completed-launch continuation provenance registration input");
+
+  // Claim first. Any validation failure below permanently burns this
+  // same-process capability, which is the intended fail-closed replay rule.
+  const {
+    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance,
+  } = await import("./phala-completed-launch-continuation.mjs");
+  const dependencies =
+    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance(
+      parsed.continuationCapability,
+    );
+  const state = dependencies.executor_final_state;
+  const normalized = normalizeCompletedPhalaExecutorState(state);
+  if (canonicalCompact(normalized) !== canonicalCompact(state)) {
+    throw new Error(
+      "continuation executor state must already be exact and normalized",
+    );
+  }
+  const {
+    normalizePhalaCompletedLaunchContinuityReceipt,
+    phalaCompletedLaunchContinuityReceiptSha256,
+  } = await import("./phala-completed-launch-continuation-core.mjs");
+  const {
+    phalaNonLiveBootstrapAuthorizationReceiptSha256,
+  } = await import("./phala-nonlive-bootstrap-authorization-core.mjs");
+
+  const receipt = normalizePhalaCompletedLaunchContinuityReceipt(
+    dependencies.current_continuity_receipt,
+  );
+  const receiptSha256 = phalaCompletedLaunchContinuityReceiptSha256(receipt);
+  const stateDigest = phalaExecutorStateDigest(normalized);
+  const journal = dependencies.completed_recovery_journal;
+  const launch = dependencies.persisted_launch_completion_receipt;
+  const signedA = dependencies.signed_a_receipt;
+  const target = dependencies.production_target_authority_evidence;
+  const historicalEvidence = dependencies.historical_evidence_reconstruction;
+  assertCanonicalPlainDataGraph(journal, {
+    label: "continuation completed recovery journal",
+  });
+  assertCanonicalPlainDataGraph(launch, {
+    label: "continuation immutable launch completion receipt",
+  });
+  if (!isRecord(journal)
+    || journal.schema !== "dnai.phala-production-recovery-journal.v2"
+    || journal.truth_status
+      !== "private_recovery_metadata_no_secrets_ciphertext_or_phala_atomicity_claim"
+    || journal.state_sha256 !== stateDigest
+    || journal.batch_id !== normalized.batch_id
+    || canonicalCompact(journal.state) !== canonicalCompact(normalized)
+    || journal.seven_commit_batch_is_atomic !== false
+    || journal.automatic_retry_authorized !== false
+    || journal.automatic_cleanup_authorized !== false
+    || !isRecord(launch)
+    || launch.schema
+      !== "dnai.phala-seven-cvm-launch-completion-receipt.v4"
+    || launch.status
+      !== "all_seven_committed_private_production_posture_and_machine_verifier_evidence_bound"
+    || launch.all_seven_committed !== true
+    || launch.all_seven_production_posture_validated !== true
+    || launch.all_seven_machine_verified !== true
+    || launch.live_traffic_authorized !== false
+    || launch.late_secret_activation_authorized !== false
+    || launch.compute_workload_recipient_activation_authorized !== false
+    || launch.executor_final_state_sha256 !== stateDigest
+    || launch.batch_id !== normalized.batch_id
+    || launch.release_sha !== normalized.release_sha
+    || launch.bootstrap_authorization_id
+      !== normalized.bootstrap_authorization_id
+    || launch.cvm_launch_intent_sha256 !== normalized.launch_intent_sha256
+    || launch.production_target_authority_sha256
+      !== normalized.target_authority_sha256
+    || launch.phala_recovery_directory_identity_anchor_sha256
+      !== normalized.phala_recovery_directory_identity_anchor_sha256
+    || receipt.executor_final_state_sha256 !== stateDigest
+    || receipt.release_sha !== normalized.release_sha
+    || receipt.batch_id !== normalized.batch_id
+    || receipt.production_target_authority_sha256
+      !== normalized.target_authority_sha256
+    || receipt.launch_completion_receipt_sha256
+      !== dependencies.persisted_launch_completion_receipt_sha256
+    || receipt.launch_completion_raw_file_sha256
+      !== dependencies.persisted_launch_completion_raw_file_sha256
+    || receipt.nonlive_bootstrap_authorization_receipt_sha256
+      !== phalaNonLiveBootstrapAuthorizationReceiptSha256(signedA)
+    || receipt.nonlive_bootstrap_authorization_receipt_sha256
+      !== normalized.bootstrap_authorization_receipt_sha256
+    || receipt.seven_cvm_verified_evidence_set_sha256
+      !== historicalEvidence?.seven_cvm_verified_evidence_set_sha256
+    || receipt.historical_transcript_file_set_sha256
+      !== historicalEvidence?.historical_transcript_file_set_sha256
+    || receiptSha256 !== dependencies.current_continuity_receipt_sha256
+    || target?.productionTargetAuthoritySha256
+      !== normalized.target_authority_sha256
+    || dependencies.historical_launch_refreshed !== false
+    || dependencies.historical_evidence_refreshed !== false
+    || dependencies.live_traffic_authorized !== false) {
+    throw new Error(
+      "completed-launch continuation does not identify one exact historical executor lineage",
+    );
+  }
+  PROVENANCE_VERIFIED_COMPLETED_STATES.set(state, stateDigest);
+  return state;
 }
 
 export function buildExactCommitMetadata({

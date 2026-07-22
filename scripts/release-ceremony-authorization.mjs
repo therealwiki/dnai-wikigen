@@ -11,7 +11,6 @@ import {
 import {
   canonicalArtifactSha256,
   DEPLOYMENT_TOOLCHAIN_AUTHORITY,
-  deploymentIntentReviewerAuthorityCurrentStatusBinding,
   validateDeploymentIntentCore,
 } from "./operator-policy-packet-core.mjs";
 import {
@@ -23,20 +22,15 @@ import {
   eip191AuthorizationSigningDigest,
   eip191AuthorizationSigningMessage,
   executionPolicyReviewerRootHash,
-  normalizeExpectedReviewerAuthority,
   verifyPinnedTwoSignerAuthorization,
 } from "./release-authority-signature-verifier.mjs";
 import {
-  assertReleaseReviewerAuthorityGenesisDeploymentRoleSeparation,
   normalizeReleaseReviewerAuthorityGenesis,
   releaseReviewerAuthorityGenesisSha256,
 } from "./release-reviewer-authority-genesis.mjs";
 import {
-  assertReleaseReviewerAuthorityGenesisAcceptanceCurrentAtTime,
-  normalizeReleaseReviewerAuthorityGenesisAcceptance,
-  releaseReviewerAuthorityCurrentStatusSha256,
-  releaseReviewerAuthorityGenesisAcceptanceSha256,
-} from "./release-reviewer-authority-genesis-acceptance.mjs";
+  normalizeStageBSuccessorReviewerAuthority,
+} from "./release-authority-current-reviewer-facade.mjs";
 import {
   freshContractDeploymentReceiptDigest,
   CVM_LAUNCH_DOMAINS,
@@ -81,13 +75,13 @@ export const LIVE_ACTIVATION_REVIEW_SUBJECT_DOMAIN =
   "dnai-wikigen/live-activation-review-subject/v5\0";
 
 export const RELEASE_AUTHORITY_CRYPTOGRAPHIC_REVIEW_SCHEMA =
-  "dnai.release-authority-cryptographic-review.v1";
+  "dnai.release-authority-cryptographic-review.v2";
 export const RELEASE_AUTHORITY_REVIEW_SIGNING_PAYLOAD_SCHEMA =
-  "dnai.release-authority-review-signing-payload.v1";
+  "dnai.release-authority-review-signing-payload.v2";
 export const RELEASE_AUTHORITY_REVIEW_SIGNING_DOMAIN =
-  "dnai-wikigen/release-authority-cryptographic-review-signing/v1\0";
+  "dnai-wikigen/release-authority-cryptographic-review-signing/v2\0";
 export const RELEASE_AUTHORITY_REVIEW_MESSAGE_PREFIX =
-  "dnai-wikigen release-authority cryptographic review v1:";
+  "dnai-wikigen release-authority cryptographic review v2:";
 export const RELEASE_AUTHORITY_SIGNATURE_SCHEME =
   PINNED_EIP191_SIGNATURE_SCHEME;
 export const RELEASE_AUTHORITY_SIGNATURE_VERIFIER = Object.freeze({
@@ -151,31 +145,6 @@ function fail(message) {
   throw new ReleaseAuthorityValidationError(message);
 }
 
-function currentStatusValidationInstant(checkedAtMs) {
-  if (!Number.isFinite(checkedAtMs)) {
-    fail("reviewer current-status validation time is invalid");
-  }
-  return new Date(Math.floor(checkedAtMs / 1_000) * 1_000)
-    .toISOString()
-    .replace(".000Z", "Z");
-}
-
-function deploymentRoleSeparation(deploymentIntent) {
-  const validation = validateDeploymentIntentCore(deploymentIntent);
-  if (!validation.ok) {
-    fail("reviewer authority requires the exact valid deployment intent dependency");
-  }
-  return Object.freeze({
-    deploymentRoleAddresses: Object.freeze([...new Set([
-      deploymentIntent.deploymentControl.operatorAddress,
-      deploymentIntent.staticContractInputs.computeCreditVault.developer,
-    ])].sort()),
-    deploymentRoleControllerIds: Object.freeze([
-      deploymentIntent.deploymentControl.controllerId,
-    ]),
-  });
-}
-
 export function normalizeReleaseReviewerAuthorityForStage({
   reviewerGenesis,
   reviewerGenesisAcceptance,
@@ -184,62 +153,14 @@ export function normalizeReleaseReviewerAuthorityForStage({
   checkedAtMs,
   enforceFreshness,
 }) {
-  const roleSeparation = deploymentRoleSeparation(deploymentIntent);
-  const anchoredHead = deploymentIntentReviewerAuthorityCurrentStatusBinding(
+  return normalizeStageBSuccessorReviewerAuthority({
+    reviewerGenesis,
+    reviewerGenesisAcceptance,
+    reviewerStatusHistory,
     deploymentIntent,
-  );
-  const separatedGenesis =
-    assertReleaseReviewerAuthorityGenesisDeploymentRoleSeparation(
-      reviewerGenesis,
-      roleSeparation,
-    );
-  const acceptanceOptions = {
-    reviewerGenesis: separatedGenesis,
-    statusHistory: reviewerStatusHistory,
-    ...roleSeparation,
-  };
-  const acceptance = enforceFreshness
-    ? assertReleaseReviewerAuthorityGenesisAcceptanceCurrentAtTime(
-      reviewerGenesisAcceptance,
-      {
-        ...acceptanceOptions,
-        now: currentStatusValidationInstant(checkedAtMs),
-        expectedCurrentStatusEpoch:
-          anchoredHead.reviewerAuthorityCurrentStatusEpoch,
-        expectedCurrentStatusSha256:
-          anchoredHead.reviewerAuthorityCurrentStatusSha256,
-      },
-    )
-    : normalizeReleaseReviewerAuthorityGenesisAcceptance(
-      reviewerGenesisAcceptance,
-      acceptanceOptions,
-    );
-  const status = acceptance.reviewer_authority_current_status;
-  const statusSha256 = releaseReviewerAuthorityCurrentStatusSha256(status, {
-    reviewerGenesis: separatedGenesis,
-    statusHistory: reviewerStatusHistory,
-    ...roleSeparation,
+    checkedAtMs,
+    enforceFreshness,
   });
-  if (status.epoch
-      !== anchoredHead.reviewerAuthorityCurrentStatusEpoch
-    || statusSha256
-      !== anchoredHead.reviewerAuthorityCurrentStatusSha256) {
-    fail("reviewer current-status is stale or forked from the deployment-intent head");
-  }
-  return {
-    acceptance,
-    genesis: separatedGenesis,
-    roleSeparation,
-    authority: normalizeExpectedReviewerAuthority({
-      approved_reviewers: status.active_reviewers,
-      approved_reviewer_hashes: status.approved_reviewer_hashes,
-      reviewer_root_hash: status.reviewer_root_hash,
-      reviewer_set_sha256: status.reviewer_set_sha256,
-    }, {
-      expectedReviewerRootHash: status.reviewer_root_hash,
-      expectedReviewerSetSha256: status.reviewer_set_sha256,
-    }),
-  };
 }
 
 function isRecord(value) {
@@ -493,6 +414,8 @@ export function reviewSigningPayload(value) {
   const parsed = exact(value, [
     "approved_reviewer_hashes", "chain_id", "dependencies", "expires_at",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_authority_current_status_epoch",
+    "reviewer_authority_current_status_sha256",
     "reviewer_authority_genesis_sha256", "reviewer_root_hash",
     "reviewer_set_sha256", "schema", "signature_scheme", "signature_verifier", "signed_at", "stage",
     "subject_kind", "subject_sha256",
@@ -510,6 +433,16 @@ export function reviewSigningPayload(value) {
   sha256(
     parsed.reviewer_authority_genesis_acceptance_sha256,
     "reviewer authority genesis acceptance digest",
+  );
+  integer(
+    parsed.reviewer_authority_current_status_epoch,
+    "reviewer authority current-status epoch",
+    1,
+    0xffff_ffff,
+  );
+  sha256(
+    parsed.reviewer_authority_current_status_sha256,
+    "reviewer authority current-status digest",
   );
   bareSha256(parsed.reviewer_root_hash, "reviewer root");
   sha256(parsed.reviewer_set_sha256, "reviewer set digest");
@@ -538,6 +471,10 @@ export function reviewSigningPayload(value) {
     reviewer_authority_genesis_sha256: parsed.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       parsed.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      parsed.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      parsed.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: hashes,
     reviewer_root_hash: parsed.reviewer_root_hash,
     reviewer_set_sha256: parsed.reviewer_set_sha256,
@@ -570,15 +507,17 @@ export function normalizeCryptographicReview(value, {
   dependencies,
   reviewerAuthority,
   reviewerGenesis,
-  reviewerGenesisAcceptance,
-  reviewerStatusHistory = [],
-  reviewerRoleSeparation = {},
+  reviewerGenesisAcceptanceSha256,
+  reviewerCurrentStatus,
+  reviewerCurrentStatusSha256,
   checkedAtMs,
   enforceFreshness,
 }) {
   const parsed = exact(value, [
     "approved_reviewer_hashes", "chain_id", "dependencies", "expires_at",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_authority_current_status_epoch",
+    "reviewer_authority_current_status_sha256",
     "reviewer_authority_genesis_sha256", "reviewer_root_hash",
     "reviewer_set_sha256", "schema", "signature_scheme", "signature_verifier", "signatures", "signed_at",
     "signing_payload_sha256", "stage", "subject_kind", "subject_sha256",
@@ -591,16 +530,13 @@ export function normalizeCryptographicReview(value, {
     fail("cryptographic review release, chain, stage, or subject binding is invalid");
   }
   const genesisSha256 = releaseReviewerAuthorityGenesisSha256(reviewerGenesis);
-  const acceptanceSha256 = releaseReviewerAuthorityGenesisAcceptanceSha256(
-    reviewerGenesisAcceptance,
-    {
-      reviewerGenesis,
-      statusHistory: reviewerStatusHistory,
-      ...reviewerRoleSeparation,
-    },
-  );
   if (parsed.reviewer_authority_genesis_sha256 !== genesisSha256
-    || parsed.reviewer_authority_genesis_acceptance_sha256 !== acceptanceSha256
+    || parsed.reviewer_authority_genesis_acceptance_sha256
+      !== reviewerGenesisAcceptanceSha256
+    || parsed.reviewer_authority_current_status_epoch
+      !== reviewerCurrentStatus.epoch
+    || parsed.reviewer_authority_current_status_sha256
+      !== reviewerCurrentStatusSha256
     || parsed.reviewer_root_hash !== reviewerAuthority.reviewer_root_hash
     || parsed.reviewer_set_sha256 !== reviewerAuthority.reviewer_set_sha256
     || JSON.stringify(parsed.approved_reviewer_hashes)
@@ -623,6 +559,10 @@ export function normalizeCryptographicReview(value, {
     reviewer_authority_genesis_sha256: parsed.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       parsed.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      parsed.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      parsed.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: parsed.approved_reviewer_hashes,
     reviewer_root_hash: parsed.reviewer_root_hash,
     reviewer_set_sha256: parsed.reviewer_set_sha256,
@@ -635,6 +575,15 @@ export function normalizeCryptographicReview(value, {
   if (parsed.signing_payload_sha256 !== payloadSha256) fail("review signing payload digest is invalid");
   const signedAt = timestamp(parsed.signed_at, "review signed_at");
   const expiresAt = timestamp(parsed.expires_at, "review expires_at");
+  const reviewerStatusNotBefore = Date.parse(reviewerCurrentStatus.not_before);
+  const reviewerStatusExpiresAt = Date.parse(reviewerCurrentStatus.expires_at);
+  if (!Number.isFinite(reviewerStatusNotBefore)
+    || !Number.isFinite(reviewerStatusExpiresAt)
+    || signedAt < reviewerStatusNotBefore
+    || signedAt >= reviewerStatusExpiresAt
+    || expiresAt > reviewerStatusExpiresAt) {
+    fail("cryptographic review is outside its selected reviewer-status validity window");
+  }
   if (expiresAt <= signedAt
     || expiresAt - signedAt > MAX_RELEASE_AUTHORITY_REVIEW_LIFETIME_MS
     || (enforceFreshness && (
@@ -666,6 +615,10 @@ export function normalizeCryptographicReview(value, {
     reviewer_authority_genesis_sha256: parsed.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       parsed.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      parsed.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      parsed.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: [...parsed.approved_reviewer_hashes],
     reviewer_root_hash: parsed.reviewer_root_hash,
     reviewer_set_sha256: parsed.reviewer_set_sha256,
@@ -678,13 +631,13 @@ export function normalizeCryptographicReview(value, {
   };
 }
 
-export function assertReviewSignedUnderAnchoredReviewerStatus(review, {
+export function assertReviewSignedUnderCurrentReviewerStatus(review, {
   reviewerGenesis,
   reviewerGenesisAcceptance,
   reviewerStatusHistory,
   deploymentIntent,
 }) {
-  normalizeReleaseReviewerAuthorityForStage({
+  const reviewerStage = normalizeReleaseReviewerAuthorityForStage({
     reviewerGenesis,
     reviewerGenesisAcceptance,
     reviewerStatusHistory,
@@ -692,7 +645,24 @@ export function assertReviewSignedUnderAnchoredReviewerStatus(review, {
     checkedAtMs: timestamp(review.signed_at, "review signed_at"),
     enforceFreshness: true,
   });
+  if (review.reviewer_authority_current_status_epoch
+      !== reviewerStage.currentStatus.epoch
+    || review.reviewer_authority_current_status_sha256
+      !== reviewerStage.currentStatusSha256
+    || review.reviewer_root_hash
+      !== reviewerStage.currentStatus.reviewer_root_hash
+    || review.reviewer_set_sha256
+      !== reviewerStage.currentStatus.reviewer_set_sha256) {
+    fail("review does not bind the exact current reviewer-status epoch, digest, root, and set");
+  }
+  return reviewerStage;
 }
+
+// Compatibility export for callers compiled against the v1 function name.
+// The asserted head may now be a complete Stage-B successor of the immutable
+// deployment-intent root; the function never treats the root pin as mutable.
+export const assertReviewSignedUnderAnchoredReviewerStatus =
+  assertReviewSignedUnderCurrentReviewerStatus;
 
 function assertCeremonyReviewInsideRuntimeAuthorityWindow(
   review,
@@ -907,37 +877,31 @@ export function normalizeCeremonyAuthorizationCore(value, {
   }
   let reviewerGenesis;
   let reviewerGenesisAcceptance;
+  let reviewerStage;
   let freshContractDeploymentReceipt;
   let preCeremonyRuntimeAuthority;
   try {
     reviewerGenesis = normalizeReleaseReviewerAuthorityGenesis(reviewerGenesisValue);
+    reviewerStage = normalizeReleaseReviewerAuthorityForStage({
+      reviewerGenesis,
+      reviewerGenesisAcceptance: reviewerGenesisAcceptanceValue,
+      reviewerStatusHistory,
+      deploymentIntent,
+      checkedAtMs,
+      enforceFreshness,
+    });
     ({
       acceptance: reviewerGenesisAcceptance,
       genesis: reviewerGenesis,
-    } =
-      normalizeReleaseReviewerAuthorityForStage({
-        reviewerGenesis,
-        reviewerGenesisAcceptance: reviewerGenesisAcceptanceValue,
-        reviewerStatusHistory,
-        deploymentIntent,
-        checkedAtMs,
-        enforceFreshness,
-      }));
+    } = reviewerStage);
     preCeremonyRuntimeAuthority = normalizePreCeremonyRuntimeAuthority(
       preCeremonyRuntimeAuthorityValue,
     );
   } catch (error) {
     fail(`ceremony authorization dependency is invalid: ${error.message}`);
   }
-  const reviewerGenesisSha = releaseReviewerAuthorityGenesisSha256(reviewerGenesis);
-  const reviewerGenesisAcceptanceSha = releaseReviewerAuthorityGenesisAcceptanceSha256(
-    reviewerGenesisAcceptance,
-    {
-      reviewerGenesis,
-      statusHistory: reviewerStatusHistory,
-      ...deploymentRoleSeparation(deploymentIntent),
-    },
-  );
+  const reviewerGenesisSha = reviewerStage.genesisSha256;
+  const reviewerGenesisAcceptanceSha = reviewerStage.acceptanceSha256;
   const deploymentIntentSha = canonicalArtifactSha256(deploymentIntent);
   try {
     freshContractDeploymentReceipt = normalizeFreshContractDeploymentReceipt(
@@ -957,16 +921,9 @@ export function normalizeCeremonyAuthorizationCore(value, {
   }
   const {
     authority: reviewerAuthority,
-    roleSeparation: reviewerRoleSeparation,
-  } =
-    normalizeReleaseReviewerAuthorityForStage({
-      reviewerGenesis,
-      reviewerGenesisAcceptance,
-      reviewerStatusHistory,
-      deploymentIntent,
-      checkedAtMs,
-      enforceFreshness: false,
-    });
+    currentStatus: reviewerCurrentStatus,
+    currentStatusSha256: reviewerCurrentStatusSha256,
+  } = reviewerStage;
   const body = normalizeStageOneBody(Object.fromEntries(
     Object.entries(parsed).filter(([key]) => key !== "review"),
   ));
@@ -1005,9 +962,9 @@ export function normalizeCeremonyAuthorizationCore(value, {
     dependencies: stageOneDependencies(body),
     reviewerAuthority,
     reviewerGenesis,
-    reviewerGenesisAcceptance,
-    reviewerStatusHistory,
-    reviewerRoleSeparation,
+    reviewerGenesisAcceptanceSha256: reviewerGenesisAcceptanceSha,
+    reviewerCurrentStatus,
+    reviewerCurrentStatusSha256,
     checkedAtMs,
     enforceFreshness,
   });

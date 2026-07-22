@@ -2,7 +2,7 @@
   "$id": "https://wikigen.me/schemas/release-reviewer-authority-current-status-history.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Canonical complete predecessor-status sequence supplied to successor status and acceptance operations. Semantic validation checks every signature, epoch, predecessor digest, revocation, and finite-controller transition in order.",
+  "description": "Canonical wrapped reviewer-status lineage used by the reviewer-authority CLI. Proposal and acceptance operations consume the complete predecessor sequence. Production Stage A is separately constrained to the epoch-one genesis acceptance with an exact empty predecessor sequence. The activation driver request v3 contains no reviewer history. Postlaunch activation-input manifest v2 instead binds stageBReviewerStatusHistory as a canonical bare array, not an instance of this wrapped schema: [] means the epoch-one deployment-intent root remains current; selecting a successor requires the exact pinned root followed by every complete successor through the current head, and a lone repeated root is noncanonical. Semantic validation checks every guardian signature, epoch, predecessor digest, nonoverlapping window, monotonic revocation, finite-controller transition, and current-head expiry in order.",
   "properties": {
     "schema": {
       "const": "dnai.release-reviewer-authority-current-status-history.v1"

@@ -88,14 +88,26 @@ import {
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const semanticValidatorScript = path.join(rootDir, "web", "scripts", "build-release-env.mjs");
 const contractsProject = path.join(rootDir, "⚙️", "tinker-delegate", "contracts");
-const defaultLedger = path.join(rootDir, "deployments", "base-sepolia.json");
-const defaultDeploymentIntent = path.join(rootDir, ".release", "deployment-intent.json");
-const defaultCvmLaunchIntent = path.join(rootDir, ".release", "cvm-launch-intent.json");
+const historicalLedger = path.join(rootDir, "deployments", "base-sepolia.json");
+const defaultDeploymentIntent = path.join(rootDir, ".release", "deployment-intent-core.json");
+const defaultCvmLaunchIntent = path.join(rootDir, ".release", "cvm-launch-intent-core.json");
 const authorityReviewDefaults = Object.freeze({
-  fresh_deployment: ["deployment-intent.review.json", "deployment-intent.review-evidence.json"],
-  cvm_launch: ["cvm-launch-intent.review.json", "cvm-launch-intent.review-evidence.json"],
-  release_ceremony: ["final-authority.review.json", "final-authority.review-evidence.json"],
-  live_activation: ["final-authority.review.json", "final-authority.review-evidence.json"],
+  fresh_deployment: [
+    "deployment-intent.review-envelope.json",
+    "deployment-intent.review-evidence.json",
+  ],
+  cvm_launch: [
+    "cvm-launch-intent.review-envelope.json",
+    "cvm-launch-intent.review-evidence.json",
+  ],
+  release_ceremony: [
+    "final-authority.review-envelope.json",
+    "final-authority.review-evidence.json",
+  ],
+  live_activation: [
+    "final-authority.review-envelope.json",
+    "final-authority.review-evidence.json",
+  ],
 });
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 20_000;
@@ -312,7 +324,7 @@ function usage() {
     "  --arena-evidence FILE            Independent Arena deployment evidence",
     "  --anchor-writer-evidence FILE    Canonical bounded writer QVL artifact",
     "  --email-oracle-evidence FILE     Canonical bounded Email/KMS/restart evidence",
-    "  --stage MODE                     fresh-deployment, cvm-launch, release-ceremony, or live-activation (default)",
+    "  --stage MODE                     Required: fresh-deployment, cvm-launch, release-ceremony, or live-activation",
     "  --skip-network                   Skip read-only RPC/auth/attestation probes",
     "  --json                           Emit bounded JSON instead of text",
     "  --help                           Show this help",
@@ -340,12 +352,14 @@ export function parseArgs(argv) {
     imageReleaseSigstoreVerificationReceipt:
       defaultImageReleaseSigstoreVerificationReceiptPath(rootDir),
     topology: defaultTopologyPath(rootDir),
-    ledger: defaultLedger,
+    ledger: "",
     deploymentIntent: defaultDeploymentIntent,
     cvmLaunchIntent: defaultCvmLaunchIntent,
     authorityReviewEnvelope: "",
     authorityReviewEvidence: "",
     authorityStage: "live_activation",
+    authorityStageExplicit: false,
+    explicitPathKeys: [],
     json: false,
     skipNetwork: false,
   };
@@ -408,13 +422,16 @@ export function parseArgs(argv) {
         );
       }
       args.authorityStage = value.replace("-", "_");
+      args.authorityStageExplicit = true;
       index += 1;
       continue;
     }
     if (!pathFlags.has(flag)) throw new Error(`unknown argument: ${flag}`);
     const value = argv[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
-    args[pathFlags.get(flag)] = path.resolve(value);
+    const key = pathFlags.get(flag);
+    args[key] = path.resolve(value);
+    args.explicitPathKeys.push(key);
     index += 1;
   }
   const [reviewEnvelopeName, reviewEvidenceName] = authorityReviewDefaults[args.authorityStage];
@@ -2863,22 +2880,153 @@ export function githubReleaseManifestAttestationArgs(
   ];
 }
 
-function resolveEvidencePaths(args, env) {
-  return {
-    release: args.release || clean(env.ACTIVATION_RELEASE_CANDIDATE_PATH),
-    releaseCore: args.releaseCore || clean(env.FINAL_RELEASE_AUTHORITY_CORE_PATH),
-    deploymentIntent: args.deploymentIntent,
-    cvmLaunchIntent: args.cvmLaunchIntent,
-    authorityReviewEnvelope: args.authorityReviewEnvelope,
-    ledger: args.ledger,
-    artifactEvidence:
-      args.artifactEvidence || clean(env.ACTIVATION_ARTIFACT_EVIDENCE_PATH),
-    arenaEvidence: args.arenaEvidence || clean(env.ACTIVATION_ARENA_EVIDENCE_PATH),
-    anchorWriterEvidence:
-      args.anchorWriterEvidence || clean(env.ACTIVATION_ANCHOR_WRITER_EVIDENCE_PATH),
-    emailOracleEvidence:
-      args.emailOracleEvidence || clean(env.ACTIVATION_EMAIL_ORACLE_EVIDENCE_PATH),
+function explicitPathProvided(args, key) {
+  if (Array.isArray(args.explicitPathKeys)) {
+    return args.explicitPathKeys.includes(key);
+  }
+  // Compatibility for internal callers that construct the argument object
+  // directly instead of using parseArgs().
+  return clean(args[key]).length > 0;
+}
+
+function normalizedOperatorPath(value, label, { requireAbsolute = false } = {}) {
+  const candidate = clean(value);
+  if (!candidate) return "";
+  if (/[\u0000\r\n]/.test(candidate)) {
+    throw new Error(`${label} contains an invalid path character`);
+  }
+  if (requireAbsolute && (!path.isAbsolute(candidate) || path.normalize(candidate) !== candidate)) {
+    throw new Error(`${label} must be a canonical absolute path`);
+  }
+  return path.resolve(candidate);
+}
+
+function resolvePathBinding({
+  args,
+  key,
+  env,
+  envKey = "",
+  fallback = "",
+  requireAbsoluteEnv = false,
+}) {
+  const cliExplicit = explicitPathProvided(args, key);
+  const cliPath = clean(args[key]) ? path.resolve(clean(args[key])) : "";
+  const envPath = envKey
+    ? normalizedOperatorPath(env[envKey], envKey, { requireAbsolute: requireAbsoluteEnv })
+    : "";
+  if (cliExplicit && envPath && cliPath !== envPath) {
+    throw new Error(`${key} is ambiguous between the CLI flag and ${envKey}`);
+  }
+  if (cliExplicit) return cliPath;
+  if (envPath) return envPath;
+  return fallback || cliPath;
+}
+
+export function releaseScopedLedgerPath(
+  releaseShaValue,
+  gitHeadValue,
+  repositoryRoot = rootDir,
+) {
+  const releaseSha = clean(releaseShaValue).toLowerCase();
+  const gitHead = clean(gitHeadValue).toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(releaseSha) || releaseSha !== gitHead) return "";
+  return path.join(
+    repositoryRoot,
+    "deployments",
+    "fresh-contract-suites",
+    releaseSha,
+    "base-sepolia.json",
+  );
+}
+
+export function resolveEvidencePaths(
+  args,
+  env,
+  { gitHead = "", repositoryRoot = rootDir } = {},
+) {
+  const defaultLedger = releaseScopedLedgerPath(env.RELEASE_SHA, gitHead, repositoryRoot);
+  const resolved = {
+    release: resolvePathBinding({
+      args,
+      key: "release",
+      env,
+      envKey: "ACTIVATION_RELEASE_CANDIDATE_PATH",
+    }),
+    releaseCore: resolvePathBinding({
+      args,
+      key: "releaseCore",
+      env,
+      envKey: "FINAL_RELEASE_AUTHORITY_CORE_PATH",
+      requireAbsoluteEnv: true,
+    }),
+    deploymentIntent: resolvePathBinding({
+      args,
+      key: "deploymentIntent",
+      env,
+      envKey: "DEPLOYMENT_INTENT_PATH",
+      fallback: path.join(repositoryRoot, ".release", "deployment-intent-core.json"),
+      requireAbsoluteEnv: true,
+    }),
+    cvmLaunchIntent: resolvePathBinding({
+      args,
+      key: "cvmLaunchIntent",
+      env,
+      fallback: path.join(repositoryRoot, ".release", "cvm-launch-intent-core.json"),
+    }),
+    authorityReviewEnvelope: resolvePathBinding({
+      args,
+      key: "authorityReviewEnvelope",
+      env,
+      envKey: "OPERATOR_POLICY_REVIEW_ENVELOPE_PATH",
+      requireAbsoluteEnv: true,
+    }),
+    authorityReviewEvidence: resolvePathBinding({
+      args,
+      key: "authorityReviewEvidence",
+      env,
+    }),
+    ledger: resolvePathBinding({
+      args,
+      key: "ledger",
+      env,
+      envKey: "DEPLOYMENT_MANIFEST_PATH",
+      fallback: defaultLedger,
+      requireAbsoluteEnv: true,
+    }),
+    artifactEvidence: resolvePathBinding({
+      args,
+      key: "artifactEvidence",
+      env,
+      envKey: "ACTIVATION_ARTIFACT_EVIDENCE_PATH",
+    }),
+    arenaEvidence: resolvePathBinding({
+      args,
+      key: "arenaEvidence",
+      env,
+      envKey: "ACTIVATION_ARENA_EVIDENCE_PATH",
+    }),
+    anchorWriterEvidence: resolvePathBinding({
+      args,
+      key: "anchorWriterEvidence",
+      env,
+      envKey: "ACTIVATION_ANCHOR_WRITER_EVIDENCE_PATH",
+    }),
+    emailOracleEvidence: resolvePathBinding({
+      args,
+      key: "emailOracleEvidence",
+      env,
+      envKey: "ACTIVATION_EMAIL_ORACLE_EVIDENCE_PATH",
+    }),
   };
+  const repositoryHistoricalLedger = path.join(
+    repositoryRoot,
+    "deployments",
+    "base-sepolia.json",
+  );
+  if (resolved.ledger === repositoryHistoricalLedger || resolved.ledger === historicalLedger) {
+    throw new Error("the historical deployments/base-sepolia.json ledger is not activation authority");
+  }
+  return resolved;
 }
 
 export async function collectSnapshot(args) {
@@ -2886,7 +3034,19 @@ export async function collectSnapshot(args) {
   const envFile = await inspectFile(args.env);
   const fileEnv = envFile.exists ? parseEnvText(envFile.text) : {};
   const env = { ...fileEnv, ...process.env };
-  const evidencePaths = resolveEvidencePaths(args, env);
+  const tools = toolPresence();
+  const toolVersions = {
+    phala: inspectInstalledCliVersion("phala", "phala"),
+  };
+  const headProbe = tools.git
+    ? runReadOnly("git", ["-C", rootDir, "rev-parse", "HEAD"])
+    : { ok: false, stdout: "" };
+  const dirtyProbe = tools.git
+    ? runReadOnly("git", ["-C", rootDir, "status", "--porcelain", "--untracked-files=normal"])
+    : { ok: false, stdout: "" };
+  const evidencePaths = resolveEvidencePaths(args, env, {
+    gitHead: headProbe.ok ? clean(headProbe.stdout) : "",
+  });
 
   const [
     composeFile,
@@ -2924,10 +3084,10 @@ export async function collectSnapshot(args) {
       inspectFile(args.imageReleaseAttestationBundle),
       inspectFile(args.imageReleaseSigstoreVerificationReceipt, { json: true }),
       inspectFile(args.topology, { json: true }),
-      inspectFile(args.deploymentIntent),
-      inspectFile(args.cvmLaunchIntent),
-      inspectFile(args.authorityReviewEnvelope),
-      inspectFile(args.authorityReviewEvidence),
+      inspectFile(evidencePaths.deploymentIntent),
+      inspectFile(evidencePaths.cvmLaunchIntent),
+      inspectFile(evidencePaths.authorityReviewEnvelope),
+      inspectFile(evidencePaths.authorityReviewEvidence),
       inspectFile(evidencePaths.release, { json: true }),
       inspectFile(evidencePaths.releaseCore, { json: true }),
       inspectFile(evidencePaths.ledger, { json: true }),
@@ -2996,16 +3156,6 @@ export async function collectSnapshot(args) {
       authorityDependencies,
     })
     : { ok: false, errors: [] };
-  const tools = toolPresence();
-  const toolVersions = {
-    phala: inspectInstalledCliVersion("phala", "phala"),
-  };
-  const headProbe = tools.git
-    ? runReadOnly("git", ["-C", rootDir, "rev-parse", "HEAD"])
-    : { ok: false, stdout: "" };
-  const dirtyProbe = tools.git
-    ? runReadOnly("git", ["-C", rootDir, "status", "--porcelain", "--untracked-files=normal"])
-    : { ok: false, stdout: "" };
   const authorityReleaseSha = clean(deploymentIntentResult?.receipt?.releaseSha).toLowerCase();
   const authorityObjectProbe = tools.git && /^[0-9a-f]{40}$/.test(authorityReleaseSha)
     ? runReadOnly("git", ["-C", rootDir, "cat-file", "-t", authorityReleaseSha])
@@ -3429,9 +3579,9 @@ export async function collectSnapshot(args) {
   if (args.authorityStage === "fresh_deployment") {
     finalInputFilesStable = await validateStableFileBindings([
       { path: args.env, initial: envFile },
-      { path: args.deploymentIntent, initial: deploymentIntentFile },
-      { path: args.authorityReviewEnvelope, initial: authorityReviewEnvelopeFile },
-      { path: args.authorityReviewEvidence, initial: authorityReviewEvidenceFile },
+      { path: evidencePaths.deploymentIntent, initial: deploymentIntentFile },
+      { path: evidencePaths.authorityReviewEnvelope, initial: authorityReviewEnvelopeFile },
+      { path: evidencePaths.authorityReviewEvidence, initial: authorityReviewEvidenceFile },
     ]);
   } else {
     const readinessStableBindings = [
@@ -3454,10 +3604,10 @@ export async function collectSnapshot(args) {
         options: { json: true },
       },
       { path: args.topology, initial: topologyFile, options: { json: true } },
-      { path: args.deploymentIntent, initial: deploymentIntentFile },
-      { path: args.cvmLaunchIntent, initial: cvmLaunchIntentFile },
-      { path: args.authorityReviewEnvelope, initial: authorityReviewEnvelopeFile },
-      { path: args.authorityReviewEvidence, initial: authorityReviewEvidenceFile },
+      { path: evidencePaths.deploymentIntent, initial: deploymentIntentFile },
+      { path: evidencePaths.cvmLaunchIntent, initial: cvmLaunchIntentFile },
+      { path: evidencePaths.authorityReviewEnvelope, initial: authorityReviewEnvelopeFile },
+      { path: evidencePaths.authorityReviewEvidence, initial: authorityReviewEvidenceFile },
       { path: evidencePaths.ledger, initial: ledger, options: { json: true } },
     ];
     if (args.authorityStage !== "cvm_launch") {
@@ -3621,6 +3771,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (args.help) {
     process.stdout.write(`${usage()}\n`);
     return 0;
+  }
+  if (args.authorityStageExplicit !== true) {
+    process.stderr.write(
+      "activation preflight requires explicit --stage fresh-deployment, cvm-launch, release-ceremony, or live-activation; no probes were run\n",
+    );
+    return 2;
   }
   const snapshot = await collectSnapshot(args);
   const report = buildPreflightReport(snapshot);

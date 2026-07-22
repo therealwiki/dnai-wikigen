@@ -260,13 +260,17 @@ function ceremonyLineage({
     "freshContractDeploymentReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
-    "reviewerStatusHistory",
+    "stageBReviewerStatusHistory",
   ], "post-measurement signed-B dependency set");
-  if (!Array.isArray(dependencies.reviewerStatusHistory)) {
-    throw new Error("post-measurement reviewer status history must be an exact array");
+  if (!Array.isArray(dependencies.stageBReviewerStatusHistory)) {
+    throw new Error("post-measurement Stage-B reviewer status history must be an exact array");
   }
   const ceremonyOptions = {
-    ...dependencies,
+    deploymentIntent: dependencies.deploymentIntent,
+    freshContractDeploymentReceipt: dependencies.freshContractDeploymentReceipt,
+    reviewerGenesis: dependencies.reviewerGenesis,
+    reviewerGenesisAcceptance: dependencies.reviewerGenesisAcceptance,
+    reviewerStatusHistory: dependencies.stageBReviewerStatusHistory,
     preCeremonyRuntimeAuthority: runtimeAuthority,
   };
   const signedB = normalizeCeremonyAuthorizationCore(
@@ -386,6 +390,7 @@ function signedBDeferredAuthorizationDependencies(value) {
     freshContractDeploymentReceipt: value.freshContractDeploymentReceipt,
     reviewerGenesis: value.reviewerGenesis,
     reviewerGenesisAcceptance: value.reviewerGenesisAcceptance,
+    stageBReviewerStatusHistory: value.stageBReviewerStatusHistory,
   };
 }
 

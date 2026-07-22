@@ -25,7 +25,9 @@ import {
   CONTRACT_CHAIN_PROVENANCE_BOOLEAN_FIELDS,
   CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE,
   CONTRACT_STATELESS_POSTSTATE_EXCEPTION,
+  CVM_COMPOSE_PHASE_GATE_SCHEMA,
   CVM_TOPOLOGY_SCHEMA,
+  FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES,
   INTERNAL_RUNTIME_CREDENTIAL_GROUPS,
   PHALA_RELEASE_MANIFEST_SIGSTORE_VERIFICATION_MISSING,
   REQUIRED_RUNTIME_CREDENTIALS,
@@ -41,6 +43,7 @@ import {
   inspectCompose,
   inspectImageRelease,
   parseEnvText,
+  sensitiveValues,
 } from "./activation-preflight-core.mjs";
 import {
   CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS,
@@ -54,6 +57,8 @@ import {
   parseArgs as parsePreflightArgs,
   parseSemanticValidationReceipt,
   probeCloudflareAuthentication,
+  releaseScopedLedgerPath,
+  resolveEvidencePaths,
   inspectInstalledCliVersion,
   resolveExecutablePath,
   runSemanticReleaseValidation,
@@ -873,6 +878,22 @@ function attachActivationReadinessSnapshot(snapshot) {
   return snapshot;
 }
 
+function phaseGate(profile) {
+  return {
+    schema: CVM_COMPOSE_PHASE_GATE_SCHEMA,
+    initial_phase: "bootstrap_provision",
+    initial_services: [],
+    initial_compose_profiles: [],
+    post_measurement_phase: "post_measurement_policy_bootstrap",
+    activation_environment: {
+      key: "COMPOSE_PROFILES",
+      exact_value: profile,
+    },
+    interpolation_policy:
+      "late_values_use_exact_empty_default_until_nonempty_validated_profile_activation",
+  };
+}
+
 function completeSnapshot() {
   const ledgerValue = freshContractLedgerFixture();
   const contractDeploymentReceipt = projectFreshContractDeploymentReceipt(
@@ -933,7 +954,7 @@ function completeSnapshot() {
   mainServices.neko.cap_add = ["SYS_ADMIN"];
   mainServices.delegate.ports = ["8080:8080"];
   mainServices.delegate.networks = { "tee-net": {}, "deal-control": {} };
-  mainServices.delegate.environment = { TINKER_EVALUATOR_MODE: "disabled" };
+  mainServices.delegate.environment = { TINKER_EVALUATOR_MODE: "deterministic" };
   mainServices["arena-policy-init"].network_mode = "none";
   mainServices["arena-policy-init"].networks = [];
   mainServices["arena-worker"].environment = {
@@ -950,7 +971,7 @@ function completeSnapshot() {
   });
   mainServices["deal-runtime"] = hardened(delegateImage, {
     profiles: ["deal-settlement"],
-    "x-dnai-capability-status": "disabled_confidential_evaluator_required",
+    "x-dnai-capability-status": "release_pinned_deterministic_evaluator",
     command: [
       "tinker-deal-runtime",
       "--expected-chain-id",
@@ -1088,7 +1109,7 @@ function completeSnapshot() {
         services: [...REQUIRED_PRODUCTION_SERVICES],
         images: releaseImages.slice(0, 3),
         compute_execution: "disabled_provider_contract_unavailable",
-        deal_settlement: "disabled_confidential_evaluator_required",
+        deal_settlement: "release_pinned_deterministic_evaluator",
         email_oracle_consumer_policy: "required_onchain_exact_release_binding",
       },
       diligence_qvl_cvm: {
@@ -1098,6 +1119,7 @@ function completeSnapshot() {
         images: [qvlImage],
         qvl_context: "diligence",
         runtime_policy: { ...qvlRuntimePolicy },
+        phase_gate: phaseGate("qvl-runtime"),
       },
       arena_qvl_cvm: {
         compose: "dnai-arena-qvl.phala.yaml",
@@ -1106,6 +1128,7 @@ function completeSnapshot() {
         images: [qvlImage],
         qvl_context: "arena",
         runtime_policy: { ...qvlRuntimePolicy },
+        phase_gate: phaseGate("qvl-runtime"),
       },
       anchor_writer_qvl_cvm: {
         compose: "dnai-anchor-writer-qvl.phala.yaml",
@@ -1114,6 +1137,7 @@ function completeSnapshot() {
         images: [qvlImage],
         qvl_context: "execution_policy_anchor_writer",
         runtime_policy: { ...qvlRuntimePolicy },
+        phase_gate: phaseGate("qvl-runtime"),
       },
       compute_workload_qvl_cvm: {
         compose: "dnai-compute-workload-qvl.phala.yaml",
@@ -1122,6 +1146,7 @@ function completeSnapshot() {
         images: [qvlImage],
         qvl_context: "compute_workload",
         runtime_policy: { ...qvlRuntimePolicy },
+        phase_gate: phaseGate("qvl-runtime"),
       },
       compute_metering_qvl_cvm: {
         compose: "dnai-compute-metering-qvl.phala.yaml",
@@ -1130,6 +1155,7 @@ function completeSnapshot() {
         images: [qvlImage],
         qvl_context: "compute_metering",
         runtime_policy: { ...qvlRuntimePolicy },
+        phase_gate: phaseGate("qvl-runtime"),
       },
       independent_metering_cvm: {
         compose: "dnai-independent-metering.phala.yaml",
@@ -1137,6 +1163,7 @@ function completeSnapshot() {
         services: ["policy-init", "state-init", "metering"],
         images: [meteringImage],
         runtime_policy: { ...meteringRuntimePolicy },
+        phase_gate: phaseGate("metering-runtime"),
       },
     },
     checks: {
@@ -1365,9 +1392,58 @@ test("bounded report redacts every secret and credential-bearing URL", () => {
     assert.equal(human.includes(value), false);
     assert.equal(json.includes(value), false);
   }
-  assert.equal(report.checks.length, 102);
+  assert.equal(report.checks.length, 103);
   assert.ok(report.next_actions.length <= 20);
   assert.equal(report.checks.some((item) => item.id === "credential.openrouter"), false);
+});
+
+test("secret classification excludes public auth and key configuration controls", () => {
+  const env = {
+    ORACLE_RUNTIME_AUTH_REQUIRED: "true",
+    ORACLE_AUTH_REQUIRED: "false",
+    ORACLE_AUTH_CHAIN_ID: "84532",
+    TINKER_RUNTIME_AUTH_REQUIRED: "true",
+    TINKER_WALLET_AUTH_CHAIN_ID: "84532",
+    TINKER_ALLOW_TINKER_PROXY_TOKEN_ISSUANCE: "false",
+    TINKER_PURGE_SECRET_DEBUG_ARTIFACTS: "true",
+    TINKER_ALLOW_KEY_MANAGEMENT_ENDPOINT: "false",
+    EMAIL_ORACLE_AUTH_ADDRESS: address("1"),
+    TINKER_COMPUTE_CREDENTIAL_AUDIENCE: "dnai-wikigen:compute-jobs",
+    TINKER_WALLET_AUTH_KEY_PATH: "tinker/wallet_auth",
+    TINKER_API_KEY_STORE_PATH: "/data/tinker_api_key.enc",
+    BASE_SEPOLIA_RPC_URL: "https://provider.invalid/credential",
+    PHALA_CLOUD_API_KEY: ["phak_", "private-test-credential"].join(""),
+    GITHUB_TOKEN: "github-private-test-credential",
+    CLOUDFLARE_API_TOKEN: "cloudflare-private-test-credential",
+    AWS_SECRET_ACCESS_KEY: "aws-private-test-credential",
+    WEBHOOK_SECRET: "webhook-private-test-credential",
+    TINKER_RUNTIME_AUTH_TOKEN: "runtime-private-test-credential",
+    TINKER_COMPUTE_STORE_INTEGRITY_KEY: "integrity-private-test-credential",
+    TINKER_COMPUTE_WORKLOAD_INGRESS_PRIVATE_KEY_HEX:
+      "11".repeat(32),
+    TINKER_ARENA_PROVISION_EVALUATOR_B64: "sealed-private-test-payload",
+  };
+
+  assert.deepEqual(sensitiveValues(env), [
+    env.BASE_SEPOLIA_RPC_URL,
+    env.PHALA_CLOUD_API_KEY,
+    env.GITHUB_TOKEN,
+    env.CLOUDFLARE_API_TOKEN,
+    env.AWS_SECRET_ACCESS_KEY,
+    env.WEBHOOK_SECRET,
+    env.TINKER_RUNTIME_AUTH_TOKEN,
+    env.TINKER_COMPUTE_STORE_INTEGRITY_KEY,
+    env.TINKER_COMPUTE_WORKLOAD_INGRESS_PRIVATE_KEY_HEX,
+    env.TINKER_ARENA_PROVISION_EVALUATOR_B64,
+  ]);
+  const boundedPublicReport = {
+    auth_required: true,
+    chain_id: 84_532,
+    token_issuance_enabled: false,
+    key_management_enabled: false,
+  };
+  assert.doesNotThrow(() =>
+    assertReportContainsNoSensitiveValues(boundedPublicReport, env));
 });
 
 test("CVM execution readiness reports the available reviewed boundary", () => {
@@ -1376,7 +1452,48 @@ test("CVM execution readiness reports the available reviewed boundary", () => {
     (item) => item.id === "authority.cvm_execution_boundary_availability",
   );
   assert.equal(boundary.status, "pass");
-  assert.match(boundary.message, /available with no unresolved/);
+  assert.match(boundary.message, /executor implementation is present in source/);
+  assert.match(boundary.message, /not Phala authentication or reachability evidence/);
+});
+
+test("legacy private-key assignment names fail closed without projecting values", () => {
+  const snapshot = completeSnapshot();
+  const legacyValues = [
+    "SUPER_SECRET_LEGACY_JUDGE_VALUE",
+    "SUPER_SECRET_LEGACY_KMS_VALUE",
+  ];
+  for (const [index, name] of FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES.entries()) {
+    snapshot.env[name] = legacyValues[index];
+  }
+  const report = buildPreflightReport(snapshot);
+  const hygiene = report.checks.find(
+    (item) => item.id === "safety.legacy_private_key_names",
+  );
+  assert.equal(report.verdict, "BLOCKED");
+  assert.equal(hygiene.status, "fail");
+  assert.match(hygiene.message, /2 prohibited legacy raw-private-key assignment/);
+  for (const value of legacyValues) {
+    assert.equal(JSON.stringify(report).includes(value), false);
+  }
+  assert.doesNotThrow(() => assertReportContainsNoSensitiveValues(report, snapshot.env));
+});
+
+test("VERIFY is blocking only at the fresh-deployment boundary", () => {
+  for (const stage of [
+    "fresh_deployment",
+    "cvm_launch",
+    "release_ceremony",
+    "live_activation",
+  ]) {
+    const snapshot = completeSnapshot();
+    snapshot.authorityStage = stage;
+    snapshot.env.VERIFY = "false";
+    const verify = buildPreflightReport(snapshot).checks.find(
+      (item) => item.id === "contract_policy.verify",
+    );
+    assert.equal(verify.status, stage === "fresh_deployment" ? "fail" : "pass", stage);
+    if (stage !== "fresh_deployment") assert.match(verify.message, /ignored/);
+  }
 });
 
 test("staged release authority is fail closed across intent, final authority, review, and artifacts", () => {
@@ -2260,8 +2377,8 @@ test("activation readiness requires the canonical signed-C seven-CVM dependency 
   );
 });
 
-test("production evaluation remains disabled without an external LLM credential", () => {
-  for (const mode of ["sft", "stub", "", undefined, "unreviewed-provider"]) {
+test("production evaluation accepts only the release-pinned deterministic in-CVM lane", () => {
+  for (const mode of ["disabled", "sft", "stub", "", undefined, "unreviewed-provider"]) {
     const snapshot = completeSnapshot();
     if (mode === undefined) {
       delete snapshot.compose.document.services.delegate.environment.TINKER_EVALUATOR_MODE;
@@ -2275,6 +2392,16 @@ test("production evaluation remains disabled without an external LLM credential"
       "fail",
     );
   }
+
+  const duplicate = completeSnapshot();
+  duplicate.compose.document.services["deal-runtime"].environment.TINKER_EVALUATOR_MODE =
+    "deterministic";
+  const report = buildPreflightReport(duplicate);
+  assert.equal(report.verdict, "BLOCKED");
+  assert.equal(
+    report.checks.find((item) => item.id === "phala.confidential_evaluator_boundary").status,
+    "fail",
+  );
 });
 
 test("pairwise role collisions block activation without exposing addresses", () => {
@@ -2471,16 +2598,36 @@ test("activation preflight rejects duplicate path and mode flags", () => {
     "/tmp/final-authority.review-evidence.json",
   );
   assert.equal(authorityArgs.authorityStage, "fresh_deployment");
+  assert.equal(authorityArgs.authorityStageExplicit, true);
+  assert.deepEqual(
+    authorityArgs.explicitPathKeys,
+    [
+      "deploymentIntent",
+      "cvmLaunchIntent",
+      "authorityReviewEnvelope",
+      "authorityReviewEvidence",
+    ],
+  );
   const defaultAuthorityArgs = parsePreflightArgs([]);
   assert.equal(defaultAuthorityArgs.authorityStage, "live_activation");
-  assert.match(defaultAuthorityArgs.authorityReviewEnvelope, /final-authority\.review\.json$/);
+  assert.equal(defaultAuthorityArgs.authorityStageExplicit, false);
+  assert.equal(defaultAuthorityArgs.ledger, "");
+  assert.match(defaultAuthorityArgs.deploymentIntent, /deployment-intent-core\.json$/);
+  assert.match(defaultAuthorityArgs.cvmLaunchIntent, /cvm-launch-intent-core\.json$/);
+  assert.match(
+    defaultAuthorityArgs.authorityReviewEnvelope,
+    /final-authority\.review-envelope\.json$/,
+  );
   assert.match(
     parsePreflightArgs(["--stage", "cvm-launch"]).authorityReviewEnvelope,
-    /cvm-launch-intent\.review\.json$/,
+    /cvm-launch-intent\.review-envelope\.json$/,
   );
   const ceremonyArgs = parsePreflightArgs(["--stage", "release-ceremony"]);
   assert.equal(ceremonyArgs.authorityStage, "release_ceremony");
-  assert.match(ceremonyArgs.authorityReviewEnvelope, /final-authority\.review\.json$/);
+  assert.match(
+    ceremonyArgs.authorityReviewEnvelope,
+    /final-authority\.review-envelope\.json$/,
+  );
   assert.throws(
     () => parsePreflightArgs(["--stage", "preview"]),
     /fresh-deployment, cvm-launch, release-ceremony, or live-activation/,
@@ -2517,6 +2664,99 @@ test("activation preflight rejects duplicate path and mode flags", () => {
       "/tmp/two.receipt.json",
     ]),
     /duplicate argument: --image-release-sigstore-verification-receipt/,
+  );
+});
+
+test("preflight path resolution uses release-scoped defaults and rejects CLI/env ambiguity", () => {
+  const repositoryRoot = "/tmp/dnai-preflight-path-contract";
+  const args = parsePreflightArgs(["--stage", "fresh-deployment"]);
+  const env = { RELEASE_SHA: SHA };
+  assert.equal(
+    releaseScopedLedgerPath(SHA, SHA, repositoryRoot),
+    path.join(
+      repositoryRoot,
+      "deployments",
+      "fresh-contract-suites",
+      SHA,
+      "base-sepolia.json",
+    ),
+  );
+  assert.equal(releaseScopedLedgerPath(SHA, "f".repeat(40), repositoryRoot), "");
+  assert.equal(releaseScopedLedgerPath("not-a-sha", SHA, repositoryRoot), "");
+
+  const defaults = resolveEvidencePaths(args, env, { gitHead: SHA, repositoryRoot });
+  assert.equal(
+    defaults.ledger,
+    path.join(
+      repositoryRoot,
+      "deployments",
+      "fresh-contract-suites",
+      SHA,
+      "base-sepolia.json",
+    ),
+  );
+  assert.equal(
+    defaults.deploymentIntent,
+    path.join(repositoryRoot, ".release", "deployment-intent-core.json"),
+  );
+  assert.equal(
+    defaults.cvmLaunchIntent,
+    path.join(repositoryRoot, ".release", "cvm-launch-intent-core.json"),
+  );
+
+  const envBound = resolveEvidencePaths(args, {
+    ...env,
+    DEPLOYMENT_MANIFEST_PATH: "/tmp/operator-ledger.json",
+    DEPLOYMENT_INTENT_PATH: "/tmp/operator-deployment-intent.json",
+    OPERATOR_POLICY_REVIEW_ENVELOPE_PATH: "/tmp/operator-review-envelope.json",
+  }, { gitHead: SHA, repositoryRoot });
+  assert.equal(envBound.ledger, "/tmp/operator-ledger.json");
+  assert.equal(envBound.deploymentIntent, "/tmp/operator-deployment-intent.json");
+  assert.equal(envBound.authorityReviewEnvelope, "/tmp/operator-review-envelope.json");
+
+  const explicit = parsePreflightArgs([
+    "--stage",
+    "fresh-deployment",
+    "--ledger",
+    "/tmp/cli-ledger.json",
+    "--deployment-intent",
+    "/tmp/cli-deployment-intent.json",
+  ]);
+  assert.equal(
+    resolveEvidencePaths(explicit, env, { gitHead: SHA, repositoryRoot }).ledger,
+    "/tmp/cli-ledger.json",
+  );
+  assert.throws(
+    () => resolveEvidencePaths(explicit, {
+      ...env,
+      DEPLOYMENT_MANIFEST_PATH: "/tmp/different-ledger.json",
+    }, { gitHead: SHA, repositoryRoot }),
+    /ledger is ambiguous between the CLI flag and DEPLOYMENT_MANIFEST_PATH/,
+  );
+  assert.throws(
+    () => resolveEvidencePaths(explicit, {
+      ...env,
+      DEPLOYMENT_INTENT_PATH: "/tmp/different-deployment-intent.json",
+    }, { gitHead: SHA, repositoryRoot }),
+    /deploymentIntent is ambiguous between the CLI flag and DEPLOYMENT_INTENT_PATH/,
+  );
+
+  const historical = parsePreflightArgs([
+    "--stage",
+    "fresh-deployment",
+    "--ledger",
+    path.join(repositoryRoot, "deployments", "base-sepolia.json"),
+  ]);
+  assert.throws(
+    () => resolveEvidencePaths(historical, env, { gitHead: SHA, repositoryRoot }),
+    /historical deployments\/base-sepolia\.json ledger is not activation authority/,
+  );
+  assert.throws(
+    () => resolveEvidencePaths(args, {
+      ...env,
+      DEPLOYMENT_INTENT_PATH: "relative/deployment-intent.json",
+    }, { gitHead: SHA, repositoryRoot }),
+    /DEPLOYMENT_INTENT_PATH must be a canonical absolute path/,
   );
 });
 
@@ -2578,6 +2818,33 @@ test("seven topology descriptors must remain hash-distinct", () => {
   topology.trust_domains.arena_qvl_cvm.sha256 =
     topology.trust_domains.diligence_qvl_cvm.sha256;
   assert.equal(inspectCvmTopology(topology).valid, false);
+});
+
+test("topology phase gates are exact, empty-bootstrap, profile-specific authority", () => {
+  const mutations = [
+    (topology) => {
+      delete topology.trust_domains.diligence_qvl_cvm.phase_gate;
+    },
+    (topology) => {
+      topology.trust_domains.arena_qvl_cvm.phase_gate.initial_services = ["qvl"];
+    },
+    (topology) => {
+      topology.trust_domains.compute_workload_qvl_cvm
+        .phase_gate.activation_environment.exact_value = "metering-runtime";
+    },
+    (topology) => {
+      topology.trust_domains.independent_metering_cvm
+        .phase_gate.activation_environment.exact_value = "qvl-runtime";
+    },
+    (topology) => {
+      topology.trust_domains.compute_metering_qvl_cvm.phase_gate.unreviewed = true;
+    },
+  ];
+  for (const mutate of mutations) {
+    const topology = structuredClone(completeSnapshot().files.topology.value);
+    mutate(topology);
+    assert.equal(inspectCvmTopology(topology).valid, false);
+  }
 });
 
 test("release-manifest provenance and bundle hash are independent readiness gates", () => {

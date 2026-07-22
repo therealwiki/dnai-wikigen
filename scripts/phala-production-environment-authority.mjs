@@ -1437,9 +1437,19 @@ export async function authorizePhalaDeferredPublicEnvironmentAuthority({
     "freshContractDeploymentReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
+    "stageBReviewerStatusHistory",
   ], "signed-B dependency set");
+  if (!Array.isArray(dependencies.stageBReviewerStatusHistory)) {
+    throw new TypeError(
+      "signed-B dependency set requires the complete Stage-B reviewer status history",
+    );
+  }
   const stageOptions = {
-    ...dependencies,
+    deploymentIntent: dependencies.deploymentIntent,
+    freshContractDeploymentReceipt: dependencies.freshContractDeploymentReceipt,
+    reviewerGenesis: dependencies.reviewerGenesis,
+    reviewerGenesisAcceptance: dependencies.reviewerGenesisAcceptance,
+    reviewerStatusHistory: dependencies.stageBReviewerStatusHistory,
     preCeremonyRuntimeAuthority: runtimeAuthority,
     checkedAtMs: Date.now(),
     enforceFreshness: true,

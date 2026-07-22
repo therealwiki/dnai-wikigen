@@ -118,7 +118,7 @@ the main TEE, verifiers, metering control, and anchor roles.
 The five configuration helpers consume no operator-authored projection JSON.
 `scripts/ceremony-authority-projector.mjs` validates deployment-intent v6 and
 final-authority v2, enforces their constructor/static and numeric equality
-bindings, and emits exactly 26 named public ceremony assertions. The anchor
+bindings, and emits exactly 31 named public ceremony assertions. The anchor
 writer release commitment is `0x` plus the reviewed CVM launch-intent digest;
 both the launch-intent pin and that exact writer release are embedded in the
 hashed final authority.

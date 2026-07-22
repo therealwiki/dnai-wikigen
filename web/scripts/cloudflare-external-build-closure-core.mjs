@@ -80,8 +80,6 @@ const RESOURCE_DEFINITIONS = Object.freeze([
   Object.freeze({ kind: "verification_input", path: "ARCHITECTURE.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "PROJECT.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "README.md", maximumBytes: 4 * 1024 * 1024 }),
-  Object.freeze({ kind: "build_asset", path: "outputs/wikigen-pitch-assets/attested-network.webp", maximumBytes: 8 * 1024 * 1024 }),
-  Object.freeze({ kind: "build_asset", path: "outputs/wikigen-pitch-assets/private-reward-oracle.webp", maximumBytes: 8 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq", maximumBytes: 1024 * 1024 }),
 ]);
 
@@ -100,16 +98,6 @@ const RESOURCE_CONSUMER_BINDINGS = Object.freeze([
     consumer: "web/src/productTruth.test.ts",
     externalPath: "README.md",
     specifier: "../../README.md?raw",
-  }),
-  Object.freeze({
-    consumer: "web/src/views/Verify.tsx",
-    externalPath: "outputs/wikigen-pitch-assets/attested-network.webp",
-    specifier: "../../../outputs/wikigen-pitch-assets/attested-network.webp",
-  }),
-  Object.freeze({
-    consumer: "web/src/views/Overview.tsx",
-    externalPath: "outputs/wikigen-pitch-assets/private-reward-oracle.webp",
-    specifier: "../../../outputs/wikigen-pitch-assets/private-reward-oracle.webp",
   }),
   Object.freeze({
     consumer: "web/scripts/release-env-core.test.mjs",

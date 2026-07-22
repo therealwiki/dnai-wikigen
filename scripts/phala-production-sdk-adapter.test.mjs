@@ -22,9 +22,11 @@ import {
 import {
   PHALA_AUTHENTICATED_SDK_OBSERVATION_SCHEMA,
   assertAuthenticatedPhalaSdkObservation,
+  assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
   assertPinnedPhalaProductionSdkAdapter,
   authenticatedPhalaSdkObservationSha256,
   createPinnedPhalaProductionSdkAdapter,
+  createPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
   phalaAuthenticatedSdkRequestSemanticsSha256,
   phalaAuthenticatedAccountSubjectSha256,
   phalaSdkJsonBodySemanticDigest,
@@ -651,4 +653,46 @@ test("credential file drift after construction invalidates the adapter before HT
   fs.chmodSync(credentialPath, 0o600);
   await assert.rejects(adapter.getCurrentUser(), /changed after adapter creation/);
   assert.equal(calls, 0);
+});
+
+test("expired historical authority can open only the four authenticated continuity reads", async (t) => {
+  installCanonicalCredentialHome(t);
+  const authorities = authorityFixture();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 24 * 60 * 60 * 1_000;
+  t.after(() => { Date.now = realNow; });
+  let calls = 0;
+  installFakeHttps(t, (options) => {
+    calls += 1;
+    assert.equal(options.path, "/api/v1/auth/me");
+    return { body: CURRENT_USER };
+  });
+  await assert.rejects(
+    createPinnedPhalaProductionSdkAdapter(authorities),
+    /fresh compatibility, staging, and target authority/,
+  );
+  const observer =
+    await createPinnedPhalaHistoricalContinuityReadOnlySdkObserver(authorities);
+  assert.equal(
+    assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver(observer),
+    observer,
+  );
+  assert.deepEqual(Object.keys(observer).sort(), [
+    "getAppEnvEncryptPubKey",
+    "getCurrentUser",
+    "getCvmAttestation",
+    "getCvmInfo",
+  ]);
+  for (const forbidden of [
+    "nextAppIds",
+    "provisionCvm",
+    "commitCvmProvision",
+    "updateCvmEnvs",
+    "restartCvm",
+  ]) {
+    assert.equal(observer[forbidden], undefined);
+  }
+  const account = await observer.getCurrentUser();
+  assert.equal(account.call_sequence, 1);
+  assert.equal(calls, 1);
 });

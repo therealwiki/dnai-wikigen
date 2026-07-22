@@ -10,7 +10,12 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import { REQUIRED_RUNTIME_CREDENTIALS } from "./activation-preflight-core.mjs";
+import {
+  FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES,
+  REQUIRED_RUNTIME_CREDENTIALS,
+} from "./activation-preflight-core.mjs";
+
+export { FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES } from "./activation-preflight-core.mjs";
 
 export const ACTIVATION_ENV_SCHEMA = "dnai.activation-environment.v1";
 export const MAX_ENV_BYTES = 2 * 1024 * 1024;
@@ -39,11 +44,6 @@ export const INTERNAL_ACTIVATION_SECRET_GROUPS = Object.freeze([
 export const INTERNAL_ACTIVATION_SECRET_KEYS = Object.freeze(
   INTERNAL_ACTIVATION_SECRET_GROUPS.flat(),
 );
-export const FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES = Object.freeze([
-  "JUDGE_PRIVATE_KEY",
-  "KMS_PRIVATE_KEY",
-]);
-
 const expectedPreflightKeys = REQUIRED_RUNTIME_CREDENTIALS
   .map(([, key]) => key)
   .filter((key) => key !== "ETHERSCAN_API_KEY");

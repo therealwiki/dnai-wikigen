@@ -19,6 +19,9 @@ import {
   readReverifyDescriptorSetAndCheckpointPhalaBootstrap,
 } from "./phala-nonlive-bootstrap-authorization.mjs";
 import {
+  normalizePhalaNonLiveBootstrapAuthorizationReceipt,
+} from "./phala-nonlive-bootstrap-authorization-core.mjs";
+import {
   assembleAuthorizedPrivateBootstrapEnvironment,
 } from "./phala-authorized-private-bootstrap-environment.mjs";
 import {
@@ -63,17 +66,24 @@ import {
   releasePhalaRecoveryJournalLock,
 } from "./phala-production-recovery-journal.mjs";
 import {
+  assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
   assertPinnedDstackComposeHash,
   authenticatedPhalaSdkObservationSha256,
   createPinnedPhalaProductionSdkAdapter,
   encryptExactEnvironmentWithPinnedDstack,
   phalaAuthenticatedSdkRequestSemanticsSha256,
+  phalaAuthenticatedAccountSubjectSha256,
+  pinnedPhalaProductionSdkAdapterIdentitySha256,
   projectPinnedProvisionWireBody,
   readAuthenticatedPhalaSdkObservationResponse,
   resolvePinnedPhalaPackageIdentity,
   verifyImmediatePinnedLegacyEnvironmentKeyRefetch,
   verifyPinnedLegacyEnvironmentKey,
 } from "./phala-production-sdk-adapter.mjs";
+import {
+  normalizePhalaCompletedLaunchContinuityReceipt,
+  phalaCompletedLaunchContinuityReceiptSha256,
+} from "./phala-completed-launch-continuation-core.mjs";
 import {
   phalaPinnedPrivateDirectoryIdentityAnchorSha256,
 } from "./phala-pinned-private-directory.mjs";
@@ -82,6 +92,10 @@ export const PHALA_PRODUCTION_EXECUTOR_RUNTIME_RESULT_SCHEMA =
   "dnai.phala-production-executor-runtime-result.v3";
 export const PHALA_PRODUCTION_EXECUTOR_RUNTIME_RESULT_DOMAIN =
   "dnai-wikigen/phala-production-executor-runtime-result/v3\0";
+export const PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_STATUS =
+  "exact_completed_seven_cvm_launch_current_continuity_reconciled_nonlive";
+export const PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_TRUTH =
+  "immutable_historical_L_and_original_signed_A_reconciled_with_current_authenticated_read_only_phala_observations_without_mutation_refresh_or_live_authority";
 
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const APP_ID = /^(?!0{40}$)[0-9a-f]{40}$/;
@@ -965,6 +979,7 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
       production_target_authority_evidence: targetEvidence,
     });
     RUNTIME_RESULTS.set(result, Object.freeze({
+      mode: "fresh_launch",
       executor_final_state_sha256: phalaExecutorStateDigest(state),
       dependencies,
     }));
@@ -974,33 +989,307 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
   }
 }
 
+function assertCompletedLaunchContinuationRuntimeDependencies(
+  dependencies,
+  result = null,
+) {
+  if (!isRecord(dependencies)) {
+    throw new Error("completed-launch continuation dependencies are absent");
+  }
+  const state = assertProvenanceVerifiedCompletedPhalaExecutorState(
+    dependencies.executor_final_state,
+  );
+  const continuity = normalizePhalaCompletedLaunchContinuityReceipt(
+    dependencies.current_continuity_receipt,
+  );
+  const continuitySha256 =
+    phalaCompletedLaunchContinuityReceiptSha256(continuity);
+  const signedA = normalizePhalaNonLiveBootstrapAuthorizationReceipt(
+    dependencies.signed_a_receipt,
+  );
+  const bootstrapAuthority =
+    dependencies.bootstrap_public_environment_authority;
+  const adapter = assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver(
+    dependencies.pinned_phala_sdk_adapter,
+  );
+  const launch = dependencies.persisted_launch_completion_receipt;
+  const journal = dependencies.completed_recovery_journal;
+  const target = dependencies.production_target_authority_evidence;
+  const accountObservation =
+    dependencies.authenticated_current_account_observation;
+  const infoObservations = dependencies.authenticated_cvm_info_observations;
+  const attestationObservations =
+    dependencies.authenticated_cvm_attestation_observations;
+  const environmentKeyObservations =
+    dependencies.authenticated_environment_key_observations;
+  const environmentKeyBindings = dependencies.current_environment_key_bindings;
+  const postureReceipts = dependencies.production_posture_receipts;
+  const stateSha256 = phalaExecutorStateDigest(state);
+
+  if (!isRecord(launch) || !isRecord(journal) || !isRecord(target)
+    || continuitySha256 !== dependencies.current_continuity_receipt_sha256
+    || continuity.executor_final_state_sha256 !== stateSha256
+    || continuity.release_sha !== state.release_sha
+    || continuity.batch_id !== state.batch_id
+    || continuity.production_target_authority_sha256
+      !== state.target_authority_sha256
+    || continuity.launch_completion_receipt_sha256
+      !== dependencies.persisted_launch_completion_receipt_sha256
+    || continuity.launch_completion_raw_file_sha256
+      !== dependencies.persisted_launch_completion_raw_file_sha256
+    || continuity.nonlive_bootstrap_authorization_receipt_sha256
+      !== phalaNonLiveBootstrapAuthorizationReceiptSha256(signedA)
+    || signedA.authorization_id !== state.bootstrap_authorization_id
+    || signedA.batch_id !== state.batch_id
+    || signedA.release_sha !== state.release_sha
+    || signedA.cvm_launch_intent_sha256 !== state.launch_intent_sha256
+    || signedA.production_target_authority_sha256
+      !== state.target_authority_sha256
+    || signedA.bootstrap_public_environment_authority_sha256
+      !== bootstrapPublicEnvironmentAuthorityDigest(bootstrapAuthority)
+    || launch.executor_final_state_sha256 !== stateSha256
+    || launch.release_sha !== state.release_sha
+    || launch.batch_id !== state.batch_id
+    || launch.production_target_authority_sha256
+      !== state.target_authority_sha256
+    || launch.phala_recovery_directory_identity_anchor_sha256
+      !== state.phala_recovery_directory_identity_anchor_sha256
+    || journal.state_sha256 !== stateSha256
+    || journal.batch_id !== state.batch_id
+    || target.productionTargetAuthoritySha256 !== state.target_authority_sha256
+    || continuity.adapter_identity_sha256
+      !== pinnedPhalaProductionSdkAdapterIdentitySha256(adapter)
+    || dependencies.historical_launch_refreshed !== false
+    || dependencies.historical_evidence_refreshed !== false
+    || dependencies.live_traffic_authorized !== false
+    || !Array.isArray(infoObservations)
+    || !Array.isArray(attestationObservations)
+    || !Array.isArray(environmentKeyObservations)
+    || !Array.isArray(environmentKeyBindings)
+    || !Array.isArray(postureReceipts)
+    || infoObservations.length !== PHALA_EXECUTION_ORDER.length
+    || attestationObservations.length !== PHALA_EXECUTION_ORDER.length
+    || environmentKeyObservations.length !== PHALA_EXECUTION_ORDER.length
+    || environmentKeyBindings.length !== PHALA_EXECUTION_ORDER.length
+    || postureReceipts.length !== PHALA_EXECUTION_ORDER.length) {
+    throw new Error("completed-launch continuation dependency lineage drifted");
+  }
+
+  const accountDigest = authenticatedPhalaSdkObservationSha256(
+    accountObservation,
+    { adapter, method: "getCurrentUser", domain: null },
+  );
+  const accountResponse = readAuthenticatedPhalaSdkObservationResponse(
+    accountObservation,
+    { adapter, method: "getCurrentUser", domain: null },
+  );
+  if (continuity.current_account.call_sequence
+      !== accountObservation.call_sequence
+    || continuity.current_account.observed_at !== accountObservation.observed_at
+    || continuity.current_account.observation_sha256 !== accountDigest
+    || continuity.current_account.account_subject_sha256
+      !== phalaAuthenticatedAccountSubjectSha256(accountResponse)) {
+    throw new Error("current authenticated Phala account observation drifted");
+  }
+
+  const signedKeyByDomain = new Map(
+    state.signed_key_bindings.map((entry) => [entry.domain, entry]),
+  );
+  for (const [index, domain] of PHALA_EXECUTION_ORDER.entries()) {
+    const current = continuity.domains[index];
+    const posture = assertVerifiedProductionCvmPostureReceipt(
+      postureReceipts[index],
+    );
+    const info = infoObservations[index];
+    const attestation = attestationObservations[index];
+    const environmentKey = environmentKeyObservations[index];
+    const binding = environmentKeyBindings[index];
+    assertCanonicalPlainDataGraph(binding, {
+      label: `${domain} current signed environment-key binding`,
+    });
+    const infoDigest = authenticatedPhalaSdkObservationSha256(info, {
+      adapter,
+      method: "getCvmInfo",
+      domain,
+    });
+    const attestationDigest = authenticatedPhalaSdkObservationSha256(
+      attestation,
+      { adapter, method: "getCvmAttestation", domain },
+    );
+    const environmentKeyDigest = authenticatedPhalaSdkObservationSha256(
+      environmentKey,
+      { adapter, method: "getAppEnvEncryptPubKey", domain },
+    );
+    const bindingSha256 = domainDigest(
+      "dnai-wikigen/phala-signed-environment-key-binding/v1\0",
+      binding,
+    );
+    const historicalBinding = signedKeyByDomain.get(domain);
+    if (current.domain !== domain || posture.domain !== domain
+      || current.app_id !== posture.app_id
+      || current.cvm_id !== posture.cvm_id
+      || current.compose_hash !== posture.compose_hash
+      || current.kms_id !== posture.kms_id
+      || current.instance_type !== posture.instance_type
+      || current.disk_size !== posture.disk_size
+      || current.os_image_hash !== posture.os_image_hash
+      || current.kms_type !== posture.kms_type
+      || current.listed !== posture.listed
+      || current.public_logs !== posture.public_logs
+      || current.public_sysinfo !== posture.public_sysinfo
+      || current.public_tcbinfo !== posture.public_tcbinfo
+      || current.production_posture_verification_receipt_sha256
+        !== productionCvmPostureVerificationReceiptSha256(posture)
+      || current.cvm_info_call_sequence !== info.call_sequence
+      || current.cvm_info_observed_at !== info.observed_at
+      || current.cvm_info_observation_sha256 !== infoDigest
+      || current.attestation_call_sequence !== attestation.call_sequence
+      || current.attestation_observed_at !== attestation.observed_at
+      || current.attestation_observation_sha256 !== attestationDigest
+      || current.attestation_response_sha256
+        !== attestation.sdk_response_sha256
+      || current.environment_key_call_sequence !== environmentKey.call_sequence
+      || current.environment_key_observed_at !== environmentKey.observed_at
+      || current.environment_key_observation_sha256 !== environmentKeyDigest
+      || current.environment_key_binding_sha256 !== bindingSha256
+      || current.environment_public_key_sha256 !== binding.public_key_sha256
+      || historicalBinding?.binding_sha256 !== bindingSha256
+      || historicalBinding?.public_key_sha256 !== binding.public_key_sha256) {
+      throw new Error(`${domain} current continuity dependency drifted`);
+    }
+  }
+
+  if (result !== null
+    && (result.state !== state
+      || result.posture_receipts !== postureReceipts
+      || result.executor_final_state_sha256 !== stateSha256
+      || result.journal_state_sha256 !== journal.state_sha256
+      || result.execution_replay_sha256 !== continuitySha256)) {
+    throw new Error("completed-launch continuation runtime projection drifted");
+  }
+  return dependencies;
+}
+
+/**
+ * Mint a newly branded executor runtime result from one exact completed-launch
+ * continuation capability. This read-only historical adoption path recreates
+ * neither fresh descriptor/provisioning materials nor a mutation gate.
+ */
+export async function adoptCompletedPhalaSevenCvmLaunchContinuation(
+  continuationCapability,
+) {
+  const {
+    registerContinuityVerifiedCompletedPhalaExecutorState,
+  } = await import("./phala-production-executor-core.mjs");
+  const state = await registerContinuityVerifiedCompletedPhalaExecutorState({
+    continuationCapability,
+  });
+  const {
+    readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption,
+  } = await import("./phala-completed-launch-continuation.mjs");
+  const continuationDependencies =
+    readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption(
+      continuationCapability,
+    );
+  const dependencies = Object.freeze({
+    ...continuationDependencies,
+    cvm_descriptor_runtime_authority:
+      continuationDependencies.release_verification_authority
+        ?.cvm_descriptor_runtime_authority ?? null,
+    cvm_descriptor_runtime_materials: null,
+    provisioning_environment_authority: null,
+    postcommit_provisioning_environment_authority: null,
+    production_posture_receipts:
+      continuationDependencies.current_production_posture_receipts,
+  });
+  assertCompletedLaunchContinuationRuntimeDependencies(dependencies);
+  const result = deepFreezeCanonicalPlainDataGraph({
+    schema: PHALA_PRODUCTION_EXECUTOR_RUNTIME_RESULT_SCHEMA,
+    status: PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_STATUS,
+    truth_status:
+      PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_TRUTH,
+    release_sha: state.release_sha,
+    batch_id: state.batch_id,
+    bootstrap_authorization_id:
+      dependencies.signed_a_receipt.authorization_id,
+    executor_final_state_sha256: phalaExecutorStateDigest(state),
+    phala_recovery_directory_identity_anchor_sha256:
+      state.phala_recovery_directory_identity_anchor_sha256,
+    provisioning_environment_authority: null,
+    provisioning_environment_authority_sha256: null,
+    postcommit_provisioning_environment_authority: null,
+    postcommit_provisioning_environment_authority_sha256: null,
+    rpc_endpoint_authority: null,
+    private_environment_receipts: [],
+    posture_receipts: dependencies.production_posture_receipts,
+    state,
+    journal_state_sha256:
+      dependencies.completed_recovery_journal.state_sha256,
+    execution_replay_sha256:
+      dependencies.current_continuity_receipt_sha256,
+    live_traffic_authorized: false,
+    late_secret_activation_authorized: false,
+    raw_secret_egress: false,
+    ciphertext_persisted: false,
+  }, { label: "completed-launch continuation runtime result" });
+  RUNTIME_RESULTS.set(result, Object.freeze({
+    mode: "completed_launch_continuation",
+    executor_final_state_sha256: phalaExecutorStateDigest(state),
+    dependencies,
+  }));
+  return assertCompletedPhalaProductionExecutorRuntimeResult(result);
+}
+
 export function assertCompletedPhalaProductionExecutorRuntimeResult(value) {
   const provenance = value && RUNTIME_RESULTS.get(value);
+  const mode = provenance?.mode;
   const expected = provenance?.executor_final_state_sha256;
   const dependencies = provenance?.dependencies;
   if (!expected || !dependencies
     || value.schema !== PHALA_PRODUCTION_EXECUTOR_RUNTIME_RESULT_SCHEMA
     || value.executor_final_state_sha256 !== expected
     || value.state !== dependencies.executor_final_state
-    || value.provisioning_environment_authority
-      !== dependencies.provisioning_environment_authority
-    || value.postcommit_provisioning_environment_authority
-      !== dependencies.postcommit_provisioning_environment_authority
     || value.posture_receipts !== dependencies.production_posture_receipts
     || value.phala_recovery_directory_identity_anchor_sha256
       !== value.state.phala_recovery_directory_identity_anchor_sha256
-    || provisioningEnvironmentAuthorityDigest(
-      value.provisioning_environment_authority,
-    ) !== value.provisioning_environment_authority_sha256
-    || postCommitProvisioningEnvironmentAuthorityDigest(
-      assertPostCommitProvisioningEnvironmentAuthority(
-        value.postcommit_provisioning_environment_authority,
-      ),
-    ) !== value.postcommit_provisioning_environment_authority_sha256
     || value.live_traffic_authorized !== false
     || value.late_secret_activation_authorized !== false
     || value.raw_secret_egress !== false
     || value.ciphertext_persisted !== false) {
+    throw new Error("a completed locally replayed production executor result is required");
+  }
+  if (mode === "fresh_launch") {
+    if (value.provisioning_environment_authority
+        !== dependencies.provisioning_environment_authority
+      || value.postcommit_provisioning_environment_authority
+        !== dependencies.postcommit_provisioning_environment_authority
+      || provisioningEnvironmentAuthorityDigest(
+        value.provisioning_environment_authority,
+      ) !== value.provisioning_environment_authority_sha256
+      || postCommitProvisioningEnvironmentAuthorityDigest(
+        assertPostCommitProvisioningEnvironmentAuthority(
+          value.postcommit_provisioning_environment_authority,
+        ),
+      ) !== value.postcommit_provisioning_environment_authority_sha256) {
+      throw new Error("a completed locally replayed production executor result is required");
+    }
+  } else if (mode === "completed_launch_continuation") {
+    if (value.status
+        !== PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_STATUS
+      || value.truth_status
+        !== PHALA_PRODUCTION_EXECUTOR_COMPLETED_LAUNCH_CONTINUATION_TRUTH
+      || value.provisioning_environment_authority !== null
+      || value.provisioning_environment_authority_sha256 !== null
+      || value.postcommit_provisioning_environment_authority !== null
+      || value.postcommit_provisioning_environment_authority_sha256 !== null
+      || value.rpc_endpoint_authority !== null
+      || !Array.isArray(value.private_environment_receipts)
+      || value.private_environment_receipts.length !== 0
+      || value.execution_replay_sha256
+        !== dependencies.current_continuity_receipt_sha256) {
+      throw new Error("a completed locally replayed production executor result is required");
+    }
+  } else {
     throw new Error("a completed locally replayed production executor result is required");
   }
   return value;
@@ -1014,7 +1303,14 @@ export function assertCompletedPhalaProductionExecutorRuntimeResult(value) {
  */
 export function readPhalaProductionExecutorRuntimeDependencies(value) {
   const result = assertCompletedPhalaProductionExecutorRuntimeResult(value);
-  const dependencies = RUNTIME_RESULTS.get(result).dependencies;
+  const provenance = RUNTIME_RESULTS.get(result);
+  const dependencies = provenance.dependencies;
+  if (provenance.mode === "completed_launch_continuation") {
+    return assertCompletedLaunchContinuationRuntimeDependencies(
+      dependencies,
+      result,
+    );
+  }
   const receipt = assertCryptographicallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt(
     dependencies.signed_a_receipt,
   );

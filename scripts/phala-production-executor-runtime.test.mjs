@@ -5,6 +5,7 @@ import {
   PHALA_EXECUTION_ORDER,
 } from "./phala-production-executor-core.mjs";
 import {
+  adoptCompletedPhalaSevenCvmLaunchContinuation,
   executePhalaSevenCvmProductionLaunch,
   readPhalaProductionExecutorRuntimeDependencies,
   validateAuthenticatedPhalaReadinessCatalog,
@@ -113,5 +114,19 @@ test("runtime dependency reader rejects unbranded and JSON-cloned result shapes"
       JSON.parse(JSON.stringify(forged)),
     ),
     /completed locally replayed production executor result is required/,
+  );
+});
+
+test("completed-launch runtime adoption rejects an unbranded or serialized capability", async () => {
+  await assert.rejects(
+    adoptCompletedPhalaSevenCvmLaunchContinuation(Object.freeze({})),
+    /completed-launch continuation capability is required/,
+  );
+  await assert.rejects(
+    adoptCompletedPhalaSevenCvmLaunchContinuation(JSON.parse(JSON.stringify({
+      schema: "dnai.phala-completed-seven-cvm-launch-continuation-capability.v1",
+      one_shot: true,
+    }))),
+    /completed-launch continuation capability is required/,
   );
 });

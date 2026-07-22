@@ -17,7 +17,7 @@ import {
   Sparkles,
   Trophy,
 } from "lucide-solid";
-import vaultImage from "../../../outputs/wikigen-pitch-assets/private-reward-oracle.webp";
+import vaultImage from "../assets/pitch/private-reward-oracle.webp";
 import { deployment } from "../config";
 import { diligenceRoomAbi, publicClient, shortAddress } from "../lib/contract";
 import type { RouteKey } from "../components/AppShell";

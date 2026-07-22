@@ -22,10 +22,12 @@ import {
   beginPhalaProductionActivationFromSignedB,
   completePhalaProductionActivation,
   disposePhalaProductionActivationSession,
+  persistPhalaProductionActivationLaunchCompletion,
   phalaProductionActivationSigningExchangePaths,
   preparePhalaProductionActivationEvidence,
   readPhalaProductionActivationEvidenceDependencies,
   resumePhalaProductionActivationWithEvidence,
+  resumePhalaProductionActivationWithPinnedSigningExchange,
 } from "./phala-production-activation-coordinator.mjs";
 
 const SOURCE_PATH = fileURLToPath(new URL(
@@ -45,7 +47,11 @@ import { mock } from "node:test";
 import { pathToFileURL } from "node:url";
 
 const scenario = process.env.COORDINATOR_RECOVERY_SCENARIO;
-assert.ok(scenario === "different-second-retry" || scenario === "partial-lock");
+assert.ok([
+  "different-second-retry",
+  "partial-lock",
+  "wrong-proof-array",
+].includes(scenario));
 const moduleUrl = (basename) => pathToFileURL(
   path.join(process.cwd(), "scripts", basename),
 ).href;
@@ -192,6 +198,72 @@ await mockWithOriginalExports("release-reviewer-authority-genesis-acceptance.mjs
     },
     releaseReviewerAuthorityGenesisAcceptanceSha256() {
       return reviewerAcceptanceSha256;
+    },
+  },
+});
+const reviewedDeploymentIntent = Object.freeze({
+  release: Object.freeze({
+    toolchain: Object.freeze({ forge: "mock-forge" }),
+  }),
+});
+const lateBoundReviewerStatusHistory = Object.freeze([
+  Object.freeze({ epoch: 1, marker: "deployment-root" }),
+  Object.freeze({ epoch: 2, marker: "postlaunch-successor" }),
+]);
+const reviewerCurrentStatusSha256 = sha(14);
+const authorityEvents = [];
+let stageAFacadeCalls = 0;
+let stageBFacadeCalls = 0;
+await mockWithOriginalExports("release-authority-current-reviewer-facade.mjs", {
+  namedExports: {
+    normalizeStageAPinnedReviewerAuthority(options) {
+      assert.equal(options.deploymentIntent, reviewedDeploymentIntent);
+      assert.equal(
+        options.reviewerGenesisAcceptance
+          .reviewer_authority_current_status.epoch,
+        1,
+      );
+      assert.deepEqual(options.reviewerStatusHistory, []);
+      assert.equal(options.enforceFreshness, false);
+      assert.ok(authorityEvents.includes("reviewed-deployment-intent"));
+      assert.equal(downstreamProjectionCalls, 0);
+      authorityEvents.push("stage-a");
+      stageAFacadeCalls += 1;
+      return Object.freeze({
+        genesis: options.reviewerGenesis,
+        genesisSha256: reviewerGenesisSha256,
+        acceptance: options.reviewerGenesisAcceptance,
+        acceptanceSha256: reviewerAcceptanceSha256,
+      });
+    },
+    normalizeStageBSuccessorReviewerAuthority(options) {
+      assert.equal(options.deploymentIntent, reviewedDeploymentIntent);
+      assert.equal(
+        options.reviewerGenesisAcceptance
+          .reviewer_authority_current_status.epoch,
+        1,
+      );
+      assert.deepEqual(
+        options.reviewerStatusHistory,
+        lateBoundReviewerStatusHistory,
+      );
+      assert.equal(options.enforceFreshness, true);
+      assert.ok(authorityEvents.includes("reviewed-deployment-intent"));
+      assert.equal(downstreamProjectionCalls, 0);
+      authorityEvents.push("stage-b");
+      stageBFacadeCalls += 1;
+      return Object.freeze({
+        genesis: options.reviewerGenesis,
+        acceptance: options.reviewerGenesisAcceptance,
+        currentStatus: Object.freeze({ epoch: 2 }),
+        currentStatusExpiresAt: new Date(startMs + 3_000_000).toISOString(),
+        currentStatusSha256: reviewerCurrentStatusSha256,
+        authority: Object.freeze({
+          approved_reviewer_hashes: Object.freeze([sha(15)]),
+          reviewer_root_hash: sha(16),
+          reviewer_set_sha256: sha(17),
+        }),
+      });
     },
   },
 });
@@ -342,12 +414,22 @@ await mockWithOriginalExports("reviewed-final-authority-runtime.mjs", {
       });
     },
     assertReviewedFinalAuthorityRuntimeProjection(value) { return value; },
+    readReviewedFinalAuthorityRuntimeDependencies() {
+      authorityEvents.push("reviewed-deployment-intent");
+      return Object.freeze({ deployment_intent: reviewedDeploymentIntent });
+    },
   },
 });
 let downstreamProjectionCalls = 0;
 await mockWithOriginalExports("phala-production-environment-authority.mjs", {
   namedExports: {
     async projectPhalaDeferredPublicEnvironmentAuthority() {
+      assert.deepEqual(authorityEvents, [
+        "reviewed-deployment-intent",
+        "stage-a",
+        "stage-b",
+      ]);
+      authorityEvents.push("deferred-projection");
       downstreamProjectionCalls += 1;
       throw new Error("forced downstream Stage-B preparation failure");
     },
@@ -388,6 +470,42 @@ await mockWithOriginalExports("phala-pinned-private-directory.mjs", {
   },
 });
 
+const postlaunchCapability = Object.freeze({ kind: "postlaunch-capability" });
+let postlaunchDependencies;
+let stageBReviewerStatusHistoryBinding;
+let capabilityConsumeCalls = 0;
+let capabilityDisposeCalls = 0;
+let capabilityLive = true;
+await mockWithOriginalExports(
+  "phala-production-postlaunch-activation-capability.mjs",
+  {
+    namedExports: {
+      consumePhalaProductionPostlaunchActivationCapability(
+        value,
+        expected,
+      ) {
+        capabilityConsumeCalls += 1;
+        assert.equal(value, postlaunchCapability);
+        if (!capabilityLive) throw new Error("mock postlaunch capability is not live");
+        capabilityLive = false;
+        assert.equal(expected.releaseVerificationAuthority, releaseAuthority);
+        assert.ok(evidenceBrands.has(expected.verifiedEvidenceSet));
+        return Object.freeze({
+          dependencies: postlaunchDependencies,
+          stageBReviewerStatusHistory: lateBoundReviewerStatusHistory,
+          stageBReviewerStatusHistoryBinding,
+        });
+      },
+      disposePhalaProductionPostlaunchActivationCapability(value) {
+        if (value !== postlaunchCapability || !capabilityLive) return false;
+        capabilityLive = false;
+        capabilityDisposeCalls += 1;
+        return true;
+      },
+    },
+  },
+);
+
 const coordinator = await import(
   moduleUrl("phala-production-activation-coordinator.mjs")
     + "?recovery-behavior=" + scenario,
@@ -410,8 +528,14 @@ try {
   const measurementPolicySet = writeArtifact("measurement-policy.json", {});
   const freshContractDeploymentReceipt = writeArtifact("fresh-receipt.json", {});
   const reviewerGenesis = writeArtifact("reviewer-genesis.json", {});
-  const reviewerGenesisAcceptance = writeArtifact("reviewer-acceptance.json", {});
-  const reviewerStatusHistory = writeArtifact("reviewer-history.json", []);
+  const reviewerGenesisAcceptance = writeArtifact("reviewer-acceptance.json", {
+    reviewer_authority_current_status: { epoch: 1 },
+  });
+  stageBReviewerStatusHistoryBinding = writeArtifact(
+    "stage-b-reviewer-history.json",
+    lateBoundReviewerStatusHistory,
+    0o600,
+  );
   const releaseManifestSigstoreVerificationReceipt = writeArtifact(
     "sigstore.json",
     { release_manifest_sha256: imageManifestSha256 },
@@ -430,7 +554,6 @@ try {
     releaseManifestSigstoreVerificationReceipt,
     reviewerGenesis,
     reviewerGenesisAcceptance,
-    reviewerStatusHistory,
   });
 
   const reviewedFinalAuthorityFiles = Object.freeze({
@@ -469,80 +592,108 @@ try {
     0o600,
   );
   const ceremonyTransactionPlan = writeArtifact("transaction-plan.json", {});
-  const resumeInput = {
-    bootstrapPhaseInput,
+  postlaunchDependencies = Object.freeze({
     ceremonyLedgerInitializationReceipt,
     ceremonyLedgerInitial,
     ceremonyTransactionPlan,
     deferredAuthorityReview,
-    finalPhaseInput,
     immutableDeploymentManifest,
-    qvlIdentityEvidence,
     reviewedFinalAuthorityFiles,
+  });
+  const resumeInput = {
+    bootstrapPhaseInput,
+    finalPhaseInput,
+    postlaunchActivationCapability: postlaunchCapability,
+    qvlIdentityEvidence,
     session,
     signingExchangeDirectory: path.join(root, "signing-exchange"),
     workloadVerdictEvidence,
   };
-
-  let firstError;
+  let persistenceError;
   try {
-    await coordinator.resumePhalaProductionActivationWithEvidence(resumeInput);
+    await coordinator.persistPhalaProductionActivationLaunchCompletion({
+      qvlIdentityEvidence,
+      session,
+      workloadVerdictEvidence,
+    });
   } catch (error) {
-    firstError = error;
+    persistenceError = error;
   }
-  assert.ok(firstError instanceof Error);
-
-  if (scenario === "different-second-retry") {
-    assert.match(firstError.message, /forced downstream Stage-B preparation failure/);
-    const checkpointIssuedAt = lastEvidenceIssuedAt;
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
-    let retryError;
+  if (scenario === "partial-lock") {
+    assert.match(persistenceError?.message || "", /lock requires explicit recovery/);
+    await assert.rejects(
+      coordinator.persistPhalaProductionActivationLaunchCompletion({
+        qvlIdentityEvidence,
+        session,
+        workloadVerdictEvidence,
+      }),
+      /same-process/,
+    );
+    assert.throws(
+      () => coordinator.disposePhalaProductionActivationSession({ session }),
+      /same-process/,
+    );
+    console.log(JSON.stringify({
+      scenario,
+      evidenceFactoryCalls,
+      persistCalls,
+      loadCalls,
+      capabilityConsumeCalls,
+      closedPinnedHandles,
+    }));
+  } else if (scenario === "wrong-proof-array") {
+    assert.equal(persistenceError, undefined);
+    await assert.rejects(
+      coordinator.resumePhalaProductionActivationWithEvidence({
+        ...resumeInput,
+        qvlIdentityEvidence: [...qvlIdentityEvidence].reverse(),
+      }),
+      /exact original|proof|checkpoint/,
+    );
+    await assert.rejects(
+      coordinator.resumePhalaProductionActivationWithEvidence(resumeInput),
+      /same-process/,
+    );
+    assert.throws(
+      () => coordinator.disposePhalaProductionActivationSession({ session }),
+      /same-process/,
+    );
+    console.log(JSON.stringify({
+      scenario,
+      capabilityConsumeCalls,
+      capabilityDisposeCalls,
+      capabilityLive,
+      closedPinnedHandles,
+    }));
+  } else {
+    assert.equal(persistenceError, undefined);
+    let firstError;
     try {
       await coordinator.resumePhalaProductionActivationWithEvidence(resumeInput);
     } catch (error) {
-      retryError = error;
+      firstError = error;
     }
-    assert.match(retryError.message, /forced downstream Stage-B preparation failure/);
-    assert.ok(Math.floor(Date.now() / 1_000) > checkpointIssuedAt);
-    assert.equal(evidenceFactoryCalls, 1);
-    assert.ok(evidenceFreshnessAssertions >= 2);
-    assert.equal(persistCalls, 1);
-    assert.equal(loadCalls, 2);
-    assert.equal(reconstructedCompletionCalls, 1);
-    assert.equal(downstreamProjectionCalls, 2);
-    const disposal = coordinator.disposePhalaProductionActivationSession({ session });
-    assert.equal(
-      disposal.disposition,
-      "evidence_collection_cancelled_exact_seven_cvm_transcript_retained_no_activation_mutation",
+    assert.match(firstError?.message || "", /forced downstream Stage-B preparation failure/);
+    await assert.rejects(
+      coordinator.resumePhalaProductionActivationWithEvidence(resumeInput),
+      /same-process/,
+    );
+    assert.throws(
+      () => coordinator.disposePhalaProductionActivationSession({ session }),
+      /same-process/,
     );
     console.log(JSON.stringify({
       scenario,
       evidenceFactoryCalls,
       evidenceFreshnessAssertions,
-      checkpointIssuedAt,
-      retrySecond: Math.floor(Date.now() / 1_000),
       persistCalls,
       loadCalls,
       reconstructedCompletionCalls,
-      disposition: disposal.disposition,
-      closedPinnedHandles,
-    }));
-  } else {
-    assert.match(firstError.message, /lock requires explicit recovery/);
-    assert.equal(evidenceFactoryCalls, 1);
-    assert.equal(loadCalls, 1);
-    assert.equal(persistCalls, 0);
-    const disposal = coordinator.disposePhalaProductionActivationSession({ session });
-    assert.equal(
-      disposal.disposition,
-      "evidence_collection_cancelled_existing_transcript_state_unreconciled_operator_recovery_required_no_activation_mutation",
-    );
-    console.log(JSON.stringify({
-      scenario,
-      evidenceFactoryCalls,
-      persistCalls,
-      loadCalls,
-      disposition: disposal.disposition,
+      downstreamProjectionCalls,
+      capabilityConsumeCalls,
+      stageAFacadeCalls,
+      stageBFacadeCalls,
+      authorityEvents,
       closedPinnedHandles,
     }));
   }
@@ -658,6 +809,14 @@ test("all coordinator entry points reject incomplete inputs before authority wor
     /contain exactly the frozen fields/,
   );
   await assert.rejects(
+    resumePhalaProductionActivationWithPinnedSigningExchange({}),
+    /contain exactly the frozen fields/,
+  );
+  await assert.rejects(
+    persistPhalaProductionActivationLaunchCompletion({}),
+    /contain exactly the frozen fields/,
+  );
+  await assert.rejects(
     beginPhalaProductionActivationFromSignedB({}),
     /contain exactly the frozen fields/,
   );
@@ -671,30 +830,187 @@ test("all coordinator entry points reject incomplete inputs before authority wor
   );
 });
 
-test("explicit retry reuses the exact branded evidence checkpoint across a different second", async () => {
+test("prepare rejects the legacy prelaunch reviewer-status-history carrier", () => {
+  assert.throws(
+    () => preparePhalaProductionActivationEvidence({
+      descriptorSetReceipt: {},
+      freshContractDeploymentReceipt: {},
+      launchRecoveryDirectory: "/tmp/legacy-reviewer-history",
+      launchRuntimeResult: {},
+      measurementPolicySet: {},
+      releaseManifestSigstoreVerificationReceipt: {},
+      reviewerGenesis: {},
+      reviewerGenesisAcceptance: {},
+      reviewerStatusHistory: {},
+    }),
+    /contain exactly the frozen fields/,
+  );
+});
+
+test("both evidence-resume entry points reject the legacy direct-dependency API", async () => {
+  const legacy = {
+    bootstrapPhaseInput: {},
+    ceremonyLedgerInitial: {},
+    ceremonyLedgerInitializationReceipt: {},
+    ceremonyTransactionPlan: {},
+    deferredAuthorityReview: {},
+    finalPhaseInput: {},
+    immutableDeploymentManifest: {},
+    qvlIdentityEvidence: [],
+    reviewedFinalAuthorityFiles: {},
+    session: {},
+    signingExchangeDirectory: "/tmp/legacy-stage-b",
+    workloadVerdictEvidence: [],
+  };
+  await assert.rejects(
+    resumePhalaProductionActivationWithEvidence(legacy),
+    /contain exactly the frozen fields/,
+  );
+  await assert.rejects(
+    resumePhalaProductionActivationWithPinnedSigningExchange({
+      ...legacy,
+      signingExchangeAuthority: {},
+    }),
+    /contain exactly the frozen fields/,
+  );
+});
+
+test("coordinator requires the persisted L and burns manifest capability before final-authority read", () => {
+  const source = fs.readFileSync(SOURCE_PATH, "utf8");
+  const persistStart = source.indexOf(
+    "export async function persistPhalaProductionActivationLaunchCompletion",
+  );
+  const resumeStart = source.indexOf(
+    "async function resumePhalaProductionActivationWithEvidenceInternal",
+  );
+  const resumeEnd = source.indexOf(
+    "export function assertPhalaProductionActivationSigningSession",
+    resumeStart,
+  );
+  assert.ok(persistStart >= 0 && resumeStart > persistStart && resumeEnd > resumeStart);
+  const persistBody = source.slice(persistStart, resumeStart);
+  const body = source.slice(resumeStart, resumeEnd);
+  assert.match(persistBody, /persistOrRecoverLaunchCompletion\(\{/);
+  assert.match(
+    persistBody,
+    /state\.launchCompletionCheckpoint = launchCompletion/,
+  );
+  const capabilityIndex = body.indexOf(
+    "consumePhalaProductionPostlaunchActivationCapability(",
+  );
+  const proofArrayInterpretationIndex = body.indexOf("evidenceSetForResume(");
+  const finalAuthorityReadIndex = body.indexOf("readReviewedFinalAuthoritySet(");
+  assert.ok(capabilityIndex >= 0);
+  assert.ok(proofArrayInterpretationIndex > capabilityIndex);
+  assert.ok(finalAuthorityReadIndex > capabilityIndex);
+  assert.doesNotMatch(body, /persistOrRecoverLaunchCompletion\(\{/);
+});
+
+test("coordinator late-binds Stage-B reviewer authority after reviewed intent and remaps it for signed-B validation", () => {
+  const source = fs.readFileSync(SOURCE_PATH, "utf8");
+  const resumeStart = source.indexOf(
+    "async function resumePhalaProductionActivationWithEvidenceInternal",
+  );
+  const resumeEnd = source.indexOf(
+    "export function assertPhalaProductionActivationSigningSession",
+    resumeStart,
+  );
+  const resumeBody = source.slice(resumeStart, resumeEnd);
+  const finalAuthorityReadIndex = resumeBody.indexOf(
+    "readReviewedFinalAuthoritySet(",
+  );
+  const reviewedIntentIndex = resumeBody.indexOf(
+    "readReviewedFinalAuthorityRuntimeDependencies(",
+  );
+  const stageAIndex = resumeBody.indexOf(
+    "normalizeStageAPinnedReviewerAuthority({",
+  );
+  const stageBIndex = resumeBody.indexOf(
+    "normalizeStageBSuccessorReviewerAuthority({",
+  );
+  const deferredProjectionIndex = resumeBody.indexOf(
+    "projectPhalaDeferredPublicEnvironmentAuthority({",
+  );
+  assert.ok(finalAuthorityReadIndex >= 0);
+  assert.ok(reviewedIntentIndex > finalAuthorityReadIndex);
+  assert.ok(stageAIndex > reviewedIntentIndex);
+  assert.ok(stageBIndex > stageAIndex);
+  assert.ok(deferredProjectionIndex > stageBIndex);
+  assert.match(
+    resumeBody.slice(stageAIndex, stageBIndex),
+    /reviewerStatusHistory:\s*\[\][\s\S]*enforceFreshness:\s*false/,
+  );
+  assert.match(
+    resumeBody.slice(stageBIndex, deferredProjectionIndex),
+    /reviewerStatusHistory:\s*stageBReviewerStatusHistory[\s\S]*enforceFreshness:\s*true/,
+  );
+
+  const stageBBodyStart = source.indexOf("function stageBBodyAndPayload({");
+  const launchCompletionStart = source.indexOf(
+    "function launchCompletionDependencies(",
+    stageBBodyStart,
+  );
+  const stageBBody = source.slice(stageBBodyStart, launchCompletionStart);
+  const maximumExpiryIndex = stageBBody.indexOf("const maximumExpiry = Math.min(");
+  const reviewMetadataIndex = stageBBody.indexOf("const reviewMetadata = {");
+  assert.ok(maximumExpiryIndex >= 0 && reviewMetadataIndex > maximumExpiryIndex);
+  assert.match(
+    stageBBody.slice(maximumExpiryIndex, reviewMetadataIndex),
+    /Date\.parse\(reviewerStage\.currentStatusExpiresAt\)/,
+  );
+
+  const signedBParserStart = source.indexOf("function parsePinnedCanonicalSignedB(");
+  const signedBParserEnd = source.indexOf(
+    "export async function beginPhalaProductionActivationFromSignedB",
+    signedBParserStart,
+  );
+  const signedBParser = source.slice(signedBParserStart, signedBParserEnd);
+  const carrierIndex = signedBParser.indexOf("stageBReviewerStatusHistory,");
+  const remapIndex = signedBParser.indexOf(
+    "reviewerStatusHistory: stageBReviewerStatusHistory",
+  );
+  const validationIndex = signedBParser.indexOf(
+    "assertFreshProductionCeremonyAuthorizationCore(",
+  );
+  assert.ok(carrierIndex >= 0);
+  assert.ok(remapIndex > carrierIndex);
+  assert.ok(validationIndex > remapIndex);
+});
+
+test("a bubbled postlaunch resume failure burns capability and evidence session", async () => {
   const result = await runRecoveryHarness("different-second-retry");
   assert.equal(result.evidenceFactoryCalls, 1);
   assert.ok(result.evidenceFreshnessAssertions >= 2);
-  assert.ok(result.retrySecond > result.checkpointIssuedAt);
   assert.equal(result.persistCalls, 1);
-  assert.equal(result.loadCalls, 2);
-  assert.equal(result.reconstructedCompletionCalls, 1);
-  assert.equal(
-    result.disposition,
-    "evidence_collection_cancelled_exact_seven_cvm_transcript_retained_no_activation_mutation",
-  );
+  assert.equal(result.loadCalls, 1);
+  assert.equal(result.reconstructedCompletionCalls, 0);
+  assert.equal(result.downstreamProjectionCalls, 1);
+  assert.equal(result.capabilityConsumeCalls, 1);
+  assert.equal(result.stageAFacadeCalls, 1);
+  assert.equal(result.stageBFacadeCalls, 1);
+  assert.deepEqual(result.authorityEvents, [
+    "reviewed-deployment-intent",
+    "stage-a",
+    "stage-b",
+    "deferred-projection",
+  ]);
   assert.equal(result.closedPinnedHandles, 1);
 });
 
-test("partial locked transcript load remains operator-recovery-required on disposal", async () => {
+test("a wrong proof array is rejected only after the manifest capability is burned", async () => {
+  const result = await runRecoveryHarness("wrong-proof-array");
+  assert.equal(result.capabilityConsumeCalls, 1);
+  assert.equal(result.capabilityDisposeCalls, 0);
+  assert.equal(result.capabilityLive, false);
+  assert.equal(result.closedPinnedHandles, 1);
+});
+
+test("a bubbled transcript persistence failure irreversibly disposes the session", async () => {
   const result = await runRecoveryHarness("partial-lock");
   assert.equal(result.evidenceFactoryCalls, 1);
   assert.equal(result.loadCalls, 1);
   assert.equal(result.persistCalls, 0);
-  assert.equal(
-    result.disposition,
-      "evidence_collection_cancelled_existing_transcript_state_unreconciled_operator_recovery_required_no_activation_mutation",
-  );
+  assert.equal(result.capabilityConsumeCalls, 0);
   assert.equal(result.closedPinnedHandles, 1);
 });
 
@@ -737,8 +1053,10 @@ test("source makes the full branded authority chain statically reachable without
   );
   assert.match(
     source,
-    /catch \(error\) \{[\s\S]*?state\.consumed = false;[\s\S]*?throw error;[\s\S]*?\n  \}/,
+    /consumePhalaProductionPostlaunchActivationCapability/,
   );
+  assert.match(source, /EVIDENCE_SESSIONS\.delete\(publicEvidenceSession\)/);
+  assert.match(source, /closeEvidenceState\(state\)/);
   assert.match(source, /new WeakMap\(\)/);
   assert.match(source, /mode: 0o600/);
   assert.match(source, /Stage-B signing exchange must be a new separate private directory/);

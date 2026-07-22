@@ -21,7 +21,7 @@ import {
   Sparkles,
   XCircle,
 } from "lucide-solid";
-import networkImage from "../../../outputs/wikigen-pitch-assets/attested-network.webp";
+import networkImage from "../assets/pitch/attested-network.webp";
 import { keccak256, type Address, type Hex } from "viem";
 import { computeVaultDeployment, deployment, explorerAddress } from "../config";
 import { EmailOracleReadinessPanel } from "../components/EmailOracleReadinessPanel";

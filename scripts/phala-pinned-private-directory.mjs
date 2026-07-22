@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 export const PHALA_PINNED_PRIVATE_DIRECTORY_SCHEMA =
   "dnai.phala-pinned-private-directory.v1";
@@ -9,12 +10,15 @@ export const PHALA_PINNED_PRIVATE_DIRECTORY_IDENTITY_SCHEMA =
   "dnai.phala-pinned-private-directory-identity.v1";
 export const PHALA_PINNED_PRIVATE_FILE_IDENTITY_SCHEMA =
   "dnai.phala-pinned-private-file-identity.v1";
+export const PHALA_PINNED_PRIVATE_PENDING_FILE_HOLD_SCHEMA =
+  "dnai.phala-pinned-private-pending-file-hold.v1";
 
 const PYTHON = "/usr/bin/python3";
 const DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
 const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 const MAX_OPERATION_BYTES = 4 * 1024 * 1024;
 const HANDLES = new WeakMap();
+const PENDING_FILE_HOLDS = new WeakMap();
 const SESSION_IDENTITY_ANCHORS = new Map();
 
 // Node does not expose openat(2). This root-owned, isolated system-Python
@@ -22,7 +26,7 @@ const SESSION_IDENTITY_ANCHORS = new Map();
 // directory descriptor as fd 3. Every child path is a single basename; no
 // operation resolves the mutable directory pathname after it has been pinned.
 const OPENAT_HELPER = String.raw`
-import hashlib, json, os, re, secrets, stat, sys
+import ctypes, errno, hashlib, json, os, platform, re, secrets, stat, sys, time
 
 def die(message, code=1):
     sys.stderr.write(str(message) + "\n")
@@ -62,6 +66,18 @@ def identity(value, data):
 
 def emit_identity(value, data):
     sys.stdout.write(json.dumps(identity(value, data), sort_keys=True, separators=(",", ":")) + "\n")
+
+def emit_posture(value):
+    sys.stdout.write(json.dumps({
+        "device": str(value.st_dev),
+        "inode": str(value.st_ino),
+        "uid": str(value.st_uid),
+        "mode": format(stat.S_IMODE(value.st_mode), "04o"),
+        "link_count": value.st_nlink,
+        "size": value.st_size,
+        "mtime_ns": str(value.st_mtime_ns),
+        "ctime_ns": str(value.st_ctime_ns),
+    }, sort_keys=True, separators=(",", ":")) + "\n")
 
 def regular(fd, expected_mode, maximum, minimum=0):
     value = os.fstat(fd)
@@ -118,6 +134,35 @@ def write_all(fd, data, fault):
         if fault == "partial-write":
             die("injected durable-write failure at partial-write")
 
+def rename_noreplace(source, target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    target_bytes = os.fsencode(target)
+    if sys.platform == "darwin":
+        rename_excl = 0x00000004
+        operation = libc.renameatx_np
+        operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        operation.restype = ctypes.c_int
+        result = operation(3, source_bytes, 3, target_bytes, rename_excl)
+    else:
+        rename_noreplace_flag = 1
+        operation = getattr(libc, "renameat2", None)
+        if operation is not None:
+            operation.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            operation.restype = ctypes.c_int
+            result = operation(3, source_bytes, 3, target_bytes, rename_noreplace_flag)
+        else:
+            machine = platform.machine().lower()
+            syscall_number = 316 if machine in ("x86_64", "amd64") else 276 if machine in ("aarch64", "arm64") else None
+            if syscall_number is None:
+                die("atomic no-replace rename is unavailable on this platform")
+            result = libc.syscall(syscall_number, 3, source_bytes, 3, target_bytes, rename_noreplace_flag)
+    if result != 0:
+        observed_errno = ctypes.get_errno()
+        if observed_errno == errno.EEXIST:
+            die("fd-relative create target already exists")
+        raise OSError(observed_errno, os.strerror(observed_errno))
+
 operation = sys.argv[1]
 target = name(sys.argv[2])
 mode = int(sys.argv[3], 8)
@@ -157,6 +202,30 @@ if operation == "read":
     if expected_sha and hashlib.sha256(data).hexdigest() != expected_sha:
         die("fd-relative file digest differs from the authenticated identity")
     sys.stdout.buffer.write(data)
+    raise SystemExit(0)
+
+if operation == "identity":
+    minimum = int(sys.argv[9])
+    try:
+        data, observed = read_exact(target, mode, maximum, minimum)
+    except FileNotFoundError:
+        raise SystemExit(44)
+    emit_identity(observed, data)
+    raise SystemExit(0)
+
+if operation == "posture":
+    minimum = int(sys.argv[9])
+    try:
+        observed = os.stat(target, dir_fd=3, follow_symlinks=False)
+    except FileNotFoundError:
+        raise SystemExit(44)
+    if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
+        die("fd-relative pending file is not a single-link regular file")
+    if observed.st_uid != os.geteuid() or observed.st_dev != os.fstat(3).st_dev:
+        die("fd-relative pending file owner or device is invalid")
+    if observed.st_size < minimum or observed.st_size > maximum:
+        die("fd-relative pending file is outside the bounded size")
+    emit_posture(observed)
     raise SystemExit(0)
 
 if operation == "create":
@@ -223,8 +292,11 @@ if operation == "publish":
         if fault == "publish":
             die("injected durable-write failure at publish")
         if publish_mode == "create":
-            os.link(temporary, target, src_dir_fd=3, dst_dir_fd=3, follow_symlinks=False)
-            os.unlink(temporary, dir_fd=3)
+            # A link+unlink create exposes a transient target with nlink=2 and
+            # two directory entries. Use the platform's atomic no-replace
+            # rename primitive so readers can observe only absence or the
+            # complete single-link target, never a partial/intermediate inode.
+            rename_noreplace(temporary, target)
         else:
             current_data, current = read_exact(target, mode, maximum, 0)
             if target_before is None or current_data != existing or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != (target_before.st_dev, target_before.st_ino, target_before.st_size, target_before.st_mtime_ns, target_before.st_ctime_ns):
@@ -245,6 +317,77 @@ if operation == "publish":
         if temporary_created and not published:
             try: os.unlink(temporary, dir_fd=3)
             except OSError: pass
+    raise SystemExit(0)
+
+if operation == "publish_pending_ready":
+    fault = sys.argv[9]
+    ready_deadline_ms = int(sys.argv[10])
+    if fault not in ("", "partial-write", "complete-write", "file-fsync", "directory-fsync", "before-ready"):
+        die("unknown fd-relative pending-ready fault stage")
+    if ready_deadline_ms < 0:
+        die("fd-relative pending-ready deadline is invalid")
+    data = sys.stdin.buffer.read(maximum + 1)
+    if len(data) > maximum:
+        die("fd-relative pending-ready input exceeds its bound")
+    pending_mode = 0o200
+    ready_mode = 0o600
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    previous_umask = os.umask(0)
+    try:
+        try:
+            fd = os.open(target, flags, pending_mode, dir_fd=3)
+        finally:
+            os.umask(previous_umask)
+    except FileExistsError:
+        die("fd-relative create target already exists")
+    postcommit_fsync_error = None
+    try:
+        write_all(fd, data, fault)
+        if fault == "complete-write":
+            die("injected durable-write failure at complete-write")
+        os.fchmod(fd, pending_mode)
+        pending = regular(fd, pending_mode, maximum, 0)
+        if pending.st_size != len(data):
+            die("fd-relative pending file length is incomplete")
+        if fault == "file-fsync":
+            die("injected durable-write failure at file-fsync")
+        os.fsync(fd)
+        if fault == "directory-fsync":
+            die("injected durable-write failure at directory-fsync")
+        os.fsync(3)
+        if fault == "before-ready":
+            die("injected durable-write failure before readiness transition")
+        if ready_deadline_ms != 0 and time.time_ns() // 1_000_000 >= ready_deadline_ms:
+            die("fd-relative pending-ready deadline expired before readiness transition")
+        # chmod(0600) is the single, irrevocable readiness commit. The bytes,
+        # inode, and directory entry were already durably fsynced while the
+        # file was unreadable at 0200. A live reader may consume immediately
+        # after this transition, so no later failure is reported as if the
+        # publication had not committed.
+        os.fchmod(fd, ready_mode)
+        ready = regular(fd, ready_mode, maximum, 0)
+        if (ready.st_dev, ready.st_ino, ready.st_size) != (pending.st_dev, pending.st_ino, pending.st_size):
+            die("fd-relative pending inode changed at readiness transition")
+        try:
+            os.fsync(fd)
+            os.fsync(3)
+        except OSError as error:
+            # The precommit file and namespace fsyncs already made the exact
+            # content durable. Preserve the irrevocable successful readiness
+            # result instead of creating a producer/consumer split where the
+            # reader can accept a 0600 manifest after the writer reports
+            # failure. A process crash still destroys all same-process
+            # capability authority, so a possibly non-durable chmod can never
+            # become automatic restart authority.
+            postcommit_fsync_error = error
+    finally:
+        os.close(fd)
+    observed, observed_stat = read_exact(target, ready_mode, maximum, 0)
+    if observed != data or (observed_stat.st_dev, observed_stat.st_ino) != (pending.st_dev, pending.st_ino):
+        die("fd-relative ready bytes or inode differ from the durable pending source")
+    if postcommit_fsync_error is not None:
+        sys.stderr.write("postcommit readiness fsync warning: " + str(postcommit_fsync_error) + "\n")
+    emit_identity(observed_stat, observed)
     raise SystemExit(0)
 
 if operation == "unlink":
@@ -316,8 +459,146 @@ if operation == "unlink":
 die("unknown fd-relative operation")
 `;
 
+// A pending manifest is intentionally unreadable at mode 0200. This isolated
+// helper opens it O_WRONLY solely to keep the original inode allocated while
+// the resident waiter polls for the producer's 0600 readiness commit. It never
+// writes through the held descriptor. Every observation authenticates both the
+// held descriptor and the current no-follow directory entry relative to the
+// already-pinned directory descriptor inherited as fd 3.
+const PENDING_FILE_HOLD_HELPER = String.raw`
+import json, os, re, stat, sys
+
+def die(message):
+    sys.stderr.write(str(message) + "\n")
+    sys.stderr.flush()
+    raise SystemExit(1)
+
+def name(value):
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,255}", value) is None or value in (".", ".."):
+        die("invalid fd-relative basename")
+    return value
+
+target = name(sys.argv[1])
+maximum = int(sys.argv[2])
+minimum = int(sys.argv[3])
+expected_directory = (
+    int(sys.argv[4]),
+    int(sys.argv[5]),
+    int(sys.argv[6]),
+    int(sys.argv[7], 8),
+)
+
+directory = os.fstat(3)
+observed_directory = (
+    directory.st_dev,
+    directory.st_ino,
+    directory.st_uid,
+    stat.S_IMODE(directory.st_mode),
+)
+if not stat.S_ISDIR(directory.st_mode) or observed_directory != expected_directory:
+    die("pending-file hold directory identity changed")
+if stat.S_IMODE(directory.st_mode) != 0o700 or directory.st_uid != os.geteuid():
+    die("pending-file hold directory posture is invalid")
+if minimum < 0 or maximum < max(1, minimum):
+    die("pending-file hold bounds are invalid")
+
+if not hasattr(os, "O_NOFOLLOW"):
+    die("pending-file hold requires O_NOFOLLOW support")
+flags = os.O_WRONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+try:
+    held_fd = os.open(target, flags, dir_fd=3)
+except FileNotFoundError:
+    raise SystemExit(44)
+except PermissionError:
+    # A non-writable wrong mode can prevent O_WRONLY from producing the held
+    # descriptor. Inspect only after that failed open so an exact 0200/0600
+    # target is never pathname-observed before it is retained.
+    try:
+        rejected = os.stat(target, dir_fd=3, follow_symlinks=False)
+    except FileNotFoundError:
+        raise SystemExit(44)
+    rejected_mode = stat.S_IMODE(rejected.st_mode)
+    die("pending-file hold target has invalid %04o readiness mode" % rejected_mode)
+
+initial_identity = None
+
+def validate_common(value, label):
+    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+        die(label + " is not a single-link regular file")
+    if value.st_uid != os.geteuid() or value.st_dev != directory.st_dev:
+        die(label + " owner or device is invalid")
+    if value.st_size < minimum or value.st_size > maximum:
+        die(label + " is outside the bounded size")
+
+def observe():
+    current_directory = os.fstat(3)
+    current_directory_identity = (
+        current_directory.st_dev,
+        current_directory.st_ino,
+        current_directory.st_uid,
+        stat.S_IMODE(current_directory.st_mode),
+    )
+    if not stat.S_ISDIR(current_directory.st_mode) or current_directory_identity != expected_directory:
+        die("pending-file hold directory identity changed while retained")
+    # fchmod is atomic but can occur between two metadata syscalls. Retry a
+    # bounded number of times only to obtain a coherent view of that transition;
+    # any other mode or identity discrepancy remains terminal.
+    for _ in range(16):
+        held = os.fstat(held_fd)
+        try:
+            current = os.stat(target, dir_fd=3, follow_symlinks=False)
+        except FileNotFoundError:
+            die("held pending file disappeared from the authority namespace")
+        validate_common(held, "held pending file")
+        validate_common(current, "current pending file")
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            die("held pending file was replaced in the authority namespace")
+        if initial_identity is not None and (held.st_dev, held.st_ino) != initial_identity:
+            die("held pending file descriptor identity changed")
+        held_mode = stat.S_IMODE(held.st_mode)
+        current_mode = stat.S_IMODE(current.st_mode)
+        if held_mode == current_mode:
+            if held_mode == 0o200:
+                status = "pending"
+            elif held_mode == 0o600:
+                status = "ready"
+            else:
+                die("held pending file has invalid %04o readiness mode" % held_mode)
+            return {
+                "device": str(held.st_dev),
+                "inode": str(held.st_ino),
+                "link_count": held.st_nlink,
+                "mode": format(held_mode, "04o"),
+                "size": held.st_size,
+                "status": status,
+                "uid": str(held.st_uid),
+            }
+    die("held and current pending-file readiness modes did not converge")
+
+try:
+    first = observe()
+    initial_identity = (int(first["device"]), int(first["inode"]))
+    sys.stdout.write(json.dumps(first, sort_keys=True, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+    for line in sys.stdin:
+        command = line.rstrip("\n")
+        if command == "inspect":
+            value = observe()
+            sys.stdout.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+        elif command == "close":
+            raise SystemExit(0)
+        else:
+            die("pending-file hold command is invalid")
+finally:
+    os.close(held_fd)
+`;
+
 export const PHALA_OPENAT_HELPER_SHA256 = `sha256:${createHash("sha256")
   .update(OPENAT_HELPER, "utf8")
+  .digest("hex")}`;
+export const PHALA_PENDING_FILE_HOLD_HELPER_SHA256 = `sha256:${createHash("sha256")
+  .update(PENDING_FILE_HOLD_HELPER, "utf8")
   .digest("hex")}`;
 
 function sameInode(left, right) {
@@ -748,6 +1029,245 @@ export function listPhalaPinnedPrivateEntries(handle) {
   return Object.freeze(parsed);
 }
 
+function boundedPendingHoldMessage(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
+      "device", "inode", "link_count", "mode", "size", "status", "uid",
+    ].sort())
+    || typeof value.device !== "string" || !/^[0-9]+$/.test(value.device)
+    || typeof value.inode !== "string" || !/^[0-9]+$/.test(value.inode)
+    || typeof value.uid !== "string" || !/^[0-9]+$/.test(value.uid)
+    || value.link_count !== 1
+    || !Number.isSafeInteger(value.size) || value.size < 0
+    || !["0200", "0600"].includes(value.mode)
+    || !["pending", "ready"].includes(value.status)
+    || (value.mode === "0200") !== (value.status === "pending")) {
+    throw new Error(`${label} returned an invalid authenticated posture`);
+  }
+  return Object.freeze(value);
+}
+
+async function nextPendingFileHoldMessage(state, deadlineMs, label) {
+  const remaining = deadlineMs - Date.now();
+  if (!Number.isFinite(deadlineMs) || remaining <= 0) {
+    throw new Error(`${label} descriptor hold exceeded its bounded deadline`);
+  }
+  let timer;
+  try {
+    const observed = await Promise.race([
+      state.iterator.next(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(
+          `${label} descriptor hold exceeded its bounded deadline`,
+        )), remaining);
+      }),
+    ]);
+    if (!observed || observed.done) {
+      const detail = state.spawnError?.message || state.stderr.trim();
+      throw new Error(detail || `${label} descriptor hold helper exited unexpectedly`);
+    }
+    let value;
+    try { value = JSON.parse(observed.value); } catch {
+      throw new Error(`${label} descriptor hold returned invalid JSON`);
+    }
+    return boundedPendingHoldMessage(value, label);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function waitForPendingFileHoldExit(state, timeoutMilliseconds) {
+  if (state.child.exitCode !== null || state.child.signalCode !== null) return true;
+  let timer;
+  try {
+    return await Promise.race([
+      state.exitPromise.then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMilliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function stopPendingFileHoldState(state) {
+  if (!state || state.closed) return;
+  state.closed = true;
+  if (state.child.exitCode === null && state.child.signalCode === null) {
+    try { state.child.stdin.end("close\n"); } catch { /* Kill below if needed. */ }
+    const cleanExit = await waitForPendingFileHoldExit(state, 250);
+    if (!cleanExit && state.child.exitCode === null
+      && state.child.signalCode === null) {
+      state.child.kill("SIGKILL");
+      const killed = await waitForPendingFileHoldExit(state, 1_000);
+      if (!killed) {
+        throw new Error(
+          "pending-ready file descriptor hold helper did not terminate",
+        );
+      }
+    }
+  }
+  state.lines.close();
+}
+
+/**
+ * Retain the exact pending/ready inode with an O_WRONLY descriptor in an
+ * isolated helper. O_WRONLY is necessary because the safe pending mode is
+ * 0200; the helper never writes through the descriptor. Keeping it open makes
+ * unlink/recreate inode-number reuse impossible until the caller closes this
+ * opaque hold after canonical ready-file acceptance.
+ */
+export async function openPhalaPinnedPrivatePendingReadyFileHold(
+  handle,
+  fileName,
+  {
+    maximum = MAX_OPERATION_BYTES,
+    minimum = 0,
+    deadlineMs,
+  } = {},
+) {
+  assertPinnedPhalaPrivateDirectoryPathIdentity(handle);
+  if (typeof fileName !== "string" || path.basename(fileName) !== fileName
+    || !/^[A-Za-z0-9._-]{1,255}$/.test(fileName)
+    || fileName === "." || fileName === "..") {
+    throw new Error("pending-file hold requires one safe basename");
+  }
+  if (!Number.isSafeInteger(minimum) || minimum < 0
+    || !Number.isSafeInteger(maximum) || maximum < Math.max(1, minimum)
+    || maximum > MAX_OPERATION_BYTES
+    || !Number.isFinite(deadlineMs) || deadlineMs <= Date.now()) {
+    throw new Error("pending-file hold bounds or deadline are invalid");
+  }
+  validateSystemPython();
+  const directoryState = HANDLES.get(handle);
+  const child = spawn(PYTHON, [
+    "-I",
+    "-S",
+    "-c",
+    PENDING_FILE_HOLD_HELPER,
+    fileName,
+    String(maximum),
+    String(minimum),
+    handle.device,
+    handle.inode,
+    handle.uid,
+    handle.mode,
+  ], {
+    stdio: ["pipe", "pipe", "pipe", directoryState.fd],
+    env: {},
+    cwd: "/",
+    windowsHide: true,
+  });
+  child.stdin.setDefaultEncoding("utf8");
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const state = {
+    child,
+    lines,
+    iterator: lines[Symbol.asyncIterator](),
+    stderr: "",
+    spawnError: null,
+    closed: false,
+    busy: false,
+  };
+  state.exitPromise = new Promise((resolve) => {
+    child.once("exit", (code, signal) => {
+      state.exitCode = code;
+      state.exitSignal = signal;
+      resolve();
+    });
+  });
+  child.once("error", (error) => { state.spawnError = error; });
+  child.stdin.on("error", (error) => { state.spawnError ??= error; });
+  child.stderr.on("data", (chunk) => {
+    if (state.stderr.length < 8 * 1024) {
+      state.stderr += chunk.toString("utf8").slice(
+        0,
+        8 * 1024 - state.stderr.length,
+      );
+    }
+  });
+  try {
+    const posture = await nextPendingFileHoldMessage(
+      state,
+      deadlineMs,
+      "pending-ready file",
+    );
+    if (posture.device !== handle.device || posture.uid !== handle.uid
+      || posture.size < minimum || posture.size > maximum) {
+      throw new Error("pending-ready file descriptor hold lineage is invalid");
+    }
+    const hold = Object.freeze({
+      schema: PHALA_PINNED_PRIVATE_PENDING_FILE_HOLD_SCHEMA,
+      device: posture.device,
+      inode: posture.inode,
+      uid: posture.uid,
+      initial_mode: posture.mode,
+      initial_size: posture.size,
+      helper_sha256: PHALA_PENDING_FILE_HOLD_HELPER_SHA256,
+    });
+    state.handle = handle;
+    state.maximum = maximum;
+    state.minimum = minimum;
+    PENDING_FILE_HOLDS.set(hold, state);
+    return Object.freeze({ hold, posture });
+  } catch (error) {
+    await stopPendingFileHoldState(state);
+    throw error;
+  }
+}
+
+export async function inspectPhalaPinnedPrivatePendingReadyFileHold(
+  hold,
+  { deadlineMs } = {},
+) {
+  const state = hold && PENDING_FILE_HOLDS.get(hold);
+  if (!state || state.closed
+    || hold.schema !== PHALA_PINNED_PRIVATE_PENDING_FILE_HOLD_SCHEMA
+    || hold.helper_sha256 !== PHALA_PENDING_FILE_HOLD_HELPER_SHA256) {
+    throw new Error("an exact live pending-ready file descriptor hold is required");
+  }
+  if (state.busy) {
+    PENDING_FILE_HOLDS.delete(hold);
+    await stopPendingFileHoldState(state);
+    throw new Error("concurrent pending-ready file descriptor inspection is forbidden");
+  }
+  state.busy = true;
+  try {
+    assertPinnedPhalaPrivateDirectoryPathIdentity(state.handle);
+    await new Promise((resolve, reject) => {
+      state.child.stdin.write("inspect\n", (error) => {
+        if (error) reject(error); else resolve();
+      });
+    });
+    const posture = await nextPendingFileHoldMessage(
+      state,
+      deadlineMs,
+      "pending-ready file",
+    );
+    if (posture.device !== hold.device || posture.inode !== hold.inode
+      || posture.uid !== hold.uid || posture.size < state.minimum
+      || posture.size > state.maximum) {
+      throw new Error("pending-ready held inode identity changed");
+    }
+    return posture;
+  } catch (error) {
+    PENDING_FILE_HOLDS.delete(hold);
+    await stopPendingFileHoldState(state);
+    throw error;
+  } finally {
+    state.busy = false;
+  }
+}
+
+export async function closePhalaPinnedPrivatePendingReadyFileHold(hold) {
+  const state = hold && PENDING_FILE_HOLDS.get(hold);
+  if (!state) return false;
+  PENDING_FILE_HOLDS.delete(hold);
+  await stopPendingFileHoldState(state);
+  return true;
+}
+
 export function readPhalaPinnedPrivateFile(handle, fileName, {
   mode = 0o600,
   maximum = MAX_OPERATION_BYTES,
@@ -777,6 +1297,75 @@ export function readPhalaPinnedPrivateFile(handle, fileName, {
       ],
       allowMissing,
     });
+  } catch (error) {
+    if (allowMissing && error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Acquire the exact fd-relative identity of one stable private file. Callers
+ * can pass the returned identity back to readPhalaPinnedPrivateFile so a later
+ * read rejects even a byte-identical inode substitution.
+ */
+export function acquirePhalaPinnedPrivateFileIdentity(handle, fileName, {
+  mode = 0o600,
+  maximum = MAX_OPERATION_BYTES,
+  minimum = 2,
+  allowMissing = false,
+} = {}) {
+  try {
+    const output = invoke(handle, "identity", fileName, {
+      mode,
+      maximum,
+      minimum,
+      extra: [minimum],
+      allowMissing,
+    });
+    if (output === null) return null;
+    return parsePrivateFileIdentity(output, "acquired fd-relative file");
+  } catch (error) {
+    if (allowMissing && error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export function inspectPhalaPinnedPrivateFilePosture(handle, fileName, {
+  maximum = MAX_OPERATION_BYTES,
+  minimum = 0,
+  allowMissing = false,
+} = {}) {
+  if (!Number.isSafeInteger(minimum) || minimum < 0
+    || !Number.isSafeInteger(maximum) || maximum < Math.max(1, minimum)
+    || maximum > MAX_OPERATION_BYTES) {
+    throw new Error("fd-relative posture bounds are invalid");
+  }
+  try {
+    const output = invoke(handle, "posture", fileName, {
+      mode: 0o600,
+      maximum,
+      extra: [minimum],
+      allowMissing,
+    });
+    if (output === null) return null;
+    let value;
+    try { value = JSON.parse(output.toString("utf8")); } catch {
+      throw new Error("fd-relative file posture is not canonical JSON");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
+        "ctime_ns", "device", "inode", "link_count", "mode", "mtime_ns",
+        "size", "uid",
+      ].sort())
+      || typeof value.device !== "string" || !/^[0-9]+$/.test(value.device)
+      || typeof value.inode !== "string" || !/^[0-9]+$/.test(value.inode)
+      || typeof value.uid !== "string" || !/^[0-9]+$/.test(value.uid)
+      || typeof value.mode !== "string" || !/^0[0-7]{3}$/.test(value.mode)
+      || value.link_count !== 1 || !Number.isSafeInteger(value.size)
+      || value.size < minimum || value.size > maximum) {
+      throw new Error("fd-relative file posture is invalid");
+    }
+    return Object.freeze(value);
   } catch (error) {
     if (allowMissing && error?.code === "ENOENT") return null;
     throw error;
@@ -850,6 +1439,48 @@ export function publishPhalaPinnedPrivateFile(handle, fileName, bytes, {
     input,
   });
   return parsePrivateFileIdentity(output, "published fd-relative file");
+}
+
+/**
+ * Manifest-specific durable readiness protocol. The final basename is created
+ * once at mode 0200, receives and fsyncs all bytes, and is directory-fsynced
+ * before chmod(0600) becomes the irrevocable atomic readiness transition.
+ * Interrupted precommit publication leaves an unreadable pending inode for
+ * explicit recovery. No post-readiness error is represented as a failed
+ * publication because a concurrent reader may already have consumed it.
+ */
+export function publishPhalaPinnedPrivateFilePendingReady(
+  handle,
+  fileName,
+  bytes,
+  {
+    maximum = MAX_OPERATION_BYTES,
+    faultStage = null,
+    readyDeadlineMs = null,
+  } = {},
+) {
+  const allowedFaults = new Set([
+    "partial-write",
+    "complete-write",
+    "file-fsync",
+    "directory-fsync",
+    "before-ready",
+  ]);
+  if (faultStage !== null && !allowedFaults.has(faultStage)) {
+    throw new Error("unknown fd-relative pending-ready fault stage");
+  }
+  if (readyDeadlineMs !== null
+    && (!Number.isSafeInteger(readyDeadlineMs) || readyDeadlineMs < 1)) {
+    throw new Error("fd-relative pending-ready deadline is invalid");
+  }
+  const input = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const output = invoke(handle, "publish_pending_ready", fileName, {
+    mode: 0o600,
+    maximum,
+    extra: [faultStage ?? "", readyDeadlineMs ?? 0],
+    input,
+  });
+  return parsePrivateFileIdentity(output, "published pending-ready fd-relative file");
 }
 
 export function unlinkPhalaPinnedPrivateFile(handle, fileName, {

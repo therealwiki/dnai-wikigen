@@ -55,8 +55,9 @@ import {
   releaseReviewerAuthorityGenesisAcceptanceSha256,
 } from "./release-reviewer-authority-genesis-acceptance.mjs";
 import {
-  normalizeReleaseReviewerAuthorityForStage,
-} from "./release-ceremony-authorization.mjs";
+  normalizeStageAPinnedReviewerAuthority,
+  normalizeStageBSuccessorReviewerAuthority,
+} from "./release-authority-current-reviewer-facade.mjs";
 import {
   canonicalReleaseCeremonyLedgerInitializationReceiptText,
   normalizeReleaseCeremonyLedgerInitializationReceipt,
@@ -115,6 +116,10 @@ import {
   completeProductionPhalaPostMeasurementActivation,
   quarantineProductionPhalaPostMeasurementActivationSession,
 } from "./phala-post-measurement-activation-runtime.mjs";
+import {
+  consumePhalaProductionPostlaunchActivationCapability,
+  disposePhalaProductionPostlaunchActivationCapability,
+} from "./phala-production-postlaunch-activation-capability.mjs";
 
 export const PHALA_PRODUCTION_ACTIVATION_EVIDENCE_SESSION_SCHEMA =
   "dnai.phala-production-activation-coordinator-evidence-session.v1";
@@ -176,20 +181,19 @@ const PREPARE_FIELDS = Object.freeze([
   "releaseManifestSigstoreVerificationReceipt",
   "reviewerGenesis",
   "reviewerGenesisAcceptance",
-  "reviewerStatusHistory",
 ]);
 const EVIDENCE_RESUME_FIELDS = Object.freeze([
   "bootstrapPhaseInput",
-  "ceremonyLedgerInitializationReceipt",
-  "ceremonyLedgerInitial",
-  "ceremonyTransactionPlan",
-  "deferredAuthorityReview",
   "finalPhaseInput",
-  "immutableDeploymentManifest",
+  "postlaunchActivationCapability",
   "qvlIdentityEvidence",
-  "reviewedFinalAuthorityFiles",
   "session",
   "signingExchangeDirectory",
+  "workloadVerdictEvidence",
+]);
+const EVIDENCE_PERSIST_FIELDS = Object.freeze([
+  "qvlIdentityEvidence",
+  "session",
   "workloadVerdictEvidence",
 ]);
 const REVIEWED_FINAL_FILE_FIELDS = Object.freeze([
@@ -222,6 +226,17 @@ function exactOwnRecord(value, fields, label) {
     fail(`${label} must contain exactly the frozen fields`);
   }
   return value;
+}
+
+function ownPostlaunchCapabilityForDisposal(value) {
+  if (!isRecord(value)) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(
+    value,
+    "postlaunchActivationCapability",
+  );
+  return descriptor && Object.hasOwn(descriptor, "value")
+    ? descriptor.value
+    : null;
 }
 
 function canonical(value) {
@@ -443,36 +458,27 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
         )) {
       fail("reviewer genesis bytes are not canonical");
     }
-    const reviewerStatusHistoryRead = readStrictCanonicalJson(
-      parsed.reviewerStatusHistory,
-      "reviewer status history",
-    );
-    if (!Array.isArray(reviewerStatusHistoryRead.value)) {
-      fail("reviewer status history must be one exact canonical array");
-    }
-    const reviewerStatusHistory = Object.freeze([
-      ...reviewerStatusHistoryRead.value,
-    ]);
     const reviewerAcceptanceRead = parseJson(stableRead(
       parsed.reviewerGenesisAcceptance,
       "reviewer genesis acceptance",
     ), "reviewer genesis acceptance");
+    const reviewerRootStatusHistory = Object.freeze([]);
     const reviewerGenesisAcceptance =
       normalizeReleaseReviewerAuthorityGenesisAcceptance(
         reviewerAcceptanceRead.value,
-        { reviewerGenesis, statusHistory: reviewerStatusHistory },
+        { reviewerGenesis, statusHistory: reviewerRootStatusHistory },
       );
     if (reviewerAcceptanceRead.text
         !== canonicalReleaseReviewerAuthorityGenesisAcceptanceArtifactText(
           reviewerGenesisAcceptance,
-          { reviewerGenesis, statusHistory: reviewerStatusHistory },
+          { reviewerGenesis, statusHistory: reviewerRootStatusHistory },
         )) {
       fail("reviewer genesis-acceptance bytes are not canonical");
     }
     const reviewerAcceptanceSha256 =
       releaseReviewerAuthorityGenesisAcceptanceSha256(
         reviewerGenesisAcceptance,
-        { reviewerGenesis, statusHistory: reviewerStatusHistory },
+        { reviewerGenesis, statusHistory: reviewerRootStatusHistory },
       );
 
     const freshReceiptRead = parseJson(stableRead(
@@ -589,7 +595,6 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
       freshReceiptSha256,
       reviewerGenesis,
       reviewerGenesisAcceptance,
-      reviewerStatusHistory,
       reviewerGenesisSha256:
         releaseReviewerAuthorityGenesisSha256(reviewerGenesis),
       reviewerGenesisAcceptanceSha256: reviewerAcceptanceSha256,
@@ -597,6 +602,7 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
       descriptorSetReceipt,
       releaseVerificationAuthority,
       evidenceCheckpoint: null,
+      launchCompletionCheckpoint: null,
       historicalTranscriptState: "not_attempted",
     };
     EVIDENCE_SESSIONS.set(publicSession, privateState);
@@ -758,6 +764,8 @@ function readReviewedFinalAuthoritySet(filesValue, deferredReviewBinding, state)
 function stageBBodyAndPayload({
   state,
   reviewedSet,
+  deploymentIntent,
+  reviewerStage,
   runtimeAuthority,
   evidenceSet,
   initializationReceiptBinding,
@@ -765,18 +773,6 @@ function stageBBodyAndPayload({
   initialLedgerBinding,
   transactionPlanBinding,
 }) {
-  const reviewedDependencies = readReviewedFinalAuthorityRuntimeDependencies(
-    reviewedSet.projection,
-  );
-  const deploymentIntent = reviewedDependencies.deployment_intent;
-  const reviewerStage = normalizeReleaseReviewerAuthorityForStage({
-    reviewerGenesis: state.reviewerGenesis,
-    reviewerGenesisAcceptance: state.reviewerGenesisAcceptance,
-    reviewerStatusHistory: state.reviewerStatusHistory,
-    deploymentIntent,
-    checkedAtMs: Date.now(),
-    enforceFreshness: true,
-  });
   const initializationRead = readCanonicalJson(
     initializationReceiptBinding,
     "ceremony ledger initialization receipt",
@@ -872,6 +868,7 @@ function stageBBodyAndPayload({
     evidenceSet.minimum_activation_evidence_lease_expires_at * 1_000 - 1_000,
     Date.parse(reviewedSet.projection.review_expires_at) - 1_000,
     Date.parse(reviewedSet.deferredReview.valid_until) - 1_000,
+    Date.parse(reviewerStage.currentStatusExpiresAt),
   );
   if (maximumExpiry - now < MIN_RELEASE_AUTHORITY_REVIEW_HEADROOM_MS) {
     fail("insufficient fresh evidence/review headroom remains to issue the Stage-B signing lease");
@@ -881,6 +878,10 @@ function stageBBodyAndPayload({
       state.reviewerGenesisSha256,
     reviewer_authority_genesis_acceptance_sha256:
       state.reviewerGenesisAcceptanceSha256,
+    reviewer_authority_current_status_epoch:
+      reviewerStage.currentStatus.epoch,
+    reviewer_authority_current_status_sha256:
+      reviewerStage.currentStatusSha256,
     approved_reviewer_hashes:
       reviewerStage.authority.approved_reviewer_hashes,
     reviewer_root_hash: reviewerStage.authority.reviewer_root_hash,
@@ -1038,12 +1039,80 @@ async function persistOrRecoverLaunchCompletion({
 }
 
 /**
+ * Persist the exact seven-CVM historical transcript and mint L before any
+ * reviewed final-authority dependency is accepted. The returned values retain
+ * their production brands only inside this process; the evidence session stays
+ * live so the resident driver can wait for a separately supplied postlaunch
+ * authority manifest and then enter the existing Stage-B path.
+ */
+export async function persistPhalaProductionActivationLaunchCompletion(
+  input = {},
+) {
+  const parsed = exactOwnRecord(
+    input,
+    EVIDENCE_PERSIST_FIELDS,
+    "production activation launch-completion persistence input",
+  );
+  const publicEvidenceSession = assertPhalaProductionActivationEvidenceSession(
+    parsed.session,
+  );
+  const state = EVIDENCE_SESSIONS.get(publicEvidenceSession);
+  state.consumed = true;
+  try {
+    if (state.launchCompletionCheckpoint !== null) {
+      fail("one launch-completion checkpoint was already persisted for this session");
+    }
+    if (!Array.isArray(parsed.qvlIdentityEvidence)
+      || !Array.isArray(parsed.workloadVerdictEvidence)) {
+      fail("seven-CVM proof inputs must be exact arrays of branded proofs");
+    }
+    const evidenceSet = evidenceSetForResume(state, parsed);
+    const evidenceCheckpoint = checkpointEvidenceForPersistence(
+      state,
+      parsed,
+      evidenceSet,
+    );
+    const launchCompletion = await persistOrRecoverLaunchCompletion({
+      state,
+      evidenceSet,
+      qvlIdentityEvidence: evidenceCheckpoint.qvlIdentityEvidence,
+      workloadVerdictEvidence: evidenceCheckpoint.workloadVerdictEvidence,
+    });
+    assertFreshProductionPhalaSevenCvmLaunchCompletionReceipt(launchCompletion);
+    state.launchCompletionCheckpoint = launchCompletion;
+    state.consumed = false;
+    return Object.freeze({
+      release_sha: state.launch.release_sha,
+      batch_id: state.launch.batch_id,
+      releaseVerificationAuthority: state.releaseVerificationAuthority,
+      verifiedEvidenceSet: evidenceCheckpoint.evidenceSet,
+      launchCompletionReceipt: launchCompletion,
+      activation_mutation_authorized: false,
+      live_traffic_authorized: false,
+    });
+  } catch (error) {
+    // persistOrRecoverLaunchCompletion() performs its one permitted durable
+    // reconciliation inside this call. Any error that escapes is terminal:
+    // automatic retry would contradict the public session posture and could
+    // compete with unknown partially persisted authority.
+    EVIDENCE_SESSIONS.delete(publicEvidenceSession);
+    closeEvidenceState(state);
+    throw error;
+  }
+}
+
+/**
  * Consume exact branded production proofs, persist their historical transcript,
  * mint L -> deferred authority -> plan -> R, and publish the canonical Stage-B
  * unsigned body and signing payload into a newly pinned private exchange.
  */
 export async function resumePhalaProductionActivationWithEvidence(input = {}) {
-  return resumePhalaProductionActivationWithEvidenceInternal(input);
+  const capability = ownPostlaunchCapabilityForDisposal(input);
+  try {
+    return await resumePhalaProductionActivationWithEvidenceInternal(input);
+  } finally {
+    disposePhalaProductionPostlaunchActivationCapability(capability);
+  }
 }
 
 /**
@@ -1055,18 +1124,23 @@ export async function resumePhalaProductionActivationWithEvidence(input = {}) {
 export async function resumePhalaProductionActivationWithPinnedSigningExchange(
   input = {},
 ) {
-  const parsed = exactOwnRecord(
-    input,
-    [...EVIDENCE_RESUME_FIELDS, "signingExchangeAuthority"],
-    "resident production activation evidence resume input",
-  );
-  const legacyInput = Object.fromEntries(
-    EVIDENCE_RESUME_FIELDS.map((field) => [field, parsed[field]]),
-  );
-  return resumePhalaProductionActivationWithEvidenceInternal(
-    legacyInput,
-    { pinnedSigningHandle: parsed.signingExchangeAuthority },
-  );
+  const capability = ownPostlaunchCapabilityForDisposal(input);
+  try {
+    const parsed = exactOwnRecord(
+      input,
+      [...EVIDENCE_RESUME_FIELDS, "signingExchangeAuthority"],
+      "resident production activation evidence resume input",
+    );
+    const legacyInput = Object.fromEntries(
+      EVIDENCE_RESUME_FIELDS.map((field) => [field, parsed[field]]),
+    );
+    return await resumePhalaProductionActivationWithEvidenceInternal(
+      legacyInput,
+      { pinnedSigningHandle: parsed.signingExchangeAuthority },
+    );
+  } finally {
+    disposePhalaProductionPostlaunchActivationCapability(capability);
+  }
 }
 
 async function resumePhalaProductionActivationWithEvidenceInternal(
@@ -1082,17 +1156,57 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
     parsed.session,
   );
   const state = EVIDENCE_SESSIONS.get(publicEvidenceSession);
+  state.consumed = true;
   let signingHandle;
   try {
+    if (state.evidenceCheckpoint === null
+      || state.launchCompletionCheckpoint === null) {
+      disposePhalaProductionPostlaunchActivationCapability(
+        parsed.postlaunchActivationCapability,
+      );
+      fail("exact persisted L checkpoint is required before postlaunch resume");
+    }
+    // Burn the manifest capability against the exact stored L/evidence
+    // checkpoint before interpreting any caller-supplied proof array. A wrong
+    // array is a terminal post-claim failure, never an opportunity to retry the
+    // same independently reviewed final-authority manifest.
+    const postlaunchAuthority =
+      consumePhalaProductionPostlaunchActivationCapability(
+        parsed.postlaunchActivationCapability,
+        {
+          evidenceSession: publicEvidenceSession,
+          releaseSha: state.launch.release_sha,
+          batchId: state.launch.batch_id,
+          releaseVerificationAuthority: state.releaseVerificationAuthority,
+          verifiedEvidenceSet: state.evidenceCheckpoint.evidenceSet,
+          launchCompletionReceipt: state.launchCompletionCheckpoint,
+        },
+      );
+    const postlaunchDependencies = postlaunchAuthority.dependencies;
     if (!Array.isArray(parsed.qvlIdentityEvidence)
       || !Array.isArray(parsed.workloadVerdictEvidence)) {
       fail("seven-CVM proof inputs must be exact arrays of branded proofs");
     }
     const evidenceSet = evidenceSetForResume(state, parsed);
-    const reviewedSet = readReviewedFinalAuthoritySet(
-      parsed.reviewedFinalAuthorityFiles,
-      parsed.deferredAuthorityReview,
-      state,
+    if (state.evidenceCheckpoint.evidenceSet !== evidenceSet) {
+      fail("exact persisted L checkpoint is required before postlaunch resume");
+    }
+    const stageBReviewerStatusHistoryBinding = normalizeFileBinding(
+      postlaunchAuthority.stageBReviewerStatusHistoryBinding,
+      "late-bound Stage-B reviewer status history",
+    );
+    const stageBReviewerStatusHistoryRead = readStrictCanonicalJson(
+      stageBReviewerStatusHistoryBinding,
+      "late-bound Stage-B reviewer status history",
+      { exactMode: 0o600 },
+    );
+    if (!Array.isArray(stageBReviewerStatusHistoryRead.value)
+      || canonicalText(stageBReviewerStatusHistoryRead.value)
+        !== canonicalText(postlaunchAuthority.stageBReviewerStatusHistory)) {
+      fail("late-bound Stage-B reviewer status history changed after capability consumption");
+    }
+    const stageBReviewerStatusHistory = deepFreeze(
+      stageBReviewerStatusHistoryRead.value,
     );
     const bootstrapPhaseInput = normalizeFileBinding(
       parsed.bootstrapPhaseInput,
@@ -1113,19 +1227,19 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       { exactMode: 0o600, maximum: MAX_SECRET_FILE_BYTES, minimum: 2 },
     );
     const initializationReceiptBinding = normalizeFileBinding(
-      parsed.ceremonyLedgerInitializationReceipt,
+      postlaunchDependencies.ceremonyLedgerInitializationReceipt,
       "ceremony ledger initialization receipt",
     );
     const immutableManifestBinding = normalizeFileBinding(
-      parsed.immutableDeploymentManifest,
+      postlaunchDependencies.immutableDeploymentManifest,
       "immutable deployment manifest",
     );
     const initialLedgerBinding = normalizeFileBinding(
-      parsed.ceremonyLedgerInitial,
+      postlaunchDependencies.ceremonyLedgerInitial,
       "initial ceremony ledger",
     );
     const transactionPlanBinding = normalizeFileBinding(
-      parsed.ceremonyTransactionPlan,
+      postlaunchDependencies.ceremonyTransactionPlan,
       "ceremony transaction plan",
     );
     stableRead(
@@ -1167,22 +1281,50 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       }
       signingHandle = pinnedSigningHandle;
     }
-    // Everything above is non-mutating proof and stable-file validation.
-    // Consume the session immediately before historical transcript
-    // persistence becomes durable.
-    const evidenceCheckpoint = checkpointEvidenceForPersistence(
-      state,
-      parsed,
-      evidenceSet,
-    );
-    state.consumed = true;
-    const launchCompletion = await persistOrRecoverLaunchCompletion({
-      state,
-      evidenceSet,
-      qvlIdentityEvidence: evidenceCheckpoint.qvlIdentityEvidence,
-      workloadVerdictEvidence: evidenceCheckpoint.workloadVerdictEvidence,
-    });
+    // L was persisted by the dedicated checkpoint call before the manifest
+    // could exist. Resume consumes that exact object; it never remints or
+    // reloads L after accepting postlaunch authority.
+    const evidenceCheckpoint = state.evidenceCheckpoint;
+    const launchCompletion = state.launchCompletionCheckpoint;
     assertFreshProductionPhalaSevenCvmLaunchCompletionReceipt(launchCompletion);
+
+    // L and its private historical transcript are durable before the first
+    // final-authority read. A first launch therefore never needs a reviewed
+    // artifact containing CVM identities that did not exist before commit.
+    const reviewedSet = readReviewedFinalAuthoritySet(
+      postlaunchDependencies.reviewedFinalAuthorityFiles,
+      postlaunchDependencies.deferredAuthorityReview,
+      state,
+    );
+    const reviewedDependencies = readReviewedFinalAuthorityRuntimeDependencies(
+      reviewedSet.projection,
+    );
+    const deploymentIntent = reviewedDependencies.deployment_intent;
+    const stageAReviewerAuthority = normalizeStageAPinnedReviewerAuthority({
+      reviewerGenesis: state.reviewerGenesis,
+      reviewerGenesisAcceptance: state.reviewerGenesisAcceptance,
+      reviewerStatusHistory: [],
+      deploymentIntent,
+      checkedAtMs: Date.now(),
+      enforceFreshness: false,
+    });
+    if (stageAReviewerAuthority.genesisSha256 !== state.reviewerGenesisSha256
+      || stageAReviewerAuthority.acceptanceSha256
+        !== state.reviewerGenesisAcceptanceSha256
+      || canonicalText(stageAReviewerAuthority.genesis)
+        !== canonicalText(state.reviewerGenesis)
+      || canonicalText(stageAReviewerAuthority.acceptance)
+        !== canonicalText(state.reviewerGenesisAcceptance)) {
+      fail("reviewed deployment intent does not reproduce the retained epoch-one Stage-A authority");
+    }
+    const reviewerStage = normalizeStageBSuccessorReviewerAuthority({
+      reviewerGenesis: state.reviewerGenesis,
+      reviewerGenesisAcceptance: state.reviewerGenesisAcceptance,
+      reviewerStatusHistory: stageBReviewerStatusHistory,
+      deploymentIntent,
+      checkedAtMs: Date.now(),
+      enforceFreshness: true,
+    });
 
     const deferredAuthority =
       await projectPhalaDeferredPublicEnvironmentAuthority({
@@ -1214,6 +1356,8 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
     const stageB = stageBBodyAndPayload({
       state,
       reviewedSet,
+      deploymentIntent,
+      reviewerStage,
       runtimeAuthority,
       evidenceSet,
       initializationReceiptBinding,
@@ -1273,6 +1417,12 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       signing_payload_sha256:
         releaseAuthorityReviewSigningPayloadSha256(stageB.payload),
       signing_message: releaseAuthorityReviewSigningMessage(stageB.payload),
+      stage_b_reviewer_status_history_raw_file_sha256:
+        stageBReviewerStatusHistoryBinding.sha256,
+      stage_b_review_reviewer_authority_current_status_epoch:
+        reviewerStage.currentStatus.epoch,
+      stage_b_review_reviewer_authority_current_status_sha256:
+        reviewerStage.currentStatusSha256,
       signing_exchange_directory_identity_anchor_sha256:
         phalaPinnedPrivateDirectoryIdentityAnchorSha256(signingHandle),
       unsigned_body_file:
@@ -1312,6 +1462,8 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       plan,
       runtimeAuthority,
       stageB,
+      stageBReviewerStatusHistory,
+      stageBReviewerStatusHistoryBinding,
       bootstrapPhaseInput,
       finalPhaseInput,
       ceremonyAuthorizationDependencies: Object.freeze({
@@ -1320,7 +1472,7 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
           state.freshContractDeploymentReceipt,
         reviewerGenesis: stageB.reviewerStage.genesis,
         reviewerGenesisAcceptance: stageB.reviewerStage.acceptance,
-        reviewerStatusHistory: state.reviewerStatusHistory,
+        stageBReviewerStatusHistory,
       }),
     };
     SIGNING_SESSIONS.set(publicSigningSession, signingState);
@@ -1329,15 +1481,17 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
     EVIDENCE_SESSIONS.delete(publicEvidenceSession);
     return publicSigningSession;
   } catch (error) {
-    if (state.consumed) {
-      try {
-        if (signingHandle) closePhalaPinnedPrivateDirectory(signingHandle);
-      } finally {
-        // The exact session remains the same-process recovery authority. A
-        // subsequent explicit call first loads and authenticates any committed
-        // transcript before it considers creating new write-once state.
-        state.consumed = false;
-      }
+    try {
+      disposePhalaProductionPostlaunchActivationCapability(
+        parsed.postlaunchActivationCapability,
+      );
+      if (signingHandle) closePhalaPinnedPrivateDirectory(signingHandle);
+    } finally {
+      // A capability claim is one-shot. Any failure before the signing-session
+      // handoff irreversibly disposes this evidence session; completed-L crash
+      // recovery uses the separately reviewed continuation protocol.
+      EVIDENCE_SESSIONS.delete(publicEvidenceSession);
+      closeEvidenceState(state);
     }
     throw error;
   }
@@ -1425,8 +1579,13 @@ function parsePinnedCanonicalSignedB(state) {
   } catch {
     fail("pinned signed-B output is not bounded UTF-8 JSON");
   }
+  const {
+    stageBReviewerStatusHistory,
+    ...baseCeremonyAuthorizationDependencies
+  } = state.ceremonyAuthorizationDependencies;
   const options = {
-    ...state.ceremonyAuthorizationDependencies,
+    ...baseCeremonyAuthorizationDependencies,
+    reviewerStatusHistory: stageBReviewerStatusHistory,
     preCeremonyRuntimeAuthority: state.runtimeAuthority,
     checkedAtMs: Date.now(),
   };

@@ -2402,7 +2402,7 @@ def render_release_composes(
                 "services": list(MAIN_SERVICES),
                 "images": [release.by_name[name].image for name in IMAGE_NAMES[:3]],
                 "compute_execution": "disabled_provider_contract_unavailable",
-                "deal_settlement": "disabled_confidential_evaluator_required",
+                "deal_settlement": "release_pinned_deterministic_evaluator",
                 "email_oracle_consumer_policy": "required_onchain_exact_release_binding",
             },
             **{

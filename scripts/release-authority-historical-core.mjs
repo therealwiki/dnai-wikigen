@@ -36,13 +36,13 @@ export const LIVE_ACTIVATION_REVIEW_SUBJECT_DOMAIN =
   "dnai-wikigen/live-activation-review-subject/v5\0";
 
 export const RELEASE_AUTHORITY_CRYPTOGRAPHIC_REVIEW_SCHEMA =
-  "dnai.release-authority-cryptographic-review.v1";
+  "dnai.release-authority-cryptographic-review.v2";
 export const RELEASE_AUTHORITY_REVIEW_SIGNING_PAYLOAD_SCHEMA =
-  "dnai.release-authority-review-signing-payload.v1";
+  "dnai.release-authority-review-signing-payload.v2";
 export const RELEASE_AUTHORITY_REVIEW_SIGNING_DOMAIN =
-  "dnai-wikigen/release-authority-cryptographic-review-signing/v1\0";
+  "dnai-wikigen/release-authority-cryptographic-review-signing/v2\0";
 export const RELEASE_AUTHORITY_REVIEW_MESSAGE_PREFIX =
-  "dnai-wikigen release-authority cryptographic review v1:";
+  "dnai-wikigen release-authority cryptographic review v2:";
 export const RELEASE_AUTHORITY_SIGNATURE_SCHEME =
   "eip191_personal_sign_secp256k1_low_s_65_byte";
 
@@ -457,6 +457,10 @@ export function normalizeHistoricalReviewerAuthority(value) {
   assertBoundedCanonicalGraph(value, "historical reviewer authority");
   const parsed = exactRecord(value, [
     "approved_reviewer_hashes", "approved_reviewers",
+    "reviewer_authority_current_status_epoch",
+    "reviewer_authority_current_status_expires_at",
+    "reviewer_authority_current_status_not_before",
+    "reviewer_authority_current_status_sha256",
     "reviewer_authority_genesis_acceptance_sha256",
     "reviewer_authority_genesis_sha256", "reviewer_root_hash",
     "reviewer_set_sha256",
@@ -496,6 +500,17 @@ export function normalizeHistoricalReviewerAuthority(value) {
     || parsed.reviewer_set_sha256 !== reviewerSetSha256(approvedReviewers)) {
     fail("historical reviewer identities do not match their exact root and set pins");
   }
+  const currentStatusNotBefore = secondTimestamp(
+    parsed.reviewer_authority_current_status_not_before,
+    "reviewer authority current-status not_before",
+  );
+  const currentStatusExpiresAt = secondTimestamp(
+    parsed.reviewer_authority_current_status_expires_at,
+    "reviewer authority current-status expires_at",
+  );
+  if (currentStatusExpiresAt <= currentStatusNotBefore) {
+    fail("historical reviewer authority current-status window must be positive");
+  }
   return deepFreezeCanonicalPlainDataGraph({
     reviewer_authority_genesis_sha256: sha256(
       parsed.reviewer_authority_genesis_sha256,
@@ -504,6 +519,20 @@ export function normalizeHistoricalReviewerAuthority(value) {
     reviewer_authority_genesis_acceptance_sha256: sha256(
       parsed.reviewer_authority_genesis_acceptance_sha256,
       "reviewer authority genesis acceptance digest",
+    ),
+    reviewer_authority_current_status_epoch: integer(
+      parsed.reviewer_authority_current_status_epoch,
+      "reviewer authority current-status epoch",
+      1,
+      0xffff_ffff,
+    ),
+    reviewer_authority_current_status_not_before:
+      parsed.reviewer_authority_current_status_not_before,
+    reviewer_authority_current_status_expires_at:
+      parsed.reviewer_authority_current_status_expires_at,
+    reviewer_authority_current_status_sha256: sha256(
+      parsed.reviewer_authority_current_status_sha256,
+      "reviewer authority current-status digest",
     ),
     approved_reviewers: approvedReviewers,
     approved_reviewer_hashes: hashes,
@@ -556,6 +585,8 @@ export function normalizeHistoricalReviewSigningPayload(value, {
   const parsed = exactRecord(value, [
     "approved_reviewer_hashes", "chain_id", "dependencies", "expires_at",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_authority_current_status_epoch",
+    "reviewer_authority_current_status_sha256",
     "reviewer_authority_genesis_sha256", "reviewer_root_hash",
     "reviewer_set_sha256", "schema", "signature_scheme",
     "signature_verifier", "signed_at", "stage", "subject_kind",
@@ -623,6 +654,16 @@ export function normalizeHistoricalReviewSigningPayload(value, {
       parsed.reviewer_authority_genesis_acceptance_sha256,
       "reviewer authority genesis acceptance digest",
     ),
+    reviewer_authority_current_status_epoch: integer(
+      parsed.reviewer_authority_current_status_epoch,
+      "reviewer authority current-status epoch",
+      1,
+      0xffff_ffff,
+    ),
+    reviewer_authority_current_status_sha256: sha256(
+      parsed.reviewer_authority_current_status_sha256,
+      "reviewer authority current-status digest",
+    ),
     approved_reviewer_hashes: hashes,
     reviewer_root_hash: bareSha256(parsed.reviewer_root_hash, "reviewer root"),
     reviewer_set_sha256: sha256(parsed.reviewer_set_sha256, "reviewer set digest"),
@@ -665,6 +706,8 @@ function normalizeCryptographicReview(value, {
   const parsed = exactRecord(value, [
     "approved_reviewer_hashes", "chain_id", "dependencies", "expires_at",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_authority_current_status_epoch",
+    "reviewer_authority_current_status_sha256",
     "reviewer_authority_genesis_sha256", "reviewer_root_hash",
     "reviewer_set_sha256", "schema", "signature_scheme",
     "signature_verifier", "signatures", "signed_at",
@@ -685,6 +728,10 @@ function normalizeCryptographicReview(value, {
       !== reviewerAuthority.reviewer_authority_genesis_sha256
     || parsed.reviewer_authority_genesis_acceptance_sha256
       !== reviewerAuthority.reviewer_authority_genesis_acceptance_sha256
+    || parsed.reviewer_authority_current_status_epoch
+      !== reviewerAuthority.reviewer_authority_current_status_epoch
+    || parsed.reviewer_authority_current_status_sha256
+      !== reviewerAuthority.reviewer_authority_current_status_sha256
     || parsed.reviewer_root_hash !== reviewerAuthority.reviewer_root_hash
     || parsed.reviewer_set_sha256 !== reviewerAuthority.reviewer_set_sha256
     || !same(
@@ -709,6 +756,10 @@ function normalizeCryptographicReview(value, {
       parsed.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       parsed.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      parsed.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      parsed.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: parsed.approved_reviewer_hashes,
     reviewer_root_hash: parsed.reviewer_root_hash,
     reviewer_set_sha256: parsed.reviewer_set_sha256,
@@ -729,6 +780,19 @@ function normalizeCryptographicReview(value, {
   );
   const signedAtMs = millisecondTimestamp(parsed.signed_at, "review signed_at");
   const expiresAtMs = millisecondTimestamp(parsed.expires_at, "review expires_at");
+  const reviewerStatusNotBeforeMs = secondTimestamp(
+    reviewerAuthority.reviewer_authority_current_status_not_before,
+    "reviewer authority current-status not_before",
+  );
+  const reviewerStatusExpiresAtMs = secondTimestamp(
+    reviewerAuthority.reviewer_authority_current_status_expires_at,
+    "reviewer authority current-status expires_at",
+  );
+  if (signedAtMs < reviewerStatusNotBeforeMs
+    || signedAtMs >= reviewerStatusExpiresAtMs
+    || expiresAtMs > reviewerStatusExpiresAtMs) {
+    fail("historical cryptographic review is outside its selected reviewer-status validity window");
+  }
   if (expiresAtMs <= signedAtMs
     || expiresAtMs - signedAtMs > MAX_RELEASE_AUTHORITY_REVIEW_LIFETIME_MS) {
     fail("historical cryptographic review is outside its bounded signed lifetime");
@@ -796,6 +860,10 @@ function normalizeCryptographicReview(value, {
       parsed.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       parsed.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      parsed.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      parsed.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: [...parsed.approved_reviewer_hashes],
     reviewer_root_hash: parsed.reviewer_root_hash,
     reviewer_set_sha256: parsed.reviewer_set_sha256,
@@ -1077,6 +1145,10 @@ export function historicalCeremonyAuthorizationReviewSigningPayload(
       authority.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       authority.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      authority.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      authority.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: authority.approved_reviewer_hashes,
     reviewer_root_hash: authority.reviewer_root_hash,
     reviewer_set_sha256: authority.reviewer_set_sha256,
@@ -2661,6 +2733,10 @@ export function historicalLiveActivationReviewSigningPayload(
       authority.reviewer_authority_genesis_sha256,
     reviewer_authority_genesis_acceptance_sha256:
       authority.reviewer_authority_genesis_acceptance_sha256,
+    reviewer_authority_current_status_epoch:
+      authority.reviewer_authority_current_status_epoch,
+    reviewer_authority_current_status_sha256:
+      authority.reviewer_authority_current_status_sha256,
     approved_reviewer_hashes: authority.approved_reviewer_hashes,
     reviewer_root_hash: authority.reviewer_root_hash,
     reviewer_set_sha256: authority.reviewer_set_sha256,

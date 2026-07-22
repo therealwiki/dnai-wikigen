@@ -4,9 +4,6 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
-  normalizeReleaseReviewerAuthorityGenesis,
-} from "./release-reviewer-authority-genesis.mjs";
-import {
   RELEASE_CEREMONY_LOCK_PROTOCOL,
 } from "./release-ceremony-lock.mjs";
 import {
@@ -1116,22 +1113,109 @@ function stageTwoDependencies(body) {
   return STAGE_TWO_DEPENDENCY_KINDS.map((kind) => ({ kind, sha256: map[kind] }));
 }
 
-export function liveActivationReviewSubjectSha256(unsignedBody, options) {
+function liveActivationReviewerHistories(options) {
+  if (!isRecord(options)) {
+    fail("live activation authority options must be an object");
+  }
+  if (Object.prototype.hasOwnProperty.call(options, "reviewerStatusHistory")) {
+    fail("live activation authority rejects the ambiguous legacy reviewerStatusHistory option");
+  }
+  if (!Object.prototype.hasOwnProperty.call(options, "stageBReviewerStatusHistory")
+    || !Array.isArray(options.stageBReviewerStatusHistory)
+    || !Object.prototype.hasOwnProperty.call(options, "stageCReviewerStatusHistory")
+    || !Array.isArray(options.stageCReviewerStatusHistory)) {
+    fail("live activation authority requires exact stageBReviewerStatusHistory and stageCReviewerStatusHistory arrays");
+  }
+  return {
+    stageBReviewerStatusHistory: options.stageBReviewerStatusHistory,
+    stageCReviewerStatusHistory: options.stageCReviewerStatusHistory,
+  };
+}
+
+function liveActivationStageBCeremonyOptions(options, stageBReviewerStatusHistory) {
+  return {
+    deploymentIntent: options.deploymentIntent,
+    freshContractDeploymentReceipt: options.freshContractDeploymentReceipt,
+    reviewerGenesis: options.reviewerGenesis,
+    reviewerGenesisAcceptance: options.reviewerGenesisAcceptance,
+    reviewerStatusHistory: stageBReviewerStatusHistory,
+    preCeremonyRuntimeAuthority: options.preCeremonyRuntimeAuthority,
+    computeWorkloadActivationObservationSha256:
+      options.computeWorkloadActivationObservationSha256,
+    checkedAtMs: options.checkedAtMs,
+    // B is historical at C. Its review and selected status are revalidated at
+    // the immutable B signing instant, not against the later C wall clock.
+    enforceFreshness: false,
+  };
+}
+
+function assertCompleteReviewerLineagePrefix(stageBReviewer, stageCReviewer) {
+  const stageBLineage = stageBReviewer.completeStatusLineage;
+  const stageCLineage = stageCReviewer.completeStatusLineage;
+  if (!Array.isArray(stageBLineage) || !Array.isArray(stageCLineage)
+    || stageBLineage.length > stageCLineage.length
+    || stageBLineage.some((status, index) => (
+      JSON.stringify(status) !== JSON.stringify(stageCLineage[index])
+    ))) {
+    fail("Stage B complete reviewer-status lineage must be an exact prefix of Stage C");
+  }
+}
+
+function normalizeLiveActivationReviewerContext(options) {
+  const {
+    stageBReviewerStatusHistory,
+    stageCReviewerStatusHistory,
+  } = liveActivationReviewerHistories(options);
   const ceremonyAuthorization = normalizeCeremonyAuthorizationCore(
     options.ceremonyAuthorization,
-    options,
+    liveActivationStageBCeremonyOptions(options, stageBReviewerStatusHistory),
   );
+  let stageBReviewer;
+  let stageCReviewer;
+  try {
+    stageBReviewer = normalizeReleaseReviewerAuthorityForStage({
+      reviewerGenesis: options.reviewerGenesis,
+      reviewerGenesisAcceptance: options.reviewerGenesisAcceptance,
+      reviewerStatusHistory: stageBReviewerStatusHistory,
+      deploymentIntent: options.deploymentIntent,
+      checkedAtMs: timestamp(
+        ceremonyAuthorization.review.signed_at,
+        "ceremony authorization review signed_at",
+      ),
+      enforceFreshness: true,
+    });
+    stageCReviewer = normalizeReleaseReviewerAuthorityForStage({
+      reviewerGenesis: stageBReviewer.genesis,
+      reviewerGenesisAcceptance: stageBReviewer.acceptance,
+      reviewerStatusHistory: stageCReviewerStatusHistory,
+      deploymentIntent: options.deploymentIntent,
+      checkedAtMs: options.checkedAtMs ?? Date.now(),
+      enforceFreshness: options.enforceFreshness ?? true,
+    });
+  } catch (error) {
+    fail(`live activation reviewer authority is invalid: ${error.message}`);
+  }
+  assertCompleteReviewerLineagePrefix(stageBReviewer, stageCReviewer);
+  return {
+    ceremonyAuthorization,
+    stageBReviewer,
+    stageCReviewer,
+    stageBReviewerStatusHistory,
+    stageCReviewerStatusHistory,
+  };
+}
+
+export function liveActivationReviewSubjectSha256(unsignedBody, options) {
+  const { ceremonyAuthorization } = normalizeLiveActivationReviewerContext(options);
   const body = normalizeStageTwoBody(unsignedBody, ceremonyAuthorization);
   return domainDigest(LIVE_ACTIVATION_REVIEW_SUBJECT_DOMAIN, body);
 }
 
 export function liveActivationReviewSigningPayload(unsignedBody, reviewMetadata, options) {
-  const ceremonyAuthorization = normalizeCeremonyAuthorizationCore(
-    options.ceremonyAuthorization,
-    options,
-  );
+  const { ceremonyAuthorization, stageCReviewer } =
+    normalizeLiveActivationReviewerContext(options);
   const body = normalizeStageTwoBody(unsignedBody, ceremonyAuthorization);
-  return reviewSigningPayload({
+  const payload = reviewSigningPayload({
     schema: RELEASE_AUTHORITY_REVIEW_SIGNING_PAYLOAD_SCHEMA,
     stage: LIVE_ACTIVATION_AUTHORITY_STATUS,
     subject_kind: LIVE_ACTIVATION_REVIEW_SUBJECT_KIND,
@@ -1143,64 +1227,40 @@ export function liveActivationReviewSigningPayload(unsignedBody, reviewMetadata,
     signature_scheme: RELEASE_AUTHORITY_SIGNATURE_SCHEME,
     signature_verifier: RELEASE_AUTHORITY_SIGNATURE_VERIFIER,
   });
+  if (payload.reviewer_authority_genesis_sha256 !== stageCReviewer.genesisSha256
+    || payload.reviewer_authority_genesis_acceptance_sha256
+      !== stageCReviewer.acceptanceSha256
+    || payload.reviewer_authority_current_status_epoch
+      !== stageCReviewer.currentStatus.epoch
+    || payload.reviewer_authority_current_status_sha256
+      !== stageCReviewer.currentStatusSha256
+    || payload.reviewer_root_hash
+      !== stageCReviewer.authority.reviewer_root_hash
+    || payload.reviewer_set_sha256
+      !== stageCReviewer.authority.reviewer_set_sha256
+    || JSON.stringify(payload.approved_reviewer_hashes)
+      !== JSON.stringify(stageCReviewer.authority.approved_reviewer_hashes)) {
+    fail("live activation signing metadata does not match the exact Stage C reviewer head");
+  }
+  return payload;
 }
 
-export function normalizeLiveActivationAuthority(value, {
-  ceremonyAuthorization: ceremonyAuthorizationValue,
-  deploymentIntent,
-  freshContractDeploymentReceipt,
-  reviewerGenesis: reviewerGenesisValue,
-  reviewerGenesisAcceptance: reviewerGenesisAcceptanceValue,
-  reviewerStatusHistory = [],
-  preCeremonyRuntimeAuthority,
-  checkedAtMs = Date.now(),
-  enforceFreshness = true,
-} = {}) {
+export function normalizeLiveActivationAuthority(value, options = {}) {
   assertBoundedJson(value, "live activation authority");
-  let reviewerGenesis;
-  let reviewerGenesisAcceptance;
-  try {
-    reviewerGenesis = normalizeReleaseReviewerAuthorityGenesis(reviewerGenesisValue);
-    ({
-      acceptance: reviewerGenesisAcceptance,
-      genesis: reviewerGenesis,
-    } =
-      normalizeReleaseReviewerAuthorityForStage({
-        reviewerGenesis,
-        reviewerGenesisAcceptance: reviewerGenesisAcceptanceValue,
-        reviewerStatusHistory,
-        deploymentIntent,
-        checkedAtMs,
-        enforceFreshness,
-      }));
-  } catch (error) {
-    fail(`live activation reviewer genesis is invalid: ${error.message}`);
-  }
+  const {
+    ceremonyAuthorization,
+    stageCReviewer: reviewerStage,
+    stageCReviewerStatusHistory,
+  } = normalizeLiveActivationReviewerContext(options);
+  const reviewerGenesis = reviewerStage.genesis;
+  const reviewerGenesisAcceptance = reviewerStage.acceptance;
+  const checkedAtMs = options.checkedAtMs ?? Date.now();
+  const enforceFreshness = options.enforceFreshness ?? true;
   const {
     authority: reviewerAuthority,
-    roleSeparation: reviewerRoleSeparation,
-  } =
-    normalizeReleaseReviewerAuthorityForStage({
-      reviewerGenesis,
-      reviewerGenesisAcceptance,
-      reviewerStatusHistory,
-      deploymentIntent,
-      checkedAtMs,
-      enforceFreshness: false,
-    });
-  const ceremonyAuthorization = normalizeCeremonyAuthorizationCore(
-    ceremonyAuthorizationValue,
-    {
-      deploymentIntent,
-      freshContractDeploymentReceipt,
-      reviewerGenesis,
-      reviewerGenesisAcceptance,
-      reviewerStatusHistory,
-      preCeremonyRuntimeAuthority,
-      checkedAtMs,
-      enforceFreshness: false,
-    },
-  );
+    currentStatus: reviewerCurrentStatus,
+    currentStatusSha256: reviewerCurrentStatusSha256,
+  } = reviewerStage;
   const parsed = exact(value, [
     "ceremony_authorization_sha256", "ceremony_finalization", "ceremony_transactions",
     "common_finalized_state", "contract_state", "network", "post_ceremony_evidence",
@@ -1219,9 +1279,9 @@ export function normalizeLiveActivationAuthority(value, {
     dependencies: stageTwoDependencies(body),
     reviewerAuthority,
     reviewerGenesis,
-    reviewerGenesisAcceptance,
-    reviewerStatusHistory,
-    reviewerRoleSeparation,
+    reviewerGenesisAcceptanceSha256: reviewerStage.acceptanceSha256,
+    reviewerCurrentStatus,
+    reviewerCurrentStatusSha256,
     checkedAtMs,
     enforceFreshness,
   });
@@ -1236,8 +1296,8 @@ export function normalizeLiveActivationAuthority(value, {
   assertReviewSignedUnderAnchoredReviewerStatus(review, {
     reviewerGenesis,
     reviewerGenesisAcceptance,
-    reviewerStatusHistory,
-    deploymentIntent,
+    reviewerStatusHistory: stageCReviewerStatusHistory,
+    deploymentIntent: options.deploymentIntent,
   });
   return { ...body, review };
 }
@@ -1535,9 +1595,10 @@ export function normalizeLiveActivationFrontendBinding(value) {
 
 export function projectLiveActivationFrontendBinding(value, options) {
   const liveActivation = normalizeLiveActivationAuthority(value, options);
+  const { stageBReviewerStatusHistory } = liveActivationReviewerHistories(options);
   const ceremonyAuthorization = normalizeCeremonyAuthorizationCore(
     options.ceremonyAuthorization,
-    options,
+    liveActivationStageBCeremonyOptions(options, stageBReviewerStatusHistory),
   );
   return normalizeLiveActivationFrontendBinding({
     schema: LIVE_ACTIVATION_FRONTEND_BINDING_SCHEMA,
@@ -1590,10 +1651,11 @@ export function liveActivationFrontendBindingSha256(value) {
 
 export function frontendBuildCandidateAuthorityBindingFromLiveActivation(value, options) {
   const binding = projectLiveActivationFrontendBinding(value, options);
+  const { stageBReviewerStatusHistory } = liveActivationReviewerHistories(options);
   const ceremonyBinding =
     frontendBuildCandidateAuthorityBindingFromCeremonyAuthorization(
       options.ceremonyAuthorization,
-      options,
+      liveActivationStageBCeremonyOptions(options, stageBReviewerStatusHistory),
     );
   if (ceremonyBinding.releaseSha !== binding.release_sha
     || ceremonyBinding.deploymentIntentSha256 !== binding.deployment_intent_sha256

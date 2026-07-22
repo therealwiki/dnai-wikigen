@@ -40,6 +40,7 @@ export const EXPECTED_GITHUB_WORKFLOW =
   "therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml";
 export const IMAGE_RELEASE_SCHEMA = "dnai.tee-image-release.v1";
 export const CVM_TOPOLOGY_SCHEMA = "dnai.cvm-topology.v6";
+export const CVM_COMPOSE_PHASE_GATE_SCHEMA = "dnai.cvm-compose-phase-gate.v1";
 export const RELEASE_MANIFEST_PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 export const EXPECTED_PLATFORM = "linux/amd64";
 export const CANONICAL_SEVEN_CVM_AUTHORITY_VALIDATION_SOURCE =
@@ -64,6 +65,15 @@ export const REQUIRED_TOOLS = Object.freeze([
   "phala",
   "wrangler",
   "uv",
+]);
+
+// These retired variable names carried raw signing material in historical
+// deployments. Presence is rejected even when the assignment is empty: an
+// activation environment must use the documented Foundry keystore and dstack
+// derivation paths, and keeping the names around invites unsafe reuse.
+export const FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES = Object.freeze([
+  "JUDGE_PRIVATE_KEY",
+  "KMS_PRIVATE_KEY",
 ]);
 
 export const REQUIRED_ROLE_KEYS = Object.freeze([
@@ -514,8 +524,27 @@ const INTERNAL_RUNTIME_CREDENTIAL_KEYS = Object.freeze(
 const INTERNAL_RUNTIME_CREDENTIAL_KEY_SET = new Set(INTERNAL_RUNTIME_CREDENTIAL_KEYS);
 const INTERNAL_RUNTIME_CREDENTIAL_PATTERN = /^[\x21-\x7e]{32,4096}$/;
 
-const SECRET_NAME_PATTERN =
-  /(?:KEY|TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|RPC_URL|BASE_URL|PRIVATE)/i;
+// Redaction is deliberately based on secret-bearing *fields*, not broad
+// substrings.  Configuration names such as ORACLE_AUTH_REQUIRED,
+// TINKER_WALLET_AUTH_CHAIN_ID, and TINKER_ALLOW_KEY_MANAGEMENT_ENDPOINT carry
+// public booleans or identifiers; treating values such as "true", "false", or
+// "84532" as secrets makes the report safety check collide with ordinary
+// bounded report text.  Keep the patterns anchored to credential-bearing
+// suffixes while retaining URL redaction because RPC/provider URLs can embed
+// access credentials even when the URL syntax itself is otherwise valid.
+const SECRET_VALUE_NAME_PATTERNS = Object.freeze([
+  /(?:^|_)(?:API_KEY|TOKEN)$/i,
+  /(?:^|_)(?:PASSWORD(?:_ADMIN)?|PRIVATE_KEY(?:_HEX)?|SIGNING_KEY|INTEGRITY_KEY|STORE_KEY)$/i,
+  /(?:^|_)(?:JWT_KEY|SECRET|CLIENT_SECRET|CREDENTIAL|AUTH_KEY_B64|AUTH_TAG)$/i,
+  /(?:^|_)(?:REVIEWER_KEY|SIGNER_KEY)$/i,
+  /(?:^|_)(?:RPC_URL|BASE_URL)(?:_SECONDARY)?$/i,
+]);
+const SECRET_VALUE_EXACT_NAMES = new Set([
+  "AWS_SECRET_ACCESS_KEY",
+  "DEV_KEY",
+  "TINKER_ARENA_PROVISION_EVALUATOR_B64",
+  "TINKER_ARENA_PROVISION_RELEASE_B64",
+]);
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 const IMAGE_PATTERN =
@@ -1527,6 +1556,28 @@ function exactStringArray(value, expected) {
     && value.every((item, index) => item === expected[index]);
 }
 
+function phaseGateValid(value, profile) {
+  return exactObject(value, [
+    "schema",
+    "initial_phase",
+    "initial_services",
+    "initial_compose_profiles",
+    "post_measurement_phase",
+    "activation_environment",
+    "interpolation_policy",
+  ])
+    && value.schema === CVM_COMPOSE_PHASE_GATE_SCHEMA
+    && value.initial_phase === "bootstrap_provision"
+    && exactStringArray(value.initial_services, [])
+    && exactStringArray(value.initial_compose_profiles, [])
+    && value.post_measurement_phase === "post_measurement_policy_bootstrap"
+    && exactObject(value.activation_environment, ["key", "exact_value"])
+    && value.activation_environment.key === "COMPOSE_PROFILES"
+    && value.activation_environment.exact_value === profile
+    && value.interpolation_policy
+      === "late_values_use_exact_empty_default_until_nonempty_validated_profile_activation";
+}
+
 export function inspectCvmTopology(value) {
   const invalid = {
     valid: false, releaseSha: "", sourceRef: "", generatedAt: "", domains: {},
@@ -1603,17 +1654,27 @@ export function inspectCvmTopology(value) {
         "images",
         "qvl_context",
         "runtime_policy",
+        "phase_gate",
       ],
       compose: policy.compose,
       services: REQUIRED_QVL_SERVICES,
       imageCount: 1,
       qvlContext: policy.context,
+      phaseGateProfile: "qvl-runtime",
     }])),
     independent_metering_cvm: {
-      fields: ["compose", "sha256", "services", "images", "runtime_policy"],
+      fields: [
+        "compose",
+        "sha256",
+        "services",
+        "images",
+        "runtime_policy",
+        "phase_gate",
+      ],
       compose: "dnai-independent-metering.phala.yaml",
       services: REQUIRED_METERING_SERVICES,
       imageCount: 1,
+      phaseGateProfile: "metering-runtime",
     },
   };
   for (const [name, policy] of Object.entries(domainPolicy)) {
@@ -1637,6 +1698,10 @@ export function inspectCvmTopology(value) {
       !exactObject(domain.runtime_policy, runtimePolicyKeys)
       || runtimePolicyKeys.some((key) => !boundedString(domain.runtime_policy[key], 128))
     )) return invalid;
+    if (policy.phaseGateProfile && !phaseGateValid(
+      domain.phase_gate,
+      policy.phaseGateProfile,
+    )) return invalid;
   }
   const descriptorHashes = Object.values(value.trust_domains).map((domain) => domain.sha256);
   if (new Set(descriptorHashes).size !== descriptorHashes.length) return invalid;
@@ -1644,7 +1709,7 @@ export function inspectCvmTopology(value) {
     value.trust_domains.main_runtime_cvm.compute_execution
     !== "disabled_provider_contract_unavailable"
     || value.trust_domains.main_runtime_cvm.deal_settlement
-      !== "disabled_confidential_evaluator_required"
+      !== "release_pinned_deterministic_evaluator"
     || value.trust_domains.main_runtime_cvm.email_oracle_consumer_policy
       !== "required_onchain_exact_release_binding"
   ) return invalid;
@@ -1807,6 +1872,16 @@ export function buildPreflightReport(snapshot) {
       ? "The local environment file is present with mode 0600."
       : "The local environment file is missing or is not mode 0600.",
     "Create the untracked environment file and chmod it to 0600.",
+  ));
+  const legacyPrivateKeyAssignmentCount = FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES
+    .filter((name) => Object.hasOwn(env, name)).length;
+  checks.push(check(
+    "safety.legacy_private_key_names",
+    legacyPrivateKeyAssignmentCount === 0 ? "pass" : "fail",
+    legacyPrivateKeyAssignmentCount === 0
+      ? "No prohibited legacy raw-private-key assignment names are present."
+      : `The environment contains ${legacyPrivateKeyAssignmentCount} prohibited legacy raw-private-key assignment name(s); no value was read or printed.`,
+    "Remove JUDGE_PRIVATE_KEY and KMS_PRIVATE_KEY assignments; use the Foundry dev keystore and documented dstack key derivation paths.",
   ));
 
   for (const tool of REQUIRED_TOOLS) {
@@ -1974,11 +2049,11 @@ export function buildPreflightReport(snapshot) {
     !cvmExecutionRequired
       ? "The CVM executor is not accepted or required for the reviewed contract-only deployment stage."
       : cvmExecutionAvailable
-        ? "The reviewed CVM execution boundary is available with no unresolved adapter, key, journal, or public-value blockers."
+        ? "The reviewed CVM executor implementation is present in source with no unresolved adapter, key, journal, or public-value implementation blockers; this is not Phala authentication or reachability evidence."
         : `CVM execution is unavailable (${cvmExecutionBoundary.reason_code}); unresolved blocker count: ${namedCvmExecutionBlockers.length}; first blocker: ${namedCvmExecutionBlockers[0] || "none named"}.`,
     !cvmExecutionRequired
       ? "Complete the contract-only stage, then rerun the exact executor readiness checks before CVM launch."
-      : "Use only the reviewed pinned SDK executor; do not use a manual SDK or Phala CLI mutation bypass.",
+      : "Use only the reviewed pinned SDK executor and separately require auth.phala plus current stage evidence; do not use a manual SDK or Phala CLI mutation bypass.",
   ));
 
   const finalAuthoritySha256 = clean(releaseAuthority.finalAuthoritySha256);
@@ -2526,13 +2601,20 @@ export function buildPreflightReport(snapshot) {
   ));
 
   const verifyRequested = clean(env.VERIFY).toLowerCase() === "true";
+  const verifyRequired = freshDeployment;
   checks.push(check(
     "contract_policy.verify",
-    verifyRequested ? "pass" : "fail",
-    verifyRequested
-      ? "BaseScan verification is explicitly enabled for the future deployment."
-      : "VERIFY=true is not configured for the future deployment.",
-    "Set VERIFY=true only for the reviewed deployment invocation; this preflight ignores it.",
+    !verifyRequired || verifyRequested ? "pass" : "fail",
+    verifyRequired
+      ? verifyRequested
+        ? "BaseScan verification is explicitly enabled for the reviewed fresh deployment."
+        : "VERIFY=true is not configured for the reviewed fresh deployment."
+      : verifyRequested
+        ? "VERIFY=true is present but is not authority at this postdeployment stage."
+        : "VERIFY is intentionally ignored after the fresh-deployment stage.",
+    verifyRequired
+      ? "Set VERIFY=true for the reviewed fresh-deployment invocation; this read-only preflight never performs verification itself."
+      : "BaseScan verification was already required at fresh deployment; later stages must rely on the immutable deployment receipt and chain evidence.",
   ));
   const broadcastConfigured = clean(env.BROADCAST).toLowerCase() === "true";
   checks.push(check(
@@ -2877,14 +2959,14 @@ export function buildPreflightReport(snapshot) {
     .map(([name, service]) => [name, service.environment.TINKER_EVALUATOR_MODE]);
   const evaluatorBoundaryClosed = evaluatorBindings.length === 1
     && evaluatorBindings[0][0] === "delegate"
-    && evaluatorBindings[0][1] === "disabled";
+    && evaluatorBindings[0][1] === "deterministic";
   checks.push(check(
     "phala.confidential_evaluator_boundary",
     evaluatorBoundaryClosed ? "pass" : "fail",
     evaluatorBoundaryClosed
-      ? "Production evaluation is disabled until an attested confidential provider preserves the raw-artifact boundary."
-      : "The production descriptor selects, omits, or duplicates an evaluator mode that could move seller material outside the CVM.",
-    "Regenerate the descriptor with delegate TINKER_EVALUATOR_MODE=disabled; never activate sft or stub in production.",
+      ? "Production evaluation uses the release-pinned deterministic registry inside the main CVM without provider, filesystem, subprocess, clock, randomness, or raw-artifact egress."
+      : "The production descriptor omits, duplicates, or selects an evaluator outside the one reviewed deterministic in-CVM release lane.",
+    "Regenerate the descriptor with delegate TINKER_EVALUATOR_MODE=deterministic; disabled, sft, stub, and unreviewed modes cannot activate the live Deal product.",
   ));
   const mainNetworks = snapshot.compose?.document?.networks || {};
   const purposeNetworksIsolated = sameStringSet(serviceNetworks(writer), ["writer-egress"])
@@ -2925,7 +3007,7 @@ export function buildPreflightReport(snapshot) {
     && sameStringSet(compute.profiles, ["compute-execution"])
     && compute["x-dnai-capability-status"] === "disabled_provider_contract_unavailable"
     && sameStringSet(deal.profiles, ["deal-settlement"])
-    && deal["x-dnai-capability-status"] === "disabled_confidential_evaluator_required"
+    && deal["x-dnai-capability-status"] === "release_pinned_deterministic_evaluator"
     && deal.environment?.TINKER_QVL_AUTH_TOKEN
       === "${TINKER_DILIGENCE_QVL_AUTH_TOKEN:?Phala-encrypted Diligence QVL bearer required}"
     && dealVolumes.includes("delegate-data:/data")
@@ -3108,7 +3190,10 @@ export function buildPreflightReport(snapshot) {
 
 export function sensitiveValues(env) {
   return Object.entries(env || {})
-    .filter(([name, value]) => SECRET_NAME_PATTERN.test(name) && clean(value).length >= 4)
+    .filter(([name, value]) => (
+      SECRET_VALUE_EXACT_NAMES.has(name)
+      || SECRET_VALUE_NAME_PATTERNS.some((pattern) => pattern.test(name))
+    ) && clean(value).length >= 4)
     .map(([, value]) => clean(value));
 }
 

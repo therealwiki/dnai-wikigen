@@ -1460,10 +1460,19 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
     "freshContractDeploymentReceipt",
     "reviewerGenesis",
     "reviewerGenesisAcceptance",
-    "reviewerStatusHistory",
+    "stageBReviewerStatusHistory",
   ], "activation signed-B dependency set");
+  if (!Array.isArray(dependencies.stageBReviewerStatusHistory)) {
+    throw new TypeError(
+      "activation signed-B dependency set requires an exact Stage-B reviewer history array",
+    );
+  }
   const ceremonyOptions = {
-    ...dependencies,
+    deploymentIntent: dependencies.deploymentIntent,
+    freshContractDeploymentReceipt: dependencies.freshContractDeploymentReceipt,
+    reviewerGenesis: dependencies.reviewerGenesis,
+    reviewerGenesisAcceptance: dependencies.reviewerGenesisAcceptance,
+    reviewerStatusHistory: dependencies.stageBReviewerStatusHistory,
     preCeremonyRuntimeAuthority: runtimeAuthority,
   };
   const ceremonyAuthorization = normalizeCeremonyAuthorizationCore(
