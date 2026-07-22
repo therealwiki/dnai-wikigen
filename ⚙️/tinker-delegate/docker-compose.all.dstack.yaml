@@ -6,16 +6,19 @@
 #
 # This overlay:
 #   - Activates neko (always on in prod — no profile restriction)
-#   - Mounts dstack.sock on oracle + delegate for TDX attestation + KMS
-#   - Enables dstack mode on both services
+#   - Mounts dstack.sock on oracle + delegate + Arena worker for TDX/KMS
+#   - Enables dstack mode on all trusted services
+#   - Exposes an explicit one-shot profile for independently verified writer evidence
+#   - Provisions authenticated Arena policy with no network before the worker
 #   - Oracle waits for neko health before starting
 #   - Delegate waits for oracle health before starting
 #   - Service-to-service auth via dstack derive_key (see docs/ORACLE-AUTH-SCOPE.md)
 #
 # Trust boundary:
-#   All three containers share a CVM. The compose hash in the TDX quote
-#   covers all services — attestation proves the exact set of containers.
-#   dstack.sock is only mounted on oracle + delegate (not neko).
+#   The five core service containers, including the one-shot Arena initializer,
+#   share a CVM. The profile-gated writer-evidence ceremony container is started
+#   only for admission evidence. The compose hash covers the exact descriptor.
+#   dstack.sock is mounted only where TDX/KMS is required, never on neko/init.
 ###############################################################################
 
 services:
@@ -30,21 +33,178 @@ services:
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
+      ORACLE_PRODUCTION_RELEASE: "true"
       ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
       ORACLE_CRED_STORE_KEY: ""
+      ORACLE_DSTACK_KEY_PATH: email/creds
+      ORACLE_AUTO_GENESIS: "false"
       ORACLE_USE_BROWSER_FALLBACK: "true"
       ORACLE_CDP_URL: http://172.20.0.3:9222
       ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_TOKEN: ""
       ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth
+      ORACLE_AUTH_REQUIRED: "true"
+      ORACLE_AUTH_CONTRACT_ADDRESS: ${EMAIL_ORACLE_AUTH_ADDRESS:?Fresh EmailOracleAuth address required}
+      ORACLE_AUTH_RPC_URL: ${BASE_SEPOLIA_RPC_URL:?Primary Base Sepolia HTTPS RPC URL required}
+      ORACLE_AUTH_RPC_URL_SECONDARY: ${BASE_SEPOLIA_RPC_URL_SECONDARY:?Independent secondary Base Sepolia HTTPS RPC URL required}
+      ORACLE_AUTH_CHAIN_ID: "84532"
+      ORACLE_AUTH_CONTRACT_RUNTIME_CODE_HASH: ${EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH:?EmailOracleAuth runtime code hash required}
+      ORACLE_AUTH_CONSUMER_APP_ID: ${EMAIL_ORACLE_CONSUMER_APP_ID:?Release-bound main CVM TEE identity required}
+      ORACLE_AUTH_CONSUMER_COMPOSE_HASH: ${EMAIL_ORACLE_CONSUMER_COMPOSE_HASH:?Release-bound main CVM compose hash required}
+      ORACLE_AUTH_EXPECTED_CALLER_IDENTITY: tinker-delegate.signup
+      ORACLE_AUTH_MAX_FINALIZED_BLOCK_AGE_SECONDS: "900"
+      ORACLE_AUTH_MAX_FUTURE_BLOCK_SKEW_SECONDS: "30"
+      ORACLE_AUTH_CHECKPOINT_STORE_PATH: /data/email_auth_checkpoint.json
+      ORACLE_OTP_REPLAY_STORE_PATH: /data/otp_replay.enc
+      ORACLE_OTP_REPLAY_STORE_KEY: ""
+      ORACLE_OTP_REPLAY_KEY_PATH: email/otp_replay
+      ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
+      ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+
+  diligence-policy-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["tinker-diligence-evaluator-provision"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    # This service also exists in the historical digest-pinned Phala base.
+    # Replace its hardening list instead of appending the same item twice when
+    # the documented Phala + dstack merge is syntax-checked.
+    security_opt: !override
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    volumes:
+      - diligence-evaluator-policy:/sealed/diligence
+    environment:
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_B64: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_B64:?Canonical Diligence evaluator release manifest base64url required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH:?Reviewed Diligence evaluator release manifest path required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256:?Reviewed Diligence evaluator release manifest SHA-256 required}
+      TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT: ${TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT:?Reviewed Diligence evaluator policy-set root required}
 
   delegate:
+    depends_on:
+      diligence-policy-init:
+        condition: service_completed_successfully
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
+      - diligence-evaluator-policy:/sealed/diligence:ro
     environment:
       DSTACK_ENABLED: "true"
       TINKER_CDP_URL: http://172.20.0.3:9222
       TINKER_ORACLE_URL: http://172.20.0.4:8000
       TINKER_ORACLE_AUTH_KEY_PATH: oracle/runtime-auth
+      TINKER_RUNTIME_AUTH_REQUIRED: "true"
+      TINKER_RUNTIME_AUTH_TOKEN: ${TINKER_RUNTIME_AUTH_TOKEN:-}
+      TINKER_RUNTIME_AUTH_KEY_PATH: ${TINKER_RUNTIME_AUTH_KEY_PATH:-tinker/runtime-auth}
+      TINKER_CORS_ALLOWED_ORIGINS: ${TINKER_CORS_ALLOWED_ORIGINS:-}
+      TINKER_WALLET_AUTH_SIGNING_KEY: ""
+      TINKER_WALLET_AUTH_KEY_PATH: ${TINKER_WALLET_AUTH_KEY_PATH:-tinker/wallet_auth}
+      TINKER_WALLET_AUTH_DOMAIN: ${TINKER_WALLET_AUTH_DOMAIN:-www.wikigen.me}
+      TINKER_WALLET_AUTH_URI: ${TINKER_WALLET_AUTH_URI:-https://www.wikigen.me}
+      TINKER_WALLET_AUTH_CHAIN_ID: ${TINKER_WALLET_AUTH_CHAIN_ID:-84532}
+      TINKER_WALLET_AUTH_RPC_URL: ${TINKER_WALLET_AUTH_RPC_URL:?Trusted Base Sepolia wallet-auth HTTPS RPC URL required}
+      TINKER_WALLET_AUTH_RPC_URL_SECONDARY: ${TINKER_WALLET_AUTH_RPC_URL_SECONDARY:?Independent secondary Base Sepolia wallet-auth HTTPS RPC URL required}
+      TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS: ${TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS:-3.0}
+      TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES: ${TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES:-131072}
+      TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES: ${TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES:-4096}
+      TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS: ${TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS:-600}
+      TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT:-768}
+      TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT:-64}
+      TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT:-256}
+      TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS: ${TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS:-}
+      TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER: ${TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER:-}
+      TINKER_ARENA_WALLET_AUTH_KEY_PATH: ${TINKER_ARENA_WALLET_AUTH_KEY_PATH:-tinker/arena_wallet_auth}
+      TINKER_ARENA_REGISTRY_RPC_URL: ${TINKER_ARENA_REGISTRY_RPC_URL:-}
+      TINKER_ARENA_REGISTRY_ADDRESS: ${TINKER_ARENA_REGISTRY_ADDRESS:-}
+      TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH: ${TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH:-}
+      TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON: ${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON:-}
+      TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256: ${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256:-}
+      TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS:-300}
+      TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_ARENA_STORE_PATH: ${TINKER_ARENA_STORE_PATH:-/data/arena_state.json}
+      TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH:-/data/arena_candidates}
+      TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH:-tinker/arena_candidate_ingress}
+      TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE: ""
+      TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED: ${TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED:-false}
+      TINKER_ARENA_WORKER_RELEASE_SHA: ${TINKER_ARENA_WORKER_RELEASE_SHA:-}
+      TINKER_ARENA_WORKER_IMAGE_DIGEST: ${TINKER_ARENA_WORKER_IMAGE_DIGEST:-}
+      TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256: ${TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256:-}
+      TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT: ${TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT:-}
+      TINKER_ARENA_WORKER_COMPOSE_HASH: ${TINKER_ARENA_WORKER_COMPOSE_HASH:-}
+      TINKER_ARENA_WORKER_APP_ID: ${TINKER_ARENA_WORKER_APP_ID:-}
+      TINKER_ARENA_WORKER_OS_IMAGE_HASH: ${TINKER_ARENA_WORKER_OS_IMAGE_HASH:-}
+      TINKER_ARENA_WORKER_HEARTBEAT_PATH: /data/arena_worker_heartbeat.json
+      TINKER_ARENA_WORKER_HEARTBEAT_TTL_SECONDS: ${TINKER_ARENA_WORKER_HEARTBEAT_TTL_SECONDS:-30}
+      TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH: ${TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH:-tinker/arena_worker_heartbeat}
+      TINKER_ARENA_WORKER_HEARTBEAT_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_WALLET_AUTH_SIGNING_KEY: ""
+      TINKER_COMPUTE_WALLET_AUTH_KEY_PATH: ${TINKER_COMPUTE_WALLET_AUTH_KEY_PATH:-tinker/compute_wallet_auth}
+      TINKER_COMPUTE_CREDENTIAL_SIGNING_KEY: ""
+      TINKER_COMPUTE_CREDENTIAL_KEY_PATH: ${TINKER_COMPUTE_CREDENTIAL_KEY_PATH:-tinker/compute_credentials}
+      TINKER_COMPUTE_STORE_PATH: ${TINKER_COMPUTE_STORE_PATH:-/data/compute_console_state.json}
+      TINKER_COMPUTE_STORE_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH: ${TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH:-tinker/compute_store_integrity}
+      TINKER_COMPUTE_WORKLOAD_INGRESS_STORE_PATH: /data/compute_workload_ingress
+      TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY_PATH: tinker/compute_workload_ingress_integrity
+      TINKER_COMPUTE_WORKLOAD_INGRESS_KEY_PATH: tinker/compute_workload_ingress
+      TINKER_COMPUTE_WORKLOAD_INGRESS_LOCAL_KEY_FILE: ""
+      TINKER_COMPUTE_WORKLOAD_INGRESS_PRIVATE_KEY_HEX: ""
+      TINKER_COMPUTE_WORKLOAD_QVL_URL: ${TINKER_COMPUTE_WORKLOAD_QVL_URL:?Dedicated Compute workload QVL HTTPS /verify URL required}
+      TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN: ${TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN:?Dedicated Compute workload QVL bearer required}
+      TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS: ${TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS:?Dedicated Compute workload QVL verifier required}
+      TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH: ${TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH:?Dedicated Compute workload QVL release policy required}
+      TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS: ${TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS:?Compute workload QVL age bound required}
+      TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON: ${TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON:?Compute workload quote revocations required}
+      TINKER_COMPUTE_WORKLOAD_CHAIN_ID: "84532"
+      TINKER_COMPUTE_VAULT_ADDRESS: ${TINKER_COMPUTE_VAULT_ADDRESS:?Fresh ComputeCreditVault address required}
+      TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH: ${TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH:?Fresh ComputeCreditVault runtime code hash required}
+      TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256: ${TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256:?Fresh contract deployment receipt SHA-256 required}
+      TINKER_COMPUTE_WORKLOAD_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
+      TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256: ${TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256:?Signed seven-CVM deployment intent required}
+      TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256: ${TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256:-}
+      TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE: ${TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE:?Release ceremony nonce required}
+      TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256: ${TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256:?Signed QVL measurement-policy set required}
+      TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256: ${TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256:?Linked Compute-workload QVL measurement policy required}
+      TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256: ${TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256:-}
+      TINKER_COMPUTE_DISPATCH_STORE_PATH: ${TINKER_COMPUTE_DISPATCH_STORE_PATH:-/data/compute_exact_asset_dispatch.json}
+      TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY_PATH: ${TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY_PATH:-tinker/compute_dispatch_store_integrity}
+      TINKER_EXECUTION_POLICY_STORE_PATH: ${TINKER_EXECUTION_POLICY_STORE_PATH:-/data/execution_policy_state.json}
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: ""
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH: ${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}
+      TINKER_EXECUTION_POLICY_APPROVED_SIGNERS: ${TINKER_EXECUTION_POLICY_APPROVED_SIGNERS:-}
+      TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH: ${TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH:-}
+      TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN: ${TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL: ${TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH: ${TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH:-tinker/execution_policy_anchor_writer}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS:-12}
+      TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS:-1}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS:-60}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS:-3600}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS: ${TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS:-}
+      # Production evaluation is the exact release-pinned deterministic lane.
+      # It performs no provider, network, subprocess, or filesystem I/O while
+      # evaluating private artifact bytes.
+      TINKER_EVALUATOR_MODE: "deterministic"
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH:?Reviewed Diligence evaluator release manifest path required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256:?Reviewed Diligence evaluator release manifest SHA-256 required}
+      TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT: ${TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT:?Reviewed Diligence evaluator policy-set root required}
+      TINKER_DILIGENCE_CHAIN_ID: ${TINKER_DILIGENCE_CHAIN_ID:?Reviewed Diligence chain ID required}
+      TINKER_DILIGENCE_ROOM_ADDRESS: ${TINKER_DILIGENCE_ROOM_ADDRESS:?Reviewed DiligenceRoom address required}
+      TINKER_CHAIN_CONTRACT_ADDRESS: ${TINKER_CHAIN_CONTRACT_ADDRESS:?DiligenceRoom address required}
       TINKER_BOOTSTRAP_SIGNUP: "true"
       TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
       TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
@@ -57,3 +217,255 @@ services:
       TINKER_MIN_ADD_BALANCE_USD: ${TINKER_MIN_ADD_BALANCE_USD:-10.0}
       TINKER_MAX_ADD_BALANCE_USD: ${TINKER_MAX_ADD_BALANCE_USD:-10.0}
       TINKER_ALLOW_ADD_BALANCE_ENDPOINT: ${TINKER_ALLOW_ADD_BALANCE_ENDPOINT:-false}
+
+  arena-policy-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["tinker-arena-provision"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    volumes:
+      - arena-worker-sealed:/sealed
+    environment:
+      TINKER_ARENA_PROVISION_RELEASE_B64: ${TINKER_ARENA_PROVISION_RELEASE_B64:?Encrypted canonical Arena release v2 base64url required}
+      TINKER_ARENA_PROVISION_EVALUATOR_B64: ${TINKER_ARENA_PROVISION_EVALUATOR_B64:?Encrypted canonical sealed evaluator base64url required}
+      TINKER_ARENA_PROVISION_RELEASE_SHA256: ${TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256:?Arena release v2 SHA-256 required}
+      TINKER_ARENA_PROVISION_EVALUATOR_SHA256: ${TINKER_ARENA_PROVISION_EVALUATOR_SHA256:?Sealed evaluator SHA-256 required}
+      TINKER_ARENA_PROVISION_AUTH_KEY_B64: ${TINKER_ARENA_PROVISION_AUTH_KEY_B64:?Encrypted 32-byte provision authentication key required}
+      TINKER_ARENA_PROVISION_AUTH_TAG: ${TINKER_ARENA_PROVISION_AUTH_TAG:?Authenticated Arena provision envelope tag required}
+
+  arena-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["tinker-arena-worker"]
+    restart: unless-stopped
+    ulimits:
+      core: 0
+    depends_on:
+      delegate:
+        condition: service_healthy
+      arena-policy-init:
+        condition: service_completed_successfully
+    volumes:
+      - delegate-data:/data
+      - arena-worker-sealed:/sealed:ro
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      DSTACK_SIMULATOR_ENDPOINT: ""
+      TINKER_CHAIN_RPC_URL: ${TINKER_CHAIN_RPC_URL:?Base Sepolia HTTPS RPC URL required}
+      TINKER_ARENA_STORE_PATH: /data/arena_state.json
+      TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH: /data/arena_candidates
+      TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH:-tinker/arena_candidate_ingress}
+      TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE: ""
+      TINKER_ARENA_CANDIDATE_INGRESS_PRIVATE_KEY_HEX: ""
+      TINKER_EXECUTION_POLICY_STORE_PATH: /data/execution_policy_state.json
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: ""
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH: ${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}
+      TINKER_EXECUTION_POLICY_APPROVED_SIGNERS: ${TINKER_EXECUTION_POLICY_APPROVED_SIGNERS:?Arena policy approver addresses required}
+      TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH: ${TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH:?Arena policy approver root required}
+      TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN: ${TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN:?Deployment-unique Arena policy domain required}
+      TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL: ${TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL:?Execution-policy anchor Base Sepolia HTTPS RPC URL required}
+      TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS:?Execution-policy anchor contract address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH: ${TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH:?Execution-policy anchor runtime code hash required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS:?Execution-policy anchor writer address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:?Execution-policy anchor writer release commitment required}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS:-12}
+      TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS:-1}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS:-60}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS:-3600}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_ARENA_WORKER_RELEASE_MANIFEST_PATH: /sealed/arena/release-v2.json
+      TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256: ${TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256:?Arena release v2 SHA-256 required}
+      TINKER_ARENA_WORKER_EVALUATOR_PATH: /sealed/arena/sealed-evaluator-v1.json
+      TINKER_ARENA_WORKER_QVL_VERDICT_PATH: ""
+      TINKER_ARENA_WORKER_QVL_VERDICT_URL: ${TINKER_ARENA_WORKER_QVL_VERDICT_URL:?Independent QVL HTTPS URL required}
+      TINKER_ARENA_WORKER_QVL_RELEASE_POLICY_HASH: ${TINKER_ARENA_WORKER_QVL_RELEASE_POLICY_HASH:?Independent QVL release policy hash required}
+      TINKER_ARENA_WORKER_QVL_AUTH_TOKEN: ${TINKER_ARENA_WORKER_QVL_AUTH_TOKEN:?Independent QVL bearer required}
+      TINKER_ARENA_WORKER_POLL_INTERVAL_SECONDS: ${TINKER_ARENA_WORKER_POLL_INTERVAL_SECONDS:-1.0}
+      TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED: ${TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED:-false}
+      TINKER_ARENA_WORKER_RELEASE_SHA: ${TINKER_ARENA_WORKER_RELEASE_SHA:-}
+      TINKER_ARENA_WORKER_IMAGE_DIGEST: ${TINKER_ARENA_WORKER_IMAGE_DIGEST:-}
+      TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT: ${TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT:-}
+      TINKER_ARENA_WORKER_COMPOSE_HASH: ${TINKER_ARENA_WORKER_COMPOSE_HASH:-}
+      TINKER_ARENA_WORKER_APP_ID: ${TINKER_ARENA_WORKER_APP_ID:-}
+      TINKER_ARENA_WORKER_OS_IMAGE_HASH: ${TINKER_ARENA_WORKER_OS_IMAGE_HASH:-}
+      TINKER_ARENA_WORKER_HEARTBEAT_PATH: /data/arena_worker_heartbeat.json
+      TINKER_ARENA_WORKER_HEARTBEAT_TTL_SECONDS: ${TINKER_ARENA_WORKER_HEARTBEAT_TTL_SECONDS:-30}
+      TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH: ${TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH:-tinker/arena_worker_heartbeat}
+      TINKER_ARENA_WORKER_HEARTBEAT_INTEGRITY_KEY: ""
+    networks:
+      - tee-net
+
+  # One-shot release ceremony only. The QVL bearer is deliberately absent from
+  # every long-running service, and this container receives neither /data nor
+  # the sealed Arena volume. Its sole bounded output is the independently
+  # signed writer-evidence artifact; the raw quote travels only to HTTPS QVL.
+  anchor-writer-evidence:
+    profiles: ["anchor-writer-ceremony"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["tinker-execution-policy-anchor-writer"]
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      DSTACK_SIMULATOR_ENDPOINT: ""
+      TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS:?Execution-policy anchor contract address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS:?Execution-policy anchor writer address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:?Execution-policy anchor writer release commitment required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH:-tinker/execution_policy_anchor_writer}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL:?Separate anchor-writer QVL HTTPS /verify URL required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS:?Reviewed anchor-writer QVL verifier address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH:?Reviewed anchor-writer QVL policy hash required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_MAX_VERDICT_AGE_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_MAX_VERDICT_AGE_SECONDS:-300}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN:?Phala-encrypted anchor-writer QVL bearer required}
+    networks:
+      - tee-net
+
+  # Profile-gated production settlement loop. It has no public listener and no
+  # artifact or Arena-private-state mount. The fixed TINKER_QVL_AUTH_TOKEN name is scoped
+  # to this service and is populated only from the Diligence-QVL secret. Every
+  # chain and attestation policy binding required to submit a result is a
+  # fail-closed Compose interpolation.
+  deal-runtime:
+    profiles: ["deal-settlement"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    x-dnai-capability-status: disabled_confidential_evaluator_required
+    command:
+      - tinker-deal-runtime
+      - --expected-chain-id
+      - "84532"
+      - --qvl-url
+      - ${TINKER_DILIGENCE_QVL_URL:?Separate Diligence QVL HTTPS /verify URL required}
+      - --allow-compose-hash
+      - ${TINKER_DILIGENCE_ALLOWED_COMPOSE_HASH:?Reviewed main CVM compose hash required}
+      - --allow-app-id
+      - ${TINKER_DILIGENCE_ALLOWED_APP_ID:?Reviewed main CVM app ID required}
+      - --allow-os-image-hash
+      - ${TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH:?Reviewed main CVM OS image hash required}
+      - --trusted-attestation-verifier-address
+      - ${TINKER_DILIGENCE_QVL_VERIFIER_ADDRESS:?Reviewed Diligence QVL verifier address required}
+      - --attestation-release-policy-hash
+      - ${TINKER_DILIGENCE_QVL_RELEASE_POLICY_HASH:?Reviewed Diligence QVL release policy hash required}
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    depends_on:
+      delegate:
+        condition: service_healthy
+    volumes:
+      - delegate-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      DSTACK_SIMULATOR_ENDPOINT: ""
+      TINKER_RUNTIME_AUTH_REQUIRED: "true"
+      TINKER_RUNTIME_AUTH_TOKEN: ""
+      TINKER_RUNTIME_AUTH_KEY_PATH: ${TINKER_RUNTIME_AUTH_KEY_PATH:-tinker/runtime-auth}
+      TINKER_CHAIN_RPC_URL: ${TINKER_CHAIN_RPC_URL:?Base Sepolia HTTPS RPC URL required}
+      TINKER_CHAIN_CONTRACT_ADDRESS: ${TINKER_CHAIN_CONTRACT_ADDRESS:?DiligenceRoom address required}
+      TINKER_CHAIN_CONTROL_PLANE_URL: http://delegate:8080
+      TINKER_CHAIN_START_BLOCK: ${TINKER_CHAIN_START_BLOCK:?DiligenceRoom deployment block required}
+      TINKER_CHAIN_POLL_INTERVAL: ${TINKER_CHAIN_POLL_INTERVAL:-5}
+      TINKER_CHAIN_CONFIRMATIONS: ${TINKER_CHAIN_CONFIRMATIONS:-2}
+      TINKER_CHAIN_CURSOR_STORE_PATH: /data/chain_watcher_cursor.json
+      TINKER_CHAIN_RESULT_AUTHORIZATION_TTL_SECONDS: ${TINKER_CHAIN_RESULT_AUTHORIZATION_TTL_SECONDS:-300}
+      TINKER_QVL_AUTH_TOKEN: ${TINKER_DILIGENCE_QVL_AUTH_TOKEN:?Phala-encrypted Diligence QVL bearer required}
+    networks:
+      - deal-control
+      - deal-egress
+
+  # Release-profile service: the API and worker share the exact dispatch
+  # journal plus the execution-policy journal/lock on delegate-data. The
+  # installed provider adapter still has its own explicit release gate.
+  compute-execution-worker:
+    profiles: ["compute-execution"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    command: ["tinker-compute-runtime", "--poll"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    depends_on:
+      delegate:
+        condition: service_healthy
+    volumes:
+      - delegate-data:/data
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      DSTACK_SIMULATOR_ENDPOINT: ""
+      TINKER_COMPUTE_DISPATCH_STORE_PATH: /data/compute_exact_asset_dispatch.json
+      TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY_PATH: ${TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY_PATH:-tinker/compute_dispatch_store_integrity}
+      TINKER_COMPUTE_CHAIN_RPC_URL: ${TINKER_COMPUTE_CHAIN_RPC_URL:?Compute vault Base Sepolia HTTPS RPC URL required}
+      TINKER_COMPUTE_VAULT_ADDRESS: ${TINKER_COMPUTE_VAULT_ADDRESS:?Compute vault address required}
+      TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH: ${TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH:?Compute vault runtime code hash required}
+      TINKER_COMPUTE_VAULT_COMPOSE_HASH: ${TINKER_COMPUTE_VAULT_COMPOSE_HASH:?Compute execution compose hash required}
+      TINKER_COMPUTE_METERING_POLICY_SET_HASH: ${TINKER_COMPUTE_METERING_POLICY_SET_HASH:?Compute metering policy-set hash required}
+      TINKER_COMPUTE_EXECUTION_SIGNER_KEY_PATH: ${TINKER_COMPUTE_EXECUTION_SIGNER_KEY_PATH:-tinker/compute_execution_identity}
+      TINKER_COMPUTE_METERING_URL: ${TINKER_COMPUTE_METERING_URL:?Authenticated independent metering HTTPS URL required}
+      TINKER_COMPUTE_METERING_AUTH_TOKEN: ${TINKER_COMPUTE_METERING_AUTH_TOKEN:?Independent metering bearer required}
+      TINKER_COMPUTE_EXECUTION_CONFIRMATIONS: ${TINKER_COMPUTE_EXECUTION_CONFIRMATIONS:-2}
+      TINKER_COMPUTE_EXECUTION_POLL_INTERVAL_SECONDS: ${TINKER_COMPUTE_EXECUTION_POLL_INTERVAL_SECONDS:-1.0}
+      TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS: ${TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS:-300}
+      TINKER_COMPUTE_EXECUTION_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_COMPUTE_EXECUTION_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_EXECUTION_POLICY_STORE_PATH: /data/execution_policy_state.json
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: ""
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH: ${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}
+      TINKER_EXECUTION_POLICY_APPROVED_SIGNERS: ${TINKER_EXECUTION_POLICY_APPROVED_SIGNERS:?Compute policy approver addresses required}
+      TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH: ${TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH:?Compute policy approver root required}
+      TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN: ${TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN:?Deployment-unique Compute policy domain required}
+      TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL: ${TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL:?Execution-policy anchor Base Sepolia HTTPS RPC URL required}
+      TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS:?Execution-policy anchor contract address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH: ${TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH:?Execution-policy anchor runtime code hash required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS:?Execution-policy anchor writer address required}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:?Execution-policy anchor writer release commitment required}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS:-12}
+      TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS:-1}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS:-60}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS:-3600}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+    networks:
+      - tee-net
+
+volumes:
+  arena-worker-sealed:
+  diligence-evaluator-policy:

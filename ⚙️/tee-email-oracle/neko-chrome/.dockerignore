@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!supervisord.conf
+!preferences.json
+!policies.json
+!openbox.xml
+!nginx-cdp.conf

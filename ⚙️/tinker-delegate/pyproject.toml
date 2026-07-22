@@ -14,6 +14,7 @@ dependencies = [
     "dstack-sdk>=0.5.2",
     "eth-hash[pycryptodome]>=0.7.0",
     "eth-account>=0.13.7",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +29,21 @@ agent = [
 
 [project.scripts]
 tinker-delegate = "tinker_delegate.main:cli"
+tinker-deal-runtime = "tinker_delegate.deal_runtime:main"
+tinker-arena-worker = "tinker_delegate.arena_worker_cli:main"
+tinker-arena-provision = "tinker_delegate.arena_policy_provisioner:main"
+tinker-diligence-evaluator-provision = "tinker_delegate.diligence_evaluator_provisioner:main"
+tinker-diligence-evaluator-release = "tinker_delegate.diligence_evaluator_release_builder:main"
+tinker-compute-runtime = "tinker_delegate.compute_runtime_cli:main"
+tinker-execution-policy-anchor-writer = "tinker_delegate.execution_policy_anchor_cli:main"
+tinker-release-composes = "tinker_delegate.release_composes:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "dcap-qvl==0.5.2",
+    "pytest==9.0.2",
+]

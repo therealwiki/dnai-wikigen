@@ -1,13 +1,21 @@
 # TODO: Full Latent Vision Roadmap
 
-Last updated: 2026-07-13
-Branch context: `codex/wikigen-private-reward-pitch`
+Last updated: 2026-07-21
+Branch context: active working tree; deployment items require a clean reviewed release
 
 This is the build backlog for turning `dnai-wikigen` from the current prototype
 into the full latent project: a DevProof-style, attested diligence room where
 private artifacts, credentials, source accounts, Tinker compute, bio-validation,
 private verified rewards, coordination, and settlement all happen through
 bounded, auditable, no-human-key control planes.
+
+Current-release note: the repository has moved beyond the original mockup and
+now contains the complete routed SolidJS product plus a fresh seven-contract
+suite and hardened CVM/runtime release machinery. Open checkboxes below are not
+evidence that those source surfaces are absent; many describe the still-pending
+fresh Base Sepolia/Phala ceremony, independent trust roots, production provider
+accounts, and end-to-end live proof. [STATUS.md](STATUS.md) is authoritative for
+what is source-real, modeled, externally blocked, historical, or deployed.
 
 The north star:
 
@@ -22,28 +30,86 @@ Every credential, policy change, run, denial, and payout has a verification path
 
 The current repo already has meaningful pieces:
 
-- `DiligenceRoom.sol` escrow and settlement tests.
-- `EmailOracleAuth.sol` app-auth contract and tests.
-- `tee-email-oracle` service for a TEE-held email account and OTP path.
-- `tinker-delegate` service scaffold for a TEE-held Tinker account, billing,
-  isolated sessions, evaluator shape, API server, and Phala deployment.
+- A locally rehearsed seven-contract suite: `DiligenceRoom`,
+  `TinkerAccountEncumbrance`, `RoyaltyDistributor`, `ChallengeRegistry`,
+  `ComputeCreditVault`, `EmailOracleAuth`, and `ExecutionPolicyAnchor`.
+- `tee-email-oracle` with fixed OTP capability, dual-RPC finalized authorization,
+  exact release configuration, and a restart-preserved checkpoint.
+- `tinker-delegate` with bounded wallet/proxy domains, Deal/Arena/Compute
+  runtimes, sealed artifact paths, policy anchoring, and an exact two-day frozen
+  Tinker release ceremony.
+- Five purpose-separated signed challenge-v2 / verdict-v4 QVL profiles/CVM
+  definitions plus an independent deterministic Compute meter, for seven
+  production CVMs total. Each single-use DCAP challenge is at most 120 seconds
+  and appraisal must finish strictly before expiry. The reviewed release uses a
+  separate exact 900-second activation-evidence lease, which may outlive the
+  consumed challenge but is not renewed challenge freshness. Post-restart
+  Compute-workload recipient activation is schema v3 with an explicit lease of
+  at most 300 seconds; its stable recipient-release commitment remains v2.
+- A source-real, locally tested resident production activation driver that
+  preserves the branded authority chain in one process from non-live launch
+  through external proof/signature waits, restart, recipient activation, and
+  bounded-output publication. It accepts no serialized capability or signer
+  key, authorizes no automatic retry or live traffic, and has not run against a
+  fresh project-owned production topology.
 - `props-room` and `whatsapp-delegate` as source/controller/data-room stubs.
 - `ARCHITECTURE.md` with the complete current architecture.
-- `gate-health-frontend` on a separate branch with the Vite/React demo UI.
+- A complete eleven-route SolidJS product under `web/`, with EIP-6963/injected
+  EIP-1193 wallet discovery, conditional WalletConnect, and explicit
+  live/modeled/roadmap states.
 
 The honest current gap:
 
 ```text
-Email encumbrance: real but runtime enforcement is incomplete.
-Tinker encumbrance: contract, runtime preflight, Base Sepolia deployment, live
-Tinker API-key sealing, live reauth, and low-value operator-validation funding
-are real; production/repeated funding remains incomplete.
-TTT/RL bio validation: not built; current evaluator is stub/SFT-oriented.
-Private verified reward/RLVR environments: concept now clarified, not built.
-DNAI settlement: core escrow exists; live attestation, watcher, and full product flow are incomplete.
+Email encumbrance: source enforcement is substantial; fresh Email/KMS restart
+evidence, live bindings, and whole-volume anti-rollback remain open.
+Tinker encumbrance: exact policy and rehearsal exist; no fresh Base Sepolia
+instance/CVM binding or production provider activation exists for this release.
+Bio/private reward: sealed synthetic environments and capability-free safe IR
+exist; general hostile code, clinical/wet-lab claims, and live workers do not.
+Compute: exact-asset vault and off-chain service-credit lanes exist separately;
+paid provider dispatch lacks sufficient idempotent restart semantics.
+DNAI settlement: source and local lifecycle proofs exist; the seven contracts,
+seven CVMs, five QVL roots, and multi-day ceremonies are not deployed.
 ```
 
-## 2026-07-13 Milestone — the hard part is done: TEE-owned Tinker delegate, proven live
+Simulator evidence is now a separate `mode=simulator` class across delegate,
+Arena, and oracle public envelopes. It remains `verified=false`, and production
+verifiers reject it even if an input self-asserts verification. Local modeled
+rehearsals must never be labeled `tdx`.
+
+### 2026-07-13 live-runtime build slice
+
+- [x] Make evaluator activation explicit: disabled by default, local-only stub,
+      and SFT only in a real non-simulator dstack CVM.
+- [x] Add one durable execution-policy store shared by deal evaluation, Arena
+      execution, and Compute dispatch. A pass requires both internal auth and
+      an allowlisted independent Ethereum signature over a deployment-domain-
+      bound hash-only message; the latest hold/deny revokes it.
+- [x] Add a confirmation-safe deal runtime that checks policy, avoids duplicate
+      evaluation, obtains an independently signed QVL verdict, authorizes the
+      bounded result, and submits only with dstack-derived keys.
+- [x] Add the single-process-leased, crash-resumable capability-free Arena
+      worker seam with fresh cross-process stores, external-QVL activation, and
+      a mandatory pre-mutation policy adapter.
+- [x] Rehearse the complete fresh seven-contract suite and representative deal,
+      challenge, Compute, Tinker-release, and policy-anchor lifecycles on stopped
+      ephemeral Anvil without raw key material.
+- [ ] Wire the deal runtime and Arena worker executables into a disabled-by-
+      default hardened CVM process overlay, then test startup failure and
+      healthy structural operation.
+- [ ] Provision an independent QVL operator/signing root, final policy approver
+      wallets, and a deployment-unique approval domain derived from the fresh
+      Base Sepolia suite plus reviewed compose commitment.
+- [ ] Deploy the fresh suite with Foundry keystore account `dev`, verify source,
+      deploy reviewed digest-pinned Phala services, and prove one live bounded
+      deal and one live capability-free Arena submission end to end.
+
+## Historical 2026-07-13 prior-release Tinker milestone
+
+The following is preserved as prior-operator engineering evidence. It does not
+mean the fresh seven-contract/seven-CVM release is deployed, and its completed
+checkboxes do not satisfy current activation tasks.
 
 The load-bearing infrastructure — a TEE-custodied Tinker account whose full
 lifecycle and scoped delegation run through bounded, attested control planes —
@@ -923,12 +989,14 @@ ordinary account provisioning.
             backward compatibility, create-revert-when-unapproved,
             create-success-when-approved, submit-success on identity/compose match,
             submit-revert on mismatch, and revoke-blocks-create.
-      - [x] Drive the on-chain approvals from `result_verifier` attestation checks
-            rather than hand-written developer calls. Done 2026-07-11:
-            `tinker_delegate.governance_plan.build_governance_plan_from_authorization`
-            takes a *verified* `ResultAuthorization` (attestation already passed the
-            verifier policy — allowed compose hash, allowed app ID, matching quote
-            report data, not revoked) and emits a bounded plan of the exact calls
+      - [x] Drive the on-chain approvals from independently authenticated
+            attestation rather than hand-written developer calls. Hardened
+            2026-07-13: `build_governance_plan_from_verdict` requires the complete
+            signed DCAP/QVL verdict plus externally supplied trusted-verifier
+            addresses and exact chain/contract/TEE/compose/app/OS/quote pins. It
+            verifies the canonical report-data binding, digest, low-s signature,
+            signer independence, exact context, and freshness before emitting the
+            bounded calls
             that admit that identity/measurement pair on-chain:
             `approveComposeHash(composeHash)` and
             `approveTeeIdentity(teeIdentity, composeHash)`. It fails closed on an
@@ -936,11 +1004,12 @@ ordinary account provisioning.
             does NOT execute — the plan carries `cast` command templates using
             `--account dev` (keystore, never a raw key) for the developer to
             broadcast. Operator surface: `governance-approval-plan
-            <authorization.json>` reads an `authorize-result` output and prints the
-            bounded plan (`raw_secret_egress=false`, no signatures/digests).
-            `tests/test_governance_plan.py` (8) cover both calls, calldata/selector
-            correctness, keystore-not-raw-key, unauthorized/zero rejection,
-            bounded output, and the CLI path.
+            <independent-verdict.json>` requires every trust root/release pin as a
+            separate CLI argument and prints the bounded plan
+            (`raw_secret_egress=false`, signature omitted). The legacy
+            authorization-summary/boolean path always rejects. Adversarial tests
+            cover forged summaries/signatures, self-declared trust, every context
+            pin, missing policy, and expired/future/stale/overlong verdicts.
       Remaining (operational, not mechanism): (1) enable both gates by default for
       production; (2) redeploy — the current Base Sepolia `DiligenceRoom` predates
       both gates and does not expose them. Redeploy is NOT done autonomously: a
@@ -949,15 +1018,14 @@ ordinary account provisioning.
       keystore password — it requires explicit user confirmation (run
       `/forge-deploy` with `--account dev`). Blocked on that confirmation, not on
       code.
-- [x] `P0` Add anti-replay material to submitted results:
-      `chainId`, contract address, deal ID, nonce, compose hash, result hash,
-      score band, compute cost, and expiry.
-      Done in `tinker_delegate.chain_submitter`: the value submitted to
-      `DiligenceRoom.resultHash` is now an anti-replay commitment over those
-      fields, while the original bounded payload result hash remains separate
-      in the bounded receipt as `payload_result_hash`. The dstack-simulator
-      Anvil proof verifies the `EvaluationSubmitted.result_hash` equals the
-      submission commitment and is not the raw payload hash.
+- [x] `P0` Make submitted results canonical and non-malleable:
+      `DiligenceRoom.submitResult` no longer accepts any caller-provided result
+      hash. The contract derives a domain-separated `DiligenceRoomPublicResult`
+      commitment over chain/contract/deal identity, immutable funded-deal fields,
+      compose hash, bounded score band, and deterministic compute tariff. The
+      verifier and submitter recompute this exact commitment and share a fixed
+      Solidity/Python parity vector. Payload hashes and reward-transcript
+      commitments are absent from the production transaction and receipt path.
 - [x] `P0` Define whether quote verification happens on-chain, in a verifier
       contract, through an attestation registry, or through a verified off-chain
       verifier whose signature the contract accepts.
@@ -1136,7 +1204,8 @@ ordinary account provisioning.
       2026-07-12) a reentrancy-drain test: a malicious co-owner re-entering
       `withdraw()` during its native payout gets exactly its single credit and
       cannot drain other owners (CEI defeats it). Contract-surface audit complete
-      2026-07-12: all five contracts reviewed — DiligenceRoom (settlement
+      2026-07-12 historical checkpoint: the then-current five-contract surface
+      was reviewed — DiligenceRoom (settlement
       conservation/reentrancy/fee-lock), TinkerAccountEncumbrance (fixed an
       on-chain self-approval gap), EmailOracleAuth (kill-switch/delivery, correct +
       well-tested), and RoyaltyDistributor (inherent conservation, reentrancy now
@@ -1257,16 +1326,18 @@ ordinary account provisioning.
 
 ### EmailOracleAuth Completion
 
-- [x] `P0` Enforce `EmailOracleAuth` at the FastAPI `/pin` and `/inbox`
-      endpoints.
-      Done when unauthenticated callers cannot retrieve OTPs or inbox metadata.
-      - [x] Add runtime bearer guard for `/pin` and `/inbox` so unauthenticated
-            network callers cannot retrieve OTPs or inbox metadata.
+- [x] `P0` Enforce `EmailOracleAuth` at the FastAPI `/pin` endpoint and remove
+      general mailbox egress.
+      Done: `/inbox` is absent, `/email` is commitment-only, and authenticated
+      callers cannot retrieve mailbox identifiers, headers, dates, or raw
+      addresses.
+      - [x] Add runtime bearer guard for `/pin` so unauthenticated network
+            callers cannot retrieve OTPs.
       - [x] Check the caller identity against the on-chain `EmailOracleAuth`
-            consumer registry before releasing OTP or inbox data.
-            Done with `email_oracle.chain_auth` and FastAPI guards for `/pin`
-            and `/inbox`. When `ORACLE_AUTH_REQUIRED=true` or a contract is
-            configured, the service fails closed before IMAP access unless
+            consumer registry before releasing an OTP.
+            Done with `email_oracle.chain_auth` and the FastAPI `/pin` guard.
+            When `ORACLE_AUTH_REQUIRED=true` or a contract is configured, the
+            service fails closed before IMAP access unless
             `isConsumerAuthorized(ORACLE_AUTH_CONSUMER_APP_ID,
             ORACLE_AUTH_CONSUMER_COMPOSE_HASH)` returns true; optional
             `ORACLE_AUTH_EXPECTED_CALLER_IDENTITY` binds `/pin` request metadata.
@@ -1536,10 +1607,10 @@ ordinary account provisioning.
                   Phala debug app `4c92eec94e2d7b6e8c8a7940cb0b6eb4a0e8e1bd`
                   reached IMAP verification and healthy oracle state, and the
                   temporary public-log/dev-OS debug CVM was deleted afterward.
-            - [x] Stop public `/health` and `/attestation` from exposing the raw
-                  generated oracle mailbox when credentials exist; expose
-                  readiness plus `oracle_email_hash` publicly and move raw email
-                  address retrieval to runtime-authenticated `/email`.
+            - [x] Stop every HTTP response from exposing the raw generated
+                  oracle mailbox when credentials exist; expose readiness plus
+                  commitments only, remove `/inbox`, and require an in-CVM
+                  sealed/bootstrap path for the delegate's raw address input.
             - [x] Build/push the bounded-health oracle image and re-run the
                   explicit debug proof to confirm public health/attestation do
                   not expose raw mailbox identifiers after successful genesis.
@@ -2153,7 +2224,7 @@ ordinary account provisioning.
             with both diagnostic endpoints returning 403 disabled.
 - [x] `P0` Narrow Phala redeploy runtime env handling to the minimal key set
       needed by each compose profile.
-      Done 2026-07-08: `scripts/redeploy-phala-cvm.mjs` now defaults to
+      Historical completion 2026-07-08: the retired helper defaulted to
       `--runtime-env-policy compose-refs`, selecting only keys referenced by the
       compose source plus explicitly allowed keys. The legacy broad behavior
       requires `--runtime-env-policy all`. Default output is bounded to
@@ -2161,7 +2232,9 @@ ordinary account provisioning.
       `runtime_env_keys_sha256`; printing key names requires
       `--print-runtime-env-keys`. Node tests cover compose-reference filtering,
       explicit missing-key fail-closed behavior, allow-file additions, and the
-      explicit all-env fallback. The current Phala normal profile was redeployed
+      explicit all-env fallback. The current helper rejects these flags and is
+      validation-only for an exact reviewed seven-CVM batch. At that historical checkpoint, the Phala normal
+      profile was redeployed
       with this policy: live compose hash
       `54ee243db5605588550d670fcc767ba17b49407e76613b633ddc7eee44494eb2`,
       `allowed_env_count=7`, public logs/sysinfo disabled, health OK, and both
@@ -3016,14 +3089,16 @@ ordinary account provisioning.
             reports this live compose is not yet approved on-chain.
       - [x] Bind generated Tinker smoke redeploy commands to the newly
             provisioned Phala compose hash.
-            Done 2026-07-09: `scripts/redeploy-phala-cvm.mjs` accepts
+            Historical 2026-07-09 completion: the retired update helper accepted
             `--self-compose-hash-env TINKER_ENCUMBRANCE_COMPOSE_HASH`, fails
             closed if that env key is not selected, and overwrites the selected
             env value with Phala's provisioned app-compose hash before
-            encrypted env commit. `tinker-smoke-command-plan` now emits that
-            flag and includes the self-bound compose hash plus issue/deployment
-            policy flags in the verifier env allowlist. Focused JS and Python
-            tests cover the helper and plan output.
+            encrypted env commit. At the time, `tinker-smoke-command-plan`
+            emitted that flag and included the self-bound compose hash plus
+            issue/deployment policy flags in the verifier env allowlist. That
+            interface is no longer executable; generated smoke plans
+            intentionally emit no redeploy command until the reviewed
+            fresh-batch executor is ready.
       - [ ] Run `tinker-smoke --api-url ... --max-usd 0.05
             --require-encumbrance` successfully from the deployed CVM and record
             the bounded receipt plus attestation evidence.
@@ -3792,24 +3867,12 @@ reusing existing primitives (`crypto.encrypt_for_tee`,
       accept an optional `reward_transcript_commitment` that is recorded on every
       `DiligenceFlowReceipt` and bound into `flow_hash`, tying the settlement
       outcome to the run's proof-carrying transcript (`tests/test_diligence_flow.py`
-      +1). On-chain binding added 2026-07-12: `chain_submitter.ResultCommitment`
-      now takes an optional `reward_transcript_commitment` folded into the
-      submitted `DiligenceRoom.resultHash` — v2 domain-tagged when present, and
-      byte-identical v1 when absent (existing submissions/Anvil proof unchanged).
-      `submit_result(..., reward_transcript_commitment=...)` threads it through
-      and records it in the bounded receipt, so the settled on-chain record
-      cryptographically commits to the RLVR proof-carrying transcript and any
-      holder of the bounded public fields can recompute the digest
-      (`tests/test_chain_submitter.py` +4: v1 backward-compat, v2 binds/changes,
-      recompute-from-public-fields, submit_result end-to-end). Exposed on the
-      `submit-result` CLI as `--reward-transcript-commitment` and PROVEN on-chain
-      2026-07-12: `scripts/prove-chain-submitter-dstack-anvil.py` (real dstack
-      simulator TEE key + ephemeral Anvil + real authorize-result/submit-result
-      CLIs) now binds a transcript commitment and asserts the emitted
-      `EvaluationSubmitted.result_hash` equals the v2 commitment and differs from
-      the unbound v1 digest — the on-chain settlement record commits to the RLVR
-      transcript. Proof output `ok:true` (result_hash 0x63f8…acaf9a ==
-      submitted_result_hash != unbound v1 0x0213…).
+      +1). Superseded on-chain note (2026-07-13): reward-transcript commitments
+      remain valid private-run/bounded-certificate evidence, but were removed
+      from `submitResult`, its CLI, and the chain receipt. Allowing an evaluator
+      or caller to choose opaque commitment material made escrow `resultHash`
+      non-canonical. The contract now derives the only production result hash
+      from public policy fields, while reward-run verification stays off-chain.
       Reward-loop side integration-tested end to end
       2026-07-12 (`tests/test_reward_loop_pipeline_integration.py`): clear canary
       pre-screen -> `run_private_reward_loop` with a DP budget attached (swappable
@@ -4068,12 +4131,9 @@ reusing existing primitives (`crypto.encrypt_for_tee`,
       recomputes the root from the emitted feedback and verifies an inclusion
       proof for every candidate against it (`tests/test_bio_assay_program_demo.py`,
       8). On-chain binding added 2026-07-12 (see the reproducibility-certificate
-      entry above): `ResultCommitment` optionally folds the
-      `reward_transcript_commitment` into the submitted `resultHash` (v2 tag when
-      present, byte-identical v1 when absent), exposed on the `submit-result` CLI,
-      and PROVEN on-chain 2026-07-12 via `prove-chain-submitter-dstack-anvil.py`
-      (emitted `EvaluationSubmitted.result_hash` equals the v2 commitment and
-      differs from the unbound v1 digest).
+      entry above) was superseded 2026-07-13: transcript commitments remain in
+      the private reward/certificate flow only. They are deliberately absent
+      from the production `submitResult` ABI and canonical escrow result hash.
 
 ### Define The Bio Validation Target
 
@@ -4474,8 +4534,19 @@ gate, bounded result schema, forbidden-output screen) with
             attestation report data.
       - [x] Add a client-side quote verifier/uploader that refuses to encrypt or
             upload until the live TDX quote, compose hash, and report data pass.
-- [x] `P0` Verify `keccak256(rawArtifact) == artifactHash` inside the TEE before
-      a deal can proceed.
+- [x] `P0` Bind ingress and evaluation to the immutable on-chain salted v2
+      artifact commitment before a deal can proceed.
+      - [x] Define `artifactHash` as
+            `keccak256(ASCII("dnai-wikigen/artifact-commitment/v2") || 0x00 || secret32 || rawArtifact)`
+            with an exact 32-byte random secret and no raw-keccak fallback.
+      - [x] Forward `DealCreated.artifactHash` through the watcher into immutable
+            `DealContext`, reject caller-supplied mismatches before decryption,
+            verify after wrapper decode, and re-verify immediately before the
+            evaluator receives bytes.
+      - [x] Require the strict private v2 recovery receipt and versioned encrypted
+            wrapper; reject empty artifacts, raw unwrapped bytes, malformed
+            receipts, wrong secrets, and self-consistent artifact B uploads for a
+            chain commitment to artifact A.
 - [ ] `P0` Add per-corpus/per-deal key derivation:
       no single static artifact key for all rooms.
       - [x] Derive artifact upload AES keys with per-deal/per-artifact HKDF
@@ -4787,31 +4858,41 @@ gate, bounded result schema, forbidden-output screen) with
 
 ## Milestone 7: Frontend, Cloudflare, And User Product
 
-- [ ] `P0` Decide how to merge `gate-health-frontend` into `tinker-deligate`.
-      Recommended: cherry-pick or merge `⚙️/tinker-delegate/web/`, not replace
-      backend/contracts work.
+- [x] `P0` Replace the old mockup with the repository-root `web/` product.
+      The result is SolidJS, not React, and has eleven canonical routes:
+      Overview, Arena, Diligence Rooms, Release Review, Data Vaults, Compute,
+      Delegated Tinker Account, Safeguards, Capabilities, Verify, and
+      Collaborate.
 - [ ] `P0` Wire the frontend to real APIs instead of synthetic data:
       health, attestation, rooms, deals, gate verdicts, funding, evaluator status,
-      and result verification.
-- [ ] `P0` Add wallet connection and role-aware auth:
-      seller/controller, buyer/sponsor, reviewer, auditor, admin.
-- [ ] `P0` Add seller/controller flow:
-      create room, upload encrypted artifact, set reserve, set policy, review
-      quote, open deal.
-- [ ] `P0` Add buyer/sponsor flow:
-      inspect room metadata, verify quote, fund escrow, set budget cap, start
-      evaluation, accept/reject.
+      and result verification. The client implementations and fail-closed gates
+      exist; this item means activating them only from the fresh live release.
+- [x] `P0` Add wallet connection and scoped service authentication.
+      EIP-6963 and injected EIP-1193 wallets are supported; WalletConnect is
+      conditional on its public project ID. Seller upload, Arena, and Compute
+      use separate Base-Sepolia-bound signature/token domains. Reviewer/auditor/
+      admin effect authorization remains deployment work.
+- [x] `P0` Add the seller/controller interaction shape: create room, generate a
+      salted recovery receipt, set reserve/policy, and encrypt artifact ingress.
+      Mutation remains locked unless the fresh contract/CVM gates pass.
+- [x] `P0` Add the buyer/sponsor interaction shape: inspect rooms, verify the
+      release, fund with a budget cap, and resolve bounded results. Writes remain
+      locked unless the fresh chain release passes.
 - [ ] `P0` Add reviewer flow:
       holds queue, policy context, release/deny, reviewer signature, audit record.
-- [ ] `P0` Add result verification page:
-      result hash, score band, quote, compose hash, chain transaction, payout
-      status, cleanup status.
-- [ ] `P0` Deploy the frontend to Cloudflare Pages.
+- [x] `P0` Add the Trust Center: all seven contract observations, image/compose/
+      CVM pins, evidence ladder, bounded receipt classifier, and release gates.
+      It never promotes a modeled receipt or producer envelope to Intel TDX.
+- [x] `P0` Deploy the frontend to Cloudflare Pages.
+      The current source candidate is published only to the explicit
+      `modeled-preview` alias. The production branch and custom domains were
+      not changed; live mutation remains gated on a fresh independently
+      verified contract/CVM release manifest.
 - [ ] `P0` Add Cloudflare Worker or API boundary for any server-side frontend
       tasks; no secrets in the static client.
 - [ ] `P1` Add optimistic UI and polling for chain/TEE state transitions.
-- [ ] `P1` Add a demo mode using synthetic data that is clearly labeled and
-      cannot be confused with real private bio data.
+- [x] `P1` Add modeled synthetic data that is clearly labeled and cannot be
+      confused with real private bio data or Intel TDX evidence.
 - [ ] `P1` Add "explain why denied/held" UI that reveals policy reasons but not
       sensitive internals.
       - [x] Bounded data layer done 2026-07-12:
@@ -4840,12 +4921,13 @@ gate, bounded result schema, forbidden-output screen) with
             `tests/test_bio_dual_use.py` +1).
       - [ ] The UI itself (frontend rendering of these explanations) remains
             frontend-gated.
-- [ ] `P1` Add an attestation explorer:
-      image digest, compose hash, app ID, TDX quote, contract policy, endpoint.
+- [x] `P1` Add a bounded verification explorer for image digest, compose hash,
+      app/CVM identity, contract policy, quote hash, and signed QVL verdict.
+      Raw quotes are not rendered as public product content.
 - [ ] `P2` Add guided onboarding:
       create wallet, verify TEE, submit first toy artifact, fund testnet deal.
-- [ ] `P2` Add branded `wikigen.me` product language once the trust path is
-      actually backed by code.
+- [x] `P2` Add branded `wikigen.me` product language while keeping every
+      undeployed capability labeled modeled, roadmap, or fail-closed.
 
 ## Milestone 8: External Alignment And Design Imports
 
@@ -5002,15 +5084,18 @@ vision Wiki is reaching for.
 
 - [ ] `Deploy` Create/fill `.env` locally from `example.env` without committing
       secrets.
-- [x] `Deploy` Verify Foundry keystore account `dev` exists and is funded for
-      Base Sepolia.
-      Done 2026-07-08: `0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD` has
-      Base Sepolia ETH and can pay deployment gas; raw private key material is
-      not stored in repo or `.env`.
-- [ ] `Deploy` Verify Cloudflare Wrangler login for frontend deployment.
-- [x] `Deploy` Verify Phala CLI login and profile.
-      Done 2026-07-08: `phala status` reports user `g-structure`, workspace
-      `wiki`, profile `wikigen`.
+- [ ] `Deploy` Re-verify and unlock Foundry keystore account `dev` for the fresh
+      Base Sepolia release without exposing its password. The alias and a
+      historically funded address were confirmed, but the current activation
+      run has no usable noninteractive unlock input. The 2026-07-08 balance is
+      historical, not proof of present deployment readiness.
+- [x] `Deploy` Verify Cloudflare Wrangler login for frontend deployment.
+      Reverified 2026-07-13 with Pages write access for account
+      `956388df29525b9e06f81581b485a571`.
+- [ ] `Deploy` Restore and verify Phala CLI authentication for the new operator
+      release. The 2026-07-08 `g-structure` / `wiki` / `wikigen` result is
+      historical. Current checks either report unauthenticated or reject the
+      available API-key response shape, so no fresh CVM may be deployed yet.
 - [x] `Deploy` Verify Docker registry credentials and decide permanent registry.
       - [x] Add GHCR as the CI image publication path for deploy-critical
             TEE images.
@@ -5066,7 +5151,9 @@ vision Wiki is reaching for.
             `tinker-delegate@sha256:17f22d8e87f774717a1989f1501ea659ad13bf409e7d601af6cf7b1c1fdc7381`
             from source
             `eb3bde3b5b156dfdd46f701ab2df8f1f19d94120`.
-- [x] `Deploy` Redeploy Phala CVM with final image digests.
+- [ ] `Deploy` Deploy the fresh seven-CVM topology with final image digests and
+      five independently controlled QVL roots. The following combined-CVM
+      record is historical only and does not satisfy this item.
       Refreshed 2026-07-08: CVM `670b3b21-4338-4d4e-ae72-7c8922579f59` /
       `cvm_1w85mGjo` now
       runs oracle image
@@ -5368,8 +5455,19 @@ vision Wiki is reaching for.
 - [ ] `Deploy` Submit result on-chain.
 - [ ] `Deploy` Accept/reject/expire the deal and withdraw funds.
 - [ ] `Deploy` Confirm cleanup of artifact and checkpoints.
-- [ ] `Deploy` Deploy frontend to Cloudflare Pages.
-- [ ] `Deploy` Smoke-test the public URL from a clean browser.
+- [x] `Deploy` Deploy frontend to Cloudflare Pages.
+      The current eleven-route source candidate is available only on the
+      explicit `modeled-preview` preview branch. The production branch and
+      custom domains remain unchanged.
+- [x] `Deploy` Preserve the prior nine-route clean-browser smoke evidence.
+      Historical check against `https://wikigen.me`: all then-nine routes, wallet
+      dialog/focus behavior, 390x844 responsive navigation, overflow, and
+      browser error logs passed. No injected wallet was present; the UI
+      truthfully rendered WalletConnect as unavailable when no project ID was
+      configured. This does not validate the current eleven-route candidate.
+- [ ] `Deploy` Complete in-app-browser visual QA and a clean-browser smoke test
+      for all eleven current routes on the modeled preview before promoting any
+      production frontend release.
 - [ ] `Deploy` Archive deployment evidence:
       git SHA, image digests, compose hash, quote, tx hashes, screenshots, logs
       with secrets redacted.
@@ -5383,7 +5481,12 @@ vision Wiki is reaching for.
 - [ ] `P0` Show email oracle receives OTPs and the one-off capped Tinker
       funding validation, but do not claim production/repeated Tinker funding
       is solved.
-- [ ] `P0` Show stub evaluator and bounded output only.
+- [x] `P0` Make evaluator activation explicit and prevent synthetic results
+      from masquerading as live TDX-backed evidence. Done 2026-07-13:
+      `disabled` is the process default, `stub` is local-only and rejected in
+      dstack, and `sft` is accepted only in a real non-simulator dstack CVM.
+- [ ] `P0` Show local stub evaluation with an unmistakable modeled label, then
+      separately prove a real SFT evaluation in the replacement CVM.
 - [ ] `P0` Show Base Sepolia fund -> result -> accept/reject/expire.
 
 ### Demo 2: End-To-End Synthetic DNAI
@@ -5496,10 +5599,11 @@ vision Wiki is reaching for.
        `scripts/verify-agent-image.sh` verifies the optional Tinker SDK import
        inside the built delegate image. Fresh Phala CVM validation remains
        separate because no CVMs are currently deployed.
-6. [x] Enforce oracle auth on `/pin` and `/inbox`.
-       Runtime bearer auth and optional on-chain `EmailOracleAuth` consumer
-       registry enforcement are implemented locally. Base Sepolia compose-hash
-       registration remains a separate deployment step.
+6. [x] Enforce oracle auth on scoped `/pin`; remove `/inbox`; make `/email`
+       commitment-only. Runtime bearer auth and optional on-chain
+       `EmailOracleAuth` consumer registry enforcement are implemented locally.
+       Base Sepolia compose-hash registration remains a separate deployment
+       step.
 7. [ ] Add chain watcher + TEE chain signer for `DiligenceRoom`.
        Local watcher, signer/broadcaster plumbing, dstack-simulator
        `submitResult()` broadcast, and a local synthetic-room-to-Anvil
@@ -5527,26 +5631,26 @@ vision Wiki is reaching for.
        deployed Tinker login, API-key sealing, reauth, and one-off capped
        funding through the main CVM. The remaining live Tinker blocker is now
        client configuration for SDK training creation, not browser bootstrap.
-10. [ ] Get an official Tinker service-account/API route, or complete the
-        bounded headed-Neko signup repair without evasion.
+10. [ ] Obtain an official Tinker service-account/provider route that preserves
+        the confidentiality and bounded-egress contract; do not evade provider
+        bot or account controls.
 11. [x] Prove safe Tinker account funding with a low-value test.
        Done 2026-07-09 for the one-off operator-owned capped validation lane:
        the deployed compose was attested and approved on-chain, the funding
        packet emitted only bounded receipts with `raw_secret_egress=false`, and
        a bounded balance read returned `$10.00`.
-12. [ ] Run one real tiny Tinker training session through `IsolatedTinkerSession`.
-       Current blocker: deployed smoke fails with `BadRequestError` at
-       `sdk_error.failure_site=service_client_create` before Tinker training
-       creation; bounded diagnostics classify it as client-configuration work
-       with `project.configured=false` and
-       `client_config.project_id_argument=omitted`. Obtain or configure the
-       correct Tinker project/client/base-url settings, seal them into the live
-       CVM through `tinker-client-config --api-url ... --install`, confirm
-       bounded status reports `project_id_configured=true`, then rerun smoke. A
-       redeploy/compose approval is required only if the live CVM does not yet
-       include the sealed client-config store source.
-13. [ ] Merge the `gate-health-frontend` UI and wire it to real verifier/status
-       APIs.
+12. [ ] Enable real paid provider work only after the adapter exposes stable
+       caller-supplied idempotency for every mutation and exact post-restart
+       recovery/lookup semantics. The reproducibly pinned `tinker==0.22.7` does
+       not satisfy that production contract. Upstream 0.23.0 was isolated-
+       spot-checked after its 2026-07-15 release and still exposes no such key
+       through the public paid-workflow signatures; adopting it would also
+       require a separate locked upgrade review. Compute dispatch stays
+       disabled.
+13. [x] Replace the old frontend mockup with the eleven-route SolidJS product.
+14. [ ] Generate its live environment only after the fresh seven contracts,
+       seven CVMs, five challenge-bound QVL roots, and every timelocked release
+       state pass the release validator.
 
 ## External Alignment References
 

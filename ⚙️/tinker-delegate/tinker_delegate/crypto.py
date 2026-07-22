@@ -58,12 +58,17 @@ class EncryptedPayload:
         )
 
 
-def _derive_aes_key(shared_secret: bytes, info: bytes = CARD_HKDF_INFO) -> bytes:
+def _derive_aes_key(
+    shared_secret: bytes,
+    info: bytes = CARD_HKDF_INFO,
+    *,
+    salt: bytes | None = None,
+) -> bytes:
     """HKDF-SHA256 to derive 256-bit AES key from raw ECDH output."""
     return HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=None,
+        salt=salt,
         info=info,
     ).derive(shared_secret)
 
@@ -98,11 +103,12 @@ class TEEKeyPair:
         *,
         info: bytes = CARD_HKDF_INFO,
         associated_data: bytes | None = None,
+        hkdf_salt: bytes | None = None,
     ) -> bytes:
         """Decrypt an encrypted payload for the selected channel."""
         sender_public = X25519PublicKey.from_public_bytes(payload.ephemeral_public_key)
         shared_secret = self._private.exchange(sender_public)
-        aes_key = _derive_aes_key(shared_secret, info)
+        aes_key = _derive_aes_key(shared_secret, info, salt=hkdf_salt)
         aesgcm = AESGCM(aes_key)
         return aesgcm.decrypt(payload.nonce, payload.ciphertext, associated_data)
 

@@ -1,0 +1,39 @@
+{
+  "name": "dnai-wikigen-web",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Attested diligence rooms and private verified rewards on Base Sepolia",
+  "scripts": {
+    "dev": "vite --port 5175",
+    "build": "tsc --noEmit && vite build && node scripts/build-security-headers.mjs",
+    "preview": "vite preview --port 4175",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run && npm run test:release",
+    "test:release": "node --test scripts/*.test.mjs",
+    "release:env": "node scripts/build-release-env.mjs",
+    "check": "npm run typecheck && npm run test && npm run build && npm audit --offline --audit-level=high",
+    "deploy:cloudflare": "node scripts/deploy-cloudflare.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^8.1.4",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.10",
+    "wrangler": "4.110.0"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource-variable/manrope": "^5.2.8",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0",
+    "@walletconnect/ethereum-provider": "^2.23.10",
+    "lucide-solid": "^1.24.0",
+    "solid-js": "^1.9.3",
+    "viem": "^2.55.1"
+  },
+  "overrides": {
+    "axios": "1.18.1",
+    "sharp": "0.35.3"
+  }
+}

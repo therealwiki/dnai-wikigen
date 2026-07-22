@@ -18,7 +18,5 @@ interface IAppAuth is IERC165 {
         string[] advisoryIds;
     }
 
-    function isAppAllowed(
-        AppBootInfo calldata bootInfo
-    ) external view returns (bool isAllowed, string memory reason);
+    function isAppAllowed(AppBootInfo calldata bootInfo) external view returns (bool isAllowed, string memory reason);
 }

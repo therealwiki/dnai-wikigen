@@ -34,6 +34,18 @@ def _settings(tmp: str, jwt_key: str = "11" * 32) -> Settings:
     )
 
 
+def _noncanonical_signature_alias(token: str) -> str:
+    """Change only unused Base64URL pad bits, preserving signature bytes."""
+
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    parts = token.split(".")
+    index = alphabet.index(parts[2][-1])
+    if index % 4 != 0:
+        raise AssertionError("HS256 signature was not canonically encoded")
+    parts[2] = parts[2][:-1] + alphabet[index + 1]
+    return ".".join(parts)
+
+
 class TestProxyRoundTrip(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -74,6 +86,15 @@ class TestProxyRoundTrip(unittest.TestCase):
         other = _settings(self.tmp, jwt_key="33" * 32)
         with self.assertRaises(ValueError):
             verify_proxy_token(other, jwt, required_scope="tinker:train")
+
+    def test_noncanonical_signature_alias_rejected(self):
+        jwt = decrypt_encrypted_proxy_token(self.resp, self.priv)
+        with self.assertRaisesRegex(ValueError, "signature"):
+            verify_proxy_token(
+                self.settings,
+                _noncanonical_signature_alias(jwt),
+                required_scope="tinker:train",
+            )
 
     def test_expired_rejected(self):
         _, jwt_exp = issue_proxy_token(

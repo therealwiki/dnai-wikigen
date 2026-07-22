@@ -17,7 +17,7 @@ contract MockERC20 {
         return true;
     }
 
-    function transfer(address to, uint256 amount) external returns (bool) {
+    function transfer(address to, uint256 amount) external virtual returns (bool) {
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
@@ -31,9 +31,30 @@ contract MockERC20 {
     }
 }
 
+/// @dev Returns success from transfers without moving balances.
+contract RoyaltyPhantomERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return true;
+    }
+
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        return true;
+    }
+}
+
+/// @dev Funds the distributor correctly, then returns success without paying a
+///      claimant. Exact outbound balance-delta checks must preserve the claim.
+contract RoyaltyOutboundPhantomERC20 is MockERC20 {
+    function transfer(address, uint256) external pure override returns (bool) {
+        return true;
+    }
+}
+
 /// A malicious co-owner that re-enters `withdraw()` during its native payout to
-/// try to drain a second time. The checks-effects-interactions order must defeat
-/// it: the reentrant call finds a zeroed balance and reverts.
+/// try to drain a second time. The withdrawal lock and effects-before-interaction
+/// ordering must prevent the second payout.
 contract ReentrantRoyaltyClaimer {
     RoyaltyDistributor internal immutable dist;
     bool internal entered;
@@ -51,8 +72,8 @@ contract ReentrantRoyaltyClaimer {
         received += msg.value;
         if (!entered) {
             entered = true;
-            // Re-entrant withdraw must find a zeroed balance and revert; swallow
-            // it so the single legitimate payout can be asserted.
+            // Re-entrant withdraw must revert; swallow it so the single
+            // legitimate payout can be asserted.
             try dist.withdraw() {} catch {}
         }
     }
@@ -131,6 +152,49 @@ contract RoyaltyDistributorTest is Test {
         assertEq(dist.pending(address(0), ownerB), 0.6 ether);
     }
 
+    function test_QueryRefCannotBeDistributedTwice() public {
+        vm.startPrank(payer);
+        dist.distributeNative{value: 1 ether}(queryRef, _owners(), _amounts(0.6 ether, 0.4 ether));
+        vm.expectRevert(RoyaltyDistributor.QueryAlreadyProcessed.selector);
+        dist.distributeNative{value: 1 ether}(queryRef, _owners(), _amounts(0.6 ether, 0.4 ether));
+        vm.stopPrank();
+
+        assertTrue(dist.processedQueries(payer, queryRef));
+        assertEq(address(dist).balance, 1 ether);
+    }
+
+    function test_UnrelatedDistributorCannotConsumePayerQueryRef() public {
+        address attacker = makeAddr("attacker");
+        address[] memory attackerOwners = new address[](1);
+        attackerOwners[0] = attacker;
+        uint256[] memory attackerAmounts = new uint256[](1);
+        attackerAmounts[0] = 1;
+        vm.deal(attacker, 1);
+
+        vm.prank(attacker);
+        dist.distributeNative{value: 1}(queryRef, attackerOwners, attackerAmounts);
+
+        vm.prank(payer);
+        dist.distributeNative{value: 1 ether}(queryRef, _owners(), _amounts(0.6 ether, 0.4 ether));
+
+        assertTrue(dist.processedQueries(attacker, queryRef));
+        assertTrue(dist.processedQueries(payer, queryRef));
+        assertEq(dist.pending(address(0), attacker), 1);
+        assertEq(dist.pending(address(0), ownerA), 0.6 ether);
+        assertEq(dist.pending(address(0), ownerB), 0.4 ether);
+    }
+
+    function test_FailedDistributionDoesNotConsumeQueryRef() public {
+        vm.startPrank(payer);
+        vm.expectRevert(RoyaltyDistributor.ValueMismatch.selector);
+        dist.distributeNative{value: 0.5 ether}(queryRef, _owners(), _amounts(0.6 ether, 0.4 ether));
+        assertFalse(dist.processedQueries(payer, queryRef));
+
+        dist.distributeNative{value: 1 ether}(queryRef, _owners(), _amounts(0.6 ether, 0.4 ether));
+        vm.stopPrank();
+        assertTrue(dist.processedQueries(payer, queryRef));
+    }
+
     // ── ERC20 ──────────────────────────────────────────────────────────
 
     function test_DistributeERC20CreditsAndPullsFunds() public {
@@ -152,6 +216,47 @@ contract RoyaltyDistributorTest is Test {
         assertEq(usdc.balanceOf(ownerA), 700_000);
         assertEq(usdc.balanceOf(ownerB), 300_000);
         assertEq(usdc.balanceOf(address(dist)), 0);
+    }
+
+    function test_DistributeERC20RejectsZeroAddress() public {
+        vm.prank(payer);
+        vm.expectRevert(RoyaltyDistributor.InvalidToken.selector);
+        dist.distributeERC20(queryRef, address(0), _owners(), _amounts(700_000, 300_000));
+    }
+
+    function test_DistributeERC20RejectsNonContract() public {
+        vm.prank(payer);
+        vm.expectRevert(RoyaltyDistributor.InvalidToken.selector);
+        dist.distributeERC20(queryRef, makeAddr("not-a-token"), _owners(), _amounts(700_000, 300_000));
+    }
+
+    function test_DistributeERC20RejectsPhantomFunding() public {
+        RoyaltyPhantomERC20 phantom = new RoyaltyPhantomERC20();
+
+        vm.prank(payer);
+        vm.expectRevert(RoyaltyDistributor.TokenAmountMismatch.selector);
+        dist.distributeERC20(queryRef, address(phantom), _owners(), _amounts(700_000, 300_000));
+
+        assertFalse(dist.processedQueries(payer, queryRef));
+        assertEq(dist.pending(address(phantom), ownerA), 0);
+        assertEq(dist.pending(address(phantom), ownerB), 0);
+    }
+
+    function test_WithdrawERC20RejectsPhantomPayoutAndPreservesClaim() public {
+        RoyaltyOutboundPhantomERC20 phantom = new RoyaltyOutboundPhantomERC20();
+        phantom.mint(payer, 1_000_000);
+        vm.startPrank(payer);
+        phantom.approve(address(dist), 1_000_000);
+        dist.distributeERC20(queryRef, address(phantom), _owners(), _amounts(700_000, 300_000));
+        vm.stopPrank();
+
+        vm.prank(ownerA);
+        vm.expectRevert(RoyaltyDistributor.TokenAmountMismatch.selector);
+        dist.withdraw(address(phantom));
+
+        assertEq(dist.pending(address(phantom), ownerA), 700_000);
+        assertEq(phantom.balanceOf(ownerA), 0);
+        assertEq(phantom.balanceOf(address(dist)), 1_000_000);
     }
 
     // ── Guards ─────────────────────────────────────────────────────────
@@ -179,6 +284,23 @@ contract RoyaltyDistributorTest is Test {
         vm.prank(payer);
         vm.expectRevert(RoyaltyDistributor.ZeroOwner.selector);
         dist.distributeNative{value: 1 ether}(queryRef, owners, amounts);
+    }
+
+    function test_DistributorCannotBeItsOwnRoyaltyOwner() public {
+        address[] memory owners = new address[](1);
+        owners[0] = address(dist);
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = 1 ether;
+        vm.prank(payer);
+        vm.expectRevert(RoyaltyDistributor.SelfOwner.selector);
+        dist.distributeNative{value: 1 ether}(queryRef, owners, amounts);
+    }
+
+    function test_ZeroQueryReferenceRevertsWithoutConsumingReplaySlot() public {
+        vm.prank(payer);
+        vm.expectRevert(RoyaltyDistributor.ZeroQueryRef.selector);
+        dist.distributeNative{value: 1 ether}(bytes32(0), _owners(), _amounts(0.7 ether, 0.3 ether));
+        assertFalse(dist.processedQueries(payer, bytes32(0)));
     }
 
     function test_ZeroAmountReverts() public {
@@ -217,9 +339,9 @@ contract RoyaltyDistributorTest is Test {
 
         attacker.claim();
 
-        // The reentrant second withdraw hit a zeroed balance: the attacker got
-        // exactly its single credit, its pending is zero, and ownerB's funds are
-        // untouched (the contract still holds them). No double-pay / drain.
+        // The reentrant second withdraw was blocked: the attacker got exactly
+        // its single credit, its pending is zero, and ownerB's funds are untouched
+        // (the contract still holds them). No double-pay / drain.
         assertEq(attacker.received(), 3 ether);
         assertEq(dist.pending(address(0), address(attacker)), 0);
         assertEq(address(dist).balance, 1 ether);

@@ -10,12 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
-
-from tinker_delegate.redaction import redact_text
+from typing import Any, Mapping
 
 
 class AutomationSurface(StrEnum):
@@ -72,6 +71,47 @@ class AutomationOutcome(StrEnum):
     UNKNOWN_FAILURE = "unknown_failure"
 
 
+AMOUNT_BANDS = frozenset(
+    {
+        "",
+        "unknown",
+        "invalid_amount",
+        "zero_or_negative",
+        "lt_5_usd",
+        "5_25_usd",
+        "25_100_usd",
+        "gte_100_usd",
+    }
+)
+BALANCE_BANDS = frozenset(
+    {
+        "",
+        "unknown",
+        "zero_usd",
+        "lt_10_usd",
+        "10_100_usd",
+        "gte_100_usd",
+    }
+)
+
+# ``issued_at`` deliberately is not evidence: otherwise identical bounded
+# observations made one second apart would produce different evidence hashes.
+# Raw browser text, errors, URLs, and secrets are never members of this
+# projection and therefore can never influence the public hash.
+CANONICAL_RECEIPT_PROJECTION_FIELDS = (
+    "surface",
+    "outcome",
+    "furthest_stage",
+    "bounded_message",
+    "account_hash",
+    "amount_band",
+    "balance_band",
+    "tdx_quote_hash",
+    "card_payload_destroyed",
+    "raw_secret_egress",
+)
+
+
 @dataclass(frozen=True)
 class AutomationReceipt:
     """Bounded public record for a Tinker automation attempt."""
@@ -106,15 +146,38 @@ class AutomationReceipt:
         }
 
 
-def hash_bounded_evidence(*parts: object) -> str:
-    """Hash redacted evidence into a stable audit value."""
+def canonical_receipt_projection(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the only receipt fields permitted to influence evidence hashes."""
+
+    missing = [field for field in CANONICAL_RECEIPT_PROJECTION_FIELDS if field not in receipt]
+    if missing:
+        raise ValueError(f"bounded receipt projection is missing fields: {missing}")
+    return {field: receipt[field] for field in CANONICAL_RECEIPT_PROJECTION_FIELDS}
+
+
+def canonical_receipt_evidence_hash(receipt: Mapping[str, Any]) -> str:
+    """Hash the canonical bounded public projection, never private evidence."""
+
     payload = json.dumps(
-        [redact_text(part) for part in parts],
+        canonical_receipt_projection(receipt),
         sort_keys=True,
         separators=(",", ":"),
-        default=str,
+        ensure_ascii=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def hash_bounded_evidence(*parts: object) -> str:
+    """Compatibility wrapper that accepts only one bounded receipt projection.
+
+    The former variadic helper accepted raw page/error evidence and hashed its
+    redacted form.  That still created a dictionary oracle over private browser
+    text.  Reject every legacy call shape instead of silently hashing it.
+    """
+
+    if len(parts) != 1 or not isinstance(parts[0], Mapping):
+        raise ValueError("evidence hashing requires one canonical bounded receipt projection")
+    return canonical_receipt_evidence_hash(parts[0])
 
 
 def account_hash(identifier: str) -> str:
@@ -149,10 +212,16 @@ def amount_band(amount_dollars: float | int | None) -> str:
 def balance_band(balance: str | None) -> str:
     if not balance or balance == "unknown":
         return "unknown"
-    digits = "".join(ch for ch in balance if ch.isdigit() or ch == ".")
-    if not digits:
+    normalized = str(balance).strip().replace(",", "")
+    match = re.search(r"-?\d+(?:\.\d+)?", normalized)
+    if not match:
         return "unknown"
-    value = float(digits)
+    try:
+        value = float(match.group(0))
+    except ValueError:
+        return "unknown"
+    if not math.isfinite(value) or value < 0:
+        return "unknown"
     if value == 0:
         return "zero_usd"
     if value < 10:
@@ -166,6 +235,10 @@ def classify_automation_error(error: str | None) -> AutomationOutcome:
     text = (error or "").lower()
     if not text:
         return AutomationOutcome.UNKNOWN_FAILURE
+    try:
+        return AutomationOutcome(text)
+    except ValueError:
+        pass
     if "declined" in text or "your card" in text or "the card" in text:
         return AutomationOutcome.CARD_DECLINED
     if "payment method required" in text:
@@ -213,16 +286,42 @@ def make_receipt(
     tdx_quote: str | None = None,
     card_payload_destroyed: bool = False,
 ) -> AutomationReceipt:
+    """Build a deterministic bounded receipt.
+
+    ``evidence`` and ``bounded_message`` remain accepted for source
+    compatibility, but are deliberately ignored.  The only public message is
+    the outcome enum code, and the evidence hash is derived exclusively from
+    the canonical bounded projection.  This guarantees two private page/error
+    sentences with the same bounded outcome, stage, and bands produce the same
+    evidence hash.
+    """
+
+    del evidence, bounded_message
+    surface = AutomationSurface(surface)
+    outcome = AutomationOutcome(outcome)
+    furthest_stage = AutomationStage(furthest_stage)
+    public_projection = {
+        "surface": surface.value,
+        "outcome": outcome.value,
+        "furthest_stage": furthest_stage.value,
+        "bounded_message": outcome.value,
+        "account_hash": account_hash(account_identifier),
+        "amount_band": amount_band(amount_dollars) if amount_dollars is not None else "",
+        "balance_band": balance_band(balance) if balance is not None else "",
+        "tdx_quote_hash": quote_hash(tdx_quote),
+        "card_payload_destroyed": bool(card_payload_destroyed),
+        "raw_secret_egress": False,
+    }
     return AutomationReceipt(
         surface=surface,
         outcome=outcome,
         furthest_stage=furthest_stage,
-        bounded_message=bounded_message,
-        evidence_hash=hash_bounded_evidence(surface.value, outcome.value, furthest_stage.value, evidence),
-        account_hash=account_hash(account_identifier),
-        amount_band=amount_band(amount_dollars) if amount_dollars is not None else "",
-        balance_band=balance_band(balance) if balance is not None else "",
-        tdx_quote_hash=quote_hash(tdx_quote),
-        card_payload_destroyed=card_payload_destroyed,
+        bounded_message=outcome.value,
+        evidence_hash=canonical_receipt_evidence_hash(public_projection),
+        account_hash=public_projection["account_hash"],
+        amount_band=public_projection["amount_band"],
+        balance_band=public_projection["balance_band"],
+        tdx_quote_hash=public_projection["tdx_quote_hash"],
+        card_payload_destroyed=public_projection["card_payload_destroyed"],
         raw_secret_egress=False,
     )

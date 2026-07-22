@@ -1,0 +1,10 @@
+{
+  "active_reviewers": [],
+  "epoch": 1,
+  "expires_at": null,
+  "not_before": null,
+  "previous_status_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "revoked_controller_ids": [],
+  "revoked_reviewer_addresses": [],
+  "schema": "dnai.release-reviewer-authority-current-status-proposal.v1"
+}

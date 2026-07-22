@@ -1,4 +1,10 @@
-"""Client-side attestation-gated email credential provisioning helper."""
+"""Client-side attestation-gated email credential provisioning helper.
+
+The envelope checks below do not implement Intel DCAP/QVL signature,
+collateral, TCB, or measurement verification. The oracle intentionally never
+self-asserts ``verified=true``; without a separately integrated independent
+verifier, a production TDX upload therefore fails closed before encryption.
+"""
 
 from __future__ import annotations
 
@@ -72,19 +78,24 @@ def verify_credential_attestation(
     fetched_at: float | None = None,
     now: float | None = None,
 ) -> str:
-    """Verify the oracle credential attestation before using its public key."""
+    """Check the oracle envelope before using a separately verified public key."""
     checked_at = time.time() if now is None else now
     evidence_time = checked_at if fetched_at is None else fetched_at
     if policy.max_age_seconds >= 0 and checked_at - evidence_time > policy.max_age_seconds:
         raise CredentialUploadError("attestation evidence is stale")
+
+    if attestation.get("service") != "tee-email-oracle":
+        raise CredentialUploadError("attestation service mismatch")
 
     mode = attestation.get("mode")
     if mode == "local":
         if not policy.allow_local:
             raise CredentialUploadError("local attestation is not allowed")
     elif mode == "tdx":
-        if attestation.get("verified") is False:
-            raise CredentialUploadError("attestation endpoint reported verification failure")
+        if attestation.get("verified") is not True:
+            raise CredentialUploadError(
+                "independent cryptographic attestation verdict is unavailable"
+            )
         _hex_bytes(attestation.get("tdx_quote"), "tdx_quote")
         if not policy.expected_compose_hash:
             raise CredentialUploadError("expected compose hash is required for tdx mode")

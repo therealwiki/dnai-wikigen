@@ -2,23 +2,31 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from eth_account import Account
+from eth_account.messages import encode_defunct
 from eth_hash.auto import keccak
 
 from tinker_delegate.chain_submitter import (
     ChainSubmitterError,
+    DealRead,
     DiligenceRoomSubmitter,
     DstackEthereumSigner,
-    ResultCommitment,
+    PUBLIC_RESULT_TYPEHASH,
     SignerAttestationEvidence,
     SignerUnavailable,
+    attestation_authorization_digest,
+    authenticate_result_authorization,
+    canonical_public_result_hash,
+    decode_deal_call_result,
     encode_submit_result_calldata,
     encode_uint256,
     eth_signed_message_digest,
+    policy_compute_cost,
     result_authorization_digest,
     signer_attestation_report_data,
     verify_signer_attestation_evidence,
@@ -28,8 +36,15 @@ from tinker_delegate.config import Settings
 
 COMPOSE_HASH = "0x" + "99" * 32
 CONTRACT_ADDRESS = "0x" + "55" * 20
-AUTHORIZATION_EXPIRY = 2_000_000_000
 VERIFIER_SIGNATURE = "0x" + "11" * 65
+POLICY_COMPUTE = 10**16
+EVALUATOR_POLICY_COMMITMENT = "0x" + "66" * 32
+ATTESTATION_EVIDENCE_HASH = "0x" + "88" * 32
+ATTESTATION_AUTHORIZATION_EXPIRY = int(time.time()) + 240
+AUTHORIZATION_EXPIRY = int(time.time()) + 300
+RESULT_VERIFIER_ACCOUNT = Account.from_key(bytes.fromhex("31" * 32))
+ATTESTATION_VERIFIER_ACCOUNT = Account.from_key(bytes.fromhex("32" * 32))
+ATTESTATION_POLICY_HASH = "0x" + "77" * 32
 
 
 def _signer_attestation(
@@ -82,12 +97,19 @@ def _deal_response(*, tee_identity: str, state: int = 1, budget_cap: int = 10**1
         _word_int(0),  # computeCost
         _word_int(0),  # fee
         "00" * 32,  # resultHash
+        "00" * 32,  # resultComposeHash
+        _word_address("0x" + "00" * 20),  # paymentToken
+        EVALUATOR_POLICY_COMMITMENT[2:],
+        "00" * 32,  # attestationEvidenceHash
+        _word_int(0),  # resultAuthorizationExpiry
+        _word_int(0),  # attestationAuthorizationExpiry
     ]
     return "0x" + "".join(words)
 
 
 class InjectedTestSigner:
     custody = "injected_test_signer"
+    allow_unverified_result_authorization_for_local_testing = True
 
     def __init__(self):
         self._account = Account.create("dnai-wikigen-chain-submit-test")
@@ -97,9 +119,27 @@ class InjectedTestSigner:
         return self._account.sign_transaction(transaction)
 
 
+class ProductionLikeInjectedSigner(InjectedTestSigner):
+    """Test-only signer that exercises the production authorization gate."""
+
+    custody = "dstack_derived_test"
+    allow_unverified_result_authorization_for_local_testing = False
+
+
 _COMPOSE_APPROVAL_REQUIRED_SELECTOR = "0x" + keccak(b"composeApprovalRequired()")[:4].hex()
 _APPROVED_COMPOSE_HASHES_SELECTOR = "0x" + keccak(b"approvedComposeHashes(bytes32)")[:4].hex()
 _FEE_BPS_SELECTOR = "0x" + keccak(b"feeBps()")[:4].hex()
+_COMPUTE_POLICY_SELECTOR = "0x" + keccak(
+    b"computeSettlementPolicyEnabled()"
+)[:4].hex()
+_RESULT_VERIFIER_SELECTOR = "0x" + keccak(b"resultVerifier()")[:4].hex()
+_ATTESTATION_VERIFIER_SELECTOR = "0x" + keccak(b"attestationVerifier()")[:4].hex()
+_ATTESTATION_POLICY_SELECTOR = "0x" + keccak(
+    b"attestationReleasePolicyHash()"
+)[:4].hex()
+_ATTESTATION_FROZEN_SELECTOR = "0x" + keccak(
+    b"attestationBindingFrozen()"
+)[:4].hex()
 
 
 def _bool_word(value: bool) -> str:
@@ -119,12 +159,22 @@ class FakeRpc:
         compose_hash_approved: bool = False,
         fee_bps: int = 100,
         fee_bps_response: str | None = None,
+        compute_settlement_policy_enabled: bool = True,
+        result_verifier: str = RESULT_VERIFIER_ACCOUNT.address,
+        attestation_verifier: str = ATTESTATION_VERIFIER_ACCOUNT.address,
+        attestation_release_policy_hash: str = ATTESTATION_POLICY_HASH,
+        attestation_binding_frozen: bool = True,
     ):
         self.deal_response = deal_response
         self.compose_approval_required = compose_approval_required
         self.compose_hash_approved = compose_hash_approved
         self.fee_bps = fee_bps
         self.fee_bps_response = fee_bps_response
+        self.compute_settlement_policy_enabled = compute_settlement_policy_enabled
+        self.result_verifier = result_verifier
+        self.attestation_verifier = attestation_verifier
+        self.attestation_release_policy_hash = attestation_release_policy_hash
+        self.attestation_binding_frozen = attestation_binding_frozen
         self.sent_raw_transactions: list[bytes] = []
         self.estimate_calls: list[dict] = []
 
@@ -139,6 +189,16 @@ class FakeRpc:
             if self.fee_bps_response is not None:
                 return self.fee_bps_response
             return _uint_word(self.fee_bps)
+        if data.startswith(_COMPUTE_POLICY_SELECTOR):
+            return _bool_word(self.compute_settlement_policy_enabled)
+        if data.startswith(_RESULT_VERIFIER_SELECTOR):
+            return "0x" + _word_address(self.result_verifier)
+        if data.startswith(_ATTESTATION_VERIFIER_SELECTOR):
+            return "0x" + _word_address(self.attestation_verifier)
+        if data.startswith(_ATTESTATION_POLICY_SELECTOR):
+            return self.attestation_release_policy_hash
+        if data.startswith(_ATTESTATION_FROZEN_SELECTOR):
+            return _bool_word(self.attestation_binding_frozen)
         return self.deal_response
 
     def chain_id(self):
@@ -160,28 +220,151 @@ class FakeRpc:
         return "0x" + "ab" * 32
 
 
+def _authorization_args(
+    rpc: FakeRpc,
+    *,
+    deal_id: int = 1,
+    score_band: str | int = "medium",
+    compute_cost_wei: int = POLICY_COMPUTE,
+    compose_hash: str = COMPOSE_HASH,
+    result_verifier_account=RESULT_VERIFIER_ACCOUNT,
+    attestation_verifier_account=ATTESTATION_VERIFIER_ACCOUNT,
+) -> dict[str, object]:
+    deal = decode_deal_call_result(rpc.deal_response)
+    result_digest = result_authorization_digest(
+        chain_id=rpc.chain_id(),
+        contract_address=CONTRACT_ADDRESS,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=score_band,
+        compute_cost_wei=compute_cost_wei,
+        authorization_expiry=AUTHORIZATION_EXPIRY,
+        attestation_release_policy_hash=rpc.attestation_release_policy_hash,
+    )
+    qvl_digest = attestation_authorization_digest(
+        chain_id=rpc.chain_id(),
+        contract_address=CONTRACT_ADDRESS,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=score_band,
+        compute_cost_wei=compute_cost_wei,
+        attestation_release_policy_hash=rpc.attestation_release_policy_hash,
+        attestation_evidence_hash=ATTESTATION_EVIDENCE_HASH,
+        authorization_expiry=ATTESTATION_AUTHORIZATION_EXPIRY,
+    )
+    return {
+        "authorization_expiry": AUTHORIZATION_EXPIRY,
+        "verifier_signature": "0x"
+        + result_verifier_account.sign_message(
+            encode_defunct(hexstr=result_digest)
+        ).signature.hex(),
+        "attestation_evidence_hash": ATTESTATION_EVIDENCE_HASH,
+        "attestation_authorization_expiry": ATTESTATION_AUTHORIZATION_EXPIRY,
+        "attestation_verifier_signature": "0x"
+        + attestation_verifier_account.sign_message(
+            encode_defunct(hexstr=qvl_digest)
+        ).signature.hex(),
+    }
+
+
 class ChainSubmitterTest(unittest.TestCase):
     def test_submit_result_encodes_bounded_contract_call(self):
-        result_hash = "0x" + "44" * 32
         calldata = encode_submit_result_calldata(
             deal_id=5,
             score_band="high",
             compute_cost_wei=123,
-            result_hash=result_hash,
             compose_hash=COMPOSE_HASH,
             authorization_expiry=AUTHORIZATION_EXPIRY,
             verifier_signature=VERIFIER_SIGNATURE,
+            attestation_evidence_hash=ATTESTATION_EVIDENCE_HASH,
+            attestation_authorization_expiry=ATTESTATION_AUTHORIZATION_EXPIRY,
+            attestation_verifier_signature=VERIFIER_SIGNATURE,
         )
 
         self.assertTrue(calldata.startswith("0x"))
-        self.assertEqual(len(bytes.fromhex(calldata[2:])), 4 + (7 * 32) + 32 + 96)
+        self.assertEqual(
+            len(bytes.fromhex(calldata[2:])),
+            4 + (9 * 32) + 2 * (32 + 96),
+        )
         self.assertIn(_word_int(5), calldata)
         self.assertIn(_word_int(3), calldata)
-        self.assertIn("44" * 32, calldata)
+        self.assertNotIn("44" * 32, calldata)
         self.assertIn(COMPOSE_HASH[2:], calldata)
         self.assertIn(_word_int(AUTHORIZATION_EXPIRY), calldata)
-        self.assertIn(_word_int(7 * 32), calldata)
+        self.assertIn(_word_int(9 * 32), calldata)
         self.assertIn(_word_int(65), calldata)
+
+    def test_canonical_public_result_hash_is_domain_separated_and_public_only(self):
+        deal = decode_deal_call_result(
+            _deal_response(tee_identity="0x" + "77" * 20)
+        )
+        base = canonical_public_result_hash(
+            chain_id=31337,
+            contract_address=CONTRACT_ADDRESS,
+            deal_id=1,
+            deal=deal,
+            compose_hash=COMPOSE_HASH,
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+        )
+        same = canonical_public_result_hash(
+            chain_id=31337,
+            contract_address=CONTRACT_ADDRESS,
+            deal_id=1,
+            deal=deal,
+            compose_hash=COMPOSE_HASH,
+            score_band=2,
+            compute_cost_wei=POLICY_COMPUTE,
+        )
+        changed_band = canonical_public_result_hash(
+            chain_id=31337,
+            contract_address=CONTRACT_ADDRESS,
+            deal_id=1,
+            deal=deal,
+            compose_hash=COMPOSE_HASH,
+            score_band="high",
+            compute_cost_wei=POLICY_COMPUTE,
+        )
+
+        self.assertEqual(base, same)
+        self.assertNotEqual(base, changed_band)
+        self.assertRegex(base, r"^0x[0-9a-f]{64}$")
+
+    def test_canonical_public_result_hash_matches_solidity_vector(self):
+        deal = DealRead(
+            seller="0x" + "22" * 20,
+            buyer="0x" + "33" * 20,
+            reserve_price=500_000_000_000_000_000,
+            budget_cap=2_000_000_000_000_000_000,
+            expiry=1_800_000_000,
+            state=1,
+            artifact_hash="0x" + "aa" * 32,
+            tee_identity="0x" + "44" * 20,
+            score_band=0,
+            compute_cost=0,
+            fee=0,
+            result_hash="0x" + "00" * 32,
+            evaluator_policy_commitment="0x" + "cc" * 32,
+        )
+
+        self.assertEqual(
+            "0x" + PUBLIC_RESULT_TYPEHASH.hex(),
+            "0xcc7808e2d534524498257da49708e62cc622bfddd641a5e5f3560882b0ce4c46",
+        )
+        self.assertEqual(
+            canonical_public_result_hash(
+                chain_id=84532,
+                contract_address="0x" + "11" * 20,
+                deal_id=7,
+                deal=deal,
+                compose_hash="0x" + "bb" * 32,
+                score_band=2,
+                compute_cost_wei=20_000_000_000_000_000,
+            ),
+            "0x76d9e72181f1906242b7e0a1484b8aef5c1057a6b93734d3f37d5b6c09b0195a",
+        )
 
     def test_submit_result_broadcasts_from_matching_tee_signer(self):
         signer = InjectedTestSigner()
@@ -191,27 +374,25 @@ class ChainSubmitterTest(unittest.TestCase):
             CONTRACT_ADDRESS,
             signer,
         )
+        authorization = _authorization_args(rpc)
 
         receipt = submitter.submit_result(
             deal_id=1,
             score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
+            compute_cost_wei=POLICY_COMPUTE,
             compose_hash=COMPOSE_HASH,
+            **authorization,
         )
-        expected_commitment = ResultCommitment(
+        deal = decode_deal_call_result(rpc.deal_response)
+        expected_commitment = canonical_public_result_hash(
             chain_id=31337,
             contract_address=CONTRACT_ADDRESS,
             deal_id=1,
-            nonce=7,
+            deal=deal,
             compose_hash=COMPOSE_HASH,
-            payload_result_hash="0x" + "66" * 32,
-            score_band_value=2,
-            compute_cost_wei=10**15,
-            expiry=9999999999,
-        ).digest()
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+        )
 
         self.assertTrue(receipt.submitted)
         self.assertEqual(receipt.tx_hash, "0x" + "ab" * 32)
@@ -220,14 +401,16 @@ class ChainSubmitterTest(unittest.TestCase):
         self.assertEqual(receipt.chain_id, 31337)
         self.assertEqual(receipt.nonce, 7)
         self.assertEqual(receipt.gas_limit, 123456)
-        self.assertEqual(receipt.payload_result_hash, "0x" + "66" * 32)
         self.assertEqual(receipt.result_hash, expected_commitment)
         self.assertEqual(receipt.compose_hash, COMPOSE_HASH)
         self.assertEqual(receipt.expiry, 9999999999)
         self.assertEqual(receipt.authorization_expiry, AUTHORIZATION_EXPIRY)
         self.assertEqual(
             receipt.verifier_signature_hash,
-            "0x" + hashlib.sha256(bytes.fromhex("11" * 65)).hexdigest(),
+            "0x"
+            + hashlib.sha256(
+                bytes.fromhex(str(authorization["verifier_signature"])[2:])
+            ).hexdigest(),
         )
         self.assertEqual(receipt.custody, "injected_test_signer")
         self.assertFalse(receipt.raw_secret_egress)
@@ -247,11 +430,12 @@ class ChainSubmitterTest(unittest.TestCase):
             submitter.submit_result(
                 deal_id=1,
                 score_band="low",
-                compute_cost_wei=1,
-                result_hash="0x" + "66" * 32,
-                authorization_expiry=AUTHORIZATION_EXPIRY,
-                verifier_signature=VERIFIER_SIGNATURE,
+                compute_cost_wei=POLICY_COMPUTE,
                 compose_hash=COMPOSE_HASH,
+                **_authorization_args(
+                    submitter.rpc,
+                    score_band="low",
+                ),
             )
 
         submitter = DiligenceRoomSubmitter(
@@ -263,11 +447,12 @@ class ChainSubmitterTest(unittest.TestCase):
             submitter.submit_result(
                 deal_id=1,
                 score_band="low",
-                compute_cost_wei=1,
-                result_hash="0x" + "66" * 32,
-                authorization_expiry=AUTHORIZATION_EXPIRY,
-                verifier_signature=VERIFIER_SIGNATURE,
+                compute_cost_wei=POLICY_COMPUTE,
                 compose_hash=COMPOSE_HASH,
+                **_authorization_args(
+                    submitter.rpc,
+                    score_band="low",
+                ),
             )
 
     def test_submit_result_fails_closed_when_compose_not_approved_onchain(self):
@@ -282,11 +467,9 @@ class ChainSubmitterTest(unittest.TestCase):
             submitter.submit_result(
                 deal_id=1,
                 score_band="high",
-                compute_cost_wei=10**15,
-                result_hash="0x" + "66" * 32,
-                authorization_expiry=AUTHORIZATION_EXPIRY,
-                verifier_signature=VERIFIER_SIGNATURE,
+                compute_cost_wei=POLICY_COMPUTE,
                 compose_hash=COMPOSE_HASH,
+                **_authorization_args(rpc, score_band="high"),
             )
         # Fail closed BEFORE broadcasting — no transaction sent, no gas spent.
         self.assertEqual(len(rpc.sent_raw_transactions), 0)
@@ -302,11 +485,9 @@ class ChainSubmitterTest(unittest.TestCase):
         receipt = submitter.submit_result(
             deal_id=1,
             score_band="high",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
+            compute_cost_wei=POLICY_COMPUTE,
             compose_hash=COMPOSE_HASH,
+            **_authorization_args(rpc, score_band="high"),
         )
         self.assertTrue(receipt.submitted)
         self.assertEqual(len(rpc.sent_raw_transactions), 1)
@@ -323,57 +504,63 @@ class ChainSubmitterTest(unittest.TestCase):
         receipt = submitter.submit_result(
             deal_id=1,
             score_band="high",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
+            compute_cost_wei=POLICY_COMPUTE,
             compose_hash=COMPOSE_HASH,
+            **_authorization_args(rpc, score_band="high"),
         )
         self.assertTrue(receipt.submitted)
         self.assertEqual(len(rpc.sent_raw_transactions), 1)
 
-    def test_submit_result_uses_onchain_fee_bps_for_budget_check(self):
-        # A raised on-chain fee (10%) tightens the budget check: a compute cost
-        # that fits under 1% now exceeds budget once the real fee is read.
+    def test_submit_result_rejects_evaluator_modulated_compute_cost(self):
         signer = InjectedTestSigner()
         budget = 10**18
-        compute = 950_000_000_000_000_000  # 0.95 ETH; +10% fee = 1.045 ETH > budget
         rpc = FakeRpc(
             _deal_response(tee_identity=signer.address, budget_cap=budget),
             fee_bps=1000,
         )
         submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
-        with self.assertRaisesRegex(ChainSubmitterError, "budget"):
+        with self.assertRaisesRegex(ChainSubmitterError, "deterministic"):
             submitter.submit_result(
                 deal_id=1,
                 score_band="low",
-                compute_cost_wei=compute,
-                result_hash="0x" + "66" * 32,
-                authorization_expiry=AUTHORIZATION_EXPIRY,
-                verifier_signature=VERIFIER_SIGNATURE,
+                compute_cost_wei=950_000_000_000_000_000,
                 compose_hash=COMPOSE_HASH,
+                **_authorization_args(
+                    rpc,
+                    score_band="low",
+                    compute_cost_wei=950_000_000_000_000_000,
+                ),
             )
         self.assertEqual(len(rpc.sent_raw_transactions), 0)
 
-    def test_submit_result_falls_back_to_default_fee_when_getter_absent(self):
-        # Older deployment without feeBps(): empty return -> default 1%, submit ok.
+    def test_submit_result_rejects_contract_without_compute_policy_gate(self):
+        signer = InjectedTestSigner()
+        rpc = FakeRpc(
+            _deal_response(tee_identity=signer.address),
+            compute_settlement_policy_enabled=False,
+        )
+        submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
+
+        with self.assertRaisesRegex(ChainSubmitterError, "not enabled"):
+            submitter.submit_result(
+                deal_id=1,
+                score_band="medium",
+                compute_cost_wei=POLICY_COMPUTE,
+                compose_hash=COMPOSE_HASH,
+                **_authorization_args(rpc),
+            )
+
+        self.assertEqual(rpc.sent_raw_transactions, [])
+
+    def test_submit_result_fails_closed_when_fee_getter_absent(self):
         signer = InjectedTestSigner()
         rpc = FakeRpc(
             _deal_response(tee_identity=signer.address),
             fee_bps_response="0x",
         )
         submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
-        self.assertEqual(submitter.read_fee_bps(), 100)
-        receipt = submitter.submit_result(
-            deal_id=1,
-            score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
-            compose_hash=COMPOSE_HASH,
-        )
-        self.assertTrue(receipt.submitted)
+        with self.assertRaisesRegex(ChainSubmitterError, "short uint256"):
+            submitter.read_fee_bps()
 
     def test_read_fee_bps_returns_onchain_value(self):
         signer = InjectedTestSigner()
@@ -381,23 +568,72 @@ class ChainSubmitterTest(unittest.TestCase):
         submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
         self.assertEqual(submitter.read_fee_bps(), 250)
 
-    def test_submit_result_rejects_over_budget_compute_cost(self):
+    def test_read_fee_bps_preserves_valid_onchain_zero(self):
         signer = InjectedTestSigner()
+        rpc = FakeRpc(_deal_response(tee_identity=signer.address), fee_bps=0)
+        submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
+
+        self.assertEqual(submitter.read_fee_bps(), 0)
+
+    def test_reads_exact_frozen_attestation_binding(self):
+        signer = InjectedTestSigner()
+        rpc = FakeRpc(_deal_response(tee_identity=signer.address))
+        submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
+
+        self.assertEqual(
+            submitter.read_attestation_verifier().lower(),
+            ATTESTATION_VERIFIER_ACCOUNT.address.lower(),
+        )
+        self.assertEqual(
+            submitter.read_attestation_release_policy_hash(), "0x" + "77" * 32
+        )
+        self.assertTrue(submitter.read_attestation_binding_frozen())
+
+    def test_submit_result_honors_zero_fee_policy(self):
+        signer = InjectedTestSigner()
+        budget = 10**18
+        rpc = FakeRpc(
+            _deal_response(tee_identity=signer.address, budget_cap=budget),
+            fee_bps=0,
+        )
+        submitter = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer)
+
+        receipt = submitter.submit_result(
+            deal_id=1,
+            score_band="medium",
+            compute_cost_wei=budget // 100,
+            compose_hash=COMPOSE_HASH,
+            **_authorization_args(rpc, compute_cost_wei=budget // 100),
+        )
+
+        self.assertTrue(receipt.submitted)
+        self.assertEqual(len(rpc.sent_raw_transactions), 1)
+
+    def test_policy_compute_cost_caps_when_reserve_consumes_budget(self):
+        signer = InjectedTestSigner()
+        rpc = FakeRpc(
+            _deal_response(tee_identity=signer.address, budget_cap=100),
+            fee_bps=100,
+        )
         submitter = DiligenceRoomSubmitter(
-            FakeRpc(_deal_response(tee_identity=signer.address, budget_cap=100)),
+            rpc,
             CONTRACT_ADDRESS,
             signer,
         )
-        with self.assertRaisesRegex(ChainSubmitterError, "budget"):
-            submitter.submit_result(
-                deal_id=1,
+        deal = decode_deal_call_result(rpc.deal_response)
+        self.assertEqual(policy_compute_cost(deal, 100), 0)
+        receipt = submitter.submit_result(
+            deal_id=1,
+            score_band="low",
+            compute_cost_wei=0,
+            compose_hash=COMPOSE_HASH,
+            **_authorization_args(
+                rpc,
                 score_band="low",
-                compute_cost_wei=100,
-                result_hash="0x" + "66" * 32,
-                authorization_expiry=AUTHORIZATION_EXPIRY,
-                verifier_signature=VERIFIER_SIGNATURE,
-                compose_hash=COMPOSE_HASH,
-            )
+                compute_cost_wei=0,
+            ),
+        )
+        self.assertTrue(receipt.submitted)
 
     def test_dstack_signer_fails_closed_outside_dstack_mode(self):
         with patch("tinker_delegate.chain_submitter.is_dstack_enabled", return_value=False):
@@ -423,6 +659,9 @@ class ChainSubmitterTest(unittest.TestCase):
         self.assertNotIn("private-key", help_body)
         self.assertNotIn("seed", help_body)
         self.assertNotIn("mnemonic", help_body)
+        self.assertNotIn("result_hash", help_body)
+        self.assertNotIn("payload", help_body)
+        self.assertNotIn("reward-transcript", help_body)
 
     def test_bounded_receipt_json_contains_no_secret_shaped_fields(self):
         signer = InjectedTestSigner()
@@ -435,11 +674,9 @@ class ChainSubmitterTest(unittest.TestCase):
         ).submit_result(
             deal_id=1,
             score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
+            compute_cost_wei=POLICY_COMPUTE,
             compose_hash=COMPOSE_HASH,
+            **_authorization_args(rpc),
         )
 
         body = json.dumps(receipt.to_public_dict())
@@ -448,136 +685,19 @@ class ChainSubmitterTest(unittest.TestCase):
         self.assertNotIn("card", body.lower())
         self.assertNotIn("api_key", body.lower())
 
-    def test_result_commitment_changes_with_replay_context(self):
-        base = ResultCommitment(
-            chain_id=31337,
-            contract_address=CONTRACT_ADDRESS,
-            deal_id=1,
-            nonce=7,
-            compose_hash=COMPOSE_HASH,
-            payload_result_hash="0x" + "66" * 32,
-            score_band_value=2,
-            compute_cost_wei=10**15,
-            expiry=9999999999,
-        )
-        replay = ResultCommitment(
-            chain_id=31337,
-            contract_address=CONTRACT_ADDRESS,
-            deal_id=1,
-            nonce=8,
-            compose_hash=COMPOSE_HASH,
-            payload_result_hash="0x" + "66" * 32,
-            score_band_value=2,
-            compute_cost_wei=10**15,
-            expiry=9999999999,
-        )
-
-        self.assertNotEqual(base.digest(), replay.digest())
-        self.assertEqual(base.public_fields()["compute_cost_band"], "1e15-1e18")
-
-    def _base_commitment(self, **overrides) -> ResultCommitment:
-        params = dict(
-            chain_id=31337,
-            contract_address=CONTRACT_ADDRESS,
-            deal_id=1,
-            nonce=7,
-            compose_hash=COMPOSE_HASH,
-            payload_result_hash="0x" + "66" * 32,
-            score_band_value=2,
-            compute_cost_wei=10**15,
-            expiry=9999999999,
-        )
-        params.update(overrides)
-        return ResultCommitment(**params)
-
-    def test_reward_transcript_binding_is_backward_compatible(self):
-        # Absent reward transcript -> v1 digest, byte-identical to a commitment
-        # built without the new field, and no extra public field.
-        v1 = self._base_commitment()
-        v1_explicit_empty = self._base_commitment(reward_transcript_commitment="")
-        self.assertEqual(v1.digest(), v1_explicit_empty.digest())
-        self.assertNotIn("reward_transcript_commitment", v1.public_fields())
-
-    def test_reward_transcript_binding_changes_and_binds_digest(self):
-        v1 = self._base_commitment()
-        commitment = "0x" + "ab" * 32
-        v2 = self._base_commitment(reward_transcript_commitment=commitment)
-        # Binding a transcript changes the on-chain resultHash (v1 != v2)...
-        self.assertNotEqual(v1.digest(), v2.digest())
-        # ...and a different transcript yields a different digest (it is bound).
-        v2_other = self._base_commitment(reward_transcript_commitment="0x" + "cd" * 32)
-        self.assertNotEqual(v2.digest(), v2_other.digest())
-        self.assertEqual(
-            v2.public_fields()["reward_transcript_commitment"], commitment
-        )
-
-    def test_reward_transcript_digest_recomputes_from_public_fields(self):
-        commitment = "0x" + "ab" * 32
-        v2 = self._base_commitment(reward_transcript_commitment=commitment)
-        # Anyone with the bounded public fields can recompute the v2 digest and
-        # check it equals the on-chain resultHash.
-        recomputed = ResultCommitment(
-            chain_id=v2.public_fields()["chain_id"],
-            contract_address=v2.public_fields()["contract_address"],
-            deal_id=v2.public_fields()["deal_id"],
-            nonce=v2.public_fields()["nonce"],
-            compose_hash=v2.public_fields()["compose_hash"],
-            payload_result_hash=v2.public_fields()["payload_result_hash"],
-            score_band_value=v2.public_fields()["score_band_value"],
-            compute_cost_wei=10**15,
-            expiry=v2.public_fields()["expiry"],
-            reward_transcript_commitment=v2.public_fields()["reward_transcript_commitment"],
-        )
-        self.assertEqual(recomputed.digest(), v2.digest())
-
-    def test_submit_result_binds_reward_transcript_commitment(self):
-        signer = InjectedTestSigner()
-        commitment = "0x" + "ab" * 32
-        receipt = DiligenceRoomSubmitter(
-            FakeRpc(_deal_response(tee_identity=signer.address)),
-            CONTRACT_ADDRESS,
-            signer,
-        ).submit_result(
-            deal_id=1,
-            score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
-            signer_attestation=_signer_attestation(signer_address=signer.address),
-            reward_transcript_commitment=commitment,
-        )
-        self.assertEqual(receipt.reward_transcript_commitment, commitment)
-        self.assertIn("reward_transcript_commitment", receipt.to_public_dict())
-        # The submitted resultHash commits to the transcript: recompute v2 and match.
-        expected = ResultCommitment(
-            chain_id=receipt.chain_id,
-            contract_address=receipt.contract_address,
-            deal_id=receipt.deal_id,
-            nonce=receipt.nonce,
-            compose_hash=receipt.compose_hash,
-            payload_result_hash=receipt.payload_result_hash,
-            score_band_value=receipt.score_band_value,
-            compute_cost_wei=10**15,
-            expiry=receipt.expiry,
-            reward_transcript_commitment=commitment,
-        )
-        self.assertEqual(receipt.result_hash, expected.digest())
-
     def test_submit_result_uses_signer_attestation_compose_hash(self):
         signer = InjectedTestSigner()
+        rpc = FakeRpc(_deal_response(tee_identity=signer.address))
         receipt = DiligenceRoomSubmitter(
-            FakeRpc(_deal_response(tee_identity=signer.address)),
+            rpc,
             CONTRACT_ADDRESS,
             signer,
         ).submit_result(
             deal_id=1,
             score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
-            authorization_expiry=AUTHORIZATION_EXPIRY,
-            verifier_signature=VERIFIER_SIGNATURE,
+            compute_cost_wei=POLICY_COMPUTE,
             signer_attestation=_signer_attestation(signer_address=signer.address),
+            **_authorization_args(rpc),
         )
 
         self.assertEqual(receipt.compose_hash, COMPOSE_HASH)
@@ -592,17 +712,154 @@ class ChainSubmitterTest(unittest.TestCase):
             ).hex(),
         )
 
-    def test_result_authorization_digest_matches_contract_shape(self):
+    def test_production_submission_requires_authenticated_onchain_verifier(self):
+        signer = ProductionLikeInjectedSigner()
+        verifier = Account.create("independent-result-verifier")
+        rpc = FakeRpc(
+            _deal_response(tee_identity=signer.address),
+            result_verifier=verifier.address,
+        )
+        deal = decode_deal_call_result(rpc.deal_response)
         digest = result_authorization_digest(
             chain_id=31337,
             contract_address=CONTRACT_ADDRESS,
             deal_id=1,
-            tee_identity="0x" + "aa" * 20,
+            deal=deal,
             compose_hash=COMPOSE_HASH,
             score_band="medium",
-            compute_cost_wei=10**15,
-            result_hash="0x" + "66" * 32,
+            compute_cost_wei=POLICY_COMPUTE,
             authorization_expiry=AUTHORIZATION_EXPIRY,
+            attestation_release_policy_hash=rpc.attestation_release_policy_hash,
+        )
+        signature = verifier.sign_message(encode_defunct(hexstr=digest)).signature.hex()
+        qvl_args = _authorization_args(
+            rpc,
+            result_verifier_account=verifier,
+        )
+
+        receipt = DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer).submit_result(
+            deal_id=1,
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+            authorization_expiry=AUTHORIZATION_EXPIRY,
+            verifier_signature="0x" + signature,
+            signer_attestation=_signer_attestation(signer_address=signer.address),
+            attestation_evidence_hash=qvl_args["attestation_evidence_hash"],
+            attestation_authorization_expiry=qvl_args[
+                "attestation_authorization_expiry"
+            ],
+            attestation_verifier_signature=qvl_args[
+                "attestation_verifier_signature"
+            ],
+        )
+
+        self.assertTrue(receipt.result_authorization_authenticated)
+        self.assertEqual(
+            receipt.result_verifier_address.lower(), verifier.address.lower()
+        )
+        self.assertEqual(
+            receipt.result_authorization_verdict,
+            "authenticated_onchain_result_verifier_signature",
+        )
+        self.assertEqual(len(rpc.sent_raw_transactions), 1)
+
+    def test_service_quote_envelope_cannot_self_authorize_production_submission(self):
+        signer = ProductionLikeInjectedSigner()
+        independent_verifier = Account.create("independent-result-verifier")
+        rpc = FakeRpc(
+            _deal_response(tee_identity=signer.address),
+            result_verifier=independent_verifier.address,
+        )
+
+        # The envelope is internally consistent and looks like TDX evidence, but
+        # it was produced by the submitting service. A signature from that same
+        # TEE key is not an independent verifier verdict and must fail closed.
+        deal = decode_deal_call_result(rpc.deal_response)
+        digest = result_authorization_digest(
+            chain_id=31337,
+            contract_address=CONTRACT_ADDRESS,
+            deal_id=1,
+            deal=deal,
+            compose_hash=COMPOSE_HASH,
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+            authorization_expiry=AUTHORIZATION_EXPIRY,
+            attestation_release_policy_hash=rpc.attestation_release_policy_hash,
+        )
+        self_signature = signer._account.sign_message(encode_defunct(hexstr=digest)).signature.hex()
+        qvl_args = _authorization_args(
+            rpc,
+            result_verifier_account=independent_verifier,
+        )
+
+        with self.assertRaisesRegex(
+            ChainSubmitterError,
+            "not signed by the on-chain verifier",
+        ):
+            DiligenceRoomSubmitter(rpc, CONTRACT_ADDRESS, signer).submit_result(
+                deal_id=1,
+                score_band="medium",
+                compute_cost_wei=POLICY_COMPUTE,
+                authorization_expiry=AUTHORIZATION_EXPIRY,
+                verifier_signature="0x" + self_signature,
+                signer_attestation=_signer_attestation(signer_address=signer.address),
+                attestation_evidence_hash=qvl_args["attestation_evidence_hash"],
+                attestation_authorization_expiry=qvl_args[
+                    "attestation_authorization_expiry"
+                ],
+                attestation_verifier_signature=qvl_args[
+                    "attestation_verifier_signature"
+                ],
+            )
+
+        self.assertEqual(rpc.sent_raw_transactions, [])
+
+    def test_result_authorization_rejects_same_key_and_expired_verdicts(self):
+        signer = ProductionLikeInjectedSigner()
+        signature = "0x" + "11" * 65
+        common = {
+            "tee_identity": signer.address,
+            "chain_id": 31337,
+            "contract_address": CONTRACT_ADDRESS,
+            "deal_id": 1,
+            "deal": decode_deal_call_result(
+                _deal_response(tee_identity=signer.address)
+            ),
+            "compose_hash": COMPOSE_HASH,
+            "score_band": "medium",
+            "compute_cost_wei": POLICY_COMPUTE,
+            "verifier_signature": signature,
+            "attestation_release_policy_hash": ATTESTATION_POLICY_HASH,
+        }
+        with self.assertRaisesRegex(ChainSubmitterError, "independent"):
+            authenticate_result_authorization(
+                verifier_address=signer.address,
+                authorization_expiry=AUTHORIZATION_EXPIRY,
+                now=AUTHORIZATION_EXPIRY - 300,
+                **common,
+            )
+        with self.assertRaisesRegex(ChainSubmitterError, "expired"):
+            authenticate_result_authorization(
+                verifier_address="0x" + "aa" * 20,
+                authorization_expiry=100,
+                now=100,
+                **common,
+            )
+
+    def test_result_authorization_digest_matches_contract_shape(self):
+        deal = decode_deal_call_result(
+            _deal_response(tee_identity="0x" + "aa" * 20)
+        )
+        digest = result_authorization_digest(
+            chain_id=31337,
+            contract_address=CONTRACT_ADDRESS,
+            deal_id=1,
+            deal=deal,
+            compose_hash=COMPOSE_HASH,
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+            authorization_expiry=AUTHORIZATION_EXPIRY,
+            attestation_release_policy_hash=ATTESTATION_POLICY_HASH,
         )
         signed_digest = eth_signed_message_digest(digest)
 

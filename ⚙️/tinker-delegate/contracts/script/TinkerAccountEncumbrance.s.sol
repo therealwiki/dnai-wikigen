@@ -7,26 +7,20 @@ import {TinkerAccountEncumbrance} from "../src/TinkerAccountEncumbrance.sol";
 
 contract TinkerAccountEncumbranceScript is Script {
     function run() public {
-        address owner = vm.envOr("TINKER_ENCUMBRANCE_OWNER", msg.sender);
-        bytes32 accountCommitment = vm.envBytes32("TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT");
-        bytes32 initialComposeHash = vm.envBytes32("TINKER_ENCUMBRANCE_INITIAL_COMPOSE_HASH");
-        uint256 maxAddBalanceWei = vm.envUint("TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI");
-        uint256 maxSpendWei = vm.envUint("TINKER_ENCUMBRANCE_MAX_SPEND_WEI");
-        bool freezeMeasurements = vm.envOr("TINKER_ENCUMBRANCE_FREEZE_MEASUREMENTS", false);
-
-        vm.startBroadcast();
-
-        TinkerAccountEncumbrance encumbrance = new TinkerAccountEncumbrance(
-            owner,
-            accountCommitment,
-            initialComposeHash,
-            maxAddBalanceWei,
-            maxSpendWei
+        require(
+            block.chainid != 84532 && block.chainid != 8453,
+            "use DeployFreshSuite for Base TinkerAccountEncumbrance releases"
         );
 
-        if (freezeMeasurements) {
-            encumbrance.freezeMeasurements();
-        }
+        address owner = vm.envAddress("TINKER_ENCUMBRANCE_OWNER");
+        bytes32 accountCommitment = vm.envBytes32("TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT");
+        bytes32 initialComposeHash = vm.envOr("TINKER_ENCUMBRANCE_INITIAL_COMPOSE_HASH", bytes32(0));
+        uint256 maxAddBalanceWei = vm.envUint("TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI");
+        uint256 maxSpendWei = vm.envUint("TINKER_ENCUMBRANCE_MAX_SPEND_WEI");
+        vm.startBroadcast();
+
+        TinkerAccountEncumbrance encumbrance =
+            new TinkerAccountEncumbrance(owner, accountCommitment, initialComposeHash, maxAddBalanceWei, maxSpendWei);
 
         vm.stopBroadcast();
 
@@ -36,6 +30,11 @@ contract TinkerAccountEncumbranceScript is Script {
         console.logBytes32(initialComposeHash);
         console.log("Max add balance policy units:", encumbrance.maxAddBalanceWei());
         console.log("Max spend policy units:", encumbrance.maxSpendWei());
-        console.log("Measurements frozen:", encumbrance.measurementsFrozen());
+        console.log("Emergency halted:", encumbrance.emergencyHalted());
+        console.log("Release policy frozen:", encumbrance.releasePolicyFrozen());
+        console.logBytes32(encumbrance.approvedComposeRoot());
+        console.log("Approved compose count:", encumbrance.approvedComposeCount());
+        console.logBytes32(encumbrance.managerRoot());
+        console.log("Manager count:", encumbrance.managerCount());
     }
 }

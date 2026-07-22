@@ -1,0 +1,217 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-current-status.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Release-scoped current reviewer status signed by both genesis-pinned guardians. Semantic validation requires complete predecessor history, finite-key selection, monotonic revocation, pinned cast verification, and an independently supplied head/time check before live use.",
+  "properties": {
+    "active_reviewers": {
+      "items": {
+        "$ref": "#/$defs/identity"
+      },
+      "maxItems": 32,
+      "minItems": 2,
+      "type": "array"
+    },
+    "all_guardians_required": {
+      "const": true
+    },
+    "approved_reviewer_hashes": {
+      "items": {
+        "$ref": "#/$defs/bare_sha256"
+      },
+      "maxItems": 32,
+      "minItems": 2,
+      "type": "array"
+    },
+    "chain_id": {
+      "const": 84532
+    },
+    "declaration": {
+      "const": "both_genesis_pinned_guardians_authorize_only_this_nonoverlapping_release_scoped_status_selected_from_finite_preauthorized_reviewer_keys_for_at_most_fifteen_minutes"
+    },
+    "epoch": {
+      "maximum": 4294967295,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/instant"
+    },
+    "guardian_count": {
+      "const": 2
+    },
+    "guardian_signatures": {
+      "items": {
+        "$ref": "#/$defs/signature"
+      },
+      "maxItems": 2,
+      "minItems": 2,
+      "type": "array"
+    },
+    "minimum_active_reviewers": {
+      "const": 2
+    },
+    "not_before": {
+      "$ref": "#/$defs/instant"
+    },
+    "previous_status_sha256": {
+      "$ref": "#/$defs/sha256_allow_zero"
+    },
+    "release_sha": {
+      "$ref": "#/$defs/release_sha"
+    },
+    "reviewer_authority_genesis_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "reviewer_root_hash": {
+      "$ref": "#/$defs/bare_sha256"
+    },
+    "reviewer_set_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "revoked_controller_ids": {
+      "items": {
+        "$ref": "#/$defs/controller_id"
+      },
+      "maxItems": 32,
+      "type": "array"
+    },
+    "revoked_reviewer_addresses": {
+      "items": {
+        "$ref": "#/$defs/address"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "schema": {
+      "const": "dnai.release-reviewer-authority-current-status.v1"
+    },
+    "signature_scheme": {
+      "const": "eip191_personal_sign_secp256k1_low_s_65_byte"
+    },
+    "signature_verifier": {
+      "$ref": "#/$defs/signature_verifier"
+    },
+    "signing_payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "status_guardian_root_hash": {
+      "$ref": "#/$defs/bare_sha256"
+    },
+    "status_guardian_set_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "truth_status": {
+      "const": "two_genesis_pinned_guardians_are_the_status_root_status_windows_never_overlap_and_omission_cannot_extend_the_anchored_status_past_its_bounded_expiry"
+    }
+  },
+  "required": [
+    "active_reviewers",
+    "all_guardians_required",
+    "approved_reviewer_hashes",
+    "chain_id",
+    "declaration",
+    "epoch",
+    "expires_at",
+    "guardian_count",
+    "guardian_signatures",
+    "minimum_active_reviewers",
+    "not_before",
+    "previous_status_sha256",
+    "release_sha",
+    "reviewer_authority_genesis_sha256",
+    "reviewer_root_hash",
+    "reviewer_set_sha256",
+    "revoked_controller_ids",
+    "revoked_reviewer_addresses",
+    "schema",
+    "signature_scheme",
+    "signature_verifier",
+    "signing_payload_sha256",
+    "status_guardian_root_hash",
+    "status_guardian_set_sha256",
+    "truth_status"
+  ],
+  "title": "dnai-wikigen reviewer authority current status",
+  "type": "object",
+  "$defs": {
+    "address": {
+      "pattern": "^0x(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "bare_sha256": {
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "controller_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$",
+      "type": "string"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/controller_id"
+        }
+      },
+      "required": [
+        "address",
+        "controller_id"
+      ],
+      "type": "object"
+    },
+    "instant": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "type": "string"
+    },
+    "release_sha": {
+      "pattern": "^(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "sha256_allow_zero": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "signature": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/controller_id"
+        },
+        "signature": {
+          "pattern": "^0x[0-9a-f]{130}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "controller_id",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "signature_verifier": {
+      "additionalProperties": false,
+      "const": {
+        "build_profile": "maxperf",
+        "commit_sha": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2",
+        "executable_sha256": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d",
+        "executable_user_relative_path": ".foundry/bin/cast",
+        "tool": "cast wallet verify",
+        "version": "1.5.1-stable"
+      },
+      "type": "object"
+    }
+  }
+}

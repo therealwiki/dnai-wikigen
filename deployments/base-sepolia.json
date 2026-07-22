@@ -6,9 +6,11 @@
     "rpcEnv": "BASE_SEPOLIA_RPC_URL",
     "explorerBaseUrl": "https://sepolia.basescan.org"
   },
-  "status": "current_operator_contracts_deployed_tinker_latest_phala_compose_pending_approval",
+  "status": "historical_untrusted_incomplete_prior_operator_evidence_not_fresh_release_authority",
+  "notAuthorityForFreshRelease": true,
+  "supersededBoundary": "Fresh release authority requires a separately journaled schemaVersion 2 seven-contract suite, reviewed CVM launch, and final release ceremonies. Nothing in this file proves present control, live runtime state, or production readiness.",
   "lastReviewedAt": "2026-07-09T23:59:00Z",
-  "currentOperatorDeployer": {
+  "historicalPriorOperatorDeployer": {
     "address": "0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD",
     "keystoreAccount": "dev",
     "fundingStatus": "funded_on_base_sepolia",
@@ -16,7 +18,7 @@
   },
   "contracts": {
     "diligenceRoom": {
-      "status": "deployed_current_operator_controlled",
+      "status": "historical_untrusted_prior_operator_deployment_observation",
       "address": "0x5d8a18628b4c8427eea89aa5498d81ff5ad3f423",
       "baseScanUrl": "https://sepolia.basescan.org/address/0x5d8a18628b4c8427eea89aa5498d81ff5ad3f423",
       "deploymentTx": "0xfa50ada33f0a2c9f434c58b6cadf98defa01302b7c3e444116c021370d28169e",
@@ -25,10 +27,10 @@
       "resultVerifier": null,
       "sourceCompatibility": "superseded_by_verifier_signature_submit_result_abi",
       "requiresRedeployForVerifierAuthorization": true,
-      "currentOperatorControlled": true
+      "historicalRecordedOperatorControlled": true
     },
     "emailOracleAuth": {
-      "status": "deployed_current_operator_controlled",
+      "status": "historical_untrusted_prior_operator_deployment_observation",
       "address": "0xf52c18a33bd172ae94282132649d80bcd4b872ff",
       "baseScanUrl": "https://sepolia.basescan.org/address/0xf52c18a33bd172ae94282132649d80bcd4b872ff",
       "deploymentTx": "0xa29d749517a69f868db1785c7f091ea75f60a76ef657badedb0848e44be7a349",
@@ -38,10 +40,10 @@
       "allowAnyDevice": true,
       "oracleCodeFrozen": false,
       "consumerRegistryFrozen": false,
-      "currentOperatorControlled": true
+      "historicalRecordedOperatorControlled": true
     },
     "tinkerAccountEncumbrance": {
-      "status": "deployed_current_operator_controlled",
+      "status": "historical_untrusted_prior_operator_deployment_observation",
       "address": "0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e",
       "baseScanUrl": "https://sepolia.basescan.org/address/0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e",
       "deploymentTx": "0x7679df09aa2e939d748be0e017f380f5e7e44331a482531380198e93bdcaed01",
@@ -58,14 +60,14 @@
       "latestFundingPolicySetAt": "2026-07-09T06:09:28Z",
       "emergencyHalted": false,
       "measurementsFrozen": false,
-      "currentOperatorControlled": true,
+      "historicalRecordedOperatorControlled": true,
       "latestApprovedComposeHash": "0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085",
       "latestApprovedComposeHashApproved": true,
       "latestComposeApprovalTx": "0x13e0f37af37fb79c9bf365c8fd0a82c1299c9f85f7b6ec01057d2915768ab6e7",
       "latestComposeApprovalBlock": 44001620,
       "priorApprovedComposeHash": "0xe682ddac9de80188c7e68cab84cffe8f461478d87d506159f10cba3e65a342a7",
       "priorComposeApprovalTx": "0x3bc992cc2979aa8198923bcaf856d2c82d387646e49e750dada1f5cb203b3d17",
-      "currentFundingComposeHash": "0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085",
+      "historicalLatestFundingComposeHash": "0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085",
       "lastReviewedAt": "2026-07-11T11:00:00Z",
       "pendingComposeHashApproval": null,
       "pendingComposeHashApproved": true,
@@ -73,7 +75,7 @@
     }
   },
   "phala": {
-    "status": "running_pinned_client_config_install_compose_pending_approval_tinker_smoke_still_open",
+    "status": "historical_untrusted_prior_operator_runtime_observation_not_live_health_evidence",
     "cvmId": "cvm_1w85mGjo",
     "appId": "f6a3219ce4b3c13e1c8bbbb56ce2217f9ebd7717",
     "composeHash": "1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085",
@@ -102,7 +104,7 @@
       "TINKER_RUNTIME_AUTH_TOKEN",
       "TINKER_RUN_METADATA_KEY_PATH"
     ],
-    "allowedEnvKeysNote": "Current funding-validation profile has a twelve-key runtime surface selected by compose refs. The redeploy helper self-bound TINKER_ENCUMBRANCE_COMPOSE_HASH to the provisioned live compose hash before encrypting runtime env, so token issuance can bind to the exact attested compose hash without exposing raw secrets. TINKER_PROJECT_ID and TINKER_BASE_URL remain absent, so Tinker SDK smoke/training is still open.",
+    "allowedEnvKeysNote": "The historically observed funding-validation profile had a twelve-key runtime surface selected by compose refs. The prior-operator redeploy helper recorded a self-binding between TINKER_ENCUMBRANCE_COMPOSE_HASH and its observed compose hash. This retained observation is not fresh authority or live health evidence.",
     "temporaryDebugException": {
       "active": true,
       "enabledAt": "2026-07-09T11:00:00Z",
@@ -166,7 +168,7 @@
       }
     ],
     "quoteEvidence": {
-      "status": "current_pinned_client_config_install_compose_verified_pending_onchain_approval",
+      "status": "historical_untrusted_pinned_client_config_observation_pending_prior_operator_approval",
       "mode": "tdx",
       "context": "billing",
       "quoteSize": 5010,
@@ -183,9 +185,9 @@
       "oneShotDeploymentBundle": "verified",
       "steadyStateCompose": "⚙️/tinker-delegate/docker-compose.all.phala.yaml",
       "steadyStateAttestedComposeHash": "382aa6c881d477724552f4445157afbcd75738ee1feb9603b982b75ec4e82c2c",
-      "currentOneShotProfileLocalRawComposeImagePolicyHash": "9ff9c388af9f84833c791f278fe4afb7b2a46eb5f1d6c302cf3f1779cd4903a9",
-      "currentOneShotProfileRenderedComposeSha256": "123fa2f3e6b46d3d32ad506ac0b51cc763eb15e68e6061c86443403cbd3b8d2e",
-      "currentOneShotProfileLiveProof": "not_re_run_after_59a9eac_image_refresh_existing_mailbox_ready",
+      "historicalOneShotProfileLocalRawComposeImagePolicyHash": "9ff9c388af9f84833c791f278fe4afb7b2a46eb5f1d6c302cf3f1779cd4903a9",
+      "historicalOneShotProfileRenderedComposeSha256": "123fa2f3e6b46d3d32ad506ac0b51cc763eb15e68e6061c86443403cbd3b8d2e",
+      "historicalOneShotProfileLiveProof": "not_re_run_after_59a9eac_image_refresh_existing_mailbox_ready",
       "publicHealthEvidence": {
         "status": "ok",
         "oracleEmail": "",
@@ -1141,7 +1143,7 @@
         "run": "https://github.com/G-structure/dnai-wikigen/actions/runs/29012433267/attempts/1"
       },
       "billingAttestation": {
-        "status": "previous_billing_envelope_stale_current_verify_cvm_attestation_passed_without_report_data_recorded_here",
+        "status": "historical_previous_billing_envelope_stale_later_verify_cvm_attestation_observation_without_report_data_recorded_here",
         "reportData": "bf25975f589db409963933d0e4e030454f219a4f7fd23744317826616e265bef",
         "encryptionPublicKey": "d3bb203942efb66a852dbfe7352ba999167900f427839a21327dee33be58af7e",
         "quoteSize": 10020
@@ -1780,10 +1782,12 @@
     }
   },
   "freshDeployment": {
-    "status": "broadcast_complete",
+    "status": "historical_untrusted_incomplete_prior_operator_suite",
+    "authorityStatus": "rejected_for_fresh_release_authority",
+    "authorityReason": "Retained as historical evidence only; fresh authority requires a complete separately journaled seven-contract v2 receipt.",
     "helper": "⚙️/tinker-delegate/contracts/scripts/deploy-base-sepolia.sh",
     "tinkerAccountEncumbrance": {
-      "status": "broadcast_complete",
+      "status": "historical_untrusted_prior_operator_broadcast",
       "helper": "⚙️/tinker-delegate/contracts/scripts/deploy-tinker-encumbrance-base-sepolia.sh"
     }
   }

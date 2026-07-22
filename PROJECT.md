@@ -1,9 +1,118 @@
 # PROJECT: dnai-wikigen
 
-Last updated: 2026-07-13
-Branch context: `codex/wikigen-private-reward-pitch`
+Last updated: 2026-07-21
+Branch context: active working tree; no production release SHA has been cut
 
-## Status (2026-07-13): the hard custody+delegation layer is real and live
+## Status (2026-07-21): complete source product; fresh release ceremony pending
+
+The current repository contains the full SolidJS product, a fresh seven-contract
+Base Sepolia suite, hardened delegate and Arena runtimes, an execution-policy
+anchor, reproducible release tooling, and fail-closed browser verification. The
+implemented product surfaces cover diligence rooms, sealed Bio/DNA challenges,
+a source-modeled human release desk, wallet-owned compute capacity, scoped proxy
+credentials, a release-gated delegated Tinker account lifecycle, service-credit
+previews, safeguards, collaboration with a runtime-pinned royalty pull-payment
+panel, capabilities, and layered verification.
+
+That is a source-and-local-verification statement, not a production deployment
+claim. This working tree has not yet produced a clean release SHA, no fresh
+project-owned contract suite has been broadcast for this release, and no
+replacement Phala CVM has been independently quote-verified and admitted by the
+new contracts. Live browser mutation remains locked until one exact release
+descriptor binds the clean source SHA, runtime bytecode, role owners, image
+digests, compose identity, CVM evidence, approval domain, signer root, and frozen
+execution-policy writer.
+
+The deployment addresses, CVM identifiers, account balances, and live proofs in
+the historical section below belong to a prior operator/release. They are useful
+engineering evidence but are not inherited as authorization, custody, or
+production state for the new release.
+
+### Canonical product and release shape
+
+The public client is one SolidJS application with eleven canonical hash routes:
+Overview, Arena, Diligence Rooms, Release Review, Data Vaults, Compute,
+Delegated Tinker Account, Safeguards, Capabilities, Verify, and Collaborate.
+Wallet connection uses EIP-6963 and a compatible injected EIP-1193 fallback;
+WalletConnect is conditional on a public deployment configuration value. A
+connected wallet identifies the selected address and network but is not
+automatically authenticated to the delegate: service mutations use their own
+one-time, Base-Sepolia-bound signature challenges and scoped tokens.
+
+The fresh chain release is exactly seven contracts: `DiligenceRoom`,
+`TinkerAccountEncumbrance`, `RoyaltyDistributor`, `ChallengeRegistry`,
+`ComputeCreditVault`, `EmailOracleAuth`, and `ExecutionPolicyAnchor`. The
+production TEE topology is exactly seven CVMs: one main private runtime; five
+separate, independently controlled QVL CVMs for Diligence, Arena, anchor-writer,
+Compute-workload, and Compute-metering evidence; and one independent
+deterministic Compute meter. The Diligence QVL also evaluates the separate
+Email/KMS restart profile, so that secondary profile does not add a sixth QVL
+root or eighth CVM.
+
+Every QVL admission uses signed challenge schema v2 and the active independent
+verdict schema/signing domain v4, not a reusable quote summary. The verifier
+issues one signed, single-use challenge valid for no more than 120 seconds; the
+quote binds that challenge and the static release context in its exact 64-byte
+report data; and Intel DCAP appraisal must finish strictly before the challenge
+expires. A successful appraisal closes the challenge and starts the separately
+reviewed exact 900-second activation-evidence lease carried by the v4 verdict.
+That policy-bounded lease may outlive the consumed challenge, but is not renewed
+challenge freshness. Post-restart Compute-workload recipient activation is an
+exact schema-v3 outer record with an explicit recipient-evidence lease of at
+most 300 seconds. Its stable recipient-release commitment remains schema v2;
+activation v1 and legacy verdicts remain rejected. None of those source
+guarantees is a claim that the new QVL roots or CVMs are already deployed.
+
+Main-runtime activation is also one ordered release operation rather than two
+independent feature toggles. The exact replacement profile value is
+`arena-runtime,compute-execution`. The source-built same-process activation
+coordinator carries opaque release/evidence authority through reviewed final
+authority, signed Stage B, encrypted environment patch and restart, then checks
+a release-bound Arena worker-capability v2 observation before accepting the
+fresh independent Compute-workload recipient activation. The Phala
+post-restart attestation response and the HMAC-authenticated Arena heartbeat are
+observations, not independent Intel DCAP/QVL verification. Completion emits
+bounded journal/receipt authority with `live_traffic_authorized=false`; no
+production run of that flow has occurred for this release.
+
+The source-real resident driver,
+`scripts/phala-production-activation-driver.mjs`, packages that same authority
+chain into one exact `--execute-request` operation over an owned canonical
+mode-`0600` request. It remains resident through the non-live seven-CVM launch,
+five QVL-identity proofs, two workload verdict proofs, externally supplied
+Stage-B signatures, restart, recipient activation, and bounded-output
+publication. Its checkpoints and final result forbid capability serialization,
+signer-key input, automatic retry, and live-traffic authority. The driver is
+locally tested; it has not run against a fresh project-owned production
+topology and is not deployment evidence.
+
+Compute funding is intentionally not a token sale. The Base Sepolia vault is an
+exact-asset ledger for the deposited ETH or release-pinned ERC-20, with no
+oracle, FX, or conversion into service credits. It is the first release's
+production pay-as-you-go lane: a job reserves an exact-asset maximum, a
+purpose-separated meter can debit only bounded actual usage, and unused value
+remains withdrawable. Any wallet may sponsor an exact beneficiary without
+acquiring authority over that beneficiary; a user may invalidate older
+unsubmitted authorization signatures by advancing the project nonce; and
+provider/developer settlement accruals remain separate pull-payment balances.
+Closed-loop service credits are separate off-chain,
+non-transferable, operator-granted test units. Purchased credits and hosted
+card checkout are outside v1 and keep Wikigen outside the raw-card collection
+path.
+
+Royalty settlement is deliberately asymmetric in the browser. A connected
+owner can inspect and pull its own native ETH or canonical Base Sepolia USDC
+balance from a runtime-hash-matched `RoyaltyDistributor`, and anyone can inspect
+the exact replay slot for a `(distributor, queryRef)` pair. The browser does not
+submit distributions or infer ownership: the contract only conserves the split
+supplied by a caller and cannot establish that the underlying query, owners,
+price, or allocation are correct.
+
+## Historical 2026-07-13 custody and delegation evidence
+
+> Historical only: the following claims describe the prior operator's deployed
+> CVM and account. They do not describe the fresh seven-contract release now
+> being prepared.
 
 The foundational claim of the project — that a Tinker account can be **owned by
 a TEE**, with its full lifecycle and delegated use running through bounded,
@@ -66,12 +175,14 @@ sealed data + attested reward function + controlled optimization loop
 
 The clean motivating example is the biology task in TTT-Discover: generated
 computational-bio code is evaluated against single-cell data, and the score is
-used as reward while the model improves at test time. In this repo's version,
-the sensitive biological data and reward verifier live inside a TEE. The method
-of optimization is intentionally not the core claim. It can be reinforcement
-learning, test-time training, evolutionary search, an LLM repair loop, or a
-hybrid. The core claim is that the reward can be verified and useful while the
-data that defines the reward remains private.
+used as reward while the model improves at test time. In this repo's target
+deployment, sensitive biological data and the reward verifier would live inside
+an independently verified TEE; the current release accepts no real health data
+and has no deployed private-bio worker. The optimization method is intentionally
+not the core claim. It can be reinforcement learning, test-time training,
+evolutionary search, an LLM repair loop, or a hybrid. The intended claim is that
+the reward can be verified and useful while the data that defines it remains
+private.
 
 ## What The Project Is
 

@@ -2,7 +2,12 @@
 
 ## Problem
 
-The email oracle API (`/pin`, `/inbox`, `/attestation`) is currently unauthenticated. Any process that can reach port 8000 can request OTPs, read inbox metadata, or probe oracle health. For production we need two separate guarantees:
+Historically the email oracle API exposed `/pin`, `/inbox`, and `/attestation`
+without a complete authorization boundary. The current implementation removes
+`/inbox` entirely, requires runtime bearer auth for scoped `/pin` and
+commitment-only `/email`, and checks the on-chain consumer registry before OTP
+mailbox access. Two
+separate guarantees remain the architectural requirement:
 
 1. **Oracle boot authorization** — only approved oracle code may boot and receive oracle KMS keys.
 2. **OTP consumer authorization** — only approved TEE applications may request OTPs from the oracle.
@@ -27,12 +32,15 @@ If we "burn the attestation hash" literally, we would brick the app on the next 
 
 | Threat | Impact | Current Mitigation |
 |--------|--------|-------------------|
-| External attacker hits oracle API | OTP theft | None |
-| Rogue container in CVM calls oracle | Unauthorized OTP access | None |
-| Malicious oracle redeploy with new compose hash | Full trust-boundary break | None |
-| Malicious or mistaken consumer upgrade | Wrong app keeps OTP access | None |
-| Replay of captured auth token | Reuse of old authorization material | None |
-| Owner key compromised after production freeze | Policy rug or silent upgrade | Not yet addressed |
+| External attacker hits oracle API | OTP theft | Oracle has no published production port; same-CVM dstack-derived bearer plus exact on-chain consumer binding |
+| Compromised authorized consumer widens `/pin` query | Mailbox exfiltration / regex DoS | Literal Tinker target/sender/pattern, no subject filter, exact parsed-sender recheck |
+| Malicious oracle redeploy or contract substitution | Full trust-boundary break | KMS compose policy plus exact `EmailOracleAuth` address/runtime-code hash and `releaseConfigurationReady()` check |
+| Malicious or mistaken consumer upgrade | Wrong app keeps OTP access | Exact nonzero consumer app address and compose hash checked on-chain at one finalized block; immediate revocation and optional registry freeze |
+| Reuse of a captured runtime bearer | Reuse of same-CVM authorization material | Private network, fixed signup capability, on-chain binding, and durable OTP replay ledger; the bearer is intentionally reusable, so compromise inside the authorized CVM remains a trust-boundary failure |
+| RPC equivocation or stale chain view | Revoked consumer appears authorized | Two distinct HTTPS hosts must agree on Base Sepolia, one common finalized block, exact code and calls; 900-second age and 30-second future-skew bounds |
+| Ordinary process/CVM restart presents an older finalized view | Authorization rollback | Monotonic finalized-block/hash checkpoint on the persistent `oracle-data` volume |
+| Host restores the entire persistent volume | Checkpoint rollback | Residual: dual-RPC freshness constrains the window, but no hardware-backed monotonic storage currently prevents whole-volume snapshot rollback |
+| Owner key compromised after production freeze | Policy rug or silent upgrade | Irreversible oracle-code freeze and optional consumer-registry freeze; any policy deliberately left mutable remains exposed |
 
 ## Design Goals
 
@@ -123,6 +131,96 @@ Responsibilities:
 ### Layer C: Runtime Oracle Auth
 
 The oracle runtime enforces that the caller matches an allowed consumer entry.
+
+It also enforces a narrow capability boundary after authentication. `/pin` can
+only retrieve a six-digit Tinker login OTP from the exact allowlisted sender.
+Caller-selected regexes, sender/subject widening, other target services, and
+unknown request fields fail validation before IMAP. The response intentionally
+contains the OTP needed by the internal signup flow plus only its bounded
+request hash and attestation proof. Email/message identifiers, sender and
+subject headers, mailbox identity or commitments, extraction time, and the
+internal replay key are absent from the exact response. Private message data
+cannot modulate the public response or quote report data. Runtime auth alone is
+not treated as authorization to inspect arbitrary mailbox content. There is no
+mailbox-listing route. The unauthenticated `/health` route reports fixed process
+liveness only. `/email` returns authenticated readiness plus a
+domain-separated address commitment and `raw_email_egress=false`; it never
+returns the address itself.
+
+The production Phala compose does not publish the oracle port. The delegate is
+the only public service and calls the oracle on the private compose network.
+Replay keys remain internal and are durably stored before release; an
+unavailable or unwritable replay ledger denies the OTP.
+
+### Current production runtime contract
+
+The production compose and startup validator intentionally duplicate the
+release-critical policy so either layer rejects configuration drift. These
+values are exact, not suggested defaults:
+
+| Control | Required production value |
+|---------|---------------------------|
+| Runtime mode | `ORACLE_PRODUCTION_RELEASE=true`, dstack enabled |
+| Same-CVM transport auth | required; no static token; derived key path `oracle/runtime-auth` |
+| On-chain policy | required; nonzero `EmailOracleAuth` address and exact nonzero runtime-code hash |
+| Chain view | Base Sepolia `84532`; two HTTPS RPC URLs with different normalized hosts |
+| Consumer binding | nonzero app address plus nonzero compose hash |
+| Request scope | canonical label `tinker-delegate.signup` |
+| Finalized-block bounds | maximum age 900 seconds; maximum future skew 30 seconds in the production compose |
+| Monotonic checkpoint | `/data/email_auth_checkpoint.json` on `oracle-data:/data` |
+| Credential store | `/data/credentials.enc`; no static key; dstack path `email/creds`; auto-genesis off |
+| OTP replay store | `/data/otp_replay.enc`; no static key; dstack path `email/otp_replay` |
+| Provisioning | credential-provisioning endpoint off and provisioning token empty |
+
+For each OTP request, the runtime finds the lower of the two finalized heads,
+then requires both RPCs to return the same block number, hash, parent hash, and
+timestamp for that exact numeric block. At that block it requires the exact
+contract bytecode and Ethereum runtime-code hash, identical
+`releaseConfigurationReady()` results, and identical
+`isConsumerAuthorized(appId, composeHash)` results. It re-reads the block after
+the contract calls, atomically records its number and hash before returning an
+allow or deny decision, and rejects a later observation below that height or
+with another hash at the same height. RPC, ABI, storage, or disagreement errors
+deny the request without putting credential-bearing RPC URLs into errors.
+
+`tinker-delegate.signup` is a fixed capability label in the request body, not a
+signature, quote, or independently proven service identity. The authenticated
+same-CVM bearer proves possession of the shared dstack-derived secret. The
+label prevents the delegate client from widening the intended signup scope,
+while the app address and compose hash checked on-chain are configured release
+identity. All three controls are required; documentation or UI must not present
+the label by itself as an attestation.
+
+The checkpoint closes rollback across ordinary requests and restarts only while
+the named persistent volume is preserved. It does **not** provide hardware
+anti-rollback against an administrator or host restoring the whole volume to an
+older snapshot, because that restores the checkpoint with it. Two-provider
+agreement and the finalized-block freshness bound reduce how old an accepted
+view may be but do not create monotonic storage. Closing that residual requires
+an external monotonic anchor or equivalent independently durable state.
+
+### Independent Email/KMS restart evidence
+
+Runtime authorization is necessary but does not prove that a restarted CVM
+recovered the reviewed Email/KMS release. The Diligence QVL policy may enable
+one secondary `email_oracle_kms_restart` profile. Its
+`email_oracle_kms_restart_v1` binding kind commits
+the exact `EmailOracleAuth` and KMS proxy/implementation addresses and runtime
+hashes, the complete EIP-1967 implementation storage word, KMS registration
+transaction/block evidence, target boot-tuple hash, and restart-proof hash.
+
+The workload obtains a fresh signed Diligence-QVL challenge-v2 for the exact
+`email_oracle_kms_restart` profile and binds its digest in report-data bytes
+32–63. The challenge is single-use, lasts no more than 120 seconds, and requires
+Intel DCAP appraisal to complete strictly before expiry. It receives only an
+exact release-lineage-bound `dnai.independent-tdx-verdict.v4` under the v4
+signing domain. That verdict carries the separately reviewed exact 900-second
+activation-evidence lease, which may outlive the consumed challenge but does
+not renew challenge freshness. A Diligence-result challenge or verdict cannot
+cross-authorize restart evidence. This secondary profile shares
+the reviewed Diligence QVL root/CVM; it does not create another root. It also
+does not turn the persistent checkpoint into hardware anti-rollback against
+restoration of the whole volume.
 
 For same-CVM deployment:
 

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
 from eth_account import Account
+from eth_account.messages import encode_defunct
 from eth_hash.auto import keccak
 from eth_utils import to_checksum_address
 
@@ -33,15 +35,33 @@ SECP256K1_N = int(
 )
 
 SUBMIT_RESULT_SELECTOR = keccak(
-    b"submitResult(uint256,uint8,uint256,bytes32,bytes32,uint256,bytes)"
+    b"submitResult(uint256,uint8,uint256,bytes32,uint256,bytes32,uint256,bytes,bytes)"
 )[:4]
 DEALS_SELECTOR = keccak(b"deals(uint256)")[:4]
 COMPOSE_APPROVAL_REQUIRED_SELECTOR = keccak(b"composeApprovalRequired()")[:4]
 APPROVED_COMPOSE_HASHES_SELECTOR = keccak(b"approvedComposeHashes(bytes32)")[:4]
 FEE_BPS_SELECTOR = keccak(b"feeBps()")[:4]
-DEFAULT_FEE_BPS = 100
+COMPUTE_SETTLEMENT_POLICY_ENABLED_SELECTOR = keccak(
+    b"computeSettlementPolicyEnabled()"
+)[:4]
+RESULT_VERIFIER_SELECTOR = keccak(b"resultVerifier()")[:4]
+ATTESTATION_VERIFIER_SELECTOR = keccak(b"attestationVerifier()")[:4]
+ATTESTATION_RELEASE_POLICY_HASH_SELECTOR = keccak(
+    b"attestationReleasePolicyHash()"
+)[:4]
+ATTESTATION_BINDING_FROZEN_SELECTOR = keccak(b"attestationBindingFrozen()")[:4]
 RESULT_AUTHORIZATION_TYPEHASH = keccak(
-    b"DiligenceRoomResultAuthorization(uint256 chainId,address contractAddress,uint256 dealId,address teeIdentity,bytes32 composeHash,uint8 scoreBand,uint256 computeCost,bytes32 resultHash,uint256 authorizationExpiry)"
+    b"DiligenceRoomResultAuthorization(uint256 chainId,address contractAddress,uint256 dealId,address teeIdentity,bytes32 composeHash,bytes32 evaluatorPolicyCommitment,bytes32 resultHash,bytes32 attestationReleasePolicyHash,uint256 authorizationExpiry)"
+)
+ATTESTATION_AUTHORIZATION_TYPEHASH = keccak(
+    b"DiligenceRoomQVLAuthorization(uint256 chainId,address contractAddress,uint256 dealId,address teeIdentity,bytes32 composeHash,bytes32 evaluatorPolicyCommitment,bytes32 resultHash,bytes32 attestationReleasePolicyHash,bytes32 attestationEvidenceHash,uint256 authorizationExpiry)"
+)
+PUBLIC_RESULT_TYPEHASH = keccak(
+    b"DiligenceRoomPublicResult(uint256 chainId,address contractAddress,uint256 dealId,address seller,address buyer,uint256 reservePrice,uint256 budgetCap,uint256 expiry,bytes32 artifactHash,address teeIdentity,bytes32 composeHash,bytes32 evaluatorPolicyCommitment,uint8 scoreBand,uint256 computeCost)"
+)
+MAX_RESULT_AUTHORIZATION_TTL_SECONDS = 600
+LEGACY_LOCAL_EVALUATOR_POLICY_COMMITMENT = (
+    "0x" + keccak(b"dnai-wikigen/evaluator-policy/legacy-local-only/v1").hex()
 )
 
 SCORE_BAND_TO_CONTRACT = {
@@ -90,6 +110,12 @@ class DealRead:
     compute_cost: int
     fee: int
     result_hash: str
+    result_compose_hash: str = "0x" + "00" * 32
+    payment_token: str = "0x" + "00" * 20
+    evaluator_policy_commitment: str = LEGACY_LOCAL_EVALUATOR_POLICY_COMMITMENT
+    attestation_evidence_hash: str = "0x" + "00" * 32
+    result_authorization_expiry: int = 0
+    attestation_authorization_expiry: int = 0
 
 
 @dataclass(frozen=True)
@@ -103,11 +129,21 @@ class SubmitResultReceipt:
     score_band_value: int
     compute_cost_band: str
     result_hash: str
-    payload_result_hash: str
     compose_hash: str
     expiry: int
     authorization_expiry: int
     verifier_signature_hash: str
+    result_verifier_address: str
+    result_authorization_authenticated: bool
+    result_authorization_verdict: str
+    evaluator_policy_commitment: str
+    attestation_release_policy_hash: str
+    attestation_evidence_hash: str
+    attestation_authorization_expiry: int
+    attestation_verifier_signature_hash: str
+    attestation_verifier_address: str
+    attestation_authorization_authenticated: bool
+    attestation_authorization_verdict: str
     signer_address: str
     contract_address: str
     chain_id: int
@@ -118,7 +154,6 @@ class SubmitResultReceipt:
     signer_attestation_report_data: str
     signer_attestation_quote_size: int
     raw_secret_egress: bool = False
-    reward_transcript_commitment: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
         payload = {
@@ -129,11 +164,21 @@ class SubmitResultReceipt:
             "score_band_value": self.score_band_value,
             "compute_cost_band": self.compute_cost_band,
             "result_hash": self.result_hash,
-            "payload_result_hash": self.payload_result_hash,
             "compose_hash": self.compose_hash,
             "expiry": self.expiry,
             "authorization_expiry": self.authorization_expiry,
             "verifier_signature_hash": self.verifier_signature_hash,
+            "result_verifier_address": self.result_verifier_address,
+            "result_authorization_authenticated": self.result_authorization_authenticated,
+            "result_authorization_verdict": self.result_authorization_verdict,
+            "evaluator_policy_commitment": self.evaluator_policy_commitment,
+            "attestation_release_policy_hash": self.attestation_release_policy_hash,
+            "attestation_evidence_hash": self.attestation_evidence_hash,
+            "attestation_authorization_expiry": self.attestation_authorization_expiry,
+            "attestation_verifier_signature_hash": self.attestation_verifier_signature_hash,
+            "attestation_verifier_address": self.attestation_verifier_address,
+            "attestation_authorization_authenticated": self.attestation_authorization_authenticated,
+            "attestation_authorization_verdict": self.attestation_authorization_verdict,
             "signer_address": self.signer_address,
             "contract_address": self.contract_address,
             "chain_id": self.chain_id,
@@ -145,8 +190,6 @@ class SubmitResultReceipt:
             "signer_attestation_quote_size": self.signer_attestation_quote_size,
             "raw_secret_egress": self.raw_secret_egress,
         }
-        if self.reward_transcript_commitment:
-            payload["reward_transcript_commitment"] = self.reward_transcript_commitment
         return payload
 
 
@@ -314,33 +357,101 @@ def score_band_to_contract_value(score_band: str | int) -> tuple[int, str]:
     return SCORE_BAND_TO_CONTRACT[key], key
 
 
+def _mul_bps(value: int, bps: int) -> int:
+    if value < 0 or bps < 0:
+        raise ChainSubmitterError("basis-point inputs cannot be negative")
+    quotient, remainder = divmod(value, 10_000)
+    return quotient * bps + (remainder * bps) // 10_000
+
+
+def policy_compute_cost(deal: DealRead, fee_bps: int) -> int:
+    """Mirror DiligenceRoom's deterministic public compute tariff exactly."""
+
+    if fee_bps < 0 or fee_bps > 1_000:
+        raise ChainSubmitterError("on-chain fee bps is outside the contract bound")
+    if deal.reserve_price < 0 or deal.budget_cap < 0:
+        raise ChainSubmitterError("deal settlement fields cannot be negative")
+    target = deal.budget_cap // 100
+    available = max(0, deal.budget_cap - deal.reserve_price)
+    denominator = 10_000 + fee_bps
+    quotient, remainder = divmod(available, denominator)
+    maximum = quotient * 10_000 + (remainder * 10_000) // denominator
+    return min(target, maximum)
+
+
+def canonical_public_result_hash(
+    *,
+    chain_id: int,
+    contract_address: str,
+    deal_id: int,
+    deal: DealRead,
+    compose_hash: str,
+    score_band: str | int,
+    compute_cost_wei: int,
+) -> str:
+    """Canonical on-chain result commitment from public, policy-bound fields only."""
+
+    band_value, _ = score_band_to_contract_value(score_band)
+    payload = b"".join(
+        [
+            PUBLIC_RESULT_TYPEHASH,
+            encode_uint256(chain_id),
+            encode_address_word(contract_address),
+            encode_uint256(deal_id),
+            encode_address_word(deal.seller),
+            encode_address_word(deal.buyer),
+            encode_uint256(deal.reserve_price),
+            encode_uint256(deal.budget_cap),
+            encode_uint256(deal.expiry),
+            bytes.fromhex(normalize_bytes32(deal.artifact_hash)[2:]),
+            encode_address_word(deal.tee_identity),
+            bytes.fromhex(normalize_optional_bytes32(compose_hash)[2:]),
+            bytes.fromhex(normalize_bytes32(deal.evaluator_policy_commitment)[2:]),
+            encode_uint256(band_value),
+            encode_uint256(compute_cost_wei),
+        ]
+    )
+    return "0x" + keccak(payload).hex()
+
+
 def encode_submit_result_calldata(
     *,
     deal_id: int,
     score_band: str | int,
     compute_cost_wei: int,
-    result_hash: str,
     compose_hash: str,
     authorization_expiry: int,
+    attestation_evidence_hash: str,
+    attestation_authorization_expiry: int,
     verifier_signature: str,
+    attestation_verifier_signature: str,
 ) -> str:
     band_value, _ = score_band_to_contract_value(score_band)
-    result_hash_hex = normalize_bytes32(result_hash)[2:]
     compose_hash_hex = normalize_optional_bytes32(compose_hash)[2:]
     signature = bytes.fromhex(normalize_signature(verifier_signature)[2:])
-    head_size = 7 * 32
+    attestation_signature = bytes.fromhex(
+        normalize_signature(attestation_verifier_signature)[2:]
+    )
+    signature_tail = encode_uint256(len(signature)) + _pad_dynamic(signature)
+    attestation_signature_tail = (
+        encode_uint256(len(attestation_signature))
+        + _pad_dynamic(attestation_signature)
+    )
+    head_size = 9 * 32
     payload = b"".join(
         [
             SUBMIT_RESULT_SELECTOR,
             encode_uint256(deal_id),
             encode_uint256(band_value),
             encode_uint256(compute_cost_wei),
-            bytes.fromhex(result_hash_hex),
             bytes.fromhex(compose_hash_hex),
             encode_uint256(authorization_expiry),
+            bytes.fromhex(normalize_bytes32(attestation_evidence_hash)[2:]),
+            encode_uint256(attestation_authorization_expiry),
             encode_uint256(head_size),
-            encode_uint256(len(signature)),
-            _pad_dynamic(signature),
+            encode_uint256(head_size + len(signature_tail)),
+            signature_tail,
+            attestation_signature_tail,
         ]
     )
     return "0x" + payload.hex()
@@ -351,25 +462,74 @@ def result_authorization_digest(
     chain_id: int,
     contract_address: str,
     deal_id: int,
-    tee_identity: str,
+    deal: DealRead,
     compose_hash: str,
     score_band: str | int,
     compute_cost_wei: int,
-    result_hash: str,
     authorization_expiry: int,
+    attestation_release_policy_hash: str,
 ) -> str:
     band_value, _ = score_band_to_contract_value(score_band)
+    result_hash = canonical_public_result_hash(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=band_value,
+        compute_cost_wei=compute_cost_wei,
+    )
     payload = b"".join(
         [
             RESULT_AUTHORIZATION_TYPEHASH,
             encode_uint256(chain_id),
             encode_address_word(contract_address),
             encode_uint256(deal_id),
-            encode_address_word(tee_identity),
+            encode_address_word(deal.tee_identity),
             bytes.fromhex(normalize_optional_bytes32(compose_hash)[2:]),
-            encode_uint256(band_value),
-            encode_uint256(compute_cost_wei),
+            bytes.fromhex(normalize_bytes32(deal.evaluator_policy_commitment)[2:]),
             bytes.fromhex(normalize_bytes32(result_hash)[2:]),
+            bytes.fromhex(normalize_bytes32(attestation_release_policy_hash)[2:]),
+            encode_uint256(authorization_expiry),
+        ]
+    )
+    return "0x" + keccak(payload).hex()
+
+
+def attestation_authorization_digest(
+    *,
+    chain_id: int,
+    contract_address: str,
+    deal_id: int,
+    deal: DealRead,
+    compose_hash: str,
+    score_band: str | int,
+    compute_cost_wei: int,
+    attestation_release_policy_hash: str,
+    attestation_evidence_hash: str,
+    authorization_expiry: int,
+) -> str:
+    result_hash = canonical_public_result_hash(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=score_band,
+        compute_cost_wei=compute_cost_wei,
+    )
+    payload = b"".join(
+        [
+            ATTESTATION_AUTHORIZATION_TYPEHASH,
+            encode_uint256(chain_id),
+            encode_address_word(contract_address),
+            encode_uint256(deal_id),
+            encode_address_word(deal.tee_identity),
+            bytes.fromhex(normalize_optional_bytes32(compose_hash)[2:]),
+            bytes.fromhex(normalize_bytes32(deal.evaluator_policy_commitment)[2:]),
+            bytes.fromhex(normalize_bytes32(result_hash)[2:]),
+            bytes.fromhex(normalize_bytes32(attestation_release_policy_hash)[2:]),
+            bytes.fromhex(normalize_bytes32(attestation_evidence_hash)[2:]),
             encode_uint256(authorization_expiry),
         ]
     )
@@ -449,7 +609,14 @@ def verify_signer_attestation_evidence(
     contract_address: str,
     expected_compose_hash: str = "",
 ) -> None:
-    """Fail closed unless signer attestation matches the submission context."""
+    """Check that a signer-produced evidence envelope is internally consistent.
+
+    This function deliberately does *not* claim Intel TDX verification.  The
+    signer is also the evidence producer, so quote presence and matching
+    report-data are not an independent cryptographic verdict.  Production
+    authorization is enforced separately by an authenticated signature from
+    the contract's distinct ``resultVerifier`` identity.
+    """
 
     if evidence.mode != "tdx":
         raise ChainSubmitterError("signer attestation mode must be tdx")
@@ -477,73 +644,32 @@ def verify_signer_attestation_evidence(
         raise ChainSubmitterError("signer attestation quote is missing")
 
 
-@dataclass(frozen=True)
-class ResultCommitment:
-    """Anti-replay commitment submitted as DiligenceRoom.resultHash."""
-
-    chain_id: int
-    contract_address: str
-    deal_id: int
-    nonce: int
-    compose_hash: str
-    payload_result_hash: str
-    score_band_value: int
-    compute_cost_wei: int
-    expiry: int
-    reward_transcript_commitment: str = ""
-
-    def digest(self) -> str:
-        base = [
-            encode_uint256(self.chain_id),
-            bytes.fromhex(normalize_address(self.contract_address)[2:]).rjust(32, b"\x00"),
-            encode_uint256(self.deal_id),
-            encode_uint256(self.nonce),
-            bytes.fromhex(normalize_bytes32(self.compose_hash)[2:]),
-            bytes.fromhex(normalize_bytes32(self.payload_result_hash)[2:]),
-            encode_uint256(self.score_band_value),
-            encode_uint256(self.compute_cost_wei),
-            encode_uint256(self.expiry),
-        ]
-        if not self.reward_transcript_commitment:
-            # v1: no RLVR transcript bound. Byte-identical to the original
-            # commitment so existing on-chain submissions/proofs are unchanged.
-            payload = keccak(b"dnai-wikigen:DiligenceRoomResult:v1") + b"".join(base)
-            return "0x" + keccak(payload).hex()
-        # v2: bind the proof-carrying reward-transcript commitment into the same
-        # on-chain resultHash, so the settled record cryptographically commits to
-        # the RLVR run transcript. Distinct domain tag prevents v1/v2 collision.
-        payload = (
-            keccak(b"dnai-wikigen:DiligenceRoomResult:v2")
-            + b"".join(base)
-            + bytes.fromhex(normalize_bytes32(self.reward_transcript_commitment)[2:])
-        )
-        return "0x" + keccak(payload).hex()
-
-    def public_fields(self) -> dict[str, Any]:
-        fields: dict[str, Any] = {
-            "chain_id": self.chain_id,
-            "contract_address": normalize_address(self.contract_address),
-            "deal_id": self.deal_id,
-            "nonce": self.nonce,
-            "compose_hash": normalize_bytes32(self.compose_hash),
-            "payload_result_hash": normalize_bytes32(self.payload_result_hash),
-            "score_band_value": self.score_band_value,
-            "compute_cost_band": value_band(self.compute_cost_wei),
-            "expiry": self.expiry,
-        }
-        if self.reward_transcript_commitment:
-            fields["reward_transcript_commitment"] = normalize_bytes32(
-                self.reward_transcript_commitment
-            )
-        return fields
-
-
 def encode_deals_calldata(deal_id: int) -> str:
     return "0x" + (DEALS_SELECTOR + encode_uint256(deal_id)).hex()
 
 
 def encode_fee_bps_calldata() -> str:
     return "0x" + FEE_BPS_SELECTOR.hex()
+
+
+def encode_result_verifier_calldata() -> str:
+    return "0x" + RESULT_VERIFIER_SELECTOR.hex()
+
+
+def encode_attestation_verifier_calldata() -> str:
+    return "0x" + ATTESTATION_VERIFIER_SELECTOR.hex()
+
+
+def encode_attestation_release_policy_hash_calldata() -> str:
+    return "0x" + ATTESTATION_RELEASE_POLICY_HASH_SELECTOR.hex()
+
+
+def encode_attestation_binding_frozen_calldata() -> str:
+    return "0x" + ATTESTATION_BINDING_FROZEN_SELECTOR.hex()
+
+
+def encode_compute_settlement_policy_enabled_calldata() -> str:
+    return "0x" + COMPUTE_SETTLEMENT_POLICY_ENABLED_SELECTOR.hex()
 
 
 def decode_uint256_call_result(raw: str) -> int:
@@ -553,6 +679,181 @@ def decode_uint256_call_result(raw: str) -> int:
     if len(body) < 64:
         raise ChainSubmitterError("short uint256 response")
     return int(body[:64], 16)
+
+
+def decode_address_call_result(raw: str) -> str:
+    if not isinstance(raw, str) or not raw.startswith("0x"):
+        raise ChainSubmitterError("invalid address response")
+    body = raw[2:]
+    if len(body) < 64:
+        raise ChainSubmitterError("short address response")
+    word = body[:64]
+    if any(char != "0" for char in word[:24]):
+        raise ChainSubmitterError("invalid ABI-encoded address response")
+    return normalize_address("0x" + word[24:])
+
+
+def decode_bytes32_call_result(raw: str) -> str:
+    if not isinstance(raw, str) or not raw.startswith("0x"):
+        raise ChainSubmitterError("invalid bytes32 response")
+    body = raw[2:]
+    if len(body) < 64:
+        raise ChainSubmitterError("short bytes32 response")
+    return "0x" + body[:64].lower()
+
+
+def authenticate_result_authorization(
+    *,
+    verifier_address: str,
+    tee_identity: str,
+    chain_id: int,
+    contract_address: str,
+    deal_id: int,
+    deal: DealRead,
+    compose_hash: str,
+    score_band: str | int,
+    compute_cost_wei: int,
+    authorization_expiry: int,
+    attestation_release_policy_hash: str,
+    verifier_signature: str,
+    now: int | None = None,
+) -> str:
+    """Authenticate the exact result authorization against the on-chain verifier.
+
+    This is the production trust boundary. A signer-produced quote envelope is
+    never sufficient: the 65-byte authorization must recover to the immutable
+    ``resultVerifier`` read from the target contract, and that key must be
+    distinct from the deal's TEE signing key.
+    """
+
+    checked_at = int(time.time() if now is None else now)
+    if authorization_expiry <= checked_at:
+        raise ChainSubmitterError("result verifier authorization is expired")
+    if authorization_expiry > checked_at + MAX_RESULT_AUTHORIZATION_TTL_SECONDS:
+        raise ChainSubmitterError("result verifier authorization lifetime exceeds 10 minutes")
+    normalized_verifier = normalize_address(verifier_address)
+    normalized_tee = normalize_address(tee_identity)
+    if normalized_verifier == "0x" + ("00" * 20):
+        raise ChainSubmitterError("on-chain result verifier is not configured")
+    if normalized_verifier == normalized_tee:
+        raise ChainSubmitterError("result verifier must be independent from teeIdentity")
+    if normalize_address(deal.tee_identity) != normalized_tee:
+        raise ChainSubmitterError("authorization deal teeIdentity mismatch")
+
+    digest = result_authorization_digest(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=score_band,
+        compute_cost_wei=compute_cost_wei,
+        authorization_expiry=authorization_expiry,
+        attestation_release_policy_hash=attestation_release_policy_hash,
+    )
+    signature = normalize_signature(verifier_signature)
+    signature_bytes = bytes.fromhex(signature[2:])
+    r = int.from_bytes(signature_bytes[:32], "big")
+    s = int.from_bytes(signature_bytes[32:64], "big")
+    v = signature_bytes[64]
+    if not (1 <= r < SECP256K1_N) or not (1 <= s <= SECP256K1_N // 2):
+        raise ChainSubmitterError(
+            "result verifier authorization signature is not canonical low-s ECDSA"
+        )
+    if v not in (27, 28):
+        raise ChainSubmitterError("result verifier authorization signature v is invalid")
+    try:
+        recovered = Account.recover_message(
+            encode_defunct(hexstr=digest),
+            signature=signature_bytes,
+        )
+    except Exception as exc:
+        raise ChainSubmitterError("result verifier authorization signature is invalid") from exc
+    if normalize_address(recovered) != normalized_verifier:
+        raise ChainSubmitterError(
+            "result verifier authorization was not signed by the on-chain verifier"
+        )
+    return normalized_verifier
+
+
+def authenticate_attestation_authorization(
+    *,
+    verifier_address: str,
+    result_verifier_address: str,
+    tee_identity: str,
+    chain_id: int,
+    contract_address: str,
+    deal_id: int,
+    deal: DealRead,
+    compose_hash: str,
+    score_band: str | int,
+    compute_cost_wei: int,
+    attestation_release_policy_hash: str,
+    attestation_evidence_hash: str,
+    authorization_expiry: int,
+    verifier_signature: str,
+    now: int | None = None,
+) -> str:
+    """Authenticate the independent QVL authorization required on chain."""
+
+    checked_at = int(time.time() if now is None else now)
+    if authorization_expiry <= checked_at:
+        raise ChainSubmitterError("attestation verifier authorization is expired")
+    if authorization_expiry > checked_at + MAX_RESULT_AUTHORIZATION_TTL_SECONDS:
+        raise ChainSubmitterError(
+            "attestation verifier authorization lifetime exceeds 10 minutes"
+        )
+    normalized_verifier = normalize_address(verifier_address)
+    normalized_result_verifier = normalize_address(result_verifier_address)
+    normalized_tee = normalize_address(tee_identity)
+    if normalized_verifier == "0x" + ("00" * 20):
+        raise ChainSubmitterError("on-chain attestation verifier is not configured")
+    if normalized_verifier in (normalized_result_verifier, normalized_tee):
+        raise ChainSubmitterError(
+            "attestation verifier must be independent from result verifier and teeIdentity"
+        )
+    if normalize_address(deal.tee_identity) != normalized_tee:
+        raise ChainSubmitterError("attestation authorization deal teeIdentity mismatch")
+
+    digest = attestation_authorization_digest(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        deal_id=deal_id,
+        deal=deal,
+        compose_hash=compose_hash,
+        score_band=score_band,
+        compute_cost_wei=compute_cost_wei,
+        attestation_release_policy_hash=attestation_release_policy_hash,
+        attestation_evidence_hash=attestation_evidence_hash,
+        authorization_expiry=authorization_expiry,
+    )
+    signature = normalize_signature(verifier_signature)
+    signature_bytes = bytes.fromhex(signature[2:])
+    r = int.from_bytes(signature_bytes[:32], "big")
+    s = int.from_bytes(signature_bytes[32:64], "big")
+    v = signature_bytes[64]
+    if not (1 <= r < SECP256K1_N) or not (1 <= s <= SECP256K1_N // 2):
+        raise ChainSubmitterError(
+            "attestation verifier authorization signature is not canonical low-s ECDSA"
+        )
+    if v not in (27, 28):
+        raise ChainSubmitterError(
+            "attestation verifier authorization signature v is invalid"
+        )
+    try:
+        recovered = Account.recover_message(
+            encode_defunct(hexstr=digest),
+            signature=signature_bytes,
+        )
+    except Exception as exc:
+        raise ChainSubmitterError(
+            "attestation verifier authorization signature is invalid"
+        ) from exc
+    if normalize_address(recovered) != normalized_verifier:
+        raise ChainSubmitterError(
+            "attestation authorization was not signed by the on-chain verifier"
+        )
+    return normalized_verifier
 
 
 def encode_compose_approval_required_calldata() -> str:
@@ -596,7 +897,7 @@ def decode_deal_call_result(raw: str) -> DealRead:
         raise ChainSubmitterError("invalid deals() response")
     body = raw[2:]
     words = [body[index:index + 64] for index in range(0, len(body), 64)]
-    if len(words) < 12 or any(len(word) != 64 for word in words[:12]):
+    if len(words) < 18 or any(len(word) != 64 for word in words[:18]):
         raise ChainSubmitterError("short deals() response")
     return DealRead(
         seller=_word_to_address(words[0]),
@@ -611,7 +912,49 @@ def decode_deal_call_result(raw: str) -> DealRead:
         compute_cost=int(words[9], 16),
         fee=int(words[10], 16),
         result_hash=_word_to_bytes32(words[11]),
+        result_compose_hash=_word_to_bytes32(words[12]),
+        payment_token=_word_to_address(words[13]),
+        evaluator_policy_commitment=normalize_bytes32(_word_to_bytes32(words[14])),
+        attestation_evidence_hash=_word_to_bytes32(words[15]),
+        result_authorization_expiry=int(words[16], 16),
+        attestation_authorization_expiry=int(words[17], 16),
     )
+
+
+def read_deal_from_chain(rpc: Any, contract_address: str, deal_id: int) -> DealRead:
+    raw = rpc.eth_call(
+        {
+            "to": normalize_address(contract_address),
+            "data": encode_deals_calldata(deal_id),
+        }
+    )
+    return decode_deal_call_result(raw)
+
+
+def read_fee_bps_from_chain(rpc: Any, contract_address: str) -> int:
+    raw = rpc.eth_call(
+        {
+            "to": normalize_address(contract_address),
+            "data": encode_fee_bps_calldata(),
+        }
+    )
+    value = decode_uint256_call_result(raw)
+    if value > 1_000:
+        raise ChainSubmitterError("on-chain fee bps exceeds contract maximum")
+    return value
+
+
+def read_compute_settlement_policy_enabled_from_chain(
+    rpc: Any,
+    contract_address: str,
+) -> bool:
+    raw = rpc.eth_call(
+        {
+            "to": normalize_address(contract_address),
+            "data": encode_compute_settlement_policy_enabled_calldata(),
+        }
+    )
+    return decode_bool_call_result(raw)
 
 
 class JsonRpcClient:
@@ -677,29 +1020,54 @@ class DiligenceRoomSubmitter:
         self.gas_limit = gas_limit
 
     def read_deal(self, deal_id: int) -> DealRead:
+        return read_deal_from_chain(self.rpc, self.contract_address, deal_id)
+
+    def read_fee_bps(self) -> int:
+        """Read the exact governed fee; fresh-suite submission has no fallback."""
+
+        return read_fee_bps_from_chain(self.rpc, self.contract_address)
+
+    def read_compute_settlement_policy_enabled(self) -> bool:
+        return read_compute_settlement_policy_enabled_from_chain(
+            self.rpc,
+            self.contract_address,
+        )
+
+    def read_result_verifier(self) -> str:
         raw = self.rpc.eth_call(
             {
                 "to": self.contract_address,
-                "data": encode_deals_calldata(deal_id),
+                "data": encode_result_verifier_calldata(),
             }
         )
-        return decode_deal_call_result(raw)
+        return decode_address_call_result(raw)
 
-    def read_fee_bps(self) -> int:
-        """Read the on-chain protocol fee (bps). Falls back to the 1% default for
-        older deployments that predate the governable-fee getter."""
-        try:
-            raw = self.rpc.eth_call(
-                {
-                    "to": self.contract_address,
-                    "data": encode_fee_bps_calldata(),
-                }
-            )
-            value = decode_uint256_call_result(raw)
-        except ChainSubmitterError:
-            return DEFAULT_FEE_BPS
-        # A missing function may return empty/zero data; treat 0 as "not present".
-        return value if value > 0 else DEFAULT_FEE_BPS
+    def read_attestation_verifier(self) -> str:
+        raw = self.rpc.eth_call(
+            {
+                "to": self.contract_address,
+                "data": encode_attestation_verifier_calldata(),
+            }
+        )
+        return decode_address_call_result(raw)
+
+    def read_attestation_release_policy_hash(self) -> str:
+        raw = self.rpc.eth_call(
+            {
+                "to": self.contract_address,
+                "data": encode_attestation_release_policy_hash_calldata(),
+            }
+        )
+        return decode_bytes32_call_result(raw)
+
+    def read_attestation_binding_frozen(self) -> bool:
+        raw = self.rpc.eth_call(
+            {
+                "to": self.contract_address,
+                "data": encode_attestation_binding_frozen_calldata(),
+            }
+        )
+        return decode_bool_call_result(raw)
 
     def read_compose_approval_required(self) -> bool:
         raw = self.rpc.eth_call(
@@ -725,12 +1093,13 @@ class DiligenceRoomSubmitter:
         deal_id: int,
         score_band: str | int,
         compute_cost_wei: int,
-        result_hash: str,
         authorization_expiry: int,
         verifier_signature: str,
+        attestation_evidence_hash: str,
+        attestation_authorization_expiry: int,
+        attestation_verifier_signature: str,
         compose_hash: str = "",
         signer_attestation: SignerAttestationEvidence | None = None,
-        reward_transcript_commitment: str = "",
     ) -> SubmitResultReceipt:
         if deal_id < 0:
             raise ChainSubmitterError("deal ID cannot be negative")
@@ -738,18 +1107,34 @@ class DiligenceRoomSubmitter:
             raise ChainSubmitterError("compute cost cannot be negative")
         if authorization_expiry <= 0:
             raise ChainSubmitterError("authorization expiry must be positive")
+        if attestation_authorization_expiry <= 0:
+            raise ChainSubmitterError("attestation authorization expiry must be positive")
 
         band_value, band_label = score_band_to_contract_value(score_band)
-        payload_result_hash = normalize_bytes32(result_hash)
         normalized_verifier_signature = normalize_signature(verifier_signature)
+        normalized_attestation_signature = normalize_signature(
+            attestation_verifier_signature
+        )
+        normalized_attestation_evidence_hash = normalize_bytes32(
+            attestation_evidence_hash
+        )
         signer_address = normalize_address(self.signer.address)
         deal = self.read_deal(deal_id)
         if deal.state != 1:
             raise ChainSubmitterError("deal is not in Funded state")
         if normalize_address(deal.tee_identity) != signer_address:
             raise ChainSubmitterError("TEE signer does not match deal teeIdentity")
+        if not self.read_compute_settlement_policy_enabled():
+            raise ChainSubmitterError(
+                "on-chain deterministic compute settlement policy is not enabled"
+            )
         fee_bps = self.read_fee_bps()
-        fee = (compute_cost_wei * fee_bps) // 10000
+        expected_compute_cost = policy_compute_cost(deal, fee_bps)
+        if compute_cost_wei != expected_compute_cost:
+            raise ChainSubmitterError(
+                "compute cost does not match deterministic on-chain settlement policy"
+            )
+        fee = _mul_bps(compute_cost_wei, fee_bps)
         if compute_cost_wei + fee > deal.budget_cap:
             raise ChainSubmitterError("compute cost exceeds deal budget cap")
 
@@ -764,6 +1149,13 @@ class DiligenceRoomSubmitter:
                 expected_compose_hash=compose_hash,
             )
             normalized_compose_hash = normalize_optional_bytes32(signer_attestation.compose_hash)
+            if (
+                normalize_bytes32(signer_attestation.quote_hash)
+                != normalized_attestation_evidence_hash
+            ):
+                raise ChainSubmitterError(
+                    "attestation evidence hash does not match the submitted TDX quote"
+                )
         elif compose_hash:
             normalized_compose_hash = normalize_optional_bytes32(compose_hash)
         else:
@@ -776,32 +1168,68 @@ class DiligenceRoomSubmitter:
         if self.read_compose_approval_required():
             if not self.read_compose_hash_approved(normalized_compose_hash):
                 raise ChainSubmitterError("compose hash is not approved on-chain")
-        normalized_reward_commitment = (
-            normalize_bytes32(reward_transcript_commitment)
-            if reward_transcript_commitment
-            else ""
-        )
-        commitment = ResultCommitment(
+        submission_result_hash = canonical_public_result_hash(
             chain_id=chain_id,
             contract_address=self.contract_address,
             deal_id=deal_id,
-            nonce=nonce,
+            deal=deal,
             compose_hash=normalized_compose_hash,
-            payload_result_hash=payload_result_hash,
-            score_band_value=band_value,
+            score_band=band_value,
             compute_cost_wei=compute_cost_wei,
-            expiry=deal.expiry,
-            reward_transcript_commitment=normalized_reward_commitment,
         )
-        submission_result_hash = commitment.digest()
+        if not self.read_attestation_binding_frozen():
+            raise ChainSubmitterError("on-chain attestation binding is not frozen")
+        result_verifier_address = self.read_result_verifier()
+        attestation_verifier_address = self.read_attestation_verifier()
+        attestation_release_policy_hash = self.read_attestation_release_policy_hash()
+        authenticate_result_authorization(
+            verifier_address=result_verifier_address,
+            tee_identity=signer_address,
+            chain_id=chain_id,
+            contract_address=self.contract_address,
+            deal_id=deal_id,
+            deal=deal,
+            compose_hash=normalized_compose_hash,
+            score_band=band_value,
+            compute_cost_wei=compute_cost_wei,
+            authorization_expiry=authorization_expiry,
+            attestation_release_policy_hash=attestation_release_policy_hash,
+            verifier_signature=normalized_verifier_signature,
+        )
+        authenticate_attestation_authorization(
+            verifier_address=attestation_verifier_address,
+            result_verifier_address=result_verifier_address,
+            tee_identity=signer_address,
+            chain_id=chain_id,
+            contract_address=self.contract_address,
+            deal_id=deal_id,
+            deal=deal,
+            compose_hash=normalized_compose_hash,
+            score_band=band_value,
+            compute_cost_wei=compute_cost_wei,
+            attestation_release_policy_hash=attestation_release_policy_hash,
+            attestation_evidence_hash=normalized_attestation_evidence_hash,
+            authorization_expiry=attestation_authorization_expiry,
+            verifier_signature=normalized_attestation_signature,
+        )
+        result_authorization_authenticated = True
+        result_authorization_verdict = (
+            "authenticated_onchain_result_verifier_signature"
+        )
+        attestation_authorization_authenticated = True
+        attestation_authorization_verdict = (
+            "authenticated_onchain_independent_qvl_signature"
+        )
         calldata = encode_submit_result_calldata(
             deal_id=deal_id,
             score_band=band_value,
             compute_cost_wei=compute_cost_wei,
-            result_hash=submission_result_hash,
             compose_hash=normalized_compose_hash,
             authorization_expiry=authorization_expiry,
+            attestation_evidence_hash=normalized_attestation_evidence_hash,
+            attestation_authorization_expiry=attestation_authorization_expiry,
             verifier_signature=normalized_verifier_signature,
+            attestation_verifier_signature=normalized_attestation_signature,
         )
         gas_price = self.rpc.gas_price()
         base_tx = {
@@ -835,13 +1263,28 @@ class DiligenceRoomSubmitter:
             score_band_value=band_value,
             compute_cost_band=value_band(compute_cost_wei),
             result_hash=submission_result_hash,
-            payload_result_hash=payload_result_hash,
             compose_hash=normalized_compose_hash,
             expiry=deal.expiry,
             authorization_expiry=authorization_expiry,
             verifier_signature_hash="0x" + hashlib.sha256(
                 bytes.fromhex(normalized_verifier_signature[2:])
             ).hexdigest(),
+            result_verifier_address=result_verifier_address,
+            result_authorization_authenticated=result_authorization_authenticated,
+            result_authorization_verdict=result_authorization_verdict,
+            evaluator_policy_commitment=normalize_bytes32(
+                deal.evaluator_policy_commitment
+            ),
+            attestation_release_policy_hash=attestation_release_policy_hash,
+            attestation_evidence_hash=normalized_attestation_evidence_hash,
+            attestation_authorization_expiry=attestation_authorization_expiry,
+            attestation_verifier_signature_hash="0x"
+            + hashlib.sha256(
+                bytes.fromhex(normalized_attestation_signature[2:])
+            ).hexdigest(),
+            attestation_verifier_address=attestation_verifier_address,
+            attestation_authorization_authenticated=attestation_authorization_authenticated,
+            attestation_authorization_verdict=attestation_authorization_verdict,
             signer_address=signer_address,
             contract_address=self.contract_address,
             chain_id=chain_id,
@@ -857,7 +1300,6 @@ class DiligenceRoomSubmitter:
             signer_attestation_quote_size=(
                 signer_attestation.quote_size if signer_attestation is not None else 0
             ),
-            reward_transcript_commitment=normalized_reward_commitment,
         )
 
 

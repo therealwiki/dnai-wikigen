@@ -15,8 +15,8 @@ from eth_hash.auto import keccak
 
 
 EVENT_SIGNATURES = {
-    "DealCreated": "DealCreated(uint256,address,uint256,uint256,bytes32,address)",
-    "DealFunded": "DealFunded(uint256,address,uint256)",
+    "DealCreated": "DealCreated(uint256,address,uint256,uint256,bytes32,address,address)",
+    "DealFunded": "DealFunded(uint256,address,uint256,address,bytes32)",
     "EvaluationSubmitted": "EvaluationSubmitted(uint256,uint8,uint256,bytes32)",
     "DealAccepted": "DealAccepted(uint256,uint256,uint256,uint256)",
     "DealRejected": "DealRejected(uint256,uint256,uint256)",
@@ -196,20 +196,23 @@ def decode_diligence_room_log(log: dict[str, Any]) -> DiligenceRoomEvent | None:
     fields: dict[str, Any]
     if name == "DealCreated":
         _require_topics(name, topics, 3)
-        _require_words(name, words, 4)
+        _require_words(name, words, 5)
         fields = {
             "seller": _topic_address(topics[2]),
             "reserve_price": _word_uint(words[0]),
             "expiry": _word_uint(words[1]),
             "artifact_hash": _word_bytes32(words[2]),
             "tee_identity": _word_address(words[3]),
+            "payment_token": _word_address(words[4]),
         }
     elif name == "DealFunded":
         _require_topics(name, topics, 3)
-        _require_words(name, words, 1)
+        _require_words(name, words, 3)
         fields = {
             "buyer": _topic_address(topics[2]),
             "budget_cap": _word_uint(words[0]),
+            "payment_token": _word_address(words[1]),
+            "evaluator_policy_commitment": _word_bytes32(words[2]),
         }
     elif name == "EvaluationSubmitted":
         _require_words(name, words, 3)
@@ -309,6 +312,7 @@ class ChainEventDispatcher:
         self,
         control_plane_url: str,
         *,
+        auth_token: str = "",
         client: httpx.Client | None = None,
         created_context: dict[str, dict[str, Any]] | None = None,
     ):
@@ -317,6 +321,9 @@ class ChainEventDispatcher:
         self.control_plane_url = control_plane_url
         self._client = client or httpx.Client(timeout=30.0)
         self._owns_client = client is None
+        if "\r" in auth_token or "\n" in auth_token:
+            raise ChainWatcherError("control-plane auth token is invalid")
+        self._headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
         self._created: dict[str, dict[str, Any]] = {
             str(deal_id): _sanitize_created_context(fields)
             for deal_id, fields in (created_context or {}).items()
@@ -353,6 +360,10 @@ class ChainEventDispatcher:
                         "seller": created["seller"],
                         "budget_cap": event.fields["budget_cap"],
                         "reserve_price": created["reserve_price"],
+                        "artifact_hash": created["artifact_hash"],
+                        "evaluator_policy_commitment": event.fields[
+                            "evaluator_policy_commitment"
+                        ],
                     },
                 )
                 funded_notifications += 1
@@ -371,7 +382,11 @@ class ChainEventDispatcher:
         )
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
-        response = self._client.post(_endpoint(self.control_plane_url, path), json=payload)
+        response = self._client.post(
+            _endpoint(self.control_plane_url, path),
+            json=payload,
+            headers=self._headers,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -499,6 +514,11 @@ def _sanitize_created_context(fields: dict[str, Any]) -> dict[str, Any]:
         "expiry": int(fields["expiry"]),
         "artifact_hash": _normalize_bytes32(str(fields["artifact_hash"])),
         "tee_identity": _normalize_address(str(fields["tee_identity"])),
+        # Default preserves compatibility with cursor files written by the
+        # pre-ERC20 watcher, where all deals were native-ETH denominated.
+        "payment_token": _normalize_address(
+            str(fields.get("payment_token", "0x" + ("00" * 20)))
+        ),
     }
 
 

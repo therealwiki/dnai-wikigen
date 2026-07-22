@@ -1,0 +1,7 @@
+{
+  "purpose": "reviewer_current_status_guardian_authorization",
+  "schema": "dnai.release-reviewer-authority-external-signatures.v2",
+  "signature_scheme": "eip191_personal_sign_secp256k1_low_s_65_byte",
+  "signatures": [],
+  "signed_payload_sha256": null
+}

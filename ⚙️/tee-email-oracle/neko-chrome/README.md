@@ -75,6 +75,15 @@ curl http://localhost:9222/json/list
 | `policies.json` | Chrome enterprise policies: no autofill, no extensions |
 | `openbox.xml` | Window manager: no decorations, maximized Chrome |
 
+The production Dockerfile pins the Neko base by digest, Chrome by versioned
+amd64 package URL and SHA-256, and all Debian resolution to the base image's
+immutable `20260406T000000Z` snapshot. `openbox` and `nginx` use exact package
+versions, and apt/dpkg/update-alternatives timestamp-bearing logs are removed
+before export. The
+release workflow also fixes `SOURCE_DATE_EPOCH` and rewrites exported layer
+timestamps; a changed input therefore requires a reviewed source diff and a new
+image subject digest.
+
 ## Chrome flags explained
 
 ```
@@ -125,22 +134,31 @@ cd neko-chrome && docker build -t neko-chrome .
 ## Running standalone (without oracle)
 
 ```bash
+# Use two distinct, non-default secrets. Do not place real production secrets
+# in shell history; this standalone command is for loopback-only development.
+: "${NEKO_PASSWORD:?set a non-default Neko user password}"
+: "${NEKO_PASSWORD_ADMIN:?set a distinct Neko administrator password}"
+test "$NEKO_PASSWORD" != "$NEKO_PASSWORD_ADMIN"
+
 docker run -d \
   --name neko-chrome \
   --platform linux/amd64 \
   --shm-size 2gb \
   --cap-add SYS_ADMIN \
-  -p 52000:8080 \
-  -p 9222:9222 \
+  -p 127.0.0.1:52000:8080 \
+  -p 127.0.0.1:9222:9222 \
   -e NEKO_SCREEN=1920x1080@30 \
-  -e NEKO_PASSWORD=neko \
-  -e NEKO_PASSWORD_ADMIN=admin \
+  -e NEKO_PASSWORD \
+  -e NEKO_PASSWORD_ADMIN \
   -e NEKO_ICELITE=0 \
   neko-chrome
 
-# View browser: http://localhost:52000  (password: admin)
+# View browser: http://localhost:52000
 # CDP endpoint: http://localhost:9222
 ```
+
+The Phala production compose does not publish either browser port to the host;
+both Neko and CDP remain internal to the CVM network.
 
 ## Upstream references
 

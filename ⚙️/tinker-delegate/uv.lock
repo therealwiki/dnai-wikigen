@@ -466,6 +466,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dcap-qvl"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/ab/3b4d19abb3b34545b0ad7443378d08f6ed6bc82dee09e64cabc8e3446fb0/dcap_qvl-0.5.2.tar.gz", hash = "sha256:fa9d6d847248844273aee110b3b5a2a96d1360aa8b3ff1035aa078d26e3609a2", size = 262895, upload-time = "2026-05-31T00:58:40.015Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/77/fa6e530a574c348338c4a0ff1907662623c2aacee1f45e0c3d702d88121b/dcap_qvl-0.5.2-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:3d3be363e4629fd390d5f63eeb1af1803f75c57ae9bd4ae3f18602fdac504bda", size = 2387244, upload-time = "2026-05-31T00:58:28.829Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/53/b70a2f6e05208d7ecf3a174e090e65983794c689511dd56837ce280c4a73/dcap_qvl-0.5.2-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:7c57d7620b2d0db44df1c0e8496a7eed2cd512db942f851ff451f2fa5f28af1d", size = 2261534, upload-time = "2026-05-31T00:58:30.534Z" },
+    { url = "https://files.pythonhosted.org/packages/16/0b/df76ab53102bc4e43475a258b8f43c9b77a1d8ee6ac1dda1ac7b771224ef/dcap_qvl-0.5.2-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e0dbd4fcf778b97e31b84115a9f224a00e28b80d58cf90a3637dd41cf78e501f", size = 2538613, upload-time = "2026-05-31T00:58:32.104Z" },
+    { url = "https://files.pythonhosted.org/packages/de/20/b6b62cf721ac0adcf4365c45e09405fc8c56010be0084f9749a85f05c355/dcap_qvl-0.5.2-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4596e96ae5ba10e8bbf91c561c25d55e4fbe080fcdfd5042d6760f16ace3ad1d", size = 2696948, upload-time = "2026-05-31T00:58:33.578Z" },
+    { url = "https://files.pythonhosted.org/packages/71/5a/1cdaa889ec427902e620c0bcf24f9c795bae5e07fc8cce50b112fa522446/dcap_qvl-0.5.2-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:cc9d19d38e16e51a2e0acecc3b954b2f2ed43494984e52c52c918c5c484f2280", size = 2536939, upload-time = "2026-05-31T00:58:35.467Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/2a/218bfe048997e9955261bdb0b9971c729b9c5a84b33cd8aacd665037a868/dcap_qvl-0.5.2-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:9cfe19b82f6d72f46d9da592ca6109d1486f7ecb92643833f8a04359247b2126", size = 2694696, upload-time = "2026-05-31T00:58:37.059Z" },
+    { url = "https://files.pythonhosted.org/packages/66/24/e2e670f07660f6fb806806de73d97bbbe4982147f331dceb07b6ac173850/dcap_qvl-0.5.2-cp38-abi3-win_amd64.whl", hash = "sha256:7f37e259b6ea48ee1b9dc11a7d2d092936b818ff4bb46d8b4dde877f7fcf52d9", size = 2137048, upload-time = "2026-05-31T00:58:38.454Z" },
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -837,6 +852,15 @@ wheels = [
 ]
 
 [[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1054,6 +1078,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/4b/236e60ab9f6d62ed0fd32150d61f1f494cefbf02304c0061e78ed80c1c32/playwright-1.58.0-py3-none-win32.whl", hash = "sha256:1e03be090e75a0fabbdaeab65ce17c308c425d879fa48bb1d7986f96bfad0b99", size = 36815998, upload-time = "2026-01-30T15:09:39.627Z" },
     { url = "https://files.pythonhosted.org/packages/41/f8/5ec599c5e59d2f2f336a05b4f318e733077cd5044f24adb6f86900c3e6a7/playwright-1.58.0-py3-none-win_amd64.whl", hash = "sha256:a2bf639d0ce33b3ba38de777e08697b0d8f3dc07ab6802e4ac53fb65e3907af8", size = 36816005, upload-time = "2026-01-30T15:09:42.449Z" },
     { url = "https://files.pythonhosted.org/packages/c8/c4/cc0229fea55c87d6c9c67fe44a21e2cd28d1d558a5478ed4d617e9fb0c93/playwright-1.58.0-py3-none-win_arm64.whl", hash = "sha256:32ffe5c303901a13a0ecab91d1c3f74baf73b84f4bedbb6b935f5bc11cc98e1b", size = 33085919, upload-time = "2026-01-30T15:09:45.71Z" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
 
 [[package]]
@@ -1302,6 +1335,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/4c/7f8a24f66640ab481188ebd1dd0f29ddeb905ef05112548d07813e65c8b6/pyqwest-0.6.2-pp311-pypy311_pp73-musllinux_1_2_aarch64.whl", hash = "sha256:34b73a96721673cfe8948e05299a22b91f6bd4f98a3414037e1a2970059658e0", size = 5677824, upload-time = "2026-06-15T07:52:56.936Z" },
     { url = "https://files.pythonhosted.org/packages/a1/3f/6b116c1220e2f857106edc8ddf84e32da59800a194b38283f74ac2ec34b8/pyqwest-0.6.2-pp311-pypy311_pp73-musllinux_1_2_x86_64.whl", hash = "sha256:dcba03d13c98cea676a3ff523a81610807b315c78f8d557b4f09874571cb4ec9", size = 5846895, upload-time = "2026-06-15T07:52:59.094Z" },
     { url = "https://files.pythonhosted.org/packages/2e/d7/5bfd3659d78d349ff7de5efeb5451242b12be7bca303a0b1b302c9d233ce/pyqwest-0.6.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:5499c229cc6627341f179d2be43f8c4fad878146a0c47d47b9fb3ff11ba8cbd9", size = 4705345, upload-time = "2026-06-15T07:53:00.872Z" },
+]
+
+[[package]]
+name = "pytest"
+version = "9.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/db/7ef3487e0fb0049ddb5ce41d3a49c235bf9ad299b6a25d5780a89f19230f/pytest-9.0.2.tar.gz", hash = "sha256:75186651a92bd89611d1d9fc20f0b4345fd827c41ccd5c299a868a05d70edf11", size = 1568901, upload-time = "2025-12-06T21:30:51.014Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/ab/b3226f0bd7cdcf710fbede2b3548584366da3b19b5021e74f5bde2a8fa3f/pytest-9.0.2-py3-none-any.whl", hash = "sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b", size = 374801, upload-time = "2025-12-06T21:30:49.154Z" },
 ]
 
 [[package]]
@@ -1589,12 +1638,19 @@ dependencies = [
     { name = "playwright" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
 agent = [
     { name = "tinker" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "dcap-qvl" },
+    { name = "pytest" },
 ]
 
 [package.metadata]
@@ -1608,10 +1664,17 @@ requires-dist = [
     { name = "playwright", specifier = ">=1.49" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "tinker", marker = "extra == 'agent'", specifier = ">=0.22" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
 provides-extras = ["agent"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "dcap-qvl", specifier = "==0.5.2" },
+    { name = "pytest", specifier = "==9.0.2" },
+]
 
 [[package]]
 name = "tokenizers"

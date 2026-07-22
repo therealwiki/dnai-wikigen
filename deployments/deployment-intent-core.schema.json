@@ -1,0 +1,206 @@
+{
+  "$id": "https://wikigen.me/schemas/deployment-intent-core.v6.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Structural schema for the immutable pre-deployment intent. The JavaScript checker additionally enforces numeric relations, canonical bytes, and exact empty dynamic-runtime authority sets.",
+  "properties": {
+    "deploymentControl": {
+      "additionalProperties": false,
+      "properties": {
+        "controllerId": { "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$", "type": "string" },
+        "controllerKind": { "const": "encrypted_foundry_keystore_eoa" },
+        "foundryAccount": { "const": "dev" },
+        "operatorAddress": { "$ref": "#/$defs/address" }
+      },
+      "required": ["controllerId", "controllerKind", "foundryAccount", "operatorAddress"],
+      "type": "object"
+    },
+    "dynamicRuntimeAuthorities": {
+      "additionalProperties": false,
+      "properties": {
+        "contractAddresses": { "$ref": "#/$defs/emptySet" },
+        "cvmIdentities": { "$ref": "#/$defs/emptySet" },
+        "downstreamAnchorState": { "$ref": "#/$defs/emptySet" },
+        "releaseCommitments": { "$ref": "#/$defs/emptySet" },
+        "roleAddresses": { "$ref": "#/$defs/emptySet" }
+      },
+      "required": ["contractAddresses", "cvmIdentities", "downstreamAnchorState", "releaseCommitments", "roleAddresses"],
+      "type": "object"
+    },
+    "network": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalUsdc": { "const": "0x036cbd53842c5426634e7929541ec2318f3dcf7e" },
+        "chainId": { "const": 84532 },
+        "name": { "const": "base-sepolia" }
+      },
+      "required": ["canonicalUsdc", "chainId", "name"],
+      "type": "object"
+    },
+    "numericPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "additionalProperties": false,
+          "properties": {
+            "computeDeveloperFeeBps": { "maximum": 2000, "minimum": 0, "type": "integer" },
+            "emailOracleUpgradeDelaySeconds": { "maximum": 31536000, "minimum": 172800, "type": "integer" },
+            "tinkerMaxAddBalanceWei": { "$ref": "#/$defs/tinkerUnits" },
+            "tinkerMaxSpendWei": { "$ref": "#/$defs/tinkerUnits" }
+          },
+          "required": ["computeDeveloperFeeBps", "emailOracleUpgradeDelaySeconds", "tinkerMaxAddBalanceWei", "tinkerMaxSpendWei"],
+          "type": "object"
+        },
+        "metering": { "$ref": "#/$defs/meteringPolicy" },
+        "qvl": {
+          "additionalProperties": false,
+          "properties": {
+            "anchorWriter": { "$ref": "#/$defs/qvlPolicy" },
+            "arena": { "$ref": "#/$defs/qvlPolicy" },
+            "computeMetering": { "$ref": "#/$defs/qvlPolicy" },
+            "computeWorkload": { "$ref": "#/$defs/qvlPolicy" },
+            "diligence": { "$ref": "#/$defs/qvlPolicy" }
+          },
+          "required": ["anchorWriter", "arena", "computeMetering", "computeWorkload", "diligence"],
+          "type": "object"
+        }
+      },
+      "required": ["contract", "metering", "qvl"],
+      "type": "object"
+    },
+    "release": {
+      "additionalProperties": false,
+      "properties": {
+        "releaseSha": {
+          "not": { "const": "0000000000000000000000000000000000000000" },
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "reviewerAuthorityGenesisAcceptanceSha256": {
+          "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "reviewerAuthorityCurrentStatusEpoch": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "reviewerAuthorityCurrentStatusSha256": {
+          "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "toolchain": {
+          "additionalProperties": false,
+          "properties": {
+            "foundry": {
+              "additionalProperties": false,
+              "properties": {
+                "buildProfile": { "const": "maxperf" },
+                "castExecutableSha256": { "const": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d" },
+                "castVersion": { "const": "1.5.1-stable" },
+                "commitSha": { "const": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2" },
+                "forgeVersion": { "const": "1.5.1-stable" }
+              },
+              "required": ["buildProfile", "castExecutableSha256", "castVersion", "commitSha", "forgeVersion"],
+              "type": "object"
+            },
+            "solidity": {
+              "additionalProperties": false,
+              "properties": {
+                "bytecodeHash": { "const": "ipfs" },
+                "cborMetadata": { "const": true },
+                "compilerVersion": { "const": "0.8.28+commit.7893614a" },
+                "configuredVersion": { "const": "0.8.28" },
+                "evmVersion": { "const": "prague" },
+                "libraries": { "const": [] },
+                "optimizer": { "const": true },
+                "optimizerRuns": { "const": 200 },
+                "profile": { "const": "default" },
+                "useLiteralContent": { "const": false },
+                "viaIr": { "const": true }
+              },
+              "required": ["bytecodeHash", "cborMetadata", "compilerVersion", "configuredVersion", "evmVersion", "libraries", "optimizer", "optimizerRuns", "profile", "useLiteralContent", "viaIr"],
+              "type": "object"
+            }
+          },
+          "required": ["foundry", "solidity"],
+          "type": "object"
+        }
+      },
+      "required": ["releaseSha", "reviewerAuthorityGenesisAcceptanceSha256", "reviewerAuthorityCurrentStatusEpoch", "reviewerAuthorityCurrentStatusSha256", "toolchain"],
+      "type": "object"
+    },
+    "schema": { "const": "dnai.deployment-intent-core.v6" },
+    "scope": {
+      "additionalProperties": false,
+      "properties": {
+        "contracts": { "const": ["DiligenceRoom", "TinkerAccountEncumbrance", "RoyaltyDistributor", "ChallengeRegistry", "ComputeCreditVault", "EmailOracleAuth", "ExecutionPolicyAnchor"] },
+        "cvms": { "const": ["main_runtime", "diligence_qvl", "arena_qvl", "anchor_writer_qvl", "compute_workload_qvl", "compute_metering_qvl", "independent_metering"] }
+      },
+      "required": ["contracts", "cvms"],
+      "type": "object"
+    },
+    "staticContractInputs": {
+      "additionalProperties": false,
+      "properties": {
+        "computeCreditVault": {
+          "additionalProperties": false,
+          "properties": {
+            "developer": { "$ref": "#/$defs/address" }
+          },
+          "required": ["developer"],
+          "type": "object"
+        },
+        "tinkerAccountEncumbrance": {
+          "additionalProperties": false,
+          "properties": {
+            "accountCommitment": { "$ref": "#/$defs/bytes32" }
+          },
+          "required": ["accountCommitment"],
+          "type": "object"
+        }
+      },
+      "required": ["computeCreditVault", "tinkerAccountEncumbrance"],
+      "type": "object"
+    },
+    "truthStatus": { "const": "pre_deployment_intent_not_deployment_attestation_or_runtime_authority_evidence" }
+  },
+  "required": ["deploymentControl", "dynamicRuntimeAuthorities", "network", "numericPolicy", "release", "schema", "scope", "staticContractInputs", "truthStatus"],
+  "title": "dnai-wikigen deployment intent core",
+  "type": "object",
+  "$defs": {
+    "address": { "not": { "const": "0x0000000000000000000000000000000000000000" }, "pattern": "^0x[0-9a-f]{40}$", "type": "string" },
+    "bytes32": { "not": { "const": "0x0000000000000000000000000000000000000000000000000000000000000000" }, "pattern": "^0x[0-9a-f]{64}$", "type": "string" },
+    "canonicalDecimal": { "pattern": "^(?:0\\.[0-9]{0,5}[1-9]|[1-9][0-9]{0,2}(?:\\.[0-9]{0,5}[1-9])?)$", "type": "string" },
+    "emptySet": { "maxItems": 0, "type": "array" },
+    "meteringPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrency": { "maximum": 16, "minimum": 1, "type": "integer" },
+        "rateCapacity": { "maximum": 600, "minimum": 1, "type": "integer" },
+        "rateRefillPerSecond": { "$ref": "#/$defs/canonicalDecimal" },
+        "requestBodyTimeoutSeconds": { "$ref": "#/$defs/canonicalDecimal" },
+        "rpcTimeoutSeconds": { "$ref": "#/$defs/canonicalDecimal" }
+      },
+      "required": ["maxConcurrency", "rateCapacity", "rateRefillPerSecond", "requestBodyTimeoutSeconds", "rpcTimeoutSeconds"],
+      "type": "object"
+    },
+    "qvlPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "challengeCapacity": { "maximum": 65536, "minimum": 16, "type": "integer" },
+        "challengeTtlSeconds": { "maximum": 120, "minimum": 10, "type": "integer" },
+        "maxConcurrency": { "maximum": 16, "minimum": 1, "type": "integer" },
+        "rateCapacity": { "maximum": 600, "minimum": 1, "type": "integer" },
+        "rateRefillPerSecond": { "$ref": "#/$defs/canonicalDecimal" },
+        "requestBodyTimeoutSeconds": { "$ref": "#/$defs/canonicalDecimal" },
+        "verificationTimeoutSeconds": { "$ref": "#/$defs/canonicalDecimal" }
+      },
+      "required": ["challengeCapacity", "challengeTtlSeconds", "maxConcurrency", "rateCapacity", "rateRefillPerSecond", "requestBodyTimeoutSeconds", "verificationTimeoutSeconds"],
+      "type": "object"
+    },
+    "tinkerUnits": { "pattern": "^(?:[1-9]|[1-9][0-9]{1,18}|10000000000000000000)$", "type": "string" }
+  }
+}

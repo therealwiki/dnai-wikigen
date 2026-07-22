@@ -1,0 +1,81 @@
+name: dnai-independent-attestation-qvl
+
+x-qvl-image: &qvl-image ${QVL_IMAGE_REPOSITORY:?set a registry image}@${QVL_IMAGE_DIGEST:?set an immutable sha256 digest}
+
+services:
+  policy-init:
+    image: *qvl-image
+    user: "0:0"
+    init: true
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    network_mode: none
+    environment:
+      QVL_RELEASE_POLICY_B64: ${QVL_RELEASE_POLICY_B64:?inject the reviewed public policy with Phala encrypted environment variables}
+    entrypoint:
+      - /.venv/bin/python
+      - -m
+      - attestation_qvl.policy_bootstrap
+    volumes:
+      - type: volume
+        source: qvl-policy
+        target: /run/qvl
+
+  qvl:
+    image: *qvl-image
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    depends_on:
+      policy-init:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      QVL_RELEASE_POLICY_PATH: /run/qvl/release-policy.json
+      QVL_AUTH_TOKEN: ${QVL_AUTH_TOKEN:?inject with Phala encrypted environment variables}
+      QVL_PCCS_URL: https://pccs.phala.network
+      QVL_MAX_CONCURRENCY: ${QVL_MAX_CONCURRENCY:-4}
+      QVL_RATE_CAPACITY: ${QVL_RATE_CAPACITY:-30}
+      QVL_RATE_REFILL_PER_SECOND: ${QVL_RATE_REFILL_PER_SECOND:-0.5}
+      QVL_CHALLENGE_TTL_SECONDS: ${QVL_CHALLENGE_TTL_SECONDS:-60}
+      QVL_CHALLENGE_CAPACITY: ${QVL_CHALLENGE_CAPACITY:-1024}
+      QVL_REQUEST_BODY_TIMEOUT_SECONDS: ${QVL_REQUEST_BODY_TIMEOUT_SECONDS:-5}
+      QVL_VERIFICATION_TIMEOUT_SECONDS: ${QVL_VERIFICATION_TIMEOUT_SECONDS:-20}
+    volumes:
+      - type: volume
+        source: qvl-policy
+        target: /run/qvl
+        read_only: true
+      - type: bind
+        source: /var/run/dstack.sock
+        target: /var/run/dstack.sock
+        read_only: true
+    ports:
+      - "8443:8443"
+    networks:
+      - qvl-egress
+    healthcheck:
+      test: ["CMD", "/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8443/health', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  qvl-policy:
+
+networks:
+  qvl-egress:
+    driver: bridge

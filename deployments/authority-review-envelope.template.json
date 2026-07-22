@@ -1,0 +1,22 @@
+{
+  "action_scope": [],
+  "approved_at": null,
+  "checkpoint": null,
+  "declaration": "out_of_band_review_collected_not_signature_verified",
+  "expires_at": null,
+  "review_evidence_sha256": null,
+  "reviewers": [
+    {
+      "address": null,
+      "controllerId": null
+    },
+    {
+      "address": null,
+      "controllerId": null
+    }
+  ],
+  "schema": "dnai.authority-review-envelope.v1",
+  "subject_kind": null,
+  "subject_sha256": null,
+  "truthStatus": "renewable_review_declaration_not_signature_key_control_deployment_or_tdx_evidence"
+}

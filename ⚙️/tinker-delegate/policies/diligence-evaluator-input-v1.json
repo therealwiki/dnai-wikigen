@@ -1,0 +1,1 @@
+{"artifact_bytes":"opaque_private_bytes_inside_cvm","max_artifact_bytes":1048576,"recipes":["csv_table_integrity_v1","sft_jsonl_integrity_v1","vcf_structural_qc_v1"],"schema":"dnai.diligence-evaluator-input.v1"}

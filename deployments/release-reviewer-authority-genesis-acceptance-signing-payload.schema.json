@@ -1,0 +1,110 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-genesis-acceptance-signing-payload.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical unsigned EIP-191 payload binding the exact v2 genesis and full two-guardian-signed current status. It is not reviewer acceptance or release authority.",
+  "properties": {
+    "all_active_reviewers_required": {
+      "const": true
+    },
+    "chain_id": {
+      "const": 84532
+    },
+    "declaration": {
+      "const": "every_guardian_selected_active_reviewer_accepts_this_exact_genesis_and_full_guardian_signed_current_status_instance"
+    },
+    "minimum_active_reviewers": {
+      "const": 2
+    },
+    "release_sha": {
+      "$ref": "#/$defs/release_sha"
+    },
+    "reviewer_authority_current_status": {
+      "$ref": "release-reviewer-authority-current-status.schema.json"
+    },
+    "reviewer_authority_current_status_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "reviewer_authority_genesis_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "reviewer_authority_genesis_truth_status": {
+      "const": "release_scoped_finite_reviewer_keys_and_two_guardians_precommitted_guardians_are_status_root_nonoverlapping_statuses_expire_within_fifteen_minutes"
+    },
+    "reviewer_count": {
+      "maximum": 32,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "reviewer_root_hash": {
+      "$ref": "#/$defs/bare_sha256"
+    },
+    "reviewer_set_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schema": {
+      "const": "dnai.release-reviewer-authority-genesis-acceptance-signing-payload.v2"
+    },
+    "signature_scheme": {
+      "const": "eip191_personal_sign_secp256k1_low_s_65_byte"
+    },
+    "signature_verifier": {
+      "$ref": "#/$defs/signature_verifier"
+    },
+    "status_epoch": {
+      "maximum": 4294967295,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "truth_status": {
+      "const": "all_current_active_reviewers_accepted_the_exact_guardian_signed_status_guardians_remain_the_only_status_root_and_status_is_nonoverlapping_and_expires_within_fifteen_minutes"
+    }
+  },
+  "required": [
+    "all_active_reviewers_required",
+    "chain_id",
+    "declaration",
+    "minimum_active_reviewers",
+    "release_sha",
+    "reviewer_authority_current_status",
+    "reviewer_authority_current_status_sha256",
+    "reviewer_authority_genesis_sha256",
+    "reviewer_authority_genesis_truth_status",
+    "reviewer_count",
+    "reviewer_root_hash",
+    "reviewer_set_sha256",
+    "schema",
+    "signature_scheme",
+    "signature_verifier",
+    "status_epoch",
+    "truth_status"
+  ],
+  "title": "dnai-wikigen reviewer genesis acceptance signing payload v2",
+  "type": "object",
+  "$defs": {
+    "bare_sha256": {
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "release_sha": {
+      "pattern": "^(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "signature_verifier": {
+      "additionalProperties": false,
+      "const": {
+        "build_profile": "maxperf",
+        "commit_sha": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2",
+        "executable_sha256": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d",
+        "executable_user_relative_path": ".foundry/bin/cast",
+        "tool": "cast wallet verify",
+        "version": "1.5.1-stable"
+      },
+      "type": "object"
+    }
+  }
+}

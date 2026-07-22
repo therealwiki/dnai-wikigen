@@ -4,7 +4,10 @@ import unittest
 from email.message import EmailMessage
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from email_oracle.account_creator import verify_imap_login
+from email_oracle.api import app, state
 from email_oracle.config import Settings
 from email_oracle.cred_store import EmailCredentials
 from email_oracle.imap_client import IMAPClient
@@ -76,7 +79,52 @@ class FakeSearchConnection:
         return "OK", [(b"1", msg.as_bytes())]
 
 
+class FakeSpoofedSenderConnection(FakeSearchConnection):
+    def fetch(self, msg_id, query):
+        msg = EmailMessage()
+        msg["From"] = "no-reply@thinkingmachines.ai <attacker@example.net>"
+        msg["Subject"] = "Your code"
+        msg["Date"] = "Wed, 08 Jul 2026 12:00:00 +0000"
+        msg.set_content("Your code is 123456")
+        return "OK", [(b"1", msg.as_bytes())]
+
+
+class MailboxEgressTrap:
+    def __init__(self):
+        self.calls = 0
+
+    def list_recent(self, **_kwargs):
+        self.calls += 1
+        print("private-id private-sender@example.test private-subject private-date")
+        return []
+
+
 class OracleLogHygieneTest(unittest.TestCase):
+    def test_removed_inbox_route_cannot_call_or_log_mailbox_metadata(self):
+        trap = MailboxEgressTrap()
+        state.settings = Settings(
+            runtime_auth_required=True,
+            runtime_auth_token="shared-secret",
+        )
+        state.creds = EmailCredentials("oracle", "example.com", "secret-password")
+        state.imap = trap
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            response = TestClient(app).get(
+                "/inbox",
+                headers={"Authorization": "Bearer shared-secret"},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(trap.calls, 0)
+        rendered = output.getvalue() + response.text
+        self.assertNotIn("private-id", rendered)
+        self.assertNotIn("private-sender@example.test", rendered)
+        self.assertNotIn("private-subject", rendered)
+        self.assertNotIn("private-date", rendered)
+        self.assertNotIn("oracle@example.com", rendered)
+
     def test_verify_imap_login_logs_only_email_hash(self):
         creds = EmailCredentials("oracle", "example.com", "secret-password")
         settings = Settings(cockli_imap_host="mail.example", cockli_imap_port=993)
@@ -100,7 +148,7 @@ class OracleLogHygieneTest(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = client.search_and_extract(
                 from_filter="no-reply@thinkingmachines.ai",
-                subject_contains="Your code",
+                subject_contains="",
             )
 
         self.assertIsNotNone(result)
@@ -113,6 +161,15 @@ class OracleLogHygieneTest(unittest.TestCase):
         self.assertNotIn("Thinking Machines Lab", rendered)
         self.assertNotIn("Your code", rendered)
         self.assertNotIn("123456", rendered)
+
+    def test_imap_rechecks_exact_sender_before_reading_otp(self):
+        creds = EmailCredentials("oracle", "example.com", "secret-password")
+        client = IMAPClient(creds, Settings())
+        client._conn = FakeSpoofedSenderConnection()
+
+        result = client.search_and_extract()
+
+        self.assertIsNone(result)
 
     def test_check_command_logs_recent_email_hashes_only(self):
         creds = EmailCredentials("oracle", "example.com", "secret-password")

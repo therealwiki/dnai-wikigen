@@ -1,6 +1,8 @@
 # Tinker Funding Model
 
-Status: local policy enforced; live funding still not proven.
+Status: local policy enforced; the fresh release is undeployed and production
+funding remains unapproved. Live observations in this document are historical
+prior-operator evidence, not current project custody or release activation.
 
 ## Decision
 
@@ -212,12 +214,14 @@ What is real:
 
 What remains partial:
 
-- A live Phala encrypted-card attempt reached bounded payment-method UI copy,
-  but it has not yet been proven to leave a usable card on file.
-- A real-card low-value top-up was attempted, but the account balance stayed
-  `$0.00`; add-balance stopped at a missing amount selector. The source fix is
-  local/tested but not yet Phala-deployed.
-- The deployed encumbrance still caps add-balance/spend at `$5`; it must be
-  raised to `$10` before the next Tinker-minimum top-up attempt.
+- Historical prior-operator Phala runs reached bounded payment-method UI copy
+  and later produced bounded low-value balance reads. They did not prove a
+  reusable payment-method reference or authorize the fresh release.
+- The older prior-operator `TinkerAccountEncumbrance` was raised from `$5` to
+  `$10` add-balance/spend caps. That historical chain policy is not the fresh
+  seven-contract suite, which remains undeployed; any future funding attempt
+  requires a newly reviewed and activated policy under current custody.
+- The current selector and receipt logic is source/local-test real, but it has
+  not been deployed in the fresh project-owned Phala topology.
 - No reusable payment-method token/reference is captured or persisted.
 - Production or repeated card funding still requires legal/compliance approval.

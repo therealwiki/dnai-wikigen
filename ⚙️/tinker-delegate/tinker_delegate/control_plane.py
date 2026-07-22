@@ -14,14 +14,25 @@ that the watcher calls when events occur.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import tinker
+from eth_hash.auto import keccak
 
-from tinker_delegate.artifacts import verify_artifact_hash, zero_buffer
+from tinker_delegate.artifacts import (
+    encode_artifact_wrapper,
+    normalize_artifact_commitment_secret,
+    normalize_artifact_hash,
+    verify_artifact_commitment,
+    zero_buffer,
+)
 from tinker_delegate.cost_metering import reconcile_costs
 from tinker_delegate.destruction_record import DestructionEvidence, build_destruction_record
 from tinker_delegate.dstack_utils import get_attestation, is_dstack_enabled
@@ -44,6 +55,29 @@ from tinker_delegate.run_metadata_store import (
     value_band,
 )
 from tinker_delegate.session import CleanupAttestation, IsolatedTinkerSession
+
+
+LEGACY_LOCAL_EVALUATOR_POLICY_COMMITMENT = (
+    "0x"
+    + keccak(b"dnai-wikigen/evaluator-policy/legacy-local-only/v1").hex()
+)
+
+
+def normalize_evaluator_policy_commitment(value: str) -> str:
+    """Normalize one nonzero onchain evaluator-policy bytes32."""
+
+    if not isinstance(value, str):
+        raise ValueError("evaluator policy commitment must be bytes32")
+    raw = value[2:] if value.startswith(("0x", "0X")) else value
+    if len(raw) != 64:
+        raise ValueError("evaluator policy commitment must be bytes32")
+    try:
+        decoded = bytes.fromhex(raw)
+    except ValueError as exc:
+        raise ValueError("evaluator policy commitment must be bytes32") from exc
+    if not any(decoded):
+        raise ValueError("evaluator policy commitment must be nonzero")
+    return "0x" + raw.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -75,21 +109,99 @@ def bound_output(raw_delta: float) -> ScoreBand:
     return ScoreBand.NEGLIGIBLE
 
 
+PUBLIC_CONFIDENCE = "withheld"
+PUBLIC_METHODOLOGY_SUMMARY = "private_evaluator_details_withheld"
+# The buyer pays a fixed, public evaluation tariff instead of the evaluator's
+# exact token/call meter.  It is derived only from already-public deal terms,
+# so evaluator-controlled work cannot encode artifact bits into settlement.
+# Fresh DiligenceRoom deployments freeze the matching 1% protocol fee and
+# enable the same one-way compute-settlement policy on-chain.
+PUBLIC_COMPUTE_SETTLEMENT_BPS = 100  # 1% of the public budget cap
+PUBLIC_PROTOCOL_FEE_BPS = 100        # 1% of the public compute tariff
+_BPS_DENOMINATOR = 10_000
+
+
+def reduce_private_evaluation(raw: Mapping[str, Any]) -> ScoreBand:
+    """Reduce private evaluator metrics to the single approved public channel.
+
+    Evaluators may keep arbitrary diagnostic strings and metrics inside the TEE,
+    but none of those fields are trusted as public output.  The only accepted
+    evaluator-controlled scalar is a finite quality delta in ``[0, 1]``; it is
+    immediately quantized to :class:`ScoreBand`.  Benchmark names, confidence,
+    methodology, counts, hashes, and any additional fields are deliberately
+    ignored so they cannot become covert public egress channels.
+    """
+
+    if not isinstance(raw, Mapping):
+        raise ValueError("evaluator result must be a mapping")
+    delta = raw.get("quality_delta")
+    if isinstance(delta, bool) or not isinstance(delta, (int, float)):
+        raise ValueError("evaluator quality_delta must be a finite number")
+    normalized = float(delta)
+    if not math.isfinite(normalized) or not 0.0 <= normalized <= 1.0:
+        raise ValueError("evaluator quality_delta must be within [0, 1]")
+    return bound_output(normalized)
+
+
+def _mul_bps(value: int, bps: int) -> int:
+    """Overflow-safe floor(value * bps / 10_000), mirrored in Solidity."""
+
+    quotient, remainder = divmod(value, _BPS_DENOMINATOR)
+    return quotient * bps + (remainder * bps) // _BPS_DENOMINATOR
+
+
+def _principal_before_fee(total: int, fee_bps: int) -> int:
+    """Largest conservative principal whose principal + fee fits ``total``."""
+
+    denominator = _BPS_DENOMINATOR + fee_bps
+    quotient, remainder = divmod(total, denominator)
+    return quotient * _BPS_DENOMINATOR + (
+        remainder * _BPS_DENOMINATOR
+    ) // denominator
+
+
+def derive_public_settlement(
+    *,
+    budget_cap: int,
+    reserve_price: int,
+) -> tuple[int, int]:
+    """Return the deterministic public compute tariff and protocol fee.
+
+    Neither value reads the evaluator result, session meter, artifact size,
+    token count, time, or call count.  The tariff is one percent of the public
+    budget, conservatively capped so ``reserve + compute + fee <= budget``.
+    Exact metering remains private and is reconciled independently below.
+    """
+
+    for label, value in (("budget_cap", budget_cap), ("reserve_price", reserve_price)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{label} must be a non-negative integer")
+    if reserve_price > budget_cap:
+        raise ValueError("reserve_price cannot exceed budget_cap")
+    target = _mul_bps(budget_cap, PUBLIC_COMPUTE_SETTLEMENT_BPS)
+    available = budget_cap - reserve_price
+    compute_cost = min(
+        target,
+        _principal_before_fee(available, PUBLIC_PROTOCOL_FEE_BPS),
+    )
+    fee = _mul_bps(compute_cost, PUBLIC_PROTOCOL_FEE_BPS)
+    return compute_cost, fee
+
+
 def compute_offer(band: ScoreBand, budget_cap: int, reserve_price: int) -> int:
     """Compute offer price from score band and budget constraints.
 
     The offer is derived from the band, not the raw delta.
     This prevents reverse-engineering exact quality from price.
     """
-    band_multipliers = {
-        ScoreBand.EXCEPTIONAL: 0.90,
-        ScoreBand.HIGH: 0.70,
-        ScoreBand.MEDIUM: 0.50,
-        ScoreBand.LOW: 0.30,
-        ScoreBand.NEGLIGIBLE: 0.0,
+    band_bps = {
+        ScoreBand.EXCEPTIONAL: 9_000,
+        ScoreBand.HIGH: 7_000,
+        ScoreBand.MEDIUM: 5_000,
+        ScoreBand.LOW: 3_000,
+        ScoreBand.NEGLIGIBLE: 0,
     }
-    multiplier = band_multipliers[band]
-    offer = int(budget_cap * multiplier)
+    offer = _mul_bps(budget_cap, band_bps[band])
 
     # Clamp to reserve price
     if offer < reserve_price and band != ScoreBand.NEGLIGIBLE:
@@ -107,13 +219,13 @@ class EvaluationResult:
     """Bounded output — the only thing that leaves the TEE."""
     deal_id: str
     score_band: ScoreBand
-    quality_delta: str          # banded, e.g. "+10-15% on benchmark X"
+    quality_delta: str          # fixed description derived only from score_band
     offer_price: int            # in wei, within buyer's budget cap
     recommendation: str         # "accept" | "reject"
-    confidence: str             # "high" | "medium" | "low"
-    methodology_summary: str
-    compute_cost_wei: int
-    fee_wei: int
+    confidence: str             # fixed "withheld" marker; never evaluator text
+    methodology_summary: str    # fixed marker; private methodology never leaves
+    compute_cost_wei: int      # deterministic public tariff; never raw metering
+    fee_wei: int               # deterministic fee over the public tariff
     tdx_quote: bytes = b""     # TDX attestation binding this result
     settlement_safe: bool = True       # cost reconciliation passed
     reconciliation_status: str = "reconciled"
@@ -138,15 +250,39 @@ class DealContext:
     seller: str
     budget_cap: int       # wei
     reserve_price: int    # wei
+    committed_artifact_hash: str
+    evaluator_policy_commitment: str = LEGACY_LOCAL_EVALUATOR_POLICY_COMMITMENT
     state: DealState = DealState.PENDING_ARTIFACT
     session: Optional[IsolatedTinkerSession] = None
     artifact: Optional[bytearray] = None
+    artifact_commitment_secret: Optional[bytearray] = None
     artifact_hash: str = ""
     result: Optional[EvaluationResult] = None
     cleanup_attestation: Optional[CleanupAttestation] = None
     destruction_record: Optional[dict] = None
     retention_decision: Optional[dict] = None
     created_at: float = field(default_factory=time.time)
+
+    def __post_init__(self) -> None:
+        # Normalize once at construction. The field is write-once because every
+        # later artifact decision must stay anchored to the funded chain event.
+        object.__setattr__(
+            self,
+            "committed_artifact_hash",
+            normalize_artifact_hash(self.committed_artifact_hash),
+        )
+        object.__setattr__(
+            self,
+            "evaluator_policy_commitment",
+            normalize_evaluator_policy_commitment(
+                self.evaluator_policy_commitment
+            ),
+        )
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"committed_artifact_hash", "evaluator_policy_commitment"} and name in self.__dict__:
+            raise AttributeError(f"{name} is immutable")
+        object.__setattr__(self, name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +304,7 @@ class ControlPlane:
         source_registry: SourceControllerRegistry | None = None,
         source_ref: str = "source://tinker-account",
         source_scope: str = "tinker_compute",
+        enable_tinker_session: bool = True,
     ):
         self._api_key = tinker_api_key
         self._project_id = project_id
@@ -184,6 +321,7 @@ class ControlPlane:
         self._source_registry = source_registry
         self._source_ref = source_ref
         self._source_scope = source_scope
+        self._enable_tinker_session = bool(enable_tinker_session)
 
     def _create_service_client(self) -> Any:
         """Create a Tinker ServiceClient with the sealed API key."""
@@ -216,11 +354,38 @@ class ControlPlane:
         seller: str,
         budget_cap: int,
         reserve_price: int,
+        committed_artifact_hash: str,
+        evaluator_policy_commitment: str = LEGACY_LOCAL_EVALUATOR_POLICY_COMMITMENT,
     ) -> DealContext:
         """Called when a deal is funded on-chain. Creates session."""
-        self._authorize_source_use()
-        sc = self._create_service_client()
-        session = IsolatedTinkerSession(sc, deal_id)
+        normalized_commitment = normalize_artifact_hash(committed_artifact_hash)
+        normalized_evaluator_policy = normalize_evaluator_policy_commitment(
+            evaluator_policy_commitment
+        )
+        existing = self._deals.get(deal_id)
+        if existing is not None:
+            same_funded_context = (
+                existing.buyer == buyer
+                and existing.seller == seller
+                and existing.budget_cap == budget_cap
+                and existing.reserve_price == reserve_price
+                and hmac.compare_digest(
+                    existing.committed_artifact_hash,
+                    normalized_commitment,
+                )
+                and hmac.compare_digest(
+                    existing.evaluator_policy_commitment,
+                    normalized_evaluator_policy,
+                )
+            )
+            if same_funded_context:
+                return existing
+            raise ValueError("funded deal context conflicts with immutable chain context")
+        session = None
+        if self._enable_tinker_session:
+            self._authorize_source_use()
+            sc = self._create_service_client()
+            session = IsolatedTinkerSession(sc, deal_id)
 
         ctx = DealContext(
             deal_id=deal_id,
@@ -228,6 +393,8 @@ class ControlPlane:
             seller=seller,
             budget_cap=budget_cap,
             reserve_price=reserve_price,
+            committed_artifact_hash=normalized_commitment,
+            evaluator_policy_commitment=normalized_evaluator_policy,
             session=session,
         )
         self._deals[deal_id] = ctx
@@ -239,6 +406,7 @@ class ControlPlane:
                 seller_hash=stable_hash(seller, prefix="seller"),
                 budget_cap_band=value_band(budget_cap),
                 reserve_price_band=value_band(reserve_price),
+                evaluator_policy_commitment=normalized_evaluator_policy,
             )
         )
         return ctx
@@ -248,22 +416,70 @@ class ControlPlane:
         deal_id: str,
         artifact: bytes | bytearray,
         artifact_hash: str,
-    ) -> None:
-        """Receive seller's artifact after verifying its committed hash."""
+        commitment_secret: bytes | bytearray | str,
+    ) -> bool:
+        """Store one deal-bound v2 artifact, or accept its exact retry.
+
+        The return value is ``True`` only for the first write and ``False`` for
+        an exact replay. Public ingress deliberately returns the same bounded
+        acknowledgement for both outcomes.
+        """
         ctx = self._deals[deal_id]
-        assert ctx.state == DealState.PENDING_ARTIFACT
-        ctx.artifact_hash = verify_artifact_hash(artifact, artifact_hash)
-        ctx.artifact = bytearray(artifact)
-        self._append_run_metadata(
-            make_run_metadata_event(
-                "artifact_received",
-                deal_id,
-                artifact_hash=ctx.artifact_hash,
-                artifact_size_band=size_band(len(artifact)),
-            )
+        submitted_hash = normalize_artifact_hash(artifact_hash)
+        if not hmac.compare_digest(submitted_hash, ctx.committed_artifact_hash):
+            raise ValueError("uploaded artifact commitment does not match the on-chain deal")
+        verified_hash = verify_artifact_commitment(
+            artifact,
+            commitment_secret,
+            ctx.committed_artifact_hash,
         )
-        # Ready for evaluation — but don't auto-start.
-        # The watcher or API triggers evaluate().
+        normalized_secret = normalize_artifact_commitment_secret(commitment_secret)
+        secret_transferred = False
+        try:
+            existing_artifact = ctx.artifact
+            existing_secret = ctx.artifact_commitment_secret
+            if existing_artifact is not None or existing_secret is not None:
+                if existing_artifact is None or existing_secret is None:
+                    raise ValueError("stored artifact state is inconsistent")
+                if (
+                    hmac.compare_digest(existing_artifact, artifact)
+                    and hmac.compare_digest(existing_secret, normalized_secret)
+                    and hmac.compare_digest(ctx.artifact_hash, verified_hash)
+                ):
+                    return False
+                raise ValueError(
+                    "artifact replay conflicts with the stored deal-bound artifact"
+                )
+
+            if ctx.state != DealState.PENDING_ARTIFACT:
+                raise ValueError("deal is not awaiting an artifact")
+            ctx.artifact_hash = verified_hash
+            ctx.artifact = bytearray(artifact)
+            ctx.artifact_commitment_secret = normalized_secret
+            secret_transferred = True
+            self._append_run_metadata(
+                make_run_metadata_event(
+                    "artifact_received",
+                    deal_id,
+                    artifact_hash=ctx.artifact_hash,
+                    artifact_size_band=size_band(len(artifact)),
+                )
+            )
+            # Ready for evaluation — but don't auto-start.
+            # The watcher or API triggers evaluate().
+            return True
+        finally:
+            if not secret_transferred:
+                zero_buffer(normalized_secret)
+
+    def get_deal_context(self, deal_id: str) -> DealContext:
+        """Return the in-TEE context used for role authorization.
+
+        API callers use this only inside the process to compare the authenticated
+        wallet with the funded seller.  The context itself is never serialized.
+        """
+
+        return self._deals[deal_id]
 
     async def evaluate(
         self,
@@ -283,11 +499,25 @@ class ControlPlane:
         """
         ctx = self._deals[deal_id]
         assert ctx.artifact is not None, "No artifact uploaded"
-        assert ctx.session is not None, "No session"
+        assert ctx.artifact_commitment_secret is not None, "No artifact commitment secret"
+        requires_tinker_session = bool(
+            getattr(evaluator_fn, "requires_tinker_session", True)
+        )
+        if requires_tinker_session:
+            assert ctx.session is not None, "No session"
 
         ctx.state = DealState.EVALUATING
 
         try:
+            # Recompute at the last possible point before evaluator code sees
+            # bytes. This prevents a future ingress bypass or in-memory mutation
+            # from causing the TEE to evaluate anything other than the
+            # chain-committed artifact.
+            verify_artifact_commitment(
+                ctx.artifact,
+                ctx.artifact_commitment_secret,
+                ctx.committed_artifact_hash,
+            )
             raw = await evaluator_fn(
                 artifact=bytes(ctx.artifact),
                 artifact_type="dataset",  # TODO: detect from artifact
@@ -297,8 +527,7 @@ class ControlPlane:
             )
 
             # Bound the output
-            raw_delta = raw.get("quality_delta", 0.0)
-            band = bound_output(raw_delta)
+            band = reduce_private_evaluation(raw)
             offer = compute_offer(band, ctx.budget_cap, ctx.reserve_price)
             recommendation = "accept" if band.value in ("exceptional", "high", "medium") else "reject"
 
@@ -309,29 +538,38 @@ class ControlPlane:
             # over-metered charge is caught in the TEE instead of reverting on
             # chain. Estimate == chain here (both from the meter); a real Tinker
             # backend would feed reported_cost separately.
-            compute_cost_wei = ctx.session.compute_cost_wei
-            fee_wei = ctx.session.fee_wei
-            developer_charge = compute_cost_wei + fee_wei
+            private_compute_cost_wei = (
+                int(ctx.session.compute_cost_wei) if ctx.session is not None else 0
+            )
+            private_fee_wei = int(ctx.session.fee_wei) if ctx.session is not None else 0
+            private_developer_charge = private_compute_cost_wei + private_fee_wei
             reconciliation = reconcile_costs(
-                model=getattr(ctx.session, "model", "") or "unknown",
-                estimated_cost_wei=developer_charge,
-                chain_compute_cost_wei=developer_charge,
+                model=getattr(ctx.session, "model", "") or "deterministic",
+                estimated_cost_wei=private_developer_charge,
+                # This comparison remains entirely inside the TEE.  It checks
+                # the exact metered charge against the buyer-authorized headroom
+                # without publishing that high-cardinality value.
+                chain_compute_cost_wei=private_developer_charge,
                 budget_cap_wei=max(0, ctx.budget_cap - offer),
-                fee_wei=fee_wei,
+                fee_wei=private_fee_wei,
             )
             if not reconciliation.settlement_safe:
-                # Cannot settle within budget — refuse to recommend acceptance.
-                recommendation = "reject"
+                raise RuntimeError("private metered evaluation cost exceeds deal budget policy")
+
+            compute_cost_wei, fee_wei = derive_public_settlement(
+                budget_cap=ctx.budget_cap,
+                reserve_price=ctx.reserve_price,
+            )
 
             # Build bounded result
             result = EvaluationResult(
                 deal_id=deal_id,
                 score_band=band,
-                quality_delta=self._band_description(band, raw.get("benchmark", "unknown")),
+                quality_delta=self._band_description(band),
                 offer_price=offer,
                 recommendation=recommendation,
-                confidence=raw.get("confidence", "medium"),
-                methodology_summary=raw.get("methodology", "LoRA fine-tune + benchmark evaluation"),
+                confidence=PUBLIC_CONFIDENCE,
+                methodology_summary=PUBLIC_METHODOLOGY_SUMMARY,
                 compute_cost_wei=compute_cost_wei,
                 fee_wei=fee_wei,
                 settlement_safe=reconciliation.settlement_safe,
@@ -340,6 +578,8 @@ class ControlPlane:
 
             # Attach TDX attestation
             result.tdx_quote = self._get_tdx_quote(deal_id, result)
+            if not result.tdx_quote:
+                raise RuntimeError("TDX result attestation quote is required")
 
             ctx.result = result
             ctx.state = DealState.EVALUATED
@@ -365,9 +605,22 @@ class ControlPlane:
             return result
 
         except Exception:
-            # Cleanup on failure
+            # Fail closed on evaluator or integrity failure. A deal marked
+            # resolved must not retain private bytes while waiting for another
+            # on-chain notification that may never arrive.
             if ctx.session:
-                ctx.cleanup_attestation = ctx.session.cleanup()
+                try:
+                    ctx.cleanup_attestation = ctx.session.cleanup()
+                except Exception:
+                    # Preserve the original evaluation/integrity error, but do
+                    # not let a cleanup failure skip plaintext destruction.
+                    ctx.cleanup_attestation = None
+            if ctx.artifact is not None:
+                zero_buffer(ctx.artifact)
+                ctx.artifact = None
+            if ctx.artifact_commitment_secret is not None:
+                zero_buffer(ctx.artifact_commitment_secret)
+                ctx.artifact_commitment_secret = None
             ctx.state = DealState.RESOLVED
             self._append_run_metadata(
                 make_run_metadata_event(
@@ -400,27 +653,36 @@ class ControlPlane:
         retain = decision.action in (RetentionAction.RETAIN_SEALED, RetentionAction.ARCHIVE_ENCRYPTED)
         sealed_retained = False
 
-        if retain and store is not None and ctx.artifact is not None:
-            # Honor the retention decision: seal the artifact under the retention
-            # key, then zero the plaintext buffer. Destruction happens later on
-            # sweep_retention() once the window expires.
-            store.seal(
-                deal_id,
-                bytes(ctx.artifact),
-                retain_until=decision.retain_until,
-                artifact_hash=ctx.artifact_hash or "",
-                # Scope the key hierarchy per data owner: each seller's retained
-                # corpus derives under its own key branch, not one shared key.
-                corpus_ref=getattr(ctx, "seller", "") or "",
-            )
-            sealed_retained = True
-            zero_buffer(ctx.artifact)
-            ctx.artifact = None
-        else:
-            # Fail-closed default: destroy now (no store, or a destroy decision).
-            if ctx.artifact:
+        try:
+            if retain and store is not None and ctx.artifact is not None:
+                # Honor the retention decision: seal the versioned wrapper under
+                # the retention key. Destruction happens later on
+                # sweep_retention() once the window expires.
+                if ctx.artifact_commitment_secret is None:
+                    raise ValueError("cannot retain artifact without its v2 commitment secret")
+                retained_wrapper = encode_artifact_wrapper(ctx.artifact, ctx.artifact_commitment_secret)
+                try:
+                    store.seal(
+                        deal_id,
+                        bytes(retained_wrapper),
+                        retain_until=decision.retain_until,
+                        artifact_hash=ctx.artifact_hash or "",
+                        # Scope the key hierarchy per data owner: each seller's retained
+                        # corpus derives under its own key branch, not one shared key.
+                        corpus_ref=getattr(ctx, "seller", "") or "",
+                    )
+                finally:
+                    zero_buffer(retained_wrapper)
+                sealed_retained = True
+        finally:
+            # Plaintext and the commitment secret never survive resolution, even
+            # when the retention store raises while sealing the wrapper.
+            if ctx.artifact is not None:
                 zero_buffer(ctx.artifact)
                 ctx.artifact = None
+            if ctx.artifact_commitment_secret is not None:
+                zero_buffer(ctx.artifact_commitment_secret)
+                ctx.artifact_commitment_secret = None
 
         att = ctx.cleanup_attestation
         checkpoints_deleted = getattr(att, "deleted_checkpoint_count", 0) if att else 0
@@ -537,7 +799,11 @@ class ControlPlane:
 
         if "score_band" in event_fields:
             metadata["score_band"] = str(event_fields["score_band"])
-        for hash_field in ("artifact_hash", "result_hash"):
+        for hash_field in (
+            "artifact_hash",
+            "result_hash",
+            "evaluator_policy_commitment",
+        ):
             value = event_fields.get(hash_field)
             if value:
                 metadata[hash_field] = str(value)
@@ -592,7 +858,7 @@ class ControlPlane:
     # --- Helpers ---
 
     @staticmethod
-    def _band_description(band: ScoreBand, benchmark: str) -> str:
+    def _band_description(band: ScoreBand) -> str:
         ranges = {
             ScoreBand.EXCEPTIONAL: ">20%",
             ScoreBand.HIGH: "10-20%",
@@ -600,7 +866,7 @@ class ControlPlane:
             ScoreBand.LOW: "1-5%",
             ScoreBand.NEGLIGIBLE: "<1%",
         }
-        return f"+{ranges[band]} on {benchmark}"
+        return f"{ranges[band]} quality-improvement band"
 
     def _append_run_metadata(self, record: dict[str, Any]) -> None:
         store = getattr(self, "_run_metadata_store", None)
@@ -632,9 +898,40 @@ class ControlPlane:
         """Generate TDX quote binding the evaluation result to the enclave."""
         if is_dstack_enabled():
             try:
-                report_data = f"{deal_id}:{result.score_band.value}:{result.offer_price}"
+                report_data = evaluation_attestation_report_data(deal_id, result)
                 quote, _, _ = get_attestation(report_data)
                 return bytes.fromhex(quote)
             except Exception:
                 return b""
         return b""
+
+
+def evaluation_attestation_report_data(
+    deal_id: str,
+    result: EvaluationResult,
+) -> bytes:
+    """Bind a quote only to the fixed, approved public result projection.
+
+    The digest is high entropy, but its preimage contains only public deal data,
+    the five-way score band, fixed labels, and the deterministic settlement
+    tariff.  No evaluator-authored string, raw metric, or private meter is read.
+    """
+
+    payload = {
+        "schema": "dnai-wikigen/evaluation-public-result/v1",
+        "deal_id": str(deal_id),
+        "score_band": result.score_band.value,
+        "quality_delta": result.quality_delta,
+        "offer_price": result.offer_price,
+        "recommendation": result.recommendation,
+        "confidence": result.confidence,
+        "methodology_summary": result.methodology_summary,
+        "compute_cost_wei": result.compute_cost_wei,
+        "fee_wei": result.fee_wei,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(
+        b"dnai-wikigen/evaluation-attestation/v1\0" + canonical
+    ).digest()

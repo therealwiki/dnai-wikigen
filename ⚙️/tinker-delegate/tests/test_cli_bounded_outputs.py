@@ -1406,10 +1406,19 @@ class CliBoundedOutputsTest(unittest.TestCase):
 
             class Handler(BaseHTTPRequestHandler):
                 def do_POST(self):
+                    # Consume the request before closing the HTTP/1.0 connection.
+                    # On macOS, closing a socket with unread request bytes can send
+                    # a TCP RST after the response headers.  httpx then sometimes
+                    # reports a transport error, so the CLI exits before it can
+                    # write the bounded non-JSON failure receipt this test covers.
+                    request_length = int(self.headers.get("Content-Length", "0"))
+                    self.rfile.read(request_length)
+                    body = b"Internal Server Error"
                     self.send_response(500)
                     self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
-                    self.wfile.write(b"Internal Server Error")
+                    self.wfile.write(body)
 
                 def log_message(self, format, *args):
                     return

@@ -1,0 +1,63 @@
+{
+  "$id": "https://wikigen.me/schemas/authority-review-envelope.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "subject_kind": { "const": "deployment_intent" } }, "required": ["subject_kind"] },
+      "then": {
+        "properties": {
+          "action_scope": { "const": ["release_source_and_network", "deployment_operator_control", "static_contract_inputs", "contract_numeric_policy", "qvl_numeric_policy", "metering_numeric_policy", "dynamic_runtime_authorities_empty"] },
+          "checkpoint": { "const": "before_any_contract_broadcast_or_cvm_deployment" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "subject_kind": { "const": "cvm_launch_intent" } }, "required": ["subject_kind"] },
+      "then": {
+        "properties": {
+          "action_scope": { "const": ["deployment_intent_and_release_source", "verified_contract_poststate", "exact_image_subjects", "seven_descriptor_hashes", "production_phala_posture", "public_runtime_numeric_policy", "encrypted_env_key_contract", "staged_bootstrap_and_deferred_bindings"] },
+          "checkpoint": { "const": "after_verified_fresh_contract_suite_before_any_phala_cvm_provision_or_commit" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "subject_kind": { "const": "final_release_authority" } }, "required": ["subject_kind"] },
+      "then": {
+        "properties": {
+          "action_scope": { "const": ["release_source_and_network", "deployment_intent_binding", "cvm_launch_intent_binding", "contract_suite", "arena_genesis_catalog", "cvm_topology", "runtime_authorities", "release_policy"] },
+          "checkpoint": { "const": "after_measured_cvms_before_any_release_ceremony_transaction" }
+        }
+      }
+    }
+  ],
+  "description": "Structural schema for renewable out-of-band review evidence bound to an immutable deployment-intent, pre-Phala CVM-launch-intent, or final-release-authority digest. The JavaScript checker additionally requires exact canonical subject bytes, subject-kind-specific digest-linked dependency artifacts, live review time, canonical reviewer order, and transitive identity separation.",
+  "properties": {
+    "action_scope": { "items": { "type": "string" }, "maxItems": 8, "minItems": 7, "type": "array", "uniqueItems": true },
+    "approved_at": { "$ref": "#/$defs/utcSecondTimestamp" },
+    "checkpoint": { "type": "string" },
+    "declaration": { "const": "out_of_band_review_collected_not_signature_verified" },
+    "expires_at": { "$ref": "#/$defs/utcSecondTimestamp" },
+    "review_evidence_sha256": { "$ref": "#/$defs/sha256" },
+    "reviewers": { "items": { "$ref": "#/$defs/reviewer" }, "maxItems": 2, "minItems": 2, "type": "array", "uniqueItems": true },
+    "schema": { "const": "dnai.authority-review-envelope.v1" },
+    "subject_kind": { "enum": ["deployment_intent", "cvm_launch_intent", "final_release_authority"] },
+    "subject_sha256": { "$ref": "#/$defs/sha256" },
+    "truthStatus": { "const": "renewable_review_declaration_not_signature_key_control_deployment_or_tdx_evidence" }
+  },
+  "required": ["action_scope", "approved_at", "checkpoint", "declaration", "expires_at", "review_evidence_sha256", "reviewers", "schema", "subject_kind", "subject_sha256", "truthStatus"],
+  "title": "dnai-wikigen authority review envelope",
+  "type": "object",
+  "$defs": {
+    "address": { "not": { "const": "0x0000000000000000000000000000000000000000" }, "pattern": "^0x[0-9a-f]{40}$", "type": "string" },
+    "controllerId": { "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$", "type": "string" },
+    "reviewer": {
+      "additionalProperties": false,
+      "properties": { "address": { "$ref": "#/$defs/address" }, "controllerId": { "$ref": "#/$defs/controllerId" } },
+      "required": ["address", "controllerId"],
+      "type": "object"
+    },
+    "sha256": { "not": { "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }, "pattern": "^sha256:[0-9a-f]{64}$", "type": "string" },
+    "utcSecondTimestamp": { "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", "type": "string" }
+  }
+}

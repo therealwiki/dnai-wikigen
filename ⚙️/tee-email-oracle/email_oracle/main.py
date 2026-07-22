@@ -115,7 +115,10 @@ def cli():
     sub.add_parser("check", help="Verify IMAP connectivity")
     provision_p = sub.add_parser(
         "provision-credentials-encrypted-prompt",
-        help="Prompt for mailbox credentials, verify TEE attestation, encrypt, and provision",
+        help=(
+            "Prompt for mailbox credentials and provision locally; deployed TDX mode "
+            "remains blocked until an independent quote verifier is integrated"
+        ),
     )
     provision_p.add_argument("api_url", help="Email oracle API base URL")
     provision_p.add_argument(

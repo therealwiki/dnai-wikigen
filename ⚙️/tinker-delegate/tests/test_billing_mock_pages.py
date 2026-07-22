@@ -14,6 +14,7 @@ from tinker_delegate.billing import (
     _find_stripe_card_frame,
     _amount_choice_selectors,
     add_balance,
+    get_balance,
     get_payment_method_status,
 )
 from tinker_delegate.config import Settings
@@ -264,7 +265,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await _do_add_payment_method(card, Settings(debug_screenshots=True))
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Your card was declined.")
+        self.assertEqual(result["error"], "card_declined")
         self.assertEqual(result["attempt_record"]["surface"], "payment_method")
         self.assertEqual(result["attempt_record"]["outcome"], "card_declined")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "payment_submitted")
@@ -384,7 +385,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await _do_add_payment_method(card, Settings())
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Tinker auth access blocked before billing")
+        self.assertEqual(result["error"], "auth_access_blocked")
         self.assertEqual(result["attempt_record"]["surface"], "payment_method")
         self.assertEqual(result["attempt_record"]["outcome"], "auth_access_blocked")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "billing_page_loaded")
@@ -405,7 +406,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await add_balance(10.0, Settings(min_add_balance_usd=10.0, max_add_balance_usd=10.0))
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Payment method required before adding balance")
+        self.assertEqual(result["error"], "payment_method_required")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "payment_method_required")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "add_balance_modal_opened")
@@ -426,7 +427,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await add_balance(10.0, Settings(min_add_balance_usd=10.0, max_add_balance_usd=10.0))
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Tinker auth required before billing")
+        self.assertEqual(result["error"], "auth_required")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "auth_required")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "billing_page_loaded")
@@ -476,7 +477,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await add_balance(10.0, Settings(min_add_balance_usd=10.0, max_add_balance_usd=10.0))
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Add-balance open selector not found")
+        self.assertEqual(result["error"], "selector_missing")
         self.assertEqual(result["attempt_record"]["outcome"], "selector_missing")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "billing_page_loaded")
         self.assertNotIn("Current balance", repr(result))
@@ -585,7 +586,7 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
             result = await add_balance(10.0, Settings(min_add_balance_usd=10.0, max_add_balance_usd=10.0))
 
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Add-balance completion not confirmed")
+        self.assertEqual(result["error"], "unknown_failure")
         self.assertEqual(result["attempt_record"]["outcome"], "unknown_failure")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "add_balance_submitted")
         self.assertNotIn("Payment methods", result["attempt_record"]["bounded_message"])
@@ -612,8 +613,30 @@ class BillingMockPagesTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertTrue(result["card_on_file"])
         self.assertEqual(result["payment_method_count_band"], "one_or_more")
-        self.assertEqual(result["attempt_record"]["bounded_message"], "payment_method_count:one_or_more")
+        self.assertEqual(result["attempt_record"]["bounded_message"], "success")
         self.assertNotIn("Payment methods Billing history", repr(result))
+
+    async def test_get_balance_returns_only_a_stable_band(self):
+        page = FakeBillingPage(initial_text="$80.37 private exact account balance")
+
+        with (
+            patch("tinker_delegate.billing.async_playwright", return_value=AsyncPlaywrightStub()),
+            patch("tinker_delegate.billing.connect_chromium", new=AsyncMock(return_value=object())),
+            patch("tinker_delegate.billing.get_browser_context", new=AsyncMock(return_value=FakeContext(page))),
+            patch("tinker_delegate.billing.asyncio.sleep", new=AsyncMock()),
+        ):
+            result = await get_balance(Settings())
+
+        self.assertEqual(
+            result,
+            {
+                "success": True,
+                "balance_band": "10_100_usd",
+                "raw_secret_egress": False,
+            },
+        )
+        self.assertNotIn("80.37", repr(result))
+        self.assertNotIn("$", repr(result))
 
 
 if __name__ == "__main__":

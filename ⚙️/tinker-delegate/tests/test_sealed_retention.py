@@ -1,6 +1,9 @@
 import json
+import sys
+import types
 import unittest
 
+from tinker_delegate.artifacts import artifact_commitment
 from tinker_delegate.sealed_retention import (
     SealedRetentionError,
     SealedRetentionStore,
@@ -215,6 +218,7 @@ class RetentionFactoryTest(unittest.TestCase):
 
 class ControlPlaneRetentionWiringTest(unittest.TestCase):
     def _make_cp(self, policy):
+        sys.modules.setdefault("tinker", types.SimpleNamespace())
         from tinker_delegate.control_plane import ControlPlane, DealContext
 
         records = []
@@ -237,9 +241,12 @@ class ControlPlaneRetentionWiringTest(unittest.TestCase):
         cp, records, DealContext = self._make_cp(
             RetentionPolicy(RetentionMode.TIME_BOXED, retention_seconds=1000)
         )
-        ctx = DealContext("deal-r", "buyer", "seller", 10**18, 10**15)
+        commitment_secret = bytes(range(32))
+        commitment = artifact_commitment(b"private-artifact", commitment_secret)
+        ctx = DealContext("deal-r", "buyer", "seller", 10**18, 10**15, commitment)
         ctx.artifact = bytearray(b"private-artifact")
-        ctx.artifact_hash = ARTIFACT_HASH
+        ctx.artifact_commitment_secret = bytearray(commitment_secret)
+        ctx.artifact_hash = commitment
         cp._deals["deal-r"] = ctx
 
         cp.on_deal_resolved("deal-r")
@@ -251,6 +258,36 @@ class ControlPlaneRetentionWiringTest(unittest.TestCase):
         self.assertTrue(records[-1]["artifact_sealed_retained"])
         self.assertNotIn("destruction_record_hash", records[-1])
         self.assertNotIn("private-artifact", str(records))
+
+    def test_retention_store_failure_still_zeroes_artifact_and_v2_secret(self):
+        from tinker_delegate.retention_policy import RetentionMode, RetentionPolicy
+
+        cp, _records, DealContext = self._make_cp(
+            RetentionPolicy(RetentionMode.TIME_BOXED, retention_seconds=1000)
+        )
+
+        class RejectingStore:
+            def seal(self, *_args, **_kwargs):
+                raise OSError("synthetic retention failure")
+
+        cp._retention_store = RejectingStore()
+        commitment_secret = bytes(range(32))
+        commitment = artifact_commitment(b"private-artifact", commitment_secret)
+        ctx = DealContext("deal-r", "buyer", "seller", 10**18, 10**15, commitment)
+        ctx.artifact = bytearray(b"private-artifact")
+        ctx.artifact_commitment_secret = bytearray(commitment_secret)
+        ctx.artifact_hash = commitment
+        cp._deals["deal-r"] = ctx
+        stored_artifact = ctx.artifact
+        stored_secret = ctx.artifact_commitment_secret
+
+        with self.assertRaisesRegex(OSError, "synthetic retention failure"):
+            cp.on_deal_resolved("deal-r")
+
+        self.assertIsNone(ctx.artifact)
+        self.assertIsNone(ctx.artifact_commitment_secret)
+        self.assertEqual(stored_artifact, bytearray(len(b"private-artifact")))
+        self.assertEqual(stored_secret, bytearray(len(commitment_secret)))
 
     def test_sweep_destroys_expired_and_emits_record(self):
         from tinker_delegate.retention_policy import RetentionMode, RetentionPolicy

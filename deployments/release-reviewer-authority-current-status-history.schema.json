@@ -1,0 +1,24 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-current-status-history.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical complete predecessor-status sequence supplied to successor status and acceptance operations. Semantic validation checks every signature, epoch, predecessor digest, revocation, and finite-controller transition in order.",
+  "properties": {
+    "schema": {
+      "const": "dnai.release-reviewer-authority-current-status-history.v1"
+    },
+    "statuses": {
+      "items": {
+        "$ref": "release-reviewer-authority-current-status.schema.json"
+      },
+      "maxItems": 4294967294,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "statuses"
+  ],
+  "title": "dnai-wikigen reviewer authority current-status history",
+  "type": "object"
+}

@@ -3,11 +3,28 @@
 #
 # This file is purpose-built for `phala deploy`. Unlike the local compose, it
 # does not reference local build contexts; every service uses a published image.
+#
+# ARENA RELEASE GATE: the currently pinned tinker-delegate digest predates the
+# tinker-arena-worker module/entrypoint and the authenticated
+# tinker-arena-provision initializer. Do not add either service by reusing that
+# digest. First publish a clean-CI linux/amd64 image, pin its literal digest,
+# then add the network-disabled initializer and gated internal worker together.
+#
+# ANCHOR-WRITER EVIDENCE RELEASE GATE: the same pinned delegate digest was
+# inspected directly and contains neither the
+# `tinker-execution-policy-anchor-writer` entrypoint nor its Python module.
+# Consequently this production compose intentionally has no writer-evidence
+# service and the QVL bearer is absent from `delegate`. Commit a reviewed clean
+# SHA, publish/prove a new linux/amd64 delegate image in clean CI, pin its literal
+# digest here, and only then add the isolated profile-gated one-shot service.
 ###############################################################################
 
 services:
   neko:
-    image: ghcr.io/m1k1o/neko/google-chrome@sha256:320c62313c38fd3e6567eef6c8ee78e1d115deb0b88ba60ef02cc4ea7d6ebbea
+    # Historical project-owned digest used by earlier diagnostics only. It is
+    # not release-eligible for a new source SHA: rebuild from a reproducible
+    # Chrome artifact in clean CI, verify provenance/SBOM, then re-pin here.
+    image: ghcr.io/g-structure/dnai-wikigen/neko-chrome@sha256:525e43d585828d1d9aa1bceaf7c8cfffc2eec47abf67e0b10550bf05338c4a07
     platform: linux/amd64
     restart: unless-stopped
     shm_size: 2gb
@@ -18,101 +35,24 @@ services:
     networks:
       tee-net:
         ipv4_address: 172.20.0.3
-    ports:
-      - "52000:8080"
-      - "9222:9223"
     environment:
       NEKO_SCREEN: 1920x1080@30
-      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
-      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:-admin}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:?NEKO_PASSWORD must be a non-default secret}
+      NEKO_PASSWORD_ADMIN: ${NEKO_PASSWORD_ADMIN:?NEKO_PASSWORD_ADMIN must be a non-default secret}
       NEKO_ICELITE: 0
       NEKO_NAT1TO1: 172.20.0.3
-      NEKO_CHROME_FLAGS: ${NEKO_CHROME_FLAGS:-}
-    command:
+    entrypoint:
       - /bin/sh
-      - -lc
+      - -euc
       - |
-        cat >/usr/local/bin/cdp_proxy.py <<'EOF'
-        import socket
-        import threading
-
-        LISTEN = ("0.0.0.0", 9223)
-        TARGET = ("127.0.0.1", 9222)
-
-
-        def pump(src, dst):
-            try:
-                while True:
-                    chunk = src.recv(65536)
-                    if not chunk:
-                        break
-                    dst.sendall(chunk)
-            finally:
-                try:
-                    dst.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
-
-
-        def handle(client):
-            upstream = socket.create_connection(TARGET)
-            threading.Thread(target=pump, args=(client, upstream), daemon=True).start()
-            threading.Thread(target=pump, args=(upstream, client), daemon=True).start()
-
-
-        with socket.create_server(LISTEN, reuse_port=False) as server:
-            while True:
-                client, _ = server.accept()
-                threading.Thread(target=handle, args=(client,), daemon=True).start()
-        EOF
-        cat >/etc/neko/supervisord/google-chrome.conf <<'EOF'
-        # Chrome browser with remote debugging enabled
-        [program:google-chrome]
-        environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"
-        command=/bin/sh -c "exec /usr/bin/google-chrome \
-          --remote-debugging-port=9222 \
-          --remote-debugging-address=0.0.0.0 \
-          --remote-allow-origins=* \
-          --window-position=0,0 \
-          --display=$$DISPLAY \
-          --user-data-dir=/home/neko/chrome-profile \
-          --no-first-run \
-          --start-maximized \
-          --bwsi \
-          --disable-file-system \
-          --disable-gpu \
-          --disable-software-rasterizer \
-          --disable-dev-shm-usage \
-          $$NEKO_CHROME_FLAGS"
-        stopsignal=INT
-        autorestart=true
-        priority=800
-        user=%(ENV_USER)s
-        stdout_logfile=/var/log/neko/google-chrome.log
-        stdout_logfile_maxbytes=100MB
-        stdout_logfile_backups=10
-        redirect_stderr=true
-
-        [program:cdp-proxy]
-        command=/usr/bin/python3 -u /usr/local/bin/cdp_proxy.py
-        autorestart=true
-        priority=700
-        stdout_logfile=/var/log/neko/cdp-proxy.log
-        stdout_logfile_maxbytes=100MB
-        stdout_logfile_backups=10
-        redirect_stderr=true
-
-        [program:openbox]
-        environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"
-        command=/usr/bin/openbox --config-file /etc/neko/openbox.xml
-        autorestart=true
-        priority=300
-        user=%(ENV_USER)s
-        stdout_logfile=/var/log/neko/openbox.log
-        stdout_logfile_maxbytes=100MB
-        stdout_logfile_backups=10
-        redirect_stderr=true
-        EOF
+        if [ "$${NEKO_PASSWORD}" = "neko" ] || [ "$${NEKO_PASSWORD_ADMIN}" = "admin" ]; then
+          echo "refusing default Neko credentials" >&2
+          exit 78
+        fi
+        if [ "$${NEKO_PASSWORD}" = "$${NEKO_PASSWORD_ADMIN}" ]; then
+          echo "refusing identical Neko user and administrator credentials" >&2
+          exit 78
+        fi
         exec /usr/bin/supervisord -c /etc/neko/supervisord.conf
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
@@ -132,24 +72,39 @@ services:
     networks:
       tee-net:
         ipv4_address: 172.20.0.4
-    ports:
-      - "8000:8000"
     volumes:
       - oracle-data:/data
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
       ORACLE_CRED_STORE_PATH: /data/credentials.enc
-      ORACLE_CRED_STORE_KEY: ${ORACLE_CRED_STORE_KEY:-}
-      ORACLE_CDP_URL: http://172.20.0.3:9223
+      ORACLE_CRED_STORE_KEY: ""
+      ORACLE_CDP_URL: http://172.20.0.3:9222
       ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-true}
       ORACLE_AUTO_GENESIS: "false"
       ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
       ORACLE_API_HOST: 0.0.0.0
       ORACLE_API_PORT: "8000"
+      ORACLE_PRODUCTION_RELEASE: "true"
       ORACLE_DSTACK_ENABLED: "true"
-      ORACLE_DSTACK_KEY_PATH: ${ORACLE_DSTACK_KEY_PATH:-email/creds}
+      ORACLE_DSTACK_KEY_PATH: email/creds
       ORACLE_RUNTIME_AUTH_REQUIRED: "true"
-      ORACLE_RUNTIME_AUTH_KEY_PATH: ${ORACLE_RUNTIME_AUTH_KEY_PATH:-oracle/runtime-auth}
+      ORACLE_RUNTIME_AUTH_TOKEN: ""
+      ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth
+      ORACLE_AUTH_REQUIRED: "true"
+      ORACLE_AUTH_CONTRACT_ADDRESS: ${EMAIL_ORACLE_AUTH_ADDRESS:?Fresh EmailOracleAuth address required}
+      ORACLE_AUTH_RPC_URL: ${BASE_SEPOLIA_RPC_URL:?Primary Base Sepolia HTTPS RPC URL required}
+      ORACLE_AUTH_RPC_URL_SECONDARY: ${BASE_SEPOLIA_RPC_URL_SECONDARY:?Independent secondary Base Sepolia HTTPS RPC URL required}
+      ORACLE_AUTH_CHAIN_ID: "84532"
+      ORACLE_AUTH_CONTRACT_RUNTIME_CODE_HASH: ${EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH:?EmailOracleAuth runtime code hash required}
+      ORACLE_AUTH_CONSUMER_APP_ID: ${EMAIL_ORACLE_CONSUMER_APP_ID:?Release-bound main CVM TEE identity required}
+      ORACLE_AUTH_CONSUMER_COMPOSE_HASH: ${EMAIL_ORACLE_CONSUMER_COMPOSE_HASH:?Release-bound main CVM compose hash required}
+      ORACLE_AUTH_EXPECTED_CALLER_IDENTITY: tinker-delegate.signup
+      ORACLE_AUTH_MAX_FINALIZED_BLOCK_AGE_SECONDS: "900"
+      ORACLE_AUTH_MAX_FUTURE_BLOCK_SKEW_SECONDS: "30"
+      ORACLE_AUTH_CHECKPOINT_STORE_PATH: /data/email_auth_checkpoint.json
+      ORACLE_OTP_REPLAY_STORE_PATH: /data/otp_replay.enc
+      ORACLE_OTP_REPLAY_STORE_KEY: ""
+      ORACLE_OTP_REPLAY_KEY_PATH: email/otp_replay
       ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
       ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
     healthcheck:
@@ -159,6 +114,27 @@ services:
       timeout: 5s
       start_period: 180s
 
+  diligence-policy-init:
+    image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
+    platform: linux/amd64
+    command: ["tinker-diligence-evaluator-provision"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    volumes:
+      - diligence-evaluator-policy:/sealed/diligence
+    environment:
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_B64: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_B64:?Canonical Diligence evaluator release manifest base64url required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH:?Reviewed Diligence evaluator release manifest path required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256:?Reviewed Diligence evaluator release manifest SHA-256 required}
+      TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT: ${TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT:?Reviewed Diligence evaluator policy-set root required}
+
   delegate:
     image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
     platform: linux/amd64
@@ -166,10 +142,10 @@ services:
     ulimits:
       core: 0
     depends_on:
-      delegate-browser:
-        condition: service_started
       oracle:
         condition: service_started
+      diligence-policy-init:
+        condition: service_completed_successfully
     networks:
       tee-net:
         ipv4_address: 172.20.0.5
@@ -177,12 +153,103 @@ services:
       - "8080:8080"
     volumes:
       - delegate-data:/data
+      - diligence-evaluator-policy:/sealed/diligence:ro
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
-      TINKER_BROWSER_WS_ENDPOINT: ws://172.20.0.6:3000/
-      TINKER_CDP_URL: http://172.20.0.3:9223
+      TINKER_BROWSER_WS_ENDPOINT: ""
+      TINKER_CDP_URL: http://172.20.0.3:9222
       TINKER_ORACLE_URL: http://172.20.0.4:8000
       TINKER_ORACLE_AUTH_KEY_PATH: ${TINKER_ORACLE_AUTH_KEY_PATH:-oracle/runtime-auth}
+      TINKER_RUNTIME_AUTH_REQUIRED: "true"
+      TINKER_RUNTIME_AUTH_TOKEN: ${TINKER_RUNTIME_AUTH_TOKEN:-}
+      TINKER_RUNTIME_AUTH_KEY_PATH: ${TINKER_RUNTIME_AUTH_KEY_PATH:-tinker/runtime-auth}
+      TINKER_CORS_ALLOWED_ORIGINS: ${TINKER_CORS_ALLOWED_ORIGINS:-}
+      TINKER_WALLET_AUTH_KEY_PATH: ${TINKER_WALLET_AUTH_KEY_PATH:-tinker/wallet_auth}
+      TINKER_WALLET_AUTH_DOMAIN: ${TINKER_WALLET_AUTH_DOMAIN:-www.wikigen.me}
+      TINKER_WALLET_AUTH_URI: ${TINKER_WALLET_AUTH_URI:-https://www.wikigen.me}
+      TINKER_WALLET_AUTH_CHAIN_ID: ${TINKER_WALLET_AUTH_CHAIN_ID:-84532}
+      TINKER_WALLET_AUTH_RPC_URL: ${TINKER_WALLET_AUTH_RPC_URL:?Trusted Base Sepolia wallet-auth HTTPS RPC URL required}
+      TINKER_WALLET_AUTH_RPC_URL_SECONDARY: ${TINKER_WALLET_AUTH_RPC_URL_SECONDARY:?Independent secondary Base Sepolia wallet-auth HTTPS RPC URL required}
+      TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS: ${TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS:-3.0}
+      TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES: ${TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES:-131072}
+      TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES: ${TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES:-4096}
+      TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS: ${TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS:-600}
+      TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT:-768}
+      TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT:-64}
+      TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT:-256}
+      TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS: ${TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS:-}
+      TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER: ${TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER:-}
+      TINKER_ARENA_WALLET_AUTH_KEY_PATH: ${TINKER_ARENA_WALLET_AUTH_KEY_PATH:-tinker/arena_wallet_auth}
+      TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS: ${TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS:-300}
+      TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS: ${TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS:-300}
+      TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES: ${TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES:-1024}
+      TINKER_ARENA_REGISTRY_RPC_URL: ${TINKER_ARENA_REGISTRY_RPC_URL:-}
+      TINKER_ARENA_REGISTRY_ADDRESS: ${TINKER_ARENA_REGISTRY_ADDRESS:-}
+      TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH: ${TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH:-}
+      TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON: ${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON:-}
+      TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256: ${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256:-}
+      TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS:-300}
+      TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_ARENA_STORE_PATH: ${TINKER_ARENA_STORE_PATH:-/data/arena_state.json}
+      TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH:-/data/arena_candidates}
+      TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH:-tinker/arena_candidate_ingress}
+      TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE: ""
+      TINKER_ARENA_CANDIDATE_INGRESS_MAX_ENVELOPES: ${TINKER_ARENA_CANDIDATE_INGRESS_MAX_ENVELOPES:-10000}
+      TINKER_COMPUTE_WALLET_AUTH_SIGNING_KEY: ""
+      TINKER_COMPUTE_WALLET_AUTH_KEY_PATH: ${TINKER_COMPUTE_WALLET_AUTH_KEY_PATH:-tinker/compute_wallet_auth}
+      TINKER_COMPUTE_CREDENTIAL_SIGNING_KEY: ""
+      TINKER_COMPUTE_CREDENTIAL_KEY_PATH: ${TINKER_COMPUTE_CREDENTIAL_KEY_PATH:-tinker/compute_credentials}
+      TINKER_COMPUTE_STORE_PATH: ${TINKER_COMPUTE_STORE_PATH:-/data/compute_console_state.json}
+      TINKER_COMPUTE_STORE_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH: ${TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH:-tinker/compute_store_integrity}
+      TINKER_COMPUTE_WORKLOAD_INGRESS_STORE_PATH: /data/compute_workload_ingress
+      TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY_PATH: tinker/compute_workload_ingress_integrity
+      TINKER_COMPUTE_WORKLOAD_INGRESS_KEY_PATH: tinker/compute_workload_ingress
+      TINKER_COMPUTE_WORKLOAD_INGRESS_LOCAL_KEY_FILE: ""
+      TINKER_COMPUTE_WORKLOAD_INGRESS_PRIVATE_KEY_HEX: ""
+      TINKER_COMPUTE_WORKLOAD_QVL_URL: ${TINKER_COMPUTE_WORKLOAD_QVL_URL:?Dedicated Compute workload QVL HTTPS /verify URL required}
+      TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN: ${TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN:?Dedicated Compute workload QVL bearer required}
+      TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS: ${TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS:?Dedicated Compute workload QVL verifier required}
+      TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH: ${TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH:?Dedicated Compute workload QVL release policy required}
+      TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS: ${TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS:?Compute workload QVL age bound required}
+      TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON: ${TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON:?Compute workload quote revocations required}
+      TINKER_COMPUTE_WORKLOAD_CHAIN_ID: "84532"
+      TINKER_COMPUTE_VAULT_ADDRESS: ${TINKER_COMPUTE_VAULT_ADDRESS:?Fresh ComputeCreditVault address required}
+      TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH: ${TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH:?Fresh ComputeCreditVault runtime code hash required}
+      TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256: ${TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256:?Fresh contract deployment receipt SHA-256 required}
+      TINKER_COMPUTE_WORKLOAD_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
+      TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256: ${TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256:?Signed seven-CVM deployment intent required}
+      TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256: ${TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256:-}
+      TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE: ${TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE:?Release ceremony nonce required}
+      TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256: ${TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256:?Signed QVL measurement-policy set required}
+      TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256: ${TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256:?Linked Compute-workload QVL measurement policy required}
+      TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256: ${TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256:-}
+      TINKER_EXECUTION_POLICY_STORE_PATH: ${TINKER_EXECUTION_POLICY_STORE_PATH:-/data/execution_policy_state.json}
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: ""
+      TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH: ${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}
+      TINKER_EXECUTION_POLICY_APPROVED_SIGNERS: ${TINKER_EXECUTION_POLICY_APPROVED_SIGNERS:-}
+      TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH: ${TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH:-}
+      TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN: ${TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL: ${TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH: ${TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:-}
+      TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH: ${TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH:-tinker/execution_policy_anchor_writer}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS:-12}
+      TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS:-1}
+      TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS:-60}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS:-3600}
+      TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
+      TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS: ${TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS:-}
+      TINKER_EVALUATOR_MODE: "deterministic"
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH:?Reviewed Diligence evaluator release manifest path required}
+      TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256:?Reviewed Diligence evaluator release manifest SHA-256 required}
+      TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT: ${TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT:?Reviewed Diligence evaluator policy-set root required}
+      TINKER_DILIGENCE_CHAIN_ID: ${TINKER_DILIGENCE_CHAIN_ID:?Reviewed Diligence chain ID required}
+      TINKER_DILIGENCE_ROOM_ADDRESS: ${TINKER_DILIGENCE_ROOM_ADDRESS:?Reviewed DiligenceRoom address required}
+      TINKER_CHAIN_CONTRACT_ADDRESS: ${TINKER_CHAIN_CONTRACT_ADDRESS:?DiligenceRoom address required}
       TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
       TINKER_DSTACK_KEY_PATH: ${TINKER_DSTACK_KEY_PATH:-tinker/api_key}
       TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
@@ -200,7 +267,7 @@ services:
       TINKER_ALLOW_KEY_MANAGEMENT_ENDPOINT: "false"
       TINKER_ALLOW_TINKER_TRAIN_ENDPOINT: "false"
       TINKER_BOOTSTRAP_SIGNUP: "false"
-      TINKER_BOOTSTRAP_FAIL_OPEN: "true"
+      TINKER_BOOTSTRAP_FAIL_OPEN: "false"
       TINKER_BOOTSTRAP_ORACLE_TIMEOUT: ${TINKER_BOOTSTRAP_ORACLE_TIMEOUT:-300}
       TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL: ${TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL:-5}
       TINKER_FIRST_NAME: ${TINKER_FIRST_NAME:-Tinker}
@@ -214,28 +281,10 @@ services:
       timeout: 5s
       start_period: 300s
 
-  delegate-browser:
-    image: mcr.microsoft.com/playwright:v1.58.0-noble@sha256:e3dca7b3c921ce1ebf45a50a6ac77982532c987e5926eb06535b5f56b363b94f
-    platform: linux/amd64
-    restart: unless-stopped
-    init: true
-    ulimits:
-      core: 0
-    ipc: host
-    working_dir: /home/pwuser
-    user: pwuser
-    networks:
-      tee-net:
-        ipv4_address: 172.20.0.6
-    command:
-      - /bin/sh
-      - -lc
-      - |
-        exec npx -y playwright@1.58.0 run-server --port 3000 --host 0.0.0.0
-
 volumes:
   oracle-data:
   delegate-data:
+  diligence-evaluator-policy:
 
 networks:
   tee-net:

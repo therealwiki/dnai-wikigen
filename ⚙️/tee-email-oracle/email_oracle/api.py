@@ -2,9 +2,12 @@
 
 Endpoints:
   POST /pin          — extract a verification pin from inbox
-  GET  /health       — service health + credential status
-  GET  /inbox        — list recent emails (debug)
+  GET  /health       — liveness only (no mailbox state)
+  GET  /email        — commitment-only mailbox readiness (no raw address)
   GET  /attestation  — TDX quote (no-op locally, real in TEE)
+
+There is intentionally no mailbox-listing endpoint. Runtime authentication is
+not authority to export mailbox identifiers, headers, dates, or message text.
 """
 
 from contextlib import asynccontextmanager
@@ -12,12 +15,16 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
-import re
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
-from email_oracle.chain_auth import EmailOracleAuthError, check_consumer_authorization
+from email_oracle.chain_auth import (
+    EmailOracleAuthError,
+    FinalizedBlockCheckpointStore,
+    check_consumer_authorization,
+)
 from email_oracle.config import Settings
 from email_oracle.crypto import (
     ORACLE_CREDENTIALS_HKDF_INFO,
@@ -26,7 +33,12 @@ from email_oracle.crypto import (
     attestation_report_data,
 )
 from email_oracle.cred_store import CredentialStore, EmailCredentials
-from email_oracle.dstack_utils import derive_storage_key, get_attestation, get_attestation_details
+from email_oracle.dstack_utils import (
+    derive_storage_key,
+    get_attestation,
+    get_attestation_details,
+    is_dstack_simulator,
+)
 from email_oracle.imap_client import IMAPClient
 from email_oracle.replay_store import OtpReplayStore
 from email_oracle.redaction import redact_text
@@ -35,30 +47,28 @@ from email_oracle.redaction import redact_text
 # --- Request / Response models ---
 
 class PinRequest(BaseModel):
-    target_service: str = Field(
-        ...,
-        min_length=1,
-        max_length=64,
-        pattern=r"^[a-zA-Z0-9_.:-]+$",
-        description="Service requesting the OTP, e.g. tinker",
+    """One narrow production capability: fetch Tinker's six-digit login OTP.
+
+    The literal fields retain wire compatibility with the delegate while
+    rejecting caller-selected mailbox filters and regexes.
+    """
+
+    target_service: Literal["tinker"] = Field(
+        "tinker",
+        description="Allowlisted OTP service",
     )
-    expected_sender: str = Field(
-        ...,
-        min_length=3,
-        max_length=255,
-        description="Expected sender substring/address",
+    expected_sender: Literal["no-reply@thinkingmachines.ai"] = Field(
+        "no-reply@thinkingmachines.ai",
+        description="Fixed allowlisted sender",
     )
-    expected_subject_contains: str = Field(
+    expected_subject_contains: Literal[""] = Field(
         "",
-        max_length=255,
-        description="Expected subject substring, empty only when the live subject is not stable",
+        description="Subject matching is intentionally unavailable",
     )
     max_age_seconds: int = Field(300, ge=1, le=900, description="Max email age in seconds")
-    extract_pattern: str = Field(
+    extract_pattern: Literal[r"\b\d{6}\b"] = Field(
         r"\b\d{6}\b",
-        min_length=1,
-        max_length=128,
-        description="Regex to extract a bounded OTP/confirmation code",
+        description="Fixed six-digit OTP pattern",
     )
     nonce: str = Field(
         ...,
@@ -81,60 +91,56 @@ class PinRequest(BaseModel):
     )
     delete_after: bool = Field(False, description="Delete email after extraction")
 
-    @field_validator("extract_pattern")
-    @classmethod
-    def validate_extract_pattern(cls, value: str) -> str:
-        try:
-            re.compile(value)
-        except re.error as exc:
-            raise ValueError(f"invalid extract_pattern: {exc}") from exc
-        return value
+    model_config = {"extra": "forbid"}
 
 
 class PinResponse(BaseModel):
-    pin: str
-    email_id: str
-    subject: str
-    sender: str
-    received_at: str
-    oracle_email: str
-    timestamp: str
-    request_hash: str
-    otp_use_hash: str
-    tdx_quote: str = ""  # populated in TEE mode
+    pin: str = Field(pattern=r"^\d{6}$")
+    request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attestation_report_data: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tdx_quote: str = Field("", max_length=262_144)
+
+    model_config = {"extra": "forbid"}
 
 
 class HealthResponse(BaseModel):
-    status: str
+    service: Literal["tee-email-oracle"] = "tee-email-oracle"
+    status: Literal["ok"] = "ok"
+
+    model_config = {"extra": "forbid"}
+
+
+EMAIL_COMMITMENT_SCHEME = "dnai-wikigen/oracle-email/v1"
+
+
+class EmailCommitmentResponse(BaseModel):
     oracle_ready: bool
-    oracle_email: str = ""
-    oracle_email_hash: str = ""
-    imap_connected: bool
-    dstack_enabled: bool
-    timestamp: str
-
-
-class EmailAddressResponse(BaseModel):
-    oracle_email: str
-    oracle_email_hash: str
+    oracle_email_commitment: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commitment_scheme: Literal["dnai-wikigen/oracle-email/v1"]
+    raw_email_egress: Literal[False] = False
     timestamp: str
 
 
 class AttestationResponse(BaseModel):
-    tdx_quote: str
-    app_id: str
-    compose_hash: str
-    oracle_email: str = ""
-    oracle_email_hash: str = ""
-    oracle_ready: bool = False
-    timestamp: str
-    mode: str = "local"
-    encryption_public_key: str = ""
-    report_context: str = "attestation"
-    report_data: str = ""
-    quote_report_data: str = ""
-    os_image_hash: str = ""
-    verified: bool = False
+    service: Literal["tee-email-oracle"] = "tee-email-oracle"
+    report_context: Literal["attestation", "oracle-credentials", "pin"]
+    encryption_public_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_data: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mode: Literal["local", "simulator", "tdx"]
+    tdx_quote: str = Field(max_length=262_144)
+    quote_report_data: str = Field("", max_length=256)
+    app_id: str = Field(max_length=256)
+    compose_hash: str = Field(max_length=256)
+    os_image_hash: str = Field("", max_length=256)
+    verified: Literal[False] = False
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("verified", mode="before")
+    @classmethod
+    def never_self_attest_verification(cls, _value: object) -> bool:
+        """The quote-producing oracle cannot independently verify itself."""
+        return False
 
 
 class EncryptedCredentialPayload(BaseModel):
@@ -294,6 +300,20 @@ def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _email_commitment(value: str) -> str:
+    """Commit to a normalized mailbox without exporting the raw address.
+
+    The explicit domain and NUL separator prevent this digest from being
+    confused with subject, sender, message-id, or other plain SHA-256 values.
+    This remains a commitment, not an anonymity guarantee for guessable email
+    addresses.
+    """
+
+    normalized = value.strip().lower()
+    payload = EMAIL_COMMITMENT_SCHEME.encode("ascii") + b"\x00" + normalized.encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _attestation_payload(context: str) -> dict:
     keypair = get_tee_keypair()
     report_data = attestation_report_data(
@@ -301,15 +321,11 @@ def _attestation_payload(context: str) -> dict:
         context,
         keypair.public_key_bytes,
     )
-    oracle_email_hash = _hash_text(state.creds.email) if state.creds else ""
     base = {
+        "service": "tee-email-oracle",
         "encryption_public_key": keypair.public_key_bytes.hex(),
         "report_context": context,
         "report_data": report_data.hex(),
-        "oracle_email": "",
-        "oracle_email_hash": oracle_email_hash,
-        "oracle_ready": bool(state.creds),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     if not state.settings or not state.settings.dstack_enabled:
         return {
@@ -323,25 +339,28 @@ def _attestation_payload(context: str) -> dict:
 
     try:
         details = get_attestation_details(report_data)
+        evidence_mode = "simulator" if is_dstack_simulator() else "tdx"
         return {
             **base,
             "tdx_quote": details["quote"],
             "app_id": details["app_id"],
             "compose_hash": details["compose_hash"],
-            "mode": "tdx",
+            "mode": evidence_mode,
             "quote_report_data": str(details.get("quote_report_data") or ""),
             "os_image_hash": str(details.get("os_image_hash") or ""),
-            "verified": True,
+            # Quote retrieval is evidence transport only. No independent QVL
+            # validates signature, collateral, and measurements in this service.
+            "verified": False,
         }
     except Exception as exc:
+        print(f"[api] attestation retrieval failed: {redact_text(exc)}")
         return {
             **base,
             "tdx_quote": "",
             "app_id": "",
             "compose_hash": "",
-            "mode": "tdx",
+            "mode": "simulator" if is_dstack_simulator() else "tdx",
             "verified": False,
-            "error": redact_text(exc),
         }
 
 
@@ -412,6 +431,27 @@ def _otp_use_hash(req: PinRequest, result, oracle_email: str) -> str:
     )
 
 
+def _pin_attestation_report_data(request_hash: str, pin: str) -> bytes:
+    """Bind the released OTP to its bounded request without mailbox metadata.
+
+    Message identifiers, headers, mailbox identity, extraction time, and the
+    internal replay key are deliberately excluded. The returned digest is safe
+    to quote and disclose alongside the OTP.
+    """
+
+    canonical = json.dumps(
+        {
+            "service": "tee-email-oracle",
+            "context": "pin",
+            "request_hash": request_hash,
+            "pin_sha256": hashlib.sha256(pin.encode("ascii")).hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(canonical).digest()
+
+
 def _mark_otp_released(otp_use_hash: str) -> None:
     if otp_use_hash in state.used_otp_hashes:
         raise HTTPException(409, "OTP has already been released")
@@ -442,6 +482,18 @@ async def lifespan(app: FastAPI):
     """Initialize oracle on startup."""
     settings = Settings()
     state.settings = settings
+    if settings.production_release:
+        # Monotonic finalized-block enforcement is a durable security boundary,
+        # not an in-memory best effort.  Prove the checkpoint volume is readable
+        # and writable before the service can become healthy.
+        try:
+            FinalizedBlockCheckpointStore(
+                settings.auth_checkpoint_store_path
+            ).ensure_ready()
+        except EmailOracleAuthError:
+            raise RuntimeError(
+                "production EmailOracleAuth checkpoint store is unavailable"
+            ) from None
     state.store = CredentialStore(
         settings.cred_store_path,
         settings.cred_store_key,
@@ -512,7 +564,6 @@ async def extract_pin(req: PinRequest):
             from_filter=req.expected_sender,
             subject_contains=req.expected_subject_contains,
             max_age_seconds=req.max_age_seconds,
-            extract_pattern=req.extract_pattern,
         )
         state.imap_connected = True
     except Exception as exc:
@@ -523,84 +574,62 @@ async def extract_pin(req: PinRequest):
     if not result:
         raise HTTPException(404, "No matching pin found in inbox")
 
-    if len(result.pin) > state.settings.pin_max_length:
-        raise HTTPException(400, "Extracted value exceeds OTP length cap")
+    if not result.pin.isascii() or not result.pin.isdigit() or len(result.pin) != 6:
+        raise HTTPException(400, "Extracted value is not a six-digit OTP")
 
     request_hash = _pin_request_hash(req)
     otp_use_hash = _otp_use_hash(req, result, state.creds.email)
     _mark_otp_released(otp_use_hash)
+    report_data = _pin_attestation_report_data(request_hash, result.pin)
 
     if req.delete_after:
         try:
             state.imap.delete_email(result.email_id)
         except Exception as e:
-            print(f"[api] failed to delete email {result.email_id}: {redact_text(e)}")
+            print(
+                "[api] failed to delete email "
+                f"email_id_hash={_hash_text(result.email_id)}: {redact_text(e)}"
+            )
 
     tdx_quote = ""
     if state.settings.dstack_enabled:
-        tdx_quote, _, _ = get_attestation(f"pin:{request_hash}:{otp_use_hash}")
+        tdx_quote, _, _ = get_attestation(report_data)
 
     return PinResponse(
         pin=result.pin,
-        email_id=result.email_id,
-        subject=result.subject,
-        sender=result.sender,
-        received_at=result.received_at,
-        oracle_email=state.creds.email,
-        timestamp=datetime.now(timezone.utc).isoformat(),
         request_hash=request_hash,
-        otp_use_hash=otp_use_hash,
+        attestation_report_data=report_data.hex(),
         tdx_quote=tdx_quote,
     )
 
 
 @app.get("/health", response_model=HealthResponse)
 def health():
-    """Service health check.
+    """Return process liveness only; authenticated routes own readiness state."""
 
-    Keep this endpoint non-mutating. Docker and delegate health probes call it
-    frequently; reconnecting IMAP here can block the API and create reconnect
-    storms when the mailbox provider is flaky. `/pin` performs the real IMAP
-    operation and updates this cached connection state.
-    """
-    imap_ok = bool(state.imap and state.imap_connected)
-
-    oracle_email_hash = _hash_text(state.creds.email) if state.creds else ""
-    return HealthResponse(
-        status="ok" if state.creds and imap_ok else "degraded",
-        oracle_ready=bool(state.creds and imap_ok),
-        oracle_email="",
-        oracle_email_hash=oracle_email_hash,
-        imap_connected=imap_ok,
-        dstack_enabled=state.settings.dstack_enabled if state.settings else False,
-        timestamp=datetime.now(timezone.utc).isoformat(),
-    )
+    return HealthResponse()
 
 
-@app.get("/email", response_model=EmailAddressResponse, dependencies=[Depends(require_runtime_auth)])
+@app.get(
+    "/email",
+    response_model=EmailCommitmentResponse,
+    dependencies=[Depends(require_runtime_auth)],
+)
 async def email_address():
-    """Return the oracle address only to same-runtime authenticated callers."""
+    """Return commitment-only mailbox readiness to authenticated callers."""
     if not state.creds:
         raise HTTPException(503, "Oracle not initialized — no credentials")
-    return EmailAddressResponse(
-        oracle_email=state.creds.email,
-        oracle_email_hash=_hash_text(state.creds.email),
+    return EmailCommitmentResponse(
+        oracle_ready=True,
+        oracle_email_commitment=_email_commitment(state.creds.email),
+        commitment_scheme=EMAIL_COMMITMENT_SCHEME,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
-
-
-@app.get("/inbox", dependencies=[Depends(require_runtime_auth)])
-async def list_inbox(max_age: int = 3600, limit: int = 20):
-    """List recent emails (debug endpoint)."""
-    require_consumer_registry_authorization()
-    if not state.imap:
-        raise HTTPException(503, "IMAP not connected")
-    return state.imap.list_recent(max_age_seconds=max_age, limit=limit)
 
 
 @app.get("/attestation", response_model=AttestationResponse)
 async def attestation(context: str = "attestation"):
-    """Get TDX attestation quote (no-op locally)."""
+    """Get bounded TDX evidence (no-op locally), never a self-issued verdict."""
     if context not in {"attestation", "oracle-credentials", "pin"}:
         raise HTTPException(400, "unsupported attestation context")
     return AttestationResponse(**_attestation_payload(context))

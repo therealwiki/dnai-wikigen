@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!tinker_delegate/
+!tinker_delegate/**
+tinker_delegate/**/__pycache__/
+tinker_delegate/**/*.pyc

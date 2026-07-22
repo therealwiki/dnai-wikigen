@@ -1,12 +1,11 @@
 """End-to-end Thresholdout demo: DP-noised reusable-holdout access over a stream.
 
 Runs a scripted stream of candidates through a `ThresholdoutGate` composed with a
-real `DpAccountant`, showing the mechanism's two paths — a candidate that tracks
-the reward-partition statistic is answered for FREE (no DP budget), while a
-diverging candidate consults the fresh holdout and spends budget — until the
-`total leakage ≤ ε × holdout-accesses` budget is exhausted and the gate fails
-closed. Only bounded band indices + counts + public DP config leave; no un-noised
-statistic egresses.
+real `DpAccountant`, exercising both the free and budgeted internal paths until
+the privacy budget is exhausted and the gate fails closed. The public packet
+does not disclose which path any query took, exact access counts, or exact
+epsilon spent; only bounded release bands, public DP policy, and minimal budget
+status leave. No un-noised statistic egresses.
 
 The demo uses deterministic (zero) noise for a reproducible packet; production
 draws Laplace noise from `os.urandom`.
@@ -46,20 +45,20 @@ def run_thresholdout_demo(max_epsilon: float = 1.5) -> dict[str, Any]:
         release = gate.query(reward_stat=reward_stat, holdout_stat=holdout_stat)
         releases.append(release.to_public_dict())
 
-    # Every per-query release is bounded (ints/bools only); fail fast if not.
+    # Every per-query release is bounded and branch-oblivious; fail fast if not.
     assert_bounded_egress({"releases": releases})
+
+    # Exact composition remains available internally for enforcement/audit, but
+    # is intentionally not serialized in the demo packet.
+    assert accountant.spent_epsilon <= max_epsilon
 
     return {
         "demo": "thresholdout",
         "releases": releases,
         "manifest": gate.public_manifest(),
-        # Public DP ledger (epsilon/delta are public config, not reward values).
+        # Minimal public status. Exact spend/access counts are secret-dependent.
         "dp_status": {
-            "spent_epsilon": accountant.spent_epsilon,
-            "max_epsilon": max_epsilon,
-            "exhausted": accountant.exhausted,
+            "budget_status": "exhausted" if accountant.exhausted else "available",
         },
-        "free_release_count": sum(1 for r in releases if not r["used_holdout"] and r["has_release"]),
-        "holdout_access_count": gate.holdout_access_count,
         "raw_secret_egress": False,
     }
