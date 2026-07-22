@@ -1393,6 +1393,11 @@ test("bounded report redacts every secret and credential-bearing URL", () => {
     assert.equal(json.includes(value), false);
   }
   assert.equal(report.checks.length, 103);
+  assert.equal(report.root_cause_projection.source_check_count, 103);
+  assert.equal(report.root_cause_projection.source_fail_count, 0);
+  assert.equal(report.root_cause_projection.mapping_complete, true);
+  assert.deepEqual(report.root_causes, []);
+  assert.deepEqual(report.blocked_by, []);
   assert.ok(report.next_actions.length <= 20);
   assert.equal(report.checks.some((item) => item.id === "credential.openrouter"), false);
 });

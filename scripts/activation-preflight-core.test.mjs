@@ -11,6 +11,9 @@ import {
   CVM_TOPOLOGY_DOMAINS,
   CVM_TOPOLOGY_SCHEMA,
   LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
+  PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS,
+  PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+  PREFLIGHT_SCHEMA,
   PRE_LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
   SEMANTIC_VALIDATION_SCHEMA,
   SEMANTIC_VALIDATION_STATUS,
@@ -21,6 +24,7 @@ import {
   buildPreflightReport,
   createActivationReadinessSnapshot,
   normalizeActivationReadinessSnapshot,
+  projectPreflightRootCauses,
 } from "./activation-preflight-core.mjs";
 import {
   CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS,
@@ -764,6 +768,11 @@ test("release ceremony and live activation require all five roles to be distinct
 });
 
 test("all four stage reports stay bounded to the exact 103-check contract", () => {
+  assert.equal(PREFLIGHT_SCHEMA, "dnai.activation-preflight.v3");
+  assert.equal(
+    PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+    "dnai.activation-preflight-root-causes.v1",
+  );
   for (const snapshot of [
     freshSnapshot(),
     cvmLaunchSnapshot(),
@@ -776,7 +785,348 @@ test("all four stage reports stay bounded to the exact 103-check contract", () =
     assert.equal(rawCheckCount, 103, snapshot.authorityStage);
     assert.equal(report.checks.length, 103, snapshot.authorityStage);
     assert.equal(report.checks.at(-1)?.id, "image.provenance_sbom");
+    const failedIds = report.checks
+      .filter((item) => item.status === "fail")
+      .map((item) => item.id);
+    assert.equal(report.schema, PREFLIGHT_SCHEMA);
+    assert.deepEqual(Object.keys(report), [
+      "schema",
+      "verdict",
+      "summary",
+      "invariants",
+      "checks",
+      "root_cause_projection",
+      "root_causes",
+      "blocked_by",
+      "next_actions",
+    ]);
+    assert.equal(
+      report.root_cause_projection.schema,
+      PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+    );
+    assert.equal(report.root_cause_projection.stage, snapshot.authorityStage);
+    assert.equal(report.root_cause_projection.stage_valid, true);
+    assert.equal(report.root_cause_projection.source_check_count, 103);
+    assert.equal(report.root_cause_projection.source_fail_count, report.summary.fail);
+    assert.equal(report.root_cause_projection.mapping_complete, true);
+    assert.deepEqual(
+      report.blocked_by.map((entry) => entry.check_id),
+      failedIds,
+    );
+    assert.equal(new Set(report.blocked_by.map((entry) => entry.check_id)).size,
+      failedIds.length);
   }
+});
+
+test("root-cause diagnosis coalesces only the exact clean-CI release family", () => {
+  assert.equal(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.length, 28);
+  assert.equal(new Set(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS).size, 28);
+  const secretSentinel = "must-not-enter-root-cause-projection";
+  const checks = [
+    ...PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.map((id) => ({
+      id,
+      status: "fail",
+      message: secretSentinel,
+      action: secretSentinel,
+    })),
+    {
+      id: "contract_policy.verify",
+      status: "fail",
+      message: secretSentinel,
+      action: secretSentinel,
+    },
+    { id: "safety.read_only", status: "pass", message: secretSentinel },
+    { id: "keystore.operator_match", status: "warn", message: secretSentinel },
+  ];
+  const diagnosis = projectPreflightRootCauses(checks, "fresh_deployment");
+  const failedIds = checks
+    .filter((item) => item.status === "fail")
+    .map((item) => item.id);
+  assert.deepEqual(
+    diagnosis.root_cause_projection,
+    {
+      schema: PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+      stage: "fresh_deployment",
+      stage_valid: true,
+      source_check_count: checks.length,
+      source_fail_count: 29,
+      mapping_complete: true,
+    },
+  );
+  assert.deepEqual(
+    diagnosis.blocked_by.map((entry) => entry.check_id),
+    failedIds,
+  );
+  assert.equal(new Set(diagnosis.blocked_by.map((entry) => entry.check_id)).size, 29);
+  const ciRoot = diagnosis.root_causes.find(
+    (root) => root.id === "clean_ci_five_image_seven_cvm_bundle",
+  );
+  assert.deepEqual(ciRoot, {
+    id: "clean_ci_five_image_seven_cvm_bundle",
+    classification: "ci_external_state",
+    failed_check_ids: [...PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS],
+  });
+  assert.deepEqual(
+    diagnosis.blocked_by
+      .filter((entry) => entry.root_cause_ids.includes(ciRoot.id))
+      .map((entry) => entry.check_id),
+    PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS,
+  );
+  const verifyRoot = diagnosis.root_causes.find(
+    (root) => root.failed_check_ids.includes("contract_policy.verify"),
+  );
+  assert.deepEqual(verifyRoot, {
+    id: "check.contract_policy.verify",
+    classification: "reviewed_release_source",
+    failed_check_ids: ["contract_policy.verify"],
+  });
+  assert.equal(JSON.stringify(diagnosis).includes(secretSentinel), false);
+  assert.ok(diagnosis.root_causes.length <= 103);
+  assert.ok(diagnosis.blocked_by.length <= 103);
+  assert.ok(diagnosis.root_causes.every((root) => root.failed_check_ids.length <= 103));
+});
+
+test("root-cause diagnosis preserves partial CI drift and unknown failures", () => {
+  const checks = [
+    { id: "phala.compose_security", status: "fail", message: "x" },
+    { id: "auth.phala", status: "fail", message: "x" },
+    { id: "future.new_independent_gate", status: "fail", message: "x" },
+    { id: "safety.read_only", status: "pass", message: "x" },
+  ];
+  const diagnosis = projectPreflightRootCauses(checks, "live_activation");
+  assert.deepEqual(
+    diagnosis.root_causes.find(
+      (root) => root.id === "check.phala.compose_security",
+    ),
+    {
+      id: "check.phala.compose_security",
+      classification: "independent_check_failure",
+      failed_check_ids: ["phala.compose_security"],
+    },
+  );
+  assert.deepEqual(
+    diagnosis.root_causes.find(
+      (root) => root.id === "check.auth.phala",
+    ),
+    {
+      id: "check.auth.phala",
+      classification: "secure_interactive_authority",
+      failed_check_ids: ["auth.phala"],
+    },
+  );
+  assert.deepEqual(
+    diagnosis.root_causes.find(
+      (root) => root.id === "check.future.new_independent_gate",
+    )?.failed_check_ids,
+    ["future.new_independent_gate"],
+  );
+
+  const reorderedProperties = checks.map(({ id, status, message }) => ({
+    message,
+    status,
+    id,
+  }));
+  assert.deepEqual(
+    projectPreflightRootCauses(reorderedProperties, "live_activation"),
+    diagnosis,
+  );
+
+  const unsupported = projectPreflightRootCauses(checks, "future_stage");
+  assert.equal(unsupported.root_cause_projection.stage_valid, false);
+  assert.equal(unsupported.root_cause_projection.stage, "unsupported");
+  assert.equal(
+    unsupported.root_causes.some(
+      (root) => root.id === "clean_ci_five_image_seven_cvm_bundle",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    unsupported.blocked_by.map((entry) => entry.check_id),
+    checks.filter((item) => item.status === "fail").map((item) => item.id),
+  );
+});
+
+test("root-cause diagnosis classifies both Base Sepolia RPC inputs as chain state", () => {
+  const rpcCheckIds = [
+    "contract_input.base_sepolia_rpc_url",
+    "contract_input.base_sepolia_secondary_rpc_url",
+  ];
+  const diagnosis = projectPreflightRootCauses(
+    rpcCheckIds.map((id) => ({ id, status: "fail" })),
+    "fresh_deployment",
+  );
+  assert.deepEqual(
+    diagnosis.root_causes.map((root) => ({
+      classification: root.classification,
+      failed_check_ids: root.failed_check_ids,
+    })),
+    rpcCheckIds.map((id) => ({
+      classification: "external_chain_state",
+      failed_check_ids: [id],
+    })),
+  );
+});
+
+test("root-cause diagnosis never reflects unsupported stage bytes", () => {
+  const sentinel = "SECRET_STAGE_SENTINEL_".repeat(10_000);
+  const diagnosis = projectPreflightRootCauses([
+    { id: "future.failure", status: "fail", message: "x" },
+  ], sentinel);
+  const serialized = JSON.stringify(diagnosis);
+  assert.equal(diagnosis.root_cause_projection.stage, "unsupported");
+  assert.equal(diagnosis.root_cause_projection.stage_valid, false);
+  assert.equal(diagnosis.root_cause_projection.mapping_complete, true);
+  assert.equal(serialized.includes("SECRET_STAGE_SENTINEL_"), false);
+  assert.ok(Buffer.byteLength(serialized, "utf8") < 4_096);
+});
+
+test("report diagnosis uses the same normalized default and trimmed stage", () => {
+  const defaulted = liveSnapshot();
+  delete defaulted.authorityStage;
+  const defaultedReport = buildPreflightReport(defaulted);
+  assert.deepEqual(
+    defaultedReport.root_cause_projection,
+    {
+      schema: PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+      stage: "live_activation",
+      stage_valid: true,
+      source_check_count: 103,
+      source_fail_count: defaultedReport.summary.fail,
+      mapping_complete: true,
+    },
+  );
+
+  const trimmed = liveSnapshot();
+  trimmed.authorityStage = "  live_activation  ";
+  const trimmedReport = buildPreflightReport(trimmed);
+  assert.equal(trimmedReport.root_cause_projection.stage, "live_activation");
+  assert.equal(trimmedReport.root_cause_projection.stage_valid, true);
+  assert.equal(
+    trimmedReport.checks.find((item) => item.id === "authority.stage")?.status,
+    "pass",
+  );
+});
+
+test("root-cause diagnosis rejects duplicate or unbounded check sets", () => {
+  assert.throws(
+    () => projectPreflightRootCauses([
+      { id: "duplicate", status: "fail" },
+      { id: "duplicate", status: "pass" },
+    ], "fresh_deployment"),
+    /invalid or duplicate checks/,
+  );
+  assert.throws(
+    () => projectPreflightRootCauses(
+      Array.from({ length: 104 }, (_, index) => ({
+        id: `check-${index}`,
+        status: "fail",
+      })),
+      "fresh_deployment",
+    ),
+    /at most 103 checks/,
+  );
+});
+
+test("root-cause diagnosis rejects accessors, proxies, and control IDs before projection", () => {
+  let getterReads = 0;
+  const accessorCheck = { status: "fail" };
+  Object.defineProperty(accessorCheck, "id", {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return getterReads < 2 ? "safe.failure" : "secret.control";
+    },
+  });
+  assert.throws(
+    () => projectPreflightRootCauses([accessorCheck], "fresh_deployment"),
+    /canonical plain-data graph/,
+  );
+  assert.equal(getterReads, 0);
+
+  let proxyTraps = 0;
+  const proxyCheck = new Proxy(
+    { id: "safe.failure", status: "fail" },
+    {
+      get(target, key, receiver) {
+        proxyTraps += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      ownKeys(target) {
+        proxyTraps += 1;
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
+  assert.throws(
+    () => projectPreflightRootCauses([proxyCheck], "fresh_deployment"),
+    /Proxy objects are forbidden/,
+  );
+  assert.equal(proxyTraps, 0);
+
+  let arrayProxyTraps = 0;
+  const proxiedChecks = new Proxy(
+    [{ id: "safe.failure", status: "fail" }],
+    {
+      get(target, key, receiver) {
+        arrayProxyTraps += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    },
+  );
+  assert.throws(
+    () => projectPreflightRootCauses(proxiedChecks, "fresh_deployment"),
+    /Proxy objects are forbidden/,
+  );
+  assert.equal(arrayProxyTraps, 0);
+
+  const revoked = Proxy.revocable(
+    { id: "safe.failure", status: "fail" },
+    {},
+  );
+  revoked.revoke();
+  assert.throws(
+    () => projectPreflightRootCauses([revoked.proxy], "fresh_deployment"),
+    /Proxy objects are forbidden/,
+  );
+
+  let inheritedGetterReads = 0;
+  const inheritedCheck = Object.create({
+    get id() {
+      inheritedGetterReads += 1;
+      return "safe.failure";
+    },
+  });
+  inheritedCheck.status = "fail";
+  assert.throws(
+    () => projectPreflightRootCauses([inheritedCheck], "fresh_deployment"),
+    /custom prototypes are forbidden/,
+  );
+  assert.equal(inheritedGetterReads, 0);
+
+  assert.throws(
+    () => projectPreflightRootCauses(new Array(1), "fresh_deployment"),
+    /arrays must be dense/,
+  );
+
+  assert.throws(
+    () => projectPreflightRootCauses([
+      { id: "safe.failure\nsecret-control", status: "fail" },
+    ], "fresh_deployment"),
+    /invalid or duplicate checks/,
+  );
+});
+
+test("a missing clean-CI bundle maps the exact 28 raw failures without hiding them", () => {
+  const report = buildPreflightReport(freshSnapshot());
+  const ciRoot = report.root_causes.find(
+    (root) => root.id === "clean_ci_five_image_seven_cvm_bundle",
+  );
+  assert.deepEqual(ciRoot?.failed_check_ids, PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS);
+  assert.equal(
+    report.root_causes.flatMap((root) => root.failed_check_ids).length,
+    report.summary.fail,
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(report), "utf8") <= 131_072);
 });
 
 test("stage review subject cannot cross intent, CVM launch, or final authority", () => {

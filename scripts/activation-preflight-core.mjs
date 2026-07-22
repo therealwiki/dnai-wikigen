@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { assertCanonicalPlainDataGraph } from "./canonical-authority-graph.mjs";
 import {
   CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS,
   FRESH_DEPLOYMENT_TRANSACTION_SPEC,
@@ -22,7 +23,9 @@ export {
   PHALA_RELEASE_MANIFEST_SIGSTORE_VERIFICATION_MISSING,
 } from "./phala-production-execution-policy.mjs";
 
-export const PREFLIGHT_SCHEMA = "dnai.activation-preflight.v2";
+export const PREFLIGHT_SCHEMA = "dnai.activation-preflight.v3";
+export const PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA =
+  "dnai.activation-preflight-root-causes.v1";
 export const SEMANTIC_VALIDATION_SCHEMA =
   "dnai.semantic-live-activation-validation.v3";
 export const SEMANTIC_VALIDATION_STATUS =
@@ -646,6 +649,201 @@ function check(id, status, message, action = "") {
     ...(action
       ? { action: String(action).replace(/[\r\n]+/g, " ").slice(0, 240) }
       : {}),
+  };
+}
+
+const PREFLIGHT_AUTHORITY_STAGES = Object.freeze([
+  "fresh_deployment",
+  "cvm_launch",
+  "release_ceremony",
+  "live_activation",
+]);
+
+// These 28 checks are one reviewed remediation family: they are all derived
+// from the same exact clean-main five-image release, its attestations, and the
+// seven compositions rendered from those immutable subjects. The raw checks
+// remain authoritative and are never suppressed. No other checks are
+// coalesced because a failed conjunction can contain independent drift as well
+// as a missing prerequisite.
+export const PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS = Object.freeze([
+  "evidence.image_release_schema",
+  "evidence.cvm_topology_schema",
+  "phala.compose_parse",
+  "phala.main_service_topology",
+  "phala.service.neko",
+  "phala.service.oracle",
+  "phala.service.delegate",
+  "phala.service.diligence-policy-init",
+  "phala.service.arena-policy-init",
+  "phala.service.arena-worker",
+  "phala.service.anchor-writer-evidence",
+  "phala.service.deal-runtime",
+  "phala.service.compute-execution-worker",
+  "phala.diligence_qvl_cvm",
+  "phala.arena_qvl_cvm",
+  "phala.anchor_writer_qvl_cvm",
+  "phala.compute_workload_qvl_cvm",
+  "phala.compute_metering_qvl_cvm",
+  "phala.independent_metering",
+  "phala.compose_security",
+  "phala.confidential_evaluator_boundary",
+  "phala.main_release_profiles",
+  "image.required_set",
+  "image.operator_namespace",
+  "evidence.cvm_topology_binding",
+  "image.release_manifest_provenance",
+  "evidence.image_release_binding",
+  "image.provenance_sbom",
+]);
+
+const PREFLIGHT_CLEAN_CI_RELEASE_CHECK_ID_SET = new Set(
+  PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS,
+);
+const PREFLIGHT_RPC_CHECK_ID_SET = new Set([
+  "contract_input.base_sepolia_rpc_url",
+  "contract_input.base_sepolia_secondary_rpc_url",
+]);
+
+function singletonRootCauseId(checkId) {
+  const prefix = "check.";
+  const candidate = `${prefix}${checkId}`;
+  if (candidate.length <= 96) return candidate;
+  const suffix = createHash("sha256").update(checkId, "utf8").digest("hex").slice(0, 12);
+  return `${candidate.slice(0, 96 - suffix.length - 1)}.${suffix}`;
+}
+
+function singletonRootCauseClassification(checkId) {
+  if (checkId.startsWith("source.")
+    || checkId === "safety.env_mode"
+    || checkId === "contract_policy.verify"
+    || checkId === "contract_input.release_sha") {
+    return "reviewed_release_source";
+  }
+  if (checkId.startsWith("chain.") || PREFLIGHT_RPC_CHECK_ID_SET.has(checkId)) {
+    return "external_chain_state";
+  }
+  if (checkId.startsWith("authority.")
+    || checkId.startsWith("contract_policy.")
+    || checkId === "roles.pairwise_distinct"
+    || checkId.startsWith("contract_input.")) {
+    return "operator_governance";
+  }
+  if (checkId.startsWith("auth.") || checkId.startsWith("keystore.")) {
+    return "secure_interactive_authority";
+  }
+  if (checkId.startsWith("credential.")) return "runtime_secret_provisioning";
+  if (checkId.startsWith("tool.")) return "local_tooling";
+  if (checkId.startsWith("evidence.")) return "measured_activation_evidence";
+  if (checkId.startsWith("safety.")) return "release_safety_configuration";
+  return "independent_check_failure";
+}
+
+/**
+ * Additive, non-authorizing diagnosis for a completed preflight check set.
+ *
+ * Every raw failure is retained exactly once in `blocked_by`. The frozen
+ * 28-check clean-CI family is coalesced only when all 28 checks fail together;
+ * every partial or unrelated failure remains a singleton so this projection
+ * cannot disguise independent drift behind a prerequisite.
+ */
+export function projectPreflightRootCauses(checks, authorityStage) {
+  if (!Array.isArray(checks)) {
+    throw new TypeError("preflight root-cause projection requires one check array");
+  }
+  assertCanonicalPlainDataGraph(checks, {
+    label: "preflight root-cause source checks",
+    maximumDepth: 4,
+    maximumNodes: 1_000,
+  });
+  if (checks.length > 103) {
+    throw new TypeError("preflight root-cause projection requires at most 103 checks");
+  }
+  if (checks.some((item) => (
+    !item || typeof item !== "object" || Array.isArray(item)
+  ))) {
+    throw new TypeError("preflight root-cause projection received invalid checks");
+  }
+  const suppliedStage = typeof authorityStage === "string"
+    && authorityStage.length <= 64
+    ? authorityStage.trim()
+    : "";
+  const stageValid = PREFLIGHT_AUTHORITY_STAGES.includes(suppliedStage);
+  const stage = stageValid ? suppliedStage : "unsupported";
+  const seenCheckIds = new Set();
+  const failedChecks = [];
+  const checkSnapshot = checks.map((item) => Object.freeze({
+    id: item.id,
+    status: item.status,
+  }));
+  for (const item of checkSnapshot) {
+    if (!/^[a-z0-9](?:[a-z0-9._-]{0,95})$/.test(item.id)
+      || !["pass", "warn", "fail"].includes(item.status)
+      || seenCheckIds.has(item.id)) {
+      throw new TypeError("preflight root-cause projection received invalid or duplicate checks");
+    }
+    seenCheckIds.add(item.id);
+    if (item.status === "fail") failedChecks.push(item);
+  }
+
+  const failedCheckIds = new Set(failedChecks.map((item) => item.id));
+  const completeCiReleaseFamilyFailed = stageValid
+    && PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.every((id) => failedCheckIds.has(id));
+  const rootsById = new Map();
+  const blockedBy = [];
+  for (const item of failedChecks) {
+    const groupedCiFailure = completeCiReleaseFamilyFailed
+      && PREFLIGHT_CLEAN_CI_RELEASE_CHECK_ID_SET.has(item.id);
+    const rootId = groupedCiFailure
+      ? "clean_ci_five_image_seven_cvm_bundle"
+      : singletonRootCauseId(item.id);
+    const classification = groupedCiFailure
+      ? "ci_external_state"
+      : singletonRootCauseClassification(item.id);
+    if (!rootsById.has(rootId)) {
+      rootsById.set(rootId, {
+        id: rootId,
+        classification,
+        failed_check_ids: [],
+      });
+    }
+    const root = rootsById.get(rootId);
+    if (root.classification !== classification
+      || root.failed_check_ids.includes(item.id)) {
+      throw new TypeError("preflight root-cause projection contains overlapping ownership");
+    }
+    root.failed_check_ids.push(item.id);
+    blockedBy.push({
+      check_id: item.id,
+      root_cause_ids: [rootId],
+    });
+  }
+
+  const rootCauses = [...rootsById.values()].map((root) => ({
+    id: root.id,
+    classification: root.classification,
+    failed_check_ids: [...root.failed_check_ids],
+  }));
+  const mappedFailureIds = blockedBy.map((entry) => entry.check_id);
+  const mappingComplete = mappedFailureIds.length === failedChecks.length
+    && new Set(mappedFailureIds).size === failedChecks.length
+    && mappedFailureIds.every((id, index) => id === failedChecks[index].id)
+    && rootCauses.flatMap((root) => root.failed_check_ids).length === failedChecks.length;
+  if (!mappingComplete || rootCauses.length > 103 || blockedBy.length > 103
+    || rootCauses.some((root) => root.failed_check_ids.length > 103)) {
+    throw new TypeError("preflight root-cause projection is incomplete or out of bounds");
+  }
+
+  return {
+    root_cause_projection: {
+      schema: PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
+      stage,
+      stage_valid: stageValid,
+      source_check_count: checks.length,
+      source_fail_count: failedChecks.length,
+      mapping_complete: mappingComplete,
+    },
+    root_causes: rootCauses,
+    blocked_by: blockedBy,
   };
 }
 
@@ -3172,6 +3370,10 @@ export function buildPreflightReport(snapshot) {
   const actions = [...new Set(
     checks.filter((item) => item.status !== "pass" && item.action).map((item) => item.action),
   )].slice(0, 20);
+  const rootCauseDiagnosis = projectPreflightRootCauses(
+    checks,
+    authorityStage,
+  );
   return {
     schema: PREFLIGHT_SCHEMA,
     verdict: counts.fail === 0 ? "READY" : "BLOCKED",
@@ -3184,6 +3386,7 @@ export function buildPreflightReport(snapshot) {
       remote_state_mutated: false,
     },
     checks,
+    ...rootCauseDiagnosis,
     next_actions: actions,
   };
 }
@@ -3216,6 +3419,12 @@ export function formatHumanReport(report) {
   ];
   for (const item of report.checks) {
     lines.push(`[${item.status.toUpperCase()}] ${item.id} - ${item.message}`);
+  }
+  if (report.root_causes.length) {
+    lines.push("", "root_causes:");
+    report.root_causes.forEach((root, index) => lines.push(
+      `${index + 1}. ${root.id} [${root.classification}] (${root.failed_check_ids.length} failed check${root.failed_check_ids.length === 1 ? "" : "s"})`,
+    ));
   }
   if (report.next_actions.length) {
     lines.push("", "next_actions:");
