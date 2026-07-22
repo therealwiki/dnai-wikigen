@@ -182,6 +182,12 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     ");",
     "",
   ].join("\n"),
+  "web/scripts/pitch-assets-provenance.test.mjs": [
+    'const attested = "../../outputs/wikigen-pitch-assets/attested-network.png";',
+    'const oracle = "../../outputs/wikigen-pitch-assets/private-reward-oracle.png";',
+    "export { attested, oracle };",
+    "",
+  ].join("\n"),
 });
 
 const WEB_SOURCE_CONSUMERS = Object.freeze({
@@ -209,6 +215,10 @@ const RESOURCE_BYTES = Object.freeze({
   "ARCHITECTURE.md": "# Architecture\nBound fixture.\n",
   "PROJECT.md": "# Project\nBound fixture.\n",
   "README.md": "# Readme\nBound fixture.\n",
+  "outputs/wikigen-pitch-assets/attested-network.png":
+    "fixture attested-network PNG authority bytes\n",
+  "outputs/wikigen-pitch-assets/private-reward-oracle.png":
+    "fixture private-reward-oracle PNG authority bytes\n",
   "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq":
     ". as $manifest | $manifest\n",
 });
@@ -278,11 +288,11 @@ test("external closure is exact, typed, canonical, and domain separated", async 
     // checked-in source projection KAT at the end of this file.
     assert.equal(
       closure.aggregate_sha256,
-      "sha256:d27c82d8196b1ea9fe8ca60bffb7033ecc45d9338331c542c077cc6923ea7cd2",
+      "sha256:30cfe9e25f8c67754024fb706a7cd5fff7fa7b92f5aaa0e9a63a57410e513023",
     );
     assert.equal(
       cloudflareExternalBuildClosureSha256(closure),
-      "sha256:ed35b3badf8e1fa8ef5ba7a05389f53285703b141b9ae45c269856eb7ebab804",
+      "sha256:4deb57c511b34313a1e9564a23cff30366b8d72920291154db90e97291676664",
     );
   });
 });
@@ -581,15 +591,15 @@ test("external module parser rejects dynamic loading, CommonJS, bare packages, a
 test("real checked-in external bytes match the final release projection KAT", async () => {
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
-  assert.equal(closure.entrypoints.length, 15);
-  assert.equal(closure.files.length, 27);
+  assert.equal(closure.entrypoints.length, 17);
+  assert.equal(closure.files.length, 29);
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:9020f8b94af2cf176e391f6a3cac7325a57cc9afc8398451058bcc4b853e742f",
+    "sha256:079bd036ef0d4254563d0c1605e79851d6a7b3ba013f8fad2e8dd68be0a1782d",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:b6760391961abc0759fbdf550caff9e9eebadbc5b73d1b2981c37a800b3fea87",
+    "sha256:4efd0d83422e589c33d61bc5b350b5f54ada15ca9927a379ec0869e651a3d8ab",
   );
   assert.equal(closureTest.MODULE_ENTRYPOINT_PATHS.length, 10);
   assert.equal(closureTest.MODULE_CLOSURE_PATHS.length, 22);
@@ -601,5 +611,5 @@ test("real checked-in external bytes match the final release projection KAT", as
     "@noble/hashes/sha3",
     "@noble/hashes/utils",
   ]);
-  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 5);
+  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 7);
 });

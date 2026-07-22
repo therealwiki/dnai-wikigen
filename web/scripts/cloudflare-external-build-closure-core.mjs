@@ -80,6 +80,8 @@ const RESOURCE_DEFINITIONS = Object.freeze([
   Object.freeze({ kind: "verification_input", path: "ARCHITECTURE.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "PROJECT.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "README.md", maximumBytes: 4 * 1024 * 1024 }),
+  Object.freeze({ kind: "asset_provenance_input", path: "outputs/wikigen-pitch-assets/attested-network.png", maximumBytes: 4 * 1024 * 1024 }),
+  Object.freeze({ kind: "asset_provenance_input", path: "outputs/wikigen-pitch-assets/private-reward-oracle.png", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq", maximumBytes: 1024 * 1024 }),
 ]);
 
@@ -105,6 +107,16 @@ const RESOURCE_CONSUMER_BINDINGS = Object.freeze([
       "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
     specifier:
       "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
+  }),
+  Object.freeze({
+    consumer: "web/scripts/pitch-assets-provenance.test.mjs",
+    externalPath: "outputs/wikigen-pitch-assets/attested-network.png",
+    specifier: "../../outputs/wikigen-pitch-assets/attested-network.png",
+  }),
+  Object.freeze({
+    consumer: "web/scripts/pitch-assets-provenance.test.mjs",
+    externalPath: "outputs/wikigen-pitch-assets/private-reward-oracle.png",
+    specifier: "../../outputs/wikigen-pitch-assets/private-reward-oracle.png",
   }),
 ]);
 

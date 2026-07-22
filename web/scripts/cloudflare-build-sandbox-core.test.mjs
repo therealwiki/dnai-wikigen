@@ -93,6 +93,14 @@ test("isolated source stage excludes mutable dependencies and matches validated 
     );
     await access(path.join(workspace.rootDir, "scripts"));
     await access(path.join(workspace.rootDir, "ARCHITECTURE.md"));
+    await access(path.join(
+      workspace.rootDir,
+      "outputs/wikigen-pitch-assets/attested-network.png",
+    ));
+    await access(path.join(
+      workspace.rootDir,
+      "outputs/wikigen-pitch-assets/private-reward-oracle.png",
+    ));
     assert.deepEqual(workspace.externalBuildClosure, externalBuildClosure);
     const extraRootScript = path.join(workspace.rootDir, "scripts", "unbound.mjs");
     await writeFile(extraRootScript, "export default true;\n", { mode: 0o600 });
