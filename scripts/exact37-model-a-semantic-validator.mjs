@@ -92,6 +92,7 @@ import {
 } from "./phala-seven-cvm-historical-evidence-core.mjs";
 import {
   projectExternalFiveEvidenceFilesFromExact37ByKey,
+  projectExternalFiveHistoricalQvlAuthority,
   validateExternalFiveHistoricalEvidenceBoundary,
 } from "../web/scripts/external-five-historical-evidence-core.mjs";
 import {
@@ -992,6 +993,12 @@ export async function validateExact37ModelAHistoricalAuthority({
       frontendBuildInputManifest: normalizedManifest,
       frontendBuildCandidateReceipt: buildReceipt,
       liveActivationAuthority: stageTwo,
+      historicalQvlAuthority: projectExternalFiveHistoricalQvlAuthority({
+        qvlIdentityEvidence: historicalMachineEvidence.qvl_identity_evidence,
+        activationEvidenceLeaseSeconds:
+          launch.release_verification_authority
+            .activation_evidence_lease_seconds,
+      }),
       authorityDigests: {
         ceremonyAuthorizationSha256: stageOneSha256,
         ceremonyNonce,

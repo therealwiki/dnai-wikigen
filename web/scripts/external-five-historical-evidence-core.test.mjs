@@ -11,10 +11,12 @@ import {
   EXTERNAL_FIVE_EVIDENCE_FLAGS,
   EXTERNAL_FIVE_HISTORICAL_EVIDENCE_STATUS,
   projectExternalFiveEvidenceFilesFromExact37ByKey,
+  projectExternalFiveHistoricalQvlAuthority,
   validateExternalFiveHistoricalEvidenceBoundary,
 } from "./external-five-historical-evidence-core.mjs";
 
 const NOW = 2_000_000;
+const MAX_PROTOCOL_SECOND = 4_102_444_800;
 const RELEASE = "ab".repeat(20);
 const pin = (byte) => `sha256:${byte.repeat(32)}`;
 const word = (byte) => `0x${byte.repeat(32)}`;
@@ -69,6 +71,10 @@ const IMAGE = {
   sbom_attestation: "verified",
 };
 const VERDICT_DOMAIN = Buffer.from(
+  "dnai-wikigen/independent-tdx-verdict/v4\0",
+  "utf8",
+);
+const V3_VERDICT_DOMAIN = Buffer.from(
   "dnai-wikigen/independent-tdx-verdict/v3\0",
   "utf8",
 );
@@ -113,8 +119,13 @@ function domainHash(domain, payload) {
     .digest("hex")}`;
 }
 
-function verdictDigest(verdict) {
-  const payload = Object.fromEntries([
+function verdictDigest(
+  verdict,
+  signingDomain = VERDICT_DOMAIN,
+  { includeActivationEvidenceLease = true } = {},
+) {
+  const fields = [
+    "activation_evidence_lease_expires_at",
     "app_id", "ceremony_nonce", "chain_id", "challenge_digest",
     "challenge_expires_at", "challenge_id", "challenge_issued_at",
     "compose_hash", "contract_address", "cvm_id",
@@ -123,9 +134,13 @@ function verdictDigest(verdict) {
     "release_policy_hash", "report_data", "release_authority_sha256",
     "schema", "signer_address", "verification_method", "verified",
     "verifier_address",
-  ].map((key) => [key, verdict[key]]).sort(([left], [right]) => left.localeCompare(right)));
+  ].filter((key) => includeActivationEvidenceLease
+    || key !== "activation_evidence_lease_expires_at");
+  const payload = Object.fromEntries(fields
+    .map((key) => [key, verdict[key]])
+    .sort(([left], [right]) => left.localeCompare(right)));
   return `0x${createHash("sha256")
-    .update(VERDICT_DOMAIN)
+    .update(signingDomain)
     .update(Buffer.from(JSON.stringify(payload), "utf8"))
     .digest("hex")}`;
 }
@@ -152,11 +167,19 @@ async function signedVerdict({
   contract,
   signer,
   qvlPolicy,
+  measurementPolicy,
   reportData,
   quoteByte,
+  schema = "dnai.independent-tdx-verdict.v4",
+  signingDomain = VERDICT_DOMAIN,
+  challengeIssuedAt = NOW - 100,
+  challengeExpiresAt = NOW - 5,
+  issuedAt = NOW - 10,
+  activationEvidenceLeaseExpiresAt = NOW + 890,
+  expiresAt = activationEvidenceLeaseExpiresAt,
 }) {
   const verdict = {
-    schema: "dnai.independent-tdx-verdict.v3",
+    schema,
     verification_method: "intel_tdx_dcap_qvl",
     verified: true,
     chain_id: 84_532,
@@ -166,12 +189,12 @@ async function signedVerdict({
     deployment_intent_sha256: DEPLOYMENT_INTENT,
     release_authority_sha256: RELEASE_AUTHORITY,
     ceremony_nonce: CEREMONY_NONCE,
-    measurement_policy_sha256: pin(quoteByte),
+    measurement_policy_sha256: measurementPolicy,
     release_policy_hash: qvlPolicy,
     challenge_id: word(quoteByte),
     challenge_digest: word(String(Number.parseInt(quoteByte, 16) + 1).padStart(2, "0")),
-    challenge_issued_at: NOW - 20,
-    challenge_expires_at: NOW + 100,
+    challenge_issued_at: challengeIssuedAt,
+    challenge_expires_at: challengeExpiresAt,
     quote_hash: word(String(Number.parseInt(quoteByte, 16) + 2).padStart(2, "0")),
     report_data: reportData,
     compose_hash: `0x${COMPOSE}`,
@@ -179,13 +202,14 @@ async function signedVerdict({
     os_image_hash: OS_IMAGE,
     signer_address: signer,
     contract_address: contract,
-    issued_at: NOW - 10,
-    expires_at: NOW + 90,
+    issued_at: issuedAt,
+    activation_evidence_lease_expires_at: activationEvidenceLeaseExpiresAt,
+    expires_at: expiresAt,
     verifier_address: account.address.toLowerCase(),
     verifier_signature: "",
   };
   verdict.verifier_signature = await account.signMessage({
-    message: { raw: verdictDigest(verdict) },
+    message: { raw: verdictDigest(verdict, signingDomain) },
   });
   return {
     context,
@@ -204,6 +228,7 @@ async function fixture() {
     `0x${value.toString(16).padStart(64, "0")}`,
   ));
   const qvlPolicies = ["40", "41", "42", "43", "44"].map(word);
+  const qvlMeasurements = ["80", "81", "82", "83", "84"].map(pin);
   const emailBinding = {
     kind: "email_oracle_kms_restart_v1",
     email_oracle_auth_runtime_code_hash: word("45"),
@@ -237,23 +262,27 @@ async function fixture() {
   const artifactVerdict = await signedVerdict({
     account: accounts[0], context: "artifact", profile: "diligence",
     contract: DILIGENCE, signer: TEE, qvlPolicy: qvlPolicies[0],
-    reportData: word("50"), quoteByte: "51",
+    measurementPolicy: qvlMeasurements[0], reportData: word("50"),
+    quoteByte: "51",
   });
   const arenaVerdict = await signedVerdict({
     account: accounts[1], context: "arena", profile: "arena",
     contract: CHALLENGE, signer: TEE, qvlPolicy: qvlPolicies[1],
-    reportData: word("52"), quoteByte: "53",
+    measurementPolicy: qvlMeasurements[1], reportData: word("52"),
+    quoteByte: "53",
   });
   const anchorVerdict = await signedVerdict({
     account: accounts[2], context: "anchor_writer",
     profile: "execution_policy_anchor_writer", contract: ANCHOR,
-    signer: WRITER, qvlPolicy: qvlPolicies[2], reportData: anchorReportData,
+    signer: WRITER, qvlPolicy: qvlPolicies[2],
+    measurementPolicy: qvlMeasurements[2], reportData: anchorReportData,
     quoteByte: "54",
   });
   const emailVerdict = await signedVerdict({
     account: accounts[0], context: "email_oracle_kms_restart",
     profile: "email_oracle_kms_restart", contract: DILIGENCE,
-    signer: TEE, qvlPolicy: qvlPolicies[0], reportData: emailReportData,
+    signer: TEE, qvlPolicy: qvlPolicies[0],
+    measurementPolicy: qvlMeasurements[0], reportData: emailReportData,
     quoteByte: "55",
   });
   const runtimeHashes = Object.fromEntries([
@@ -599,6 +628,25 @@ async function fixture() {
     })),
     qvl_verifier_roots: accounts.map((account) => account.address.toLowerCase()),
   };
+  const historicalQvlAuthority = projectExternalFiveHistoricalQvlAuthority({
+    qvlIdentityEvidence: [
+      ["diligence_qvl_cvm", 0],
+      ["arena_qvl_cvm", 1],
+      ["anchor_writer_qvl_cvm", 2],
+      ["compute_workload_qvl_cvm", 4],
+      ["compute_metering_qvl_cvm", 3],
+    ].map(([domain, index]) => ({
+      domain,
+      deployment_intent_sha256: DEPLOYMENT_INTENT,
+      release_authority_sha256: RELEASE_AUTHORITY,
+      ceremony_nonce: CEREMONY_NONCE,
+      measurement_policy_sha256: qvlMeasurements[index],
+      release_policy_sha256: `sha256:${qvlPolicies[index].slice(2)}`,
+      tee_identity: accounts[index].address.toLowerCase(),
+      activation_evidence_lease_expires_at: NOW + 900,
+    })),
+    activationEvidenceLeaseSeconds: 900,
+  });
   return {
     files,
     releaseCandidate: candidate,
@@ -634,6 +682,7 @@ async function fixture() {
       },
       review: { signed_at: new Date(NOW * 1_000).toISOString() },
     },
+    historicalQvlAuthority,
     authorityDigests: {
       ceremonyAuthorizationSha256: B,
       ceremonyNonce: CEREMONY_NONCE,
@@ -645,7 +694,26 @@ async function fixture() {
       runtimeAuthorityDependencySha256: R,
     },
     recoverIndependentEip191PersonalSigner,
+    testOnly: { accounts, qvlMeasurements, qvlPolicies },
   };
+}
+
+async function resignVerdict(
+  wrapper,
+  account,
+  signingDomain = VERDICT_DOMAIN,
+  options,
+) {
+  wrapper.verdict.verifier_signature = await account.signMessage({
+    message: { raw: verdictDigest(wrapper.verdict, signingDomain, options) },
+  });
+}
+
+function recommitExternalFile(input, index) {
+  input.files[index] = file(input.files[index].flag, input.files[index].value);
+  const commitment = input.frontendBuildInputManifest.pre_D_private_inputs
+    .find(({ flag }) => flag === input.files[index].flag);
+  commitment.sha256 = input.files[index].rawSha256;
 }
 
 test("external five authenticates historical bytes, lineage, schemas and QVL signatures without elevating chain claims", async () => {
@@ -654,13 +722,259 @@ test("external five authenticates historical bytes, lineage, schemas and QVL sig
   assert.equal(result.status, EXTERNAL_FIVE_HISTORICAL_EVIDENCE_STATUS);
   assert.equal(result.frontend_D_raw_byte_commitments_authenticated, true);
   assert.equal(result.release_B_R_O_C_D_lineage_authenticated, true);
-  assert.equal(result.historical_qvl_signatures_authenticated, true);
+  assert.equal(result.historical_qvl_identity_evidence_authenticated, true);
+  assert.equal(result.historical_v4_qvl_verdict_signatures_authenticated, true);
+  assert.equal(
+    result.recorded_challenge_and_activation_lease_relations_checked,
+    true,
+  );
+  assert.equal(result.qvl_challenge_signatures_authenticated, false);
+  assert.equal(result.raw_quotes_authenticated, false);
+  assert.equal(result.qvl_challenge_consumption_authenticated, false);
+  assert.equal(result.freshness_renewed, false);
+  assert.equal(result.current_qvl_operation_performed, false);
   assert.equal(result.current_clock_consulted, false);
+  assert.equal(result.live_traffic_authorized, false);
   assert.equal(result.ledger_chain_observations_authenticated, false);
   assert.equal(result.email_restart_observation_authenticated, false);
   assert.equal(result.canonicalDependencyChainVerified, false);
-  assert.equal(result.required_downstream_proofs.length, 5);
+  assert.deepEqual(result.required_downstream_proofs.slice(0, 4), [
+    "fresh_QVL_challenge_signatures_for_external_verdicts",
+    "fresh_raw_TDX_quotes_and_current_DCAP_QVL_appraisals",
+    "single_use_QVL_challenge_consumption_receipts",
+    "current_clock_activation_evidence_lease_validation",
+  ]);
+  assert.equal(result.required_downstream_proofs.length, 9);
   assert.ok(Object.isFrozen(result));
+});
+
+test("external five rejects legacy v3 verdicts, the v3 signing domain, and non-exact v4 fields", async () => {
+  const legacy = await fixture();
+  const legacyVerdict = legacy.releaseCandidate.attestations.artifact;
+  legacyVerdict.verdict.schema = "dnai.independent-tdx-verdict.v3";
+  delete legacyVerdict.verdict.activation_evidence_lease_expires_at;
+  await resignVerdict(
+    legacyVerdict,
+    legacy.testOnly.accounts[0],
+    V3_VERDICT_DOMAIN,
+    { includeActivationEvidenceLease: false },
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(legacy),
+    /must contain exactly the canonical fields/i,
+  );
+
+  const legacyDomain = await fixture();
+  await resignVerdict(
+    legacyDomain.releaseCandidate.attestations.artifact,
+    legacyDomain.testOnly.accounts[0],
+    V3_VERDICT_DOMAIN,
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(legacyDomain),
+    /signature is not authenticated/i,
+  );
+
+  const extra = await fixture();
+  extra.releaseCandidate.attestations.artifact.verdict.challenge_consumed_at = NOW - 9;
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(extra),
+    /must contain exactly the canonical fields/i,
+  );
+});
+
+test("external five rejects every invalid v4 challenge-to-lease relation", async () => {
+  const aliasDrift = await fixture();
+  aliasDrift.releaseCandidate.attestations.artifact.verdict
+    .activation_evidence_lease_expires_at = NOW + 889;
+  await resignVerdict(
+    aliasDrift.releaseCandidate.attestations.artifact,
+    aliasDrift.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(aliasDrift),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  const oversizedLease = await fixture();
+  oversizedLease.releaseCandidate.attestations.artifact.verdict.expires_at = NOW + 891;
+  oversizedLease.releaseCandidate.attestations.artifact.verdict
+    .activation_evidence_lease_expires_at = NOW + 891;
+  await resignVerdict(
+    oversizedLease.releaseCandidate.attestations.artifact,
+    oversizedLease.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(oversizedLease),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  const issuedAtChallengeExpiry = await fixture();
+  issuedAtChallengeExpiry.releaseCandidate.attestations.artifact.verdict.issued_at =
+    issuedAtChallengeExpiry.releaseCandidate.attestations.artifact.verdict
+      .challenge_expires_at;
+  await resignVerdict(
+    issuedAtChallengeExpiry.releaseCandidate.attestations.artifact,
+    issuedAtChallengeExpiry.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(issuedAtChallengeExpiry),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  const oversizedChallenge = await fixture();
+  oversizedChallenge.releaseCandidate.attestations.artifact.verdict
+    .challenge_issued_at = NOW - 126;
+  await resignVerdict(
+    oversizedChallenge.releaseCandidate.attestations.artifact,
+    oversizedChallenge.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(oversizedChallenge),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  const beyondFutureTolerance = await fixture();
+  Object.assign(beyondFutureTolerance.releaseCandidate.attestations.artifact.verdict, {
+    challenge_issued_at: NOW + 6,
+    challenge_expires_at: NOW + 100,
+    issued_at: NOW + 6,
+  });
+  await resignVerdict(
+    beyondFutureTolerance.releaseCandidate.attestations.artifact,
+    beyondFutureTolerance.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(beyondFutureTolerance),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  const expiredAtSignedC = await fixture();
+  const leaseExpiry = expiredAtSignedC.releaseCandidate.attestations.artifact
+    .verdict.expires_at;
+  expiredAtSignedC.liveActivationAuthority.review.signed_at =
+    new Date(leaseExpiry * 1_000).toISOString();
+  expiredAtSignedC.files[1].value.cvm.fetched_at = leaseExpiry;
+  expiredAtSignedC.files[2].value.cvm.fetched_at = leaseExpiry;
+  recommitExternalFile(expiredAtSignedC, 1);
+  recommitExternalFile(expiredAtSignedC, 2);
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(expiredAtSignedC),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  for (const field of [
+    "challenge_issued_at",
+    "challenge_expires_at",
+    "issued_at",
+    "activation_evidence_lease_expires_at",
+    "expires_at",
+  ]) {
+    const outOfProtocolRange = await fixture();
+    outOfProtocolRange.releaseCandidate.attestations.artifact.verdict[field] =
+      MAX_PROTOCOL_SECOND + 1;
+    await resignVerdict(
+      outOfProtocolRange.releaseCandidate.attestations.artifact,
+      outOfProtocolRange.testOnly.accounts[0],
+    );
+    assert.throws(
+      () => validateExternalFiveHistoricalEvidenceBoundary(outOfProtocolRange),
+      /must be a bounded integer/i,
+      field,
+    );
+  }
+});
+
+test("external five authenticates v4 lease fields as signed data", async () => {
+  const tampered = await fixture();
+  tampered.releaseCandidate.attestations.artifact.verdict.expires_at = NOW + 889;
+  tampered.releaseCandidate.attestations.artifact.verdict
+    .activation_evidence_lease_expires_at = NOW + 889;
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(tampered),
+    /signature is not authenticated/i,
+  );
+});
+
+test("external five binds verifier identity, release policy, measurement policy, and identity lease", async () => {
+  const verifierDrift = await fixture();
+  verifierDrift.historicalQvlAuthority = structuredClone(
+    verifierDrift.historicalQvlAuthority,
+  );
+  verifierDrift.historicalQvlAuthority.identities[0].verifier_address = address("fe");
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(verifierDrift),
+    /historical QVL authority drifted from release\/L\/R\/C/i,
+  );
+
+  const releasePolicyDrift = await fixture();
+  releasePolicyDrift.historicalQvlAuthority = structuredClone(
+    releasePolicyDrift.historicalQvlAuthority,
+  );
+  releasePolicyDrift.historicalQvlAuthority.identities[0]
+    .release_policy_sha256 = pin("ef");
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(releasePolicyDrift),
+    /historical QVL authority drifted from release\/L\/R\/C/i,
+  );
+
+  const measurementDrift = await fixture();
+  measurementDrift.releaseCandidate.attestations.artifact.verdict
+    .measurement_policy_sha256 = pin("ee");
+  await resignVerdict(
+    measurementDrift.releaseCandidate.attestations.artifact,
+    measurementDrift.testOnly.accounts[0],
+  );
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(measurementDrift),
+    /drifted from its authenticated historical QVL identity/i,
+  );
+
+  const identityLeaseDrift = await fixture();
+  identityLeaseDrift.historicalQvlAuthority = structuredClone(
+    identityLeaseDrift.historicalQvlAuthority,
+  );
+  identityLeaseDrift.historicalQvlAuthority.identities[0]
+    .activation_evidence_lease_expires_at = NOW + 100;
+  assert.throws(
+    () => validateExternalFiveHistoricalEvidenceBoundary(identityLeaseDrift),
+    /challenge or activation evidence lease relation is invalid/i,
+  );
+
+  for (const field of ["current_clock_consulted", "live_traffic_authorized"]) {
+    const elevated = await fixture();
+    elevated.historicalQvlAuthority = structuredClone(
+      elevated.historicalQvlAuthority,
+    );
+    elevated.historicalQvlAuthority[field] = true;
+    assert.throws(
+      () => validateExternalFiveHistoricalEvidenceBoundary(elevated),
+      /historical QVL authority shape or truth boundary is invalid/i,
+      field,
+    );
+  }
+});
+
+test("external five binds each signed verdict to its release domain, profile, CVM, and contract", async () => {
+  const cases = [
+    ["domain", "unexpected_runtime_domain"],
+    ["profile", "unexpected_profile"],
+    ["cvm_id", "cvm_other_release"],
+    ["contract_address", address("fd")],
+  ];
+  for (const [field, value] of cases) {
+    const input = await fixture();
+    input.releaseCandidate.attestations.artifact.verdict[field] = value;
+    await resignVerdict(
+      input.releaseCandidate.attestations.artifact,
+      input.testOnly.accounts[0],
+    );
+    assert.throws(
+      () => validateExternalFiveHistoricalEvidenceBoundary(input),
+      /verdict drifted from release\/C\/B\/R\/O\/D authority/i,
+      field,
+    );
+  }
 });
 
 test("external five rejects D byte drift, promoted unverified claims, stale evidence and forged QVL signatures", async () => {

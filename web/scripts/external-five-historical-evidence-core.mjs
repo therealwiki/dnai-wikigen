@@ -14,19 +14,38 @@ export const EXTERNAL_FIVE_EVIDENCE_FLAGS = Object.freeze([
 ]);
 
 export const EXTERNAL_FIVE_HISTORICAL_EVIDENCE_SCHEMA =
-  "dnai.external-five-historical-evidence-boundary.v1";
+  "dnai.external-five-historical-evidence-boundary.v2";
 export const EXTERNAL_FIVE_HISTORICAL_EVIDENCE_STATUS =
-  "historical_bytes_lineage_schemas_and_qvl_signatures_authenticated_chain_observations_pending";
+  "historical_bytes_lineage_schemas_and_v4_qvl_verdict_signatures_authenticated_current_observations_pending";
 export const EXTERNAL_FIVE_HISTORICAL_EVIDENCE_TRUTH_STATUS =
-  "signed_C_to_D_raw_bytes_and_historical_QVL_windows_verified_without_claiming_current_chain_KMS_or_restart_observation";
+  "signed_C_to_D_raw_bytes_v4_verdict_signatures_and_recorded_window_relations_checked_without_claiming_challenge_signature_raw_quote_consumption_freshness_chain_KMS_or_restart_observation";
 
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
-const VERDICT_SCHEMA = "dnai.independent-tdx-verdict.v3";
+const VERDICT_SCHEMA = "dnai.independent-tdx-verdict.v4";
 const VERIFICATION_METHOD = "intel_tdx_dcap_qvl";
 const VERDICT_DOMAIN = Buffer.from(
-  "dnai-wikigen/independent-tdx-verdict/v3\0",
+  "dnai-wikigen/independent-tdx-verdict/v4\0",
   "utf8",
 );
+const ACTIVATION_EVIDENCE_LEASE_SECONDS = 900;
+const HISTORICAL_QVL_AUTHORITY_SCHEMA =
+  "dnai.external-five-historical-qvl-authority.v1";
+const HISTORICAL_QVL_AUTHORITY_TRUTH_STATUS =
+  "historical_raw14_QVL_identity_projection_not_current_QVL_or_freshness_authority";
+const HISTORICAL_QVL_DOMAIN_ORDER = Object.freeze([
+  "diligence_qvl_cvm",
+  "arena_qvl_cvm",
+  "anchor_writer_qvl_cvm",
+  "compute_workload_qvl_cvm",
+  "compute_metering_qvl_cvm",
+]);
+const CANDIDATE_QVL_KEY_BY_HISTORICAL_DOMAIN = Object.freeze({
+  diligence_qvl_cvm: "diligence_qvl",
+  arena_qvl_cvm: "arena_qvl",
+  anchor_writer_qvl_cvm: "anchor_writer_qvl",
+  compute_workload_qvl_cvm: "compute_workload_qvl",
+  compute_metering_qvl_cvm: "compute_metering_qvl",
+});
 const ANCHOR_EVIDENCE_SCHEMA =
   "dnai.execution-policy-anchor-writer-qvl-evidence.v2";
 const ANCHOR_REPORT_DATA_SCHEMA =
@@ -252,6 +271,136 @@ export function projectExternalFiveEvidenceFilesFromExact37ByKey(byKey) {
   });
 }
 
+function normalizeHistoricalQvlAuthority(value) {
+  assertCanonicalPlainDataGraph(value, {
+    label: "external-five historical QVL authority",
+  });
+  const parsed = exact(value, [
+    "activation_evidence_lease_seconds",
+    "current_clock_consulted",
+    "identities",
+    "live_traffic_authorized",
+    "schema",
+    "truth_status",
+  ], "external-five historical QVL authority");
+  if (parsed.schema !== HISTORICAL_QVL_AUTHORITY_SCHEMA
+    || parsed.truth_status !== HISTORICAL_QVL_AUTHORITY_TRUTH_STATUS
+    || parsed.activation_evidence_lease_seconds
+      !== ACTIVATION_EVIDENCE_LEASE_SECONDS
+    || parsed.current_clock_consulted !== false
+    || parsed.live_traffic_authorized !== false
+    || !Array.isArray(parsed.identities)
+    || parsed.identities.length !== HISTORICAL_QVL_DOMAIN_ORDER.length) {
+    fail("external-five historical QVL authority shape or truth boundary is invalid");
+  }
+  const identities = parsed.identities.map((valueEntry, index) => {
+    const entry = exact(valueEntry, [
+      "activation_evidence_lease_expires_at",
+      "ceremony_nonce",
+      "deployment_intent_sha256",
+      "domain",
+      "measurement_policy_sha256",
+      "release_authority_sha256",
+      "release_policy_sha256",
+      "verifier_address",
+    ], `external-five historical QVL identity ${index}`);
+    const expectedDomain = HISTORICAL_QVL_DOMAIN_ORDER[index];
+    if (entry.domain !== expectedDomain) {
+      fail(`external-five historical QVL identity ${index} must be ${expectedDomain}`);
+    }
+    return Object.freeze({
+      domain: expectedDomain,
+      deployment_intent_sha256: digest(
+        entry.deployment_intent_sha256,
+        `${expectedDomain} historical deployment intent`,
+      ),
+      release_authority_sha256: digest(
+        entry.release_authority_sha256,
+        `${expectedDomain} historical release authority`,
+      ),
+      ceremony_nonce: bytes32(
+        entry.ceremony_nonce,
+        `${expectedDomain} historical ceremony nonce`,
+      ),
+      measurement_policy_sha256: digest(
+        entry.measurement_policy_sha256,
+        `${expectedDomain} historical measurement policy`,
+      ),
+      release_policy_sha256: digest(
+        entry.release_policy_sha256,
+        `${expectedDomain} historical release policy`,
+      ),
+      verifier_address: address(
+        entry.verifier_address,
+        `${expectedDomain} historical verifier`,
+      ),
+      activation_evidence_lease_expires_at: integer(
+        entry.activation_evidence_lease_expires_at,
+        `${expectedDomain} historical activation evidence lease expiry`,
+        1,
+        4_102_444_800,
+      ),
+    });
+  });
+  for (const field of [
+    "measurement_policy_sha256",
+    "release_policy_sha256",
+    "verifier_address",
+  ]) {
+    if (new Set(identities.map((entry) => entry[field])).size !== identities.length) {
+      fail(`external-five historical QVL ${field} values must be distinct`);
+    }
+  }
+  return deepFreezeCanonicalPlainDataGraph({
+    schema: HISTORICAL_QVL_AUTHORITY_SCHEMA,
+    truth_status: HISTORICAL_QVL_AUTHORITY_TRUTH_STATUS,
+    activation_evidence_lease_seconds: ACTIVATION_EVIDENCE_LEASE_SECONDS,
+    identities,
+    current_clock_consulted: false,
+    live_traffic_authorized: false,
+  }, { label: "normalized external-five historical QVL authority" });
+}
+
+export function projectExternalFiveHistoricalQvlAuthority({
+  qvlIdentityEvidence,
+  activationEvidenceLeaseSeconds,
+} = {}) {
+  assertCanonicalPlainDataGraph(qvlIdentityEvidence, {
+    label: "external-five reconstructed QVL identity evidence",
+  });
+  if (!Array.isArray(qvlIdentityEvidence)
+    || qvlIdentityEvidence.length !== HISTORICAL_QVL_DOMAIN_ORDER.length
+    || activationEvidenceLeaseSeconds !== ACTIVATION_EVIDENCE_LEASE_SECONDS) {
+    fail("external-five requires the exact reconstructed five-QVL historical authority");
+  }
+  const identities = HISTORICAL_QVL_DOMAIN_ORDER.map((domain) => {
+    const matches = qvlIdentityEvidence.filter((entry) => entry?.domain === domain);
+    if (matches.length !== 1) {
+      fail(`external-five reconstructed QVL authority must contain ${domain} exactly once`);
+    }
+    const proof = record(matches[0], `${domain} reconstructed QVL identity proof`);
+    return {
+      domain,
+      deployment_intent_sha256: proof.deployment_intent_sha256,
+      release_authority_sha256: proof.release_authority_sha256,
+      ceremony_nonce: proof.ceremony_nonce,
+      measurement_policy_sha256: proof.measurement_policy_sha256,
+      release_policy_sha256: proof.release_policy_sha256,
+      verifier_address: proof.tee_identity,
+      activation_evidence_lease_expires_at:
+        proof.activation_evidence_lease_expires_at,
+    };
+  });
+  return normalizeHistoricalQvlAuthority({
+    schema: HISTORICAL_QVL_AUTHORITY_SCHEMA,
+    truth_status: HISTORICAL_QVL_AUTHORITY_TRUTH_STATUS,
+    activation_evidence_lease_seconds: activationEvidenceLeaseSeconds,
+    identities,
+    current_clock_consulted: false,
+    live_traffic_authorized: false,
+  });
+}
+
 function findPrivateInput(manifest, flag) {
   if (!Array.isArray(manifest.pre_D_private_inputs)) {
     fail("frontend D manifest omits its private input list");
@@ -363,7 +512,38 @@ function validateAuthorityLineage({
   });
 }
 
-function validateTrustedRoots(candidate, manifest) {
+function validateHistoricalQvlAuthorityBinding({
+  candidate,
+  historicalQvlAuthority,
+  authorityDigests,
+  evidenceTimeSeconds,
+}) {
+  const authority = normalizeHistoricalQvlAuthority(historicalQvlAuthority);
+  const byCandidateKey = {};
+  for (const identity of authority.identities) {
+    const candidateKey = CANDIDATE_QVL_KEY_BY_HISTORICAL_DOMAIN[identity.domain];
+    const candidateIdentity = candidate.trust_domains?.[candidateKey]?.identity;
+    if (!candidateIdentity
+      || identity.deployment_intent_sha256 !== candidate.deployment_intent_sha256
+      || identity.release_authority_sha256
+        !== authorityDigests.releaseVerificationAuthoritySha256
+      || identity.ceremony_nonce !== authorityDigests.ceremonyNonce
+      || identity.verifier_address !== candidateIdentity.verifier_address
+      || identity.release_policy_sha256
+        !== `sha256:${String(candidateIdentity.release_policy_hash || "").slice(2)}`
+      || identity.activation_evidence_lease_expires_at <= evidenceTimeSeconds) {
+      fail(`${identity.domain} historical QVL authority drifted from release/L/R/C`);
+    }
+    byCandidateKey[candidateKey] = identity;
+  }
+  return Object.freeze({
+    activationEvidenceLeaseSeconds:
+      authority.activation_evidence_lease_seconds,
+    byCandidateKey: Object.freeze(byCandidateKey),
+  });
+}
+
+function validateTrustedRoots(candidate, manifest, historicalQvlBinding) {
   if (!Array.isArray(manifest.qvl_verifier_roots)
     || manifest.qvl_verifier_roots.length !== 5) {
     fail("frontend D must bind exactly five QVL verifier roots");
@@ -385,11 +565,19 @@ function validateTrustedRoots(candidate, manifest) {
     || expected.some((root) => !actual.includes(root))) {
     fail("frontend D QVL roots drifted from the release candidate");
   }
+  const historical = Object.values(historicalQvlBinding.byCandidateKey)
+    .map((entry) => entry.verifier_address);
+  if (historical.length !== 5
+    || actual.some((root) => !historical.includes(root))
+    || historical.some((root) => !actual.includes(root))) {
+    fail("frontend D QVL roots drifted from authenticated historical L/R identities");
+  }
   return new Set(actual);
 }
 
 function verdictDigest(verdict) {
   const payload = Object.fromEntries([
+    "activation_evidence_lease_expires_at",
     "app_id", "ceremony_nonce", "chain_id", "challenge_digest",
     "challenge_expires_at", "challenge_id", "challenge_issued_at",
     "compose_hash", "contract_address", "cvm_id",
@@ -414,6 +602,7 @@ function validateVerdict({
   expectedSigner,
   qvlDomainKey,
   trustedRoots,
+  historicalQvlBinding,
   evidenceTimeSeconds,
   authorityDigests,
   recoverIndependentEip191PersonalSigner,
@@ -432,7 +621,8 @@ function validateVerdict({
     "release_policy_hash", "challenge_id", "challenge_digest",
     "challenge_issued_at", "challenge_expires_at", "quote_hash",
     "report_data", "compose_hash", "app_id", "os_image_hash",
-    "signer_address", "contract_address", "issued_at", "expires_at",
+    "signer_address", "contract_address", "issued_at",
+    "activation_evidence_lease_expires_at", "expires_at",
     "verifier_address", "verifier_signature",
   ], `${context} verdict`);
   if (verdict.schema !== VERDICT_SCHEMA
@@ -472,6 +662,20 @@ function validateVerdict({
     || !trustedRoots.has(verdict.verifier_address)) {
     fail(`${context} verdict QVL root drifted from frontend D and release policy`);
   }
+  const historicalIdentity = historicalQvlBinding.byCandidateKey[qvlDomainKey];
+  if (!historicalIdentity
+    || verdict.verifier_address !== historicalIdentity.verifier_address
+    || verdict.release_policy_hash
+      !== `0x${historicalIdentity.release_policy_sha256.slice(7)}`
+    || verdict.measurement_policy_sha256
+      !== historicalIdentity.measurement_policy_sha256
+    || verdict.release_authority_sha256
+      !== historicalIdentity.release_authority_sha256
+    || verdict.deployment_intent_sha256
+      !== historicalIdentity.deployment_intent_sha256
+    || verdict.ceremony_nonce !== historicalIdentity.ceremony_nonce) {
+    fail(`${context} verdict drifted from its authenticated historical QVL identity`);
+  }
   address(verdict.verifier_address, `${context} verifier`);
   const forbidden = new Set([
     candidate.operator_address,
@@ -485,16 +689,35 @@ function validateVerdict({
     fail(`${context} QVL verifier conflicts with a release control role`);
   }
   const challengeIssued = integer(verdict.challenge_issued_at,
-    `${context} challenge issued`, 1);
+    `${context} challenge issued`, 1, 4_102_444_800);
   const challengeExpires = integer(verdict.challenge_expires_at,
-    `${context} challenge expiry`, 1);
-  const issued = integer(verdict.issued_at, `${context} verdict issued`, 1);
-  const expires = integer(verdict.expires_at, `${context} verdict expiry`, 1);
+    `${context} challenge expiry`, 1, 4_102_444_800);
+  const issued = integer(
+    verdict.issued_at,
+    `${context} verdict issued`,
+    1,
+    4_102_444_800,
+  );
+  const leaseExpires = integer(
+    verdict.activation_evidence_lease_expires_at,
+    `${context} activation evidence lease expiry`,
+    1,
+    4_102_444_800,
+  );
+  const expires = integer(
+    verdict.expires_at,
+    `${context} verdict expiry`,
+    1,
+    4_102_444_800,
+  );
   if (challengeIssued > evidenceTimeSeconds + 5 || issued > evidenceTimeSeconds + 5
-    || challengeExpires <= evidenceTimeSeconds || expires <= evidenceTimeSeconds
+    || leaseExpires <= evidenceTimeSeconds
     || challengeExpires <= challengeIssued || challengeExpires - challengeIssued > 120
-    || issued < challengeIssued || expires > challengeExpires || expires <= issued) {
-    fail(`${context} verdict was not valid at signed C's authenticated time`);
+    || issued < challengeIssued || issued >= challengeExpires
+    || leaseExpires !== expires || expires <= issued
+    || expires - issued > historicalQvlBinding.activationEvidenceLeaseSeconds
+    || expires > historicalIdentity.activation_evidence_lease_expires_at) {
+    fail(`${context} v4 verdict recorded challenge or activation evidence lease relation is invalid`);
   }
   same(quotePin, `sha256:${verdict.quote_hash.slice(2)}`, `${context} quote pin`);
   const signature = canonicalSignature(verdict.verifier_signature, `${context} signature`);
@@ -714,7 +937,8 @@ function validateDeploymentEvidence(value, candidate, context, evidenceTimeSecon
 }
 
 function validateAnchorEvidence({
-  entry, candidate, trustedRoots, evidenceTimeSeconds, authorityDigests,
+  entry, candidate, trustedRoots, historicalQvlBinding, evidenceTimeSeconds,
+  authorityDigests,
   recoverIndependentEip191PersonalSigner,
 }) {
   const artifact = exact(entry.value, [
@@ -784,6 +1008,7 @@ function validateAnchorEvidence({
     expectedSigner: anchor.writer_address,
     qvlDomainKey: "anchor_writer_qvl",
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -792,7 +1017,8 @@ function validateAnchorEvidence({
 }
 
 function validateEmailEvidence({
-  entry, candidate, trustedRoots, evidenceTimeSeconds, authorityDigests,
+  entry, candidate, trustedRoots, historicalQvlBinding, evidenceTimeSeconds,
+  authorityDigests,
   recoverIndependentEip191PersonalSigner,
 }) {
   const artifact = exact(entry.value, [
@@ -905,6 +1131,7 @@ function validateEmailEvidence({
     expectedSigner: candidate.cvm.tee_identity,
     qvlDomainKey: "diligence_qvl",
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -920,6 +1147,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
   frontendBuildInputManifest,
   frontendBuildCandidateReceipt,
   liveActivationAuthority,
+  historicalQvlAuthority,
   authorityDigests,
   recoverIndependentEip191PersonalSigner,
 } = {}) {
@@ -934,6 +1162,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     frontendBuildInputManifest,
     frontendBuildCandidateReceipt,
     liveActivationAuthority,
+    historicalQvlAuthority,
     authorityDigests,
   })) assertCanonicalPlainDataGraph(value, { label: `external-five ${label}` });
   const normalizedFiles = normalizeFiles(files);
@@ -947,9 +1176,16 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     liveActivationAuthority,
     authorityDigests,
   });
+  const historicalQvlBinding = validateHistoricalQvlAuthorityBinding({
+    candidate: releaseCandidate,
+    historicalQvlAuthority,
+    authorityDigests,
+    evidenceTimeSeconds: lineage.evidenceTimeSeconds,
+  });
   const trustedRoots = validateTrustedRoots(
     releaseCandidate,
     frontendBuildInputManifest,
+    historicalQvlBinding,
   );
   const ledgerProjection = validateLedger(
     normalizedFiles["--ledger"].value,
@@ -977,6 +1213,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     expectedSigner: releaseCandidate.cvm.tee_identity,
     qvlDomainKey: "diligence_qvl",
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds: lineage.evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -990,6 +1227,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     expectedSigner: releaseCandidate.cvm.tee_identity,
     qvlDomainKey: "arena_qvl",
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds: lineage.evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -998,6 +1236,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     entry: normalizedFiles["--anchor-writer-evidence"],
     candidate: releaseCandidate,
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds: lineage.evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -1006,6 +1245,7 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     entry: normalizedFiles["--email-oracle-evidence"],
     candidate: releaseCandidate,
     trustedRoots,
+    historicalQvlBinding,
     evidenceTimeSeconds: lineage.evidenceTimeSeconds,
     authorityDigests,
     recoverIndependentEip191PersonalSigner,
@@ -1019,10 +1259,16 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     frontend_D_raw_byte_commitments_authenticated: true,
     release_B_R_O_C_D_lineage_authenticated: true,
     external_file_schemas_authenticated: true,
-    historical_qvl_signatures_authenticated: true,
+    historical_qvl_identity_evidence_authenticated: true,
+    historical_v4_qvl_verdict_signatures_authenticated: true,
     qvl_signature_recovery_authority:
       "explicit_synchronous_static_raw_digest_EIP_191_adapter",
-    historical_recorded_time_windows_authenticated: true,
+    recorded_challenge_and_activation_lease_relations_checked: true,
+    qvl_challenge_signatures_authenticated: false,
+    raw_quotes_authenticated: false,
+    qvl_challenge_consumption_authenticated: false,
+    freshness_renewed: false,
+    current_qvl_operation_performed: false,
     artifact_and_arena_unverified_trust_labels_preserved: true,
     recorded_ledger_projection: ledgerProjection,
     ledger_chain_observations_authenticated: false,
@@ -1032,8 +1278,13 @@ export function validateExternalFiveHistoricalEvidenceBoundary({
     email_restart_observation_authenticated: false,
     current_live_chain_authenticated: false,
     current_clock_consulted: false,
+    live_traffic_authorized: false,
     canonicalDependencyChainVerified: false,
     required_downstream_proofs: [
+      "fresh_QVL_challenge_signatures_for_external_verdicts",
+      "fresh_raw_TDX_quotes_and_current_DCAP_QVL_appraisals",
+      "single_use_QVL_challenge_consumption_receipts",
+      "current_clock_activation_evidence_lease_validation",
       "independent_Base_Sepolia_consensus_or_dual_RPC_state_and_receipt_proofs_at_the_release_snapshot",
       "ExecutionPolicyAnchor_storage_proof_at_the_release_snapshot",
       "KMS_registration_transaction_receipt_and_registered_apps_storage_proof",
