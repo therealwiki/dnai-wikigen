@@ -10,6 +10,12 @@ import {
   normalizeFinalReleaseAuthorityCore,
 } from "../../scripts/execution-policy-release-core.mjs";
 import {
+  CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
+  CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
+  CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS,
+  CLOUDFLARE_EXTERNAL_BUILD_FILES,
+} from "./cloudflare-external-build-closure-core.mjs";
+import {
   FRONTEND_BUILD_AUTHORITY_ROOT_FIELDS,
   FRONTEND_BUILD_CANDIDATE_SCHEMA,
   FRONTEND_BUILD_CANDIDATE_STATUS,
@@ -309,6 +315,27 @@ function historicalCandidateFixture() {
   };
 }
 
+test("historical D replay independently matches the current external closure recipe", () => {
+  assert.equal(
+    HISTORICAL_CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
+    CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
+  );
+  assert.equal(
+    HISTORICAL_CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
+    CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
+  );
+  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS.length, 17);
+  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_FILES.length, 29);
+  assert.deepEqual(
+    __historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS,
+    CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS,
+  );
+  assert.deepEqual(
+    __historicalFrontendReleaseCoreTest.EXTERNAL_FILES,
+    CLOUDFLARE_EXTERNAL_BUILD_FILES,
+  );
+});
+
 test("pure D replay preserves the v2 manifest KAT and exact 35-input recipe", () => {
   const value = manifest();
   assert.equal(value.pre_D_private_inputs.length, 35);
@@ -322,7 +349,7 @@ test("pure D replay preserves the v2 manifest KAT and exact 35-input recipe", ()
     FRONTEND_BUILD_AUTHORITY_ROOT_FIELDS);
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:732617cba420d343ab58d58e5cd7e494df493d3d10a354e8483f10593d92e859",
+    "sha256:46c6df9b1871b3683b502429d58120c1b3e73c2be6f47a033d5fdb95f04cf9b7",
   );
 });
 

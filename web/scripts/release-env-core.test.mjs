@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -33,6 +34,10 @@ const PRIMARY_RPC_URL = "https://sepolia.base.org";
 const SECONDARY_RPC_URL = "https://base-sepolia-rpc.publicnode.com";
 const FRESH_SUITE_MANIFEST_FILTER = fileURLToPath(new URL(
   "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
+  import.meta.url,
+));
+const RELEASE_MANIFEST_PATH = fileURLToPath(new URL(
+  "../RELEASE-MANIFEST.md",
   import.meta.url,
 ));
 const SHA = "a".repeat(40);
@@ -2407,6 +2412,101 @@ test("the normalized v4 descriptor remains exact when the CLI validates it again
   const env = await build(input);
   assert.equal(env.VITE_ENABLE_COMPUTE_VAULT_AUTHORIZATION, "true");
   assert.equal(env.VITE_ENABLE_ARENA_SUBMISSION, "true");
+});
+
+test("release-manifest exact-shape examples track the live candidate normalizer", async () => {
+  const source = readFileSync(RELEASE_MANIFEST_PATH, "utf8");
+  const markedJson = (marker) => {
+    const opening = `<!-- ${marker}:start -->`;
+    const closing = `<!-- ${marker}:end -->`;
+    const start = source.indexOf(opening);
+    const end = source.indexOf(closing);
+    assert.notEqual(start, -1, `${marker} opening marker is missing`);
+    assert.notEqual(end, -1, `${marker} closing marker is missing`);
+    assert.ok(end > start, `${marker} markers are out of order`);
+    assert.equal(
+      source.indexOf(opening, start + opening.length),
+      -1,
+      `${marker} opening marker must be unique`,
+    );
+    assert.equal(
+      source.indexOf(closing, end + closing.length),
+      -1,
+      `${marker} closing marker must be unique`,
+    );
+    const section = source.slice(start + opening.length, end);
+    const fences = [...section.matchAll(/```json\n([\s\S]*?)\n```/g)];
+    assert.equal(fences.length, 1, `${marker} must contain exactly one JSON fence`);
+    return JSON.parse(fences[0][1]);
+  };
+  const keys = (value) => Object.keys(value).sort();
+
+  const documentedCandidate = markedJson("release-candidate-shape");
+  const documentedCvm = markedJson("release-cvm-shape");
+  const input = await fixture();
+  const normalized = normalizeReleaseCandidate(input.candidate);
+
+  assert.deepEqual(keys(documentedCandidate), keys(normalized));
+  assert.deepEqual(
+    keys(documentedCandidate.operator_policy),
+    keys(normalized.operator_policy),
+  );
+  assert.deepEqual(
+    keys(documentedCandidate.trust_domains),
+    keys(normalized.trust_domains),
+  );
+  assert.deepEqual(keys(documentedCandidate.wallet_auth), keys(normalized.wallet_auth));
+  assert.deepEqual(
+    keys(documentedCandidate.requested_features),
+    keys(normalized.requested_features),
+  );
+  assert.deepEqual(keys(documentedCvm), keys(normalized.cvm));
+  assert.deepEqual(
+    keys(documentedCvm.compute_workload_ingress),
+    keys(normalized.cvm.compute_workload_ingress),
+  );
+  assert.deepEqual(
+    keys(documentedCvm.runtime_controls),
+    keys(normalized.cvm.runtime_controls),
+  );
+
+  assert.equal(documentedCandidate.schema, normalized.schema);
+  assert.deepEqual(documentedCandidate.network, normalized.network);
+  assert.equal(
+    documentedCandidate.operator_policy.schema,
+    normalized.operator_policy.schema,
+  );
+  assert.equal(documentedCandidate.wallet_auth.domain, normalized.wallet_auth.domain);
+  assert.equal(documentedCandidate.wallet_auth.uri, normalized.wallet_auth.uri);
+  assert.equal(documentedCandidate.wallet_auth.walletconnect_project_id, "");
+  assert.deepEqual(documentedCandidate.requested_features, normalized.requested_features);
+  assert.deepEqual(
+    [...documentedCvm.allowed_browser_origins].sort(),
+    [...normalized.cvm.allowed_browser_origins].sort(),
+  );
+  assert.deepEqual(
+    documentedCvm.compute_workload_ingress,
+    normalized.cvm.compute_workload_ingress,
+  );
+  assert.deepEqual(documentedCvm.runtime_controls, normalized.cvm.runtime_controls);
+
+  const qvlKeys = keys(documentedCandidate.trust_domains)
+    .filter((key) => key.endsWith("_qvl"));
+  assert.equal(qvlKeys.length, 5);
+  assert.equal(keys(documentedCandidate.trust_domains).length, 6);
+  assert.equal(keys(documentedCandidate.trust_domains).length + 1, 7);
+  assert.doesNotMatch(
+    JSON.stringify(documentedCandidate),
+    /dnai\.final-release-authority-evidence\.v1/,
+  );
+
+  const walletConnectDisabled = structuredClone(input.candidate);
+  walletConnectDisabled.wallet_auth.walletconnect_project_id =
+    documentedCandidate.wallet_auth.walletconnect_project_id;
+  assert.equal(
+    normalizeReleaseCandidate(walletConnectDisabled).wallet_auth.walletconnect_project_id,
+    "",
+  );
 });
 
 test("the nonauthorizing prebuild candidate is the live candidate minus only signed C", async () => {

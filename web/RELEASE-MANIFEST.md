@@ -38,10 +38,11 @@ modeled preview and cannot consume live evidence.
 manifest. It is the human-reviewed trust-root input established only after the
 five QVL CVMs' own platform/release evidence has been independently checked. A
 candidate cannot make a self-signed verifier trusted by listing it inside its
-own descriptor or identity response. Multiple previously reviewed verifier
-addresses may be comma-separated during a controlled rotation, but the exact
-Diligence, Arena, anchor-writer, Compute-workload, and Compute-metering
-descriptor addresses must all be present.
+own descriptor or identity response. The input must contain exactly the five
+distinct Diligence, Arena, anchor-writer, Compute-workload, and
+Compute-metering descriptor addresses. Previously reviewed or otherwise extra
+addresses are rejected; a rotation therefore requires a newly reviewed exact
+five-root set rather than an additive allowlist.
 
 The deployment operator, main dstack-derived execution signer, diligence result
 verifier, purpose-separated anchor writer, Compute developer, Diligence QVL
@@ -62,6 +63,7 @@ bundle; the generated client always uses the public canonical
 The candidate has schema `dnai.web-release.v4` and exactly these top-level
 fields:
 
+<!-- release-candidate-shape:start -->
 ```json
 {
   "schema": "dnai.web-release.v4",
@@ -74,10 +76,10 @@ fields:
   "deployment_intent_sha256": "sha256:<stable predeployment intent>",
   "cvm_launch_intent_sha256": "sha256:<reviewed exact CVM launch intent>",
   "operator_policy": {
-    "schema": "dnai.final-release-authority-evidence.v1",
-    "final_authority_sha256": "sha256:<domain-separated final-authority digest>",
-    "review_envelope_sha256": "sha256:<current renewable envelope digest>",
-    "review_evidence_sha256": "sha256:<current external evidence digest>"
+    "schema": "dnai.live-activation-authority-evidence.v1",
+    "ceremony_authorization_sha256": "sha256:<signed ceremony-authorization digest>",
+    "live_activation_authority_sha256": "sha256:<signed live-activation-authority digest>",
+    "runtime_authority_dependency_sha256": "sha256:<pre-ceremony runtime-authority digest>"
   },
   "contracts": {},
   "cvm": {},
@@ -86,11 +88,13 @@ fields:
     "arena_qvl": {},
     "anchor_writer_qvl": {},
     "compute_metering_qvl": {},
+    "compute_workload_qvl": {},
     "compute_metering": {}
   },
   "wallet_auth": {
-    "domain": "dnai-wikigen",
-    "uri": "urn:dnai:wikigen"
+    "domain": "www.wikigen.me",
+    "uri": "https://www.wikigen.me",
+    "walletconnect_project_id": ""
   },
   "execution_policy": {},
   "attestations": {},
@@ -101,20 +105,27 @@ fields:
     "compute_console": true,
     "compute_vault_funding": true,
     "compute_vault_authorization": true,
+    "compute_workload_upload": false,
     "arena_submission": true
   }
 }
 ```
+<!-- release-candidate-shape:end -->
 
 `deployment_intent_sha256` and `cvm_launch_intent_sha256` are committed inside
-the canonical `dnai.final-release-authority-core.v2`. The candidate's
-`operator_policy.final_authority_sha256` must equal `sha256:` plus the bare
-`execution_policy.rollback_anchor.release_manifest_commitment`. The current
-review envelope binds that same authority hash. Its envelope/evidence hashes
-are deliberately outside the authority core so a truthful review renewal does
-not require a contract redeployment or a new anchor commitment. Independently,
-the anchor `writer_release_commitment` must equal `0x` plus the bare reviewed
-CVM launch-intent digest; it is intentionally not the final-authority digest.
+the canonical immutable `dnai.final-release-authority-core.v2`. That core is
+not serialized directly as the candidate's `operator_policy`: the live browser
+candidate instead carries the exact `dnai.live-activation-authority-evidence.v1`
+digest projection shown above. Its ceremony-authorization digest binds the
+reviewed pre-ceremony authority, its live-activation digest binds the signed
+post-ceremony `dnai.live-activation-authority.v5`, and its runtime-authority
+dependency must equal `sha256:` plus the bare
+`execution_policy.rollback_anchor.release_manifest_commitment`. Review
+signatures and reviewer-status histories are authenticated by the exact-37
+validator rather than copied into the candidate as the retired
+`dnai.final-release-authority-evidence.v1` envelope fields. Independently, the
+anchor `writer_release_commitment` must equal `0x` plus the bare reviewed CVM
+launch-intent digest; it is intentionally not any live-activation digest.
 
 ## Execution-policy trust descriptor
 
@@ -277,6 +288,7 @@ runtime bytecode in `runtime_code_hash`. Additional exact fields are:
 
 The CVM object has exactly this shape:
 
+<!-- release-cvm-shape:start -->
 ```json
 {
   "app_id": "<fresh Phala app id>",
@@ -297,6 +309,10 @@ The CVM object has exactly this shape:
     "https://www.wikigen.me",
     "https://wikigenme.pages.dev"
   ],
+  "compute_workload_ingress": {
+    "max_verdict_age_seconds": 300,
+    "revoked_quote_hashes": []
+  },
   "runtime_controls": {
     "wallet_auth_required": true,
     "runtime_bearer_required": true,
@@ -318,10 +334,13 @@ The CVM object has exactly this shape:
     "oracle_replay_fail_closed": true,
     "provider_dispatch_enabled": false,
     "hostile_candidate_execution_enabled": false,
+    "deal_settlement_enabled": false,
+    "remote_artifact_evaluator_enabled": false,
     "raw_secret_egress_prohibited": true
   }
 }
 ```
+<!-- release-cvm-shape:end -->
 
 The three `allowed_browser_origins` values shown above are an exact production
 allowlist, not a minimum: preview, wildcard, localhost, path-bearing, and extra
@@ -351,10 +370,11 @@ identities pinned in code.
 ## Separate CVM trust-domain descriptors
 
 `trust_domains` has exactly `diligence_qvl`, `arena_qvl`,
-`anchor_writer_qvl`, `compute_metering_qvl`, and `compute_metering`. These are
-five separate Phala CVMs, not services added to the main evaluated-CVM compose;
-with the main CVM the release total is six. Each descriptor has the following
-exact deployment fields, plus the context-specific `identity` fields below:
+`anchor_writer_qvl`, `compute_metering_qvl`, `compute_workload_qvl`, and
+`compute_metering`. These are six separate Phala CVMs, not services added to
+the main evaluated-CVM compose; with the main CVM the release total is seven.
+Each descriptor has the following exact deployment fields, plus the
+context-specific `identity` fields below:
 
 ```json
 {
