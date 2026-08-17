@@ -4,6 +4,10 @@
 **/__pycache__/
 **/*.egg-info/
 **/.pytest_cache/
+.release/
+deployments/.fresh-suite-broadcast-journal/
+.wrangler/
+.tmp-cvm-launch-template-*.json
 # Private Markdown Files
 *.private.md
 # Captcha solver samples

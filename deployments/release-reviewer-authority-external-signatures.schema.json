@@ -1,0 +1,69 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-external-signatures.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Externally produced low-s EIP-191 signatures for exactly one domain-separated reviewer-authority purpose. The CLI verifies exact signer identities and the release-pinned cast executable before creating an authority artifact.",
+  "properties": {
+    "purpose": {
+      "enum": [
+        "reviewer_current_status_guardian_authorization",
+        "reviewer_genesis_acceptance_active_reviewer_authorization"
+      ]
+    },
+    "schema": {
+      "const": "dnai.release-reviewer-authority-external-signatures.v2"
+    },
+    "signature_scheme": {
+      "const": "eip191_personal_sign_secp256k1_low_s_65_byte"
+    },
+    "signatures": {
+      "items": {
+        "$ref": "#/$defs/signature"
+      },
+      "maxItems": 32,
+      "minItems": 2,
+      "type": "array"
+    },
+    "signed_payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "required": [
+    "purpose",
+    "schema",
+    "signature_scheme",
+    "signatures",
+    "signed_payload_sha256"
+  ],
+  "title": "dnai-wikigen external reviewer authority signatures v2",
+  "type": "object",
+  "$defs": {
+    "sha256": {
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "signature": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "pattern": "^0x(?!0{40}$)[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "controller_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$",
+          "type": "string"
+        },
+        "signature": {
+          "pattern": "^0x[0-9a-f]{130}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "controller_id",
+        "signature"
+      ],
+      "type": "object"
+    }
+  }
+}

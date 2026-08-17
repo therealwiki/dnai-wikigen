@@ -30,6 +30,7 @@ Populate `.env` from `example.env` before starting. Key groups:
 - **TEE dev mode**: `DSTACK_SIMULATOR_ENDPOINT=http://localhost:8090`
 
 ## Boundaries
+- NEVER use React — always use SolidJS for frontend UI
 - NEVER use pip or poetry — always `uv` with `pyproject.toml`
 - NEVER modify anything in `📄/` or `🔬/` — read-only research papers and reference submodules
 - NEVER commit `.env` or secrets — only `example.env` is tracked

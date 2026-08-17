@@ -4,6 +4,11 @@ Automated Thinking Machines Tinker account signup, sign-in, and API key provisio
 
 ## Current Status
 
+The current release candidate is source/local evidence only. No fresh
+seven-contract Base Sepolia suite or seven-CVM Phala topology has been deployed.
+The July 2026 account/browser results below are retained as historical
+engineering evidence and do not authorize the new release.
+
 As of 2026-07-08, the local Neko/CDP path works against the live Tinker auth flow: the email oracle creates a mailbox, receives the Thinking Machines magic-code OTP over IMAP, Playwright enters the OTP, onboarding completes, and API-key provisioning reaches the `/keys` page and captures a one-time `tml-...` key.
 
 The March 2026 deployed Phala/headless browser blocker should be treated as historical evidence until re-tested. Local success does not prove the packaged Phala CVM browser posture is production-safe; that still needs a fresh deployed probe.
@@ -12,7 +17,218 @@ The email oracle is still required. It is not just a disposable inbox: it is the
 
 The acceptable automation route is recorded in `docs/TINKER-AUTOMATION-ROUTE.md`. The short version: prefer an official or support-approved Tinker workflow; use browser automation only as bounded TEE custody for this project's own account; fail closed instead of using stealth plugins, CAPTCHA-solving services, rotating proxies, user-agent spoofing, or automation-control masking.
 
-The oracle's `/pin`, `/inbox`, and `/email` endpoints are now protected by runtime bearer auth when enabled. In the combined dstack/Phala deployment, the oracle and delegate derive the bearer token from the same dstack key path (`oracle/runtime-auth`). Public `/health` and `/attestation` expose only readiness plus `oracle_email_hash`, not the raw mailbox address. Local development can use an explicit `ORACLE_RUNTIME_AUTH_TOKEN` / `TINKER_ORACLE_AUTH_TOKEN` pair instead. `/pin` requests are scoped: the delegate sends target service, expected sender, caller identity, reason, nonce, max age, and bounded extraction pattern. The oracle persists released OTP hashes in an encrypted/sealed replay ledger so one-time-use survives restart, and logs only bounded metadata, not the OTP value.
+The oracle's scoped `/pin` and commitment-only `/email` endpoints are protected by runtime bearer auth when enabled. There is deliberately no `/inbox` route: runtime authentication is not permission to export message identifiers, sender/subject headers, dates, or message text. In the combined dstack/Phala deployment, the oracle and delegate derive the bearer token from the same dstack key path (`oracle/runtime-auth`), and the primary compose gives the oracle no host port; only the delegate can reach it on the private compose network. The oracle's public `/health` is a fixed liveness-only response and `/attestation` exposes only service/context/key/code/quote binding evidence; neither returns mailbox values, readiness, IMAP state, or timestamps. `/email` returns only authenticated readiness, a domain-separated mailbox commitment, its scheme, and `raw_email_egress=false`. The delegate must receive `TINKER_EMAIL` through an in-CVM sealed/bootstrap path before account automation; it cannot recover the address from the oracle HTTP API. Local development can use an explicit `ORACLE_RUNTIME_AUTH_TOKEN` / `TINKER_ORACLE_AUTH_TOKEN` pair instead. `/pin` is not a general mailbox query: its wire-compatible target/sender/subject/pattern fields are literal-constrained to Tinker, `no-reply@thinkingmachines.ai`, no subject filter, and one fixed six-digit OTP pattern. The IMAP layer rechecks the parsed sender, and the exact response contains only the six-digit OTP, bounded request hash, quote report data, and quote. Message/header/mailbox hashes, extraction time, and the replay key never egress. The oracle persists its internal replay keys in an encrypted/sealed ledger before release so one-time-use survives restart and fails closed if persistence is unavailable.
+
+### Delegate HTTP and wallet security boundary
+
+The delegate has separate authentication domains for operators, wallets, and
+agent compute tokens; one token type is never accepted as another:
+
+- The chain watcher and the internal `chain-event`, `notify-funded`, `evaluate`,
+  `resolve`, active-deal listing, internal health, and funding-preflight routes
+  require the configured `TINKER_RUNTIME_AUTH_TOKEN`. In dstack mode the same
+  bearer value is derived inside the CVM at
+  `TINKER_RUNTIME_AUTH_KEY_PATH`, and dstack mode enables these checks even if a
+  legacy deployment omitted the boolean flag. The watcher sends the token only
+  in the Authorization header.
+- A seller requests `POST /auth/wallet/challenge` with their Ethereum address
+  and deal ID, signs the returned Base Sepolia (chain ID `84532`), deal-bound
+  personal-sign message with MetaMask, another EOA wallet, or an EIP-1271
+  contract wallet, and exchanges it at `POST /auth/wallet/token`. The nonce is
+  single-use and expiring. The resulting bearer token has only
+  `artifact:upload`, expires after five minutes by default, and works for only
+  that deal. The encrypted artifact endpoint checks the authenticated address
+  against the funded in-TEE `DealContext.seller` before decrypting any bytes.
+- EIP-1271 support is one shared verifier used by seller upload, Arena,
+  Compute, Collaboration, and Review authentication. It is enabled only when
+  the operator configures
+  `TINKER_WALLET_AUTH_RPC_URL` and `TINKER_WALLET_AUTH_RPC_URL_SECONDARY` on
+  distinct provider origins; no request can select an RPC. Both providers must
+  report Base Sepolia `84532`. The verifier selects the lower reported
+  finalized height, requires both providers to return the same block hash and
+  exact account bytecode there, hashes the challenge with EIP-191, and calls
+  only
+  `isValidSignature(bytes32,bytes)`. It accepts only the exact `0x1626ba7e`
+  bytes4 result from both providers (including its standard zero-padded ABI
+  word). RPC time,
+  response size, global concurrency, and `eth_call` gas are bounded;
+  wrong-chain, malformed, unavailable, reverted, or wrong-magic responses fail
+  closed. Each nonce permits at most three sequential verification attempts and
+  only one in-flight attempt, while a successful compare-and-delete still
+  consumes it exactly once. Production dstack/Phala compose requires both RPC
+  URLs as encrypted bootstrap secrets; local compose may leave both empty to
+  retain the historical EOA-only path. A missing, divergent, or unavailable
+  secondary provider is denial, never fallback.
+- Production wallet tokens are signed with a domain-separated key derived at
+  `TINKER_WALLET_AUTH_KEY_PATH`. `TINKER_WALLET_AUTH_SIGNING_KEY` is a local-only
+  development fallback and must remain empty in Phala. Pending challenges are
+  process-local and intentionally become invalid on restart; deploy the API as
+  one worker until a shared sealed nonce store is added.
+- Deal, Arena, Compute, Collaboration, and Review challenge issuance share one
+  atomic 600-second
+  sliding-window admission gate. Its global capacity (`768`) is below each
+  process-local nonce store (`1024`), with subordinate canonical-address (`64`)
+  and direct-peer (`256`) buckets. Saturation returns the same bounded `429`
+  body and `Retry-After` on every surface. Forwarded client-IP headers are
+  ignored unless an approved single-IP header and exact direct-proxy CIDRs are
+  both configured; unpinned `X-Forwarded-For` is never trusted.
+- Arena submission auth is a fourth, separate token domain. A wallet signs an
+  exact challenge ID/version at `POST /auth/arena/challenge`, exchanges the
+  nonce at `POST /auth/arena/token`, and receives one of two mutually exclusive
+  short-session profiles: ordinary `challenge:submit` +
+  `challenge:submissions:read`, or an on-demand `challenge:agents:manage`
+  session used only to issue, list, rotate, or revoke credentials for that
+  same challenge version. Management consent is never ambient on an ordinary
+  submission/read session.
+  Arena tokens have a distinct issuer, audience, JWT key ID, and dstack-derived
+  key path and cannot authorize seller upload, operator routes, or Tinker proxy
+  calls. The durable Arena accepts only a SHA-256 candidate commitment, a
+  strict browser-generated X25519/HKDF-SHA256/AES-256-GCM envelope, and
+  allowlisted metadata; it never accepts plaintext candidate code or a
+  caller-supplied object reference. The server generates the internal sealed
+  reference after persisting ciphertext. Immutable catalog and submission
+  projections remain explicitly `modeled` and
+  `projection_only_no_hardened_executor`; an authenticated owner page filters
+  by the recovered wallet and omits sealed refs, timing, and evaluator detail.
+  The separate
+  `dnai-safe-ir-v1` challenge now has a capability-free canonical-JSON
+  interpreter and an internal, fail-closed, crash-resumable worker service in
+  the dstack overlays. Its operational endpoint projects live presence only
+  after an exact release descriptor and fresh authenticated heartbeat match;
+  that heartbeat is not TDX evidence and every job still uses independent QVL.
+  General Python and hostile execution remain disabled. See
+  `docs/ARENA-RUNTIME.md` for the exact language,
+  commitment, resource, worker, and residual deployment boundaries.
+- Arena Agent Access is a separate, modeled credential domain. An authorized
+  wallet can register one browser-generated X25519 public key and receive the
+  bearer only inside a one-time encrypted capsule. The agent bearer has exactly
+  `challenge:submit` plus `challenge:submissions:read`, a daily submission-
+  attempt cap, and a lifetime of at most 24 hours; it cannot manage credentials
+  or authorize Deal, Compute, proxy, worker, reward, or settlement operations.
+  The browser private key is non-exportable, memory-only, and the application
+  does not retain a recovery copy: copy the decrypted bearer directly into the
+  agent process environment, clear the reveal, and use a fresh explicit
+  management signature to revoke or replace a device whose tab/key was lost.
+  Management-session refresh retains the same-wallet device key in tab memory;
+  closing/reloading the Arena route loses it. The durable JSON store is
+  HMAC-authenticated, but restoration of an older valid file is not detected;
+  this is not hardware anti-rollback, TDX evidence, or execution authority.
+- Compute Console wallet and device credentials form two additional isolated
+  token domains. Wallet-authenticated members manage projects, X25519 device
+  keys, and scoped short-lived credentials; plaintext credentials and the
+  upstream Tinker key never egress. The durable service-credit ledger is
+  append-only/double-entry with idempotent reserve, settle, and release. A
+  current owner/admin/developer wallet may atomically cancel only an exactly
+  queued, never-dispatched job and return its reservation; device credentials,
+  viewers, running work, and settled work cannot use that path. Every legacy
+  service-credit job remains explicitly `not_dispatched` and every internal
+  settlement remains non-provider-authoritative. That ledger has no card, ETH,
+  or USDC funding mutation. The separate exact-asset journal and
+  `ComputeCreditVault` path are source-implemented but release-gated; they do
+  not turn the service-credit ledger into a payment rail. See the
+  repository-level `docs/compute-console-api.md` for the exact API contract.
+- Collaboration rooms use a sixth, exact `collaboration:console` wallet-token
+  domain and purpose-separated dstack keys. The backend gate defaults false and
+  blocks authentication, reads, mutations, key derivation, and store opening
+  unless it is exactly enabled by the current release authority. Schema v2
+  keeps creator declarations as pending invitations until each wallet accepts,
+  separates accepted owner roles from exact-current-query approvals, and uses
+  bounded snapshot-bound pagination. A public control-plane run record remains
+  only a `joint_consent_snapshot_not_dispatched`; that record is not provider
+  execution, TDX evidence, settlement, royalty distribution, or token minting.
+  The separate release-gated Collaboration execution service implements the
+  production-shaped continuation after the complete fresh grant set: derive
+  the deterministic exact royalty reservation; wait for the sponsor's exact
+  native/ERC-20 escrow; admit the worker only after one RPC-reported finalized,
+  EIP-1898-pinned match of that reservation and the exact Compute job; run the
+  bounded one-shot Compute path; anchor the exact settlement decision on demand
+  and obtain purpose-separated main-runtime/QVL authorizations; hand the
+  sponsor wallet the zero-value `settleReserved` call; then reconcile finalized
+  permanent state. The server never receives the sponsor's private key, and
+  direct distribute calls remain compatibility-only. Challenges,
+  idempotency records, snapshots, and explicitly archived quiescent rooms have
+  public bounded retention. Active or pending authority is never silently
+  pruned. Local HMAC mode detects current-file tampering but remains explicitly
+  non-monotonic. A live dstack surface instead requires the release-bound Base
+  Sepolia execution-policy anchor, commits every exact schema-v2 state through
+  a crash-recoverable compare-and-set, and fails closed on unavailable,
+  regressed, or mismatched heads before wallet challenge issuance, reads, or
+  mutations. The execution sequence is source/test proof only: this working
+  tree has no fresh Base Sepolia/Phala/QVL/sponsor-funding/settlement activation.
+  The rollback witness, DTOs, heartbeats, local signers, and RPC-reported
+  finalized reads are not execution, Intel TDX, independent-QVL, provider,
+  settlement, RPC-quorum, or consensus evidence. See
+  `docs/COLLABORATION-BACKEND.md`.
+- The wallet-owned Tinker customer lifecycle reuses only the short-lived
+  `compute:console` wallet session; its proxy credentials have a separate
+  issuer, audience, key ID, dstack key path, and training-only scope. The
+  browser can request or recover one immutable logical account, observe
+  activation state, issue lower-capped credentials to non-exportable X25519
+  device keys, rotate with revoke-before-issue ordering, and revoke a
+  credential or account. A request is not provider-account evidence:
+  activation remains an internal operation requiring independently signed
+  provisioning evidence, exact frozen release agreement, fresh TDX/QVL
+  evidence, and an external rollback anchor. Inference, card intake, token
+  exchange and provider-key minting remain absent. The separate
+  `/tinker/customer/train` route now accepts only a lower-authority bearer and
+  three bounded integer controls, durably claims dispatch before the sealed SDK,
+  signs fixed-ceiling authority settlement/release evidence, and holds every
+  uncertain post-claim outcome for reconciliation without provider redispatch.
+  This is not provider-authoritative billing, and it is not live until the fresh
+  release is activated. The feature is disabled unless one SHA-256-pinned
+  private runtime authority and all of its evidence/anchor dependencies are present. See
+  `docs/TINKER-CUSTOMER-ADAPTER.md` for the HTTP contract and residual
+  activation boundary.
+- Deal evaluation now has an explicit trust-bearing activation mode rather
+  than a hard-coded stub. `TINKER_EVALUATOR_MODE=disabled` is the safe default;
+  `stub` enables deterministic local integration only and is rejected whenever
+  dstack custody is active. The historical `sft` helper tokenizes seller data
+  for a remote Tinker provider, so merely calling it from a CVM would not keep
+  the raw artifact inside the attested boundary. It remains research/test code
+  but the production runtime rejects `sft` in every custody mode. The rendered
+  dstack and Phala releases instead pin `deterministic`: an in-main-CVM,
+  release-pinned three-policy registry whose recipes perform no provider,
+  network, subprocess, filesystem, clock, randomness, or logging I/O over the
+  private artifact. The Deal service remains profile- and release-gated as
+  `release_pinned_deterministic_evaluator`; that source capability is not a
+  live claim until the clean image, manifest/policy root, topology-v6
+  descriptor set, fresh contracts, measured CVM, QVL evidence, and ceremony
+  authority all agree. Any unsupported mode returns one fixed 503 before the
+  control plane loads credentials or artifact state.
+- Deal evaluation, Arena execution, and Compute dispatch now share a durable
+  execution-policy gate. Internal bearer possession can record a safer
+  hold/deny but cannot create a pass: pass requires an allowlisted independent
+  Ethereum signer over the exact hash-only resource/request/policy/expiry
+  message and a deployment-unique domain hash. The newest bounded record wins;
+  missing, expired, corrupt, held, or denied state fails closed at execution
+  time. See `docs/EXECUTION-POLICY.md` for the operator flow and release roots.
+- `TINKER_CORS_ALLOWED_ORIGINS` is an optional comma-separated list of exact
+  frontend origins. Configure the final Cloudflare Pages/custom HTTPS origin.
+  Wildcards are rejected, browser credentials are never enabled, and only
+  explicit loopback HTTP origins are accepted for local development.
+- The authenticated funding preflight can fetch attestation only from an HTTPS
+  DNS host listed exactly in `TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS`. IP
+  literals, credentials, wildcard hosts, paths, queries, and fragments are
+  rejected before any outbound request.
+
+Public `GET /health` is liveness-only. Public `GET /attestation` remains the
+bounded encryption-key/TDX evidence surface, and `GET /deal/{deal_id}/result`
+continues to return only the declared bounded evaluation fields. Raw artifact
+content, runtime topology, credentials, and active-deal inventories are not
+public responses. Artifact upload acknowledgements return a client-verifiable
+ciphertext SHA-256 commitment, `padding_profile=fixed_1m_v3`, and
+`exact_plaintext_size_egress=false`. Every accepted diligence ciphertext has
+the same 1,048,644-byte length, so this public transport size does not reveal
+the private artifact length. Arena public receipts similarly retain ciphertext/blob
+commitments while exact source and ciphertext lengths remain internal for caps
+and cryptographic validation only.
+
+When `DSTACK_SIMULATOR_ENDPOINT` is configured, delegate and Arena attestation
+envelopes report `mode=simulator`, never `mode=tdx`, and retain
+`verified=false`. Production verifiers accept only independently verified
+`mode=tdx`; a simulator envelope cannot be upgraded by setting a claimed
+verification flag. This keeps local modeled evidence visibly distinct from an
+Intel TDX deployment.
 
 Tinker account funding remains in progress. The production funding model is
 manual/developer prefund by default until an official/tokenized route exists.
@@ -22,9 +238,9 @@ attempt. The current validation path is card data encrypted to the TEE, then
 browser automation drives the Tinker/Stripe billing form and clears card
 material from memory. The card channel and billing code now reach Stripe in the
 local Neko session: a Stripe test card filled the live payment form and was
-rejected with `Your card was declined.` Adding balance correctly fails closed
-with `Payment method required before adding balance` when no real card is on
-file. On 2026-07-08, the same local session produced bounded `payment_method`
+classified as `card_declined`; the private Stripe sentence is not returned.
+Adding balance correctly fails closed with `payment_method_required` when no
+real card is on file. On 2026-07-08, the same local session produced bounded `payment_method`
 and `add_balance` attempt records with outcome classes, furthest-stage markers,
 timestamps, evidence hashes, amount bands, and card-payload destruction status.
 The encrypted client harness verifies `/attestation?context=billing`, encrypts
@@ -63,7 +279,7 @@ proven.
 ┌─────────────────────────────────────────────────────────────────┐
 │                        tinker-delegate                          │
 │                                                                 │
-│  1. GET /health ──→ email oracle ──→ cock.email address         │
+│  1. Internal bootstrap ──→ email oracle ──→ mailbox custody   │
 │  2. CDP ──→ neko Chrome ──→ tinker-console.thinkingmachines.ai  │
 │  3. Fill email → Continue → magic-code (OTP) page               │
 │  4. POST /pin ──→ email oracle ──→ polls IMAP ──→ 6-digit code  │
@@ -112,7 +328,8 @@ Both from the `tee-email-oracle` project:
 1. **Email oracle** — `http://localhost:8000`
    - Historically tested with `ORACLE_DOMAIN=cock.email`
    - Creates a cock.email account on first boot (genesis)
-   - Exposes `/health`, `/pin`, `/inbox` endpoints
+   - Exposes `/health`, scoped `/pin`, commitment-only `/email`, and `/attestation`
+   - Does not expose a mailbox-listing endpoint
 
 2. **Neko Chrome** — `http://localhost:9222` (CDP)
    - Headful Chrome with remote debugging enabled
@@ -168,7 +385,7 @@ uv venv && uv pip install playwright httpx pydantic pydantic-settings
 # Add balance (requires card on file)
 .venv/bin/python -m tinker_delegate.main add-balance 10
 
-# Add payment method through attestation-verified encrypted channel
+# Exercise the encrypted channel in explicitly allowed local development
 .venv/bin/python -m tinker_delegate.main add-card-encrypted http://localhost:8080 \
   --number <stripe-test-card-number> \
   --exp-month 12 --exp-year 2028 \
@@ -281,14 +498,21 @@ preflight, encumbrance-preflight, and prompt-packet command templates. It
 references `TINKER_RUNTIME_AUTH_TOKEN` and `BASE_SEPOLIA_RPC_URL` by variable
 name only; it does not print token values, RPC values, card fields, OTPs, API
 keys, cookies, or browser session material. When the encumbrance contract is
-missing, the same plan also emits absolute dry-run and broadcast commands for
-`contracts/scripts/deploy-tinker-encumbrance-base-sepolia.sh`; the broadcast
-helper uses Foundry `--account` through the encrypted keystore and must be run
-from an interactive terminal so the keystore password is never placed in the
-plan, command line, or repo. The current deployed encumbrance exists, but the
-live cap is still `$5`; the `$10` Tinker-minimum flow remains blocked until the
-owner raises the cap, the updated compose is redeployed, and the new compose
-hash is approved.
+missing, the plan reports `fresh_contract_suite_required` and emits explicit
+`BROADCAST=false` and `BROADCAST=true` templates for
+`contracts/scripts/deploy-base-sepolia.sh`. This creates a new canonical
+seven-contract release; it is not a repair or overwrite of one contract in a
+partial deployment ledger. The dry run must be reviewed before the operator
+explicitly invokes the broadcast template from an interactive terminal. The
+canonical helper uses Foundry `--account dev` through the encrypted keystore,
+so the keystore password is never placed in the plan, command line, or repo.
+`contracts/scripts/deploy-tinker-encumbrance-base-sepolia.sh` is retained only
+as a fail-closed compatibility shim and cannot deploy or mutate the ledger.
+Historical standalone addresses remain evidence of earlier releases, not a
+current release path. The current deployed encumbrance exists, but the live cap
+is still `$5`; the `$10` Tinker-minimum flow remains blocked until a new full
+release carries the reviewed cap and compose policy through the current
+timelocked activation ceremony.
 
 The CLI card flags are for local test-card development only. Read
 `docs/STRIPE-PCI-FUNDING-SCOPE.md` before any real-card attempt. The encrypted
@@ -301,20 +525,98 @@ Use `upload-artifact` from the seller/controller side after a deal exists. The
 command fetches `/attestation?context=artifact`, refuses local/default attestation unless
 explicitly allowed, checks the expected compose hash/app ID and report-data-bound
 public key, then encrypts the artifact to `POST /deal/{id}/artifact/encrypted`.
-It prints only bounded metadata: deal ID, artifact hash, size, status code, and
-server response.
+The deal-scoped seller wallet token must be supplied through an environment
+variable (never a command-line token). Obtain it through the wallet challenge
+flow described above and export it as `TINKER_WALLET_AUTH_TOKEN`.
+The fourth positional argument is the private commitment receipt produced when
+the deal is created. It must remain available to the seller for recovery and
+upload, but must never be published, committed, or passed on the command line as
+individual secret material. The CLI validates the receipt and exact artifact
+bytes before making any attestation or upload request. It prints only bounded
+metadata: deal ID, artifact commitment, fixed padding profile, status code, and
+server response; the exact plaintext length is not returned.
 
 ```bash
-.venv/bin/python -m tinker_delegate.main upload-artifact \
+uv run python -m tinker_delegate.main upload-artifact \
   https://delegate.example \
   1 \
   ./artifact.jsonl \
+  ./artifact-commitment-receipt.json \
   --compose-hash 0xEXPECTED_COMPOSE_HASH \
-  --app-id 0xEXPECTED_APP_ID
+  --app-id 0xEXPECTED_APP_ID \
+  --diligence-room-address 0xFRESH_DILIGENCE_ROOM \
+  --evaluator-policy-commitment 0xFUNDED_DEAL_POLICY_BYTES32
 ```
+
+Use `--wallet-token-env ANOTHER_ENV_NAME` if the token is stored in a different
+environment variable. The CLI fails before reading or sending the artifact when
+the token is absent.
 
 Local development can pass `--allow-local-attestation`, but production uploads
 must use the dstack/TDX attestation path.
+
+#### Artifact commitment v2
+
+`DiligenceRoom.artifactHash` remains a `bytes32`, but its one accepted meaning
+is the salted v2 commitment below. `ASCII(...)` means the literal ASCII bytes,
+`secret32` is exactly 32 cryptographically random bytes, and `rawArtifact` is
+the exact non-empty file byte sequence with no JSON or text normalization:
+
+```text
+artifactHash = keccak256(
+  ASCII("dnai-wikigen/artifact-commitment/v2")
+  || 0x00
+  || secret32
+  || rawArtifact
+)
+```
+
+The seller privately retains this exact recovery receipt:
+
+```json
+{
+  "schema_version": 2,
+  "scheme": "dnai-wikigen/artifact-commitment/v2",
+  "artifact_commitment": "0x<64 lowercase hex characters>",
+  "commitment_secret": "0x<64 lowercase hex characters>"
+}
+```
+
+Artifact transport accepts only envelope v3; there is no v2-wrapper, raw-hash,
+or raw-artifact compatibility path. The raw artifact cap is exactly 1,048,576
+bytes. The authenticated plaintext frame is always exactly 1,048,628 bytes:
+
+```text
+ASCII("DNAIARTIFACTV3\0\0")          # exact 16-byte magic
+|| uint32be(privateRawLength)         # 1..1,048,576, ciphertext-private
+|| secret32
+|| rawArtifact
+|| CSPRNG padding                     # fills a fixed 1,048,576-byte payload area
+```
+
+The upload JSON uses hex without `0x` for `ephemeral_public_key`, `nonce`, and
+`ciphertext`, a lowercase `0x` bytes32 for `artifact_hash`, and the exact
+`commitment_scheme`, `envelope_scheme=dnai-wikigen/artifact-envelope/v3`, and
+`padding_profile=fixed_1m_v3` literals. AES-GCM adds a 16-byte tag, producing
+an exact 1,048,644-byte ciphertext. Key derivation and authenticated encryption
+bind the immutable funded context as follows (fields are pipe-delimited):
+
+```text
+HKDF info = "tinker-delegate-artifact|v3|84532|<lowercase room>|<deal id>"
+            "|<lowercase artifactHash>|<lowercase evaluator policy>"
+            "|dnai-wikigen/artifact-envelope/v3"
+AES-GCM AAD = "dnai-wikigen/artifact-envelope-aad/v3|84532|<lowercase room>"
+              "|<deal id>|<lowercase artifactHash>|<lowercase evaluator policy>"
+              "|dnai-wikigen/artifact-envelope/v3"
+```
+
+The chain watcher carries `artifactHash` and `evaluatorPolicyCommitment` from
+the funded deal into immutable in-TEE context. The deployment supplies the
+exact fresh DiligenceRoom address and Base Sepolia chain ID. Ingress derives
+AAD/HKDF only from those authoritative values, rejects non-exact ciphertext or
+frame sizes before artifact use, verifies the private frame after decryption,
+and recomputes the v2 commitment immediately before evaluator code receives
+the raw bytes.
 
 ### Attestation Verification
 
@@ -356,21 +658,99 @@ values.
 The `serve` command starts a FastAPI server for programmatic access:
 
 ```
-GET  /health              — service health + oracle email
-GET  /attestation?context=ingress|artifact|billing — context-bound quote + public key
+GET  /health              — public liveness only
+GET  /health/internal     — bounded diagnostics; runtime bearer required
+GET  /attestation?context=ingress|artifact|billing|arena — context-bound quote + public key
+POST /auth/wallet/challenge — issue a one-time deal-bound personal-sign message
+POST /auth/wallet/token   — exchange seller signature for artifact-upload token
+POST /auth/arena/challenge — issue an exact challenge-version personal-sign message
+POST /auth/arena/token    — exchange signature for one exact submit/read or management-only token
+GET  /arena/candidate-encryption-contract — current recipient + exact browser crypto/AAD contract
+GET  /arena/challenges    — bounded immutable challenge catalog
+GET  /arena/challenges/{id}/versions/{version} — exact public manifest
+POST /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-only issue; encrypted token capsule
+GET  /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-only bounded list
+POST /arena/challenges/{id}/versions/{version}/agent-credentials/{credential_id}/rotate — wallet-only replacement capsule
+POST /arena/challenges/{id}/versions/{version}/agent-credentials/{credential_id}/revoke — wallet-only revocation
+POST /arena/challenges/{id}/versions/{version}/submissions — authenticated commitment + browser ciphertext
+GET  /arena/challenges/{id}/versions/{version}/queue — bounded modeled queue projection
+GET  /arena/challenges/{id}/versions/{version}/leaderboard — accepted Ladder releases only
+GET  /arena/challenges/{id}/versions/{version}/submissions/mine — authenticated bounded owner page
+GET  /arena/challenges/{id}/versions/{version}/worker-capability — release-bound presence, never TDX evidence
+GET  /arena/submissions/{submission_id} — bounded public submission projection
 POST /auth/reauth         — bounded OTP re-auth, disabled unless explicitly enabled
-GET  /billing/balance     — current Tinker balance
+GET  /billing/balance     — authenticated stable balance band; never exact currency
 GET  /billing/funding-policy — bounded funding-mode policy
-GET  /billing/funding-preflight — bounded operator funding readiness checks
+GET  /billing/funding-preflight — operator bearer + HTTPS host allowlist required
 GET  /billing/funding-receipts — bounded funding attempt audit records
 GET  /billing/payment-method-status — bounded card-on-file status, no card details
 POST /billing/card        — plaintext local-dev hook, disabled by default
-POST /billing/card/encrypted — add payment method after attestation-verified encryption
+POST /billing/card/encrypted — encrypted card ingress; production attestation gate not yet complete
 POST /billing/card/remove — admin/operator payment-method removal
 POST /billing/add-balance — add credit balance
-POST /deal/{id}/artifact/encrypted — upload artifact encrypted to TEE key
+POST /deal/{id}/artifact/encrypted — funded seller wallet token + TEE ciphertext required
 POST /deal/{id}/artifact — plaintext local-dev hook, disabled by default
 ```
+
+#### Attestation verdict contract
+
+`GET /attestation` transports bounded evidence: the quote returned by dstack,
+the context-bound X25519 public key and report data, plus claimed app, compose,
+and OS identity fields. The service is the evidence producer, not an independent
+verifier. Its `verified` field is therefore always `false`, including when
+`mode=tdx` and a quote is present. Successful quote retrieval must never be
+presented as Intel TDX verification.
+
+The Python envelope checker validates shape, context, freshness of the HTTP
+fetch, claimed identity values, and report-data/key consistency. Its optional
+TDX parser only checks structure and report-data bytes. It does **not** validate
+the quote signature, Intel collateral/TCB status, certificate chain, or bind the
+claimed measurements cryptographically. Consequently the built-in production
+artifact, billing, and oracle credential upload helpers fail closed against the
+service's `verified=false` response. Local-mode upload remains available only
+through the explicit development flags.
+
+Before enabling a production secret upload, integrate an independent DCAP/QVL
+verifier, pin the approved source/image/compose/measurement policy, validate a
+fresh quote and its report-data binding, and pass the resulting verdict through
+a separately authenticated trust boundary. This is a roadmap gate, not a live
+security claim.
+
+The same boundary governs result settlement. `submit-result` checks a
+signer-produced quote envelope only for internal consistency, then authenticates
+the exact result authorization against the immutable `resultVerifier` read from
+`DiligenceRoom` before broadcasting. `authorize-result` will not mint that
+signature from the service envelope alone: it requires a fresh signed
+`intel_tdx_dcap_qvl` verdict from an explicitly trusted verifier address, bound
+to the quote hash, report data, compose/app/OS identity, signer, chain, and
+contract. No production CLI bypass exists. Until that independent verdict
+producer is deployed, live result authorization is intentionally unavailable.
+
+Likewise, `verify-deployment-bundle` verifies GitHub provenance/SBOM signatures
+and checks digest-pinned compose plus service-reported CVM identity consistency,
+but emits `status=evidence_checked_tdx_unverified`. Its public claims keep Intel
+TDX verification, independent-verdict presence, and production authorization
+false; quote presence is never labeled as verification.
+
+The browser container in `docker-compose.all.phala.yaml` now uses an existing
+project-owned, digest-pinned `neko-chrome` image, has no host-published Neko or
+CDP port, requires distinct non-default user/admin credentials, and replaces
+the external MCR Playwright sidecar with internal CDP from the delegate image.
+That historical Neko digest is **not** release-eligible for a new source commit.
+The Dockerfile now pins Chrome `150.0.7871.114-1` by its exact versioned Google
+package URL and verifies SHA-256
+`0f19e68dca574849632e25229f15853d2beac33fa06498feed43f34628bc2d53`,
+matching the signed historical SBOM and official package index. Its Debian
+dependencies now resolve only from the immutable `20260406T000000Z` archive
+recorded by the digest-pinned Neko base; `openbox` and `nginx` are exact-version
+requests and apt/dpkg/update-alternatives wall-clock logs are removed. The Python
+runtime images use
+the base image's corresponding `20260623T000000Z` archive and normalize their
+non-editable lockfile-built virtualenvs. Production release still requires two
+uncached matching build subjects plus clean CI publication under the new source
+SHA, exact GitHub SLSA/SPDX attestations, and literal substitution of the
+resulting digest into the release manifest. No replacement digest should be
+inferred from the historical image.
 
 ### Signup Output
 
@@ -385,7 +765,7 @@ POST /deal/{id}/artifact — plaintext local-dev hook, disabled by default
     "surface": "api_key_provisioning",
     "outcome": "success",
     "furthest_stage": "api_key_stored",
-    "evidence_hash": "sha256...",
+    "evidence_hash": "64-lowercase-sha256-hex",
     "account_hash": "sha256...",
     "raw_secret_egress": false
   }
@@ -470,10 +850,10 @@ All settings use the `TINKER_` env prefix:
 |----------|---------|-------------|
 | `TINKER_CDP_URL` | `http://localhost:9222` | Neko Chrome CDP endpoint |
 | `TINKER_ORACLE_URL` | `http://localhost:8000` | Email oracle API |
-| `TINKER_ORACLE_AUTH_TOKEN` | *(empty)* | Local-dev bearer token for protected oracle `/pin` and `/inbox` calls |
+| `TINKER_ORACLE_AUTH_TOKEN` | *(empty)* | Local-dev bearer token for protected oracle `/pin` and commitment-status calls |
 | `TINKER_ORACLE_AUTH_KEY_PATH` | `oracle/runtime-auth` | dstack key path used to derive the same-CVM oracle bearer token |
 | `TINKER_TINKER_CONSOLE_URL` | `https://tinker-console.thinkingmachines.ai` | Tinker console URL |
-| `TINKER_EMAIL` | *(auto from oracle)* | Override email address |
+| `TINKER_EMAIL` | *(empty)* | Raw account email injected inside the CVM; never fetched from the oracle API |
 | `TINKER_FIRST_NAME` | `Tinker` | First name for signup |
 | `TINKER_LAST_NAME` | `Delegate` | Last name for signup |
 | `TINKER_OTP_POLL_INTERVAL` | `3.0` | Seconds between OTP polls |
@@ -485,6 +865,40 @@ All settings use the `TINKER_` env prefix:
 | `TINKER_RUN_METADATA_STORE_PATH` | `./data/run_metadata.enc` | Encrypted bounded deal/run lifecycle metadata store |
 | `TINKER_RUN_METADATA_STORE_KEY` | *(empty)* | Local-dev hex key override; dstack should derive the key instead |
 | `TINKER_RUN_METADATA_KEY_PATH` | `tinker/run_metadata` | dstack key path for run metadata storage |
+| `TINKER_ARENA_STORE_PATH` | *(empty)* | Durable bounded Arena JSON path; empty leaves catalog readable but disables submission/queue/leaderboard writes and reads |
+| `TINKER_ARENA_WALLET_AUTH_KEY_PATH` | `tinker/arena_wallet_auth` | Distinct dstack key path for challenge-version-bound Arena tokens |
+| `TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS` | `300` | Arena personal-sign nonce lifetime, capped at 600 seconds |
+| `TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS` | `300` | Either exact Arena submit/read or management-only wallet-token lifetime, capped at 900 seconds |
+| `TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES` | `1024` | Process-local pending Arena nonce capacity; new challenges fail closed at capacity |
+| `TINKER_ARENA_AGENT_CREDENTIAL_SIGNING_KEY` | *(empty)* | Local-development-only signing input; keep empty in dstack so its distinct key path is used |
+| `TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH` | `tinker/arena_agent_credentials` | Distinct dstack derivation path for modeled Arena agent bearer signing |
+| `TINKER_ARENA_AGENT_CREDENTIAL_MAX_TTL_SECONDS` | `86400` | Hard maximum credential lifetime; requests must be between 60 seconds and 24 hours |
+| `TINKER_ARENA_AGENT_STORE_PATH` | *(empty)* | HMAC-authenticated credential/device state; local composes set `/data/arena_agent_credentials.json`, while empty disables the surface |
+| `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY` | *(empty)* | Local-development-only HMAC input; never a rollback-resistant counter or anchor |
+| `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH` | `tinker/arena_agent_store_integrity` | Separate dstack derivation path for store integrity; never reuse the credential-signing path |
+| `TINKER_COLLABORATION_ENABLED` | `false` | Exact backend control-plane gate; production may project `true` only from current signed v3 `requested_features.collaboration`, never from another gate or an ambient operator override |
+| `TINKER_COLLABORATION_STORE_PATH` | *(empty)* | Schema-v2 HMAC-authenticated current-state room path; live dstack additionally requires the release-pinned Base Sepolia execution-policy rollback anchor |
+| `TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH` | `tinker/collaboration_wallet_auth` | Distinct dstack derivation path for the `collaboration:console` wallet-token domain |
+| `TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS` | `300` | Collaboration console login nonce lifetime, capped at 600 seconds |
+| `TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS` | `600` | Collaboration console bearer lifetime, capped at 900 seconds |
+| `TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES` | `1024` | Process-local pending Collaboration login nonce capacity |
+| `TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS` | `300` | Exact owner-role and exact-current-query signature lifetime, constrained to 60–900 seconds |
+| `TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH` | `tinker/collaboration_store_integrity` | Purpose-separated dstack HMAC key path; local mode remains non-monotonic, while live dstack combines this current-state integrity with the external release-bound anchor |
+| `TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS` | `600` | Shared sliding window; must cover the longest Deal/Arena/Compute/Collaboration/Review challenge TTL |
+| `TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT` | `768` | Accepted challenges across all five surfaces per window; must remain below every nonce-store capacity |
+| `TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT` | `64` | Canonical wallet-address challenge admissions per shared window |
+| `TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT` | `256` | Direct peer (IPv4 or IPv6 /64) challenge admissions per shared window |
+| `TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS` | *(empty)* | Exact direct-proxy CIDRs; forwarded identity remains disabled unless the approved header is also set |
+| `TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER` | *(empty)* | Optional `CF-Connecting-IP` or `X-Real-IP`; lists and unpinned forwarding headers are ignored |
+| `TINKER_WALLET_AUTH_RPC_URL` | *(empty locally; required in production compose)* | Primary operator-configured HTTPS Base Sepolia JSON-RPC for shared EIP-1271 verification; requests cannot override it |
+| `TINKER_WALLET_AUTH_RPC_URL_SECONDARY` | *(empty locally; required in production compose)* | Independent secondary provider origin; disagreement or failure denies auth without fallback |
+| `TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS` | `3.0` | Per-phase network timeout for each wallet-auth JSON-RPC request, hard-capped at 10 seconds |
+| `TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES` | `131072` | Maximum JSON-RPC response body for wallet verification, hard-capped at 1 MiB |
+| `TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES` | `4096` | Maximum decoded EOA/EIP-1271 signature bytes; the hard cap is 4 KiB |
+| `TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH` | *(empty)* | Durable ciphertext-envelope directory; empty disables Arena attestation/contract/submission ingress |
+| `TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH` | `tinker/arena_candidate_ingress` | Distinct dstack key path for the restart-stable Arena X25519 recipient |
+| `TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE` | *(empty)* | Local-only `0600` 32-byte key file; dstack ignores it |
+| `TINKER_ARENA_CANDIDATE_INGRESS_MAX_ENVELOPES` | `10000` | Durable ciphertext-envelope cap; decoded ciphertext is separately capped at 65,536 bytes |
 | `TINKER_FUNDING_MODE` | `manual_prefund` | Funding mode: `manual_prefund`, `operator_capped_validation`, or reserved `official_tokenized` |
 | `TINKER_MIN_ADD_BALANCE_USD` | `10.0` | Minimum whole-dollar add-balance amount accepted before browser automation starts |
 | `TINKER_MAX_ADD_BALANCE_USD` | `10.0` | Maximum add-balance amount allowed before browser automation starts |
@@ -499,7 +913,7 @@ All settings use the `TINKER_` env prefix:
 tinker_delegate/
 ├── __init__.py
 ├── config.py          # Pydantic Settings with TINKER_ prefix
-├── oracle_client.py   # HTTP client for email oracle /pin /health /inbox
+├── oracle_client.py   # HTTP client for /pin, /health, and commitment-only /email
 ├── signup.py          # Browser automation: auth, onboarding, API key creation
 ├── billing.py         # Browser automation: Stripe card form, balance, auto-reload
 ├── card_channel.py    # Secure card delivery channel (encrypted in production)
@@ -507,6 +921,10 @@ tinker_delegate/
 ├── session.py         # IsolatedTinkerSession: sandboxed SDK wrapper + cost meter
 ├── control_plane.py   # Deal lifecycle orchestration + output bounding
 ├── evaluator.py       # Stub + SFT evaluator agents
+├── arena_auth.py      # Challenge-version wallet auth plus isolated agent-credential tokens
+├── arena_agent_store.py # Modeled device/credential state; HMAC integrity without anti-rollback
+├── arena_ingress.py   # Stable attested recipient + strict browser ciphertext persistence
+├── arena_store.py     # Durable bounded modeled queue + Ladder leaderboard projection
 ├── api.py             # FastAPI server: billing, attestation, deal lifecycle
 └── main.py            # CLI: check, signup, signin, reauth, balance, add-card, add-balance, serve
 
@@ -534,10 +952,11 @@ contracts/
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| `health()` | `GET /health` | Check oracle status, get email address |
-| `get_email()` | `GET /health` | Extract oracle email from health response |
-| `get_pin()` | `POST /pin` | Poll inbox with scoped OTP metadata and bearer auth; returns one bounded code plus request/use hashes |
-| `list_inbox()` | `GET /inbox` | Debug: list recent emails; sends bearer auth when configured |
+| `health()` | `GET /health` | Check fixed process liveness only |
+| `get_email_status()` | `GET /email` | Return readiness plus a domain-separated mailbox commitment |
+| `get_email()` | none | Fails closed; configure `TINKER_EMAIL` inside the CVM |
+| `get_pin()` | `POST /pin` | Fetch the allowlisted six-digit OTP with bearer/consumer auth; accepts only the exact code/request-hash/report-data/quote shape |
+| `list_inbox()` | none | Permanently disabled; mailbox metadata cannot egress |
 
 ## Recon Findings
 
@@ -583,13 +1002,16 @@ contracts/
   browser automation.
 - **hCaptcha**: Invisible on form (no manual solve needed in neko)
 - **Model**: Prepaid balance (add credit, spend on API usage)
-- **Local test-card result**: Stripe test card reaches submission and returns `Your card was declined.`
-- **No-card funding result**: add-balance fails closed with `Payment method required before adding balance`
+- **Local test-card result**: Stripe test card reaches submission and returns
+  only `card_declined`; the raw Stripe/page sentence remains inside the CVM.
+- **No-card funding result**: add-balance fails closed with
+  `payment_method_required`.
 - **Deployed real-card validation**: the first approved real-card validation
   did not top up the account, but the later same-context reauth/add-balance
   packet reached `add_balance_submitted` with `raw_secret_egress=false`, replay
   verification passed with deployed attestation, and bounded balance read-back
-  now reports `$10.00` without card details. The add-balance receipt remains
+  demonstrated a funded balance; the current public read returns only the
+  `10_100_usd` band, never `$10.00` or another exact currency string. The add-balance receipt remains
   conservative because explicit success copy was not observed; the balance read
   is the current funding evidence. This is still a one-off operator-owned
   validation path, not production/repeated funding.
@@ -597,11 +1019,18 @@ contracts/
   `surface`, `outcome`, `furthest_stage`, `issued_at`, `evidence_hash`,
   amount/balance bands, TDX quote hash when present, and card-payload
   destruction status; they do not return raw card fields or browser page bodies.
-  Browser exception fallbacks publish only the classified outcome string while
-  retaining the redacted exception behind `evidence_hash`.
+  `bounded_message` and every public billing `error` are exactly the classified
+  `AutomationOutcome` code. `evidence_hash` is deterministic over the canonical
+  bounded public projection only; raw/redacted browser sentences, URLs, card
+  text, and timestamps cannot influence it.
 - **Receipt storage**: bounded funding attempt records are persisted in the
   encrypted delegate store and can be read through `/billing/funding-receipts`.
-  The store rejects unknown fields and any receipt claiming raw secret egress.
+  The store rejects unknown/missing fields, non-enum messages, invalid bands,
+  malformed hashes, projection/hash mismatches, and any receipt claiming raw
+  secret egress. Store failures expose only `store_failed`.
+- **Balance read**: `GET /billing/balance` requires a configured runtime bearer
+  token or a proxy JWT with the read-only `billing:balance` scope and returns
+  only `balance_band` plus bounded status/auth metadata.
 - **Funding mode**: `manual_prefund` is the default production model and denies
   card/add-balance browser automation. `operator_capped_validation` is required
   before encrypted card or add-balance automation can launch, and denied
@@ -613,7 +1042,10 @@ contracts/
   optional add-balance endpoint flag, encrypted receipt-store availability, and
   billing attestation policy before any card payload or browser launch. Passing
   `--fetch-attestation` live-fetches `/attestation?context=billing`; passing
-  `--output` writes the bounded preflight JSON.
+  `--output` writes the bounded preflight JSON. The HTTP endpoint is
+  operator-authenticated, and caller-supplied API origins are accepted only
+  when they use HTTPS and their exact DNS host is configured in
+  `TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS`.
 - **Funding receipt artifacts**: `add-card`, `add-card-encrypted`, and
   `add-balance` accept `--receipt-output` to write the bounded `attempt_record`
   JSON for later manifest binding. The CLI refuses to print or write output
@@ -683,30 +1115,64 @@ contracts/
 
 ## TEE Deployment
 
-In production (Phala Cloud), this runs alongside the email oracle in the same CVM:
+The production release uses seven purpose-separated Phala CVMs. The delegate,
+email oracle, and project-owned Neko browser share only the main runtime CVM.
+The Diligence QVL, Arena QVL, anchor-writer QVL, Compute-workload QVL,
+Compute-metering QVL, and independent deterministic Compute meter remain outside
+that trust domain. The five QVL deployments have distinct policy-derived roots;
+the Diligence root's secondary Email/KMS restart profile does not add a sixth
+root or eighth CVM.
+Each generated QVL descriptor defaults to a five-second request-body phase and
+a 20-second verification phase. Their 25-second combined server budget leaves
+headroom inside every QVL consumer's 30-second end-to-end request timeout.
+
+Do not deploy the source-development compose directly. Generate the exact
+topology-v6, digest-pinned `dnai-main-runtime.phala.yaml` plus its six
+independent descriptors from the signed five-image release manifest. The main
+descriptor contains the internal service wiring, including:
 
 ```yaml
-# docker-compose.dstack.yaml additions
 services:
   delegate:
     environment:
-      TINKER_CDP_URL: http://172.30.0.3:9222      # neko on internal network
-      TINKER_ORACLE_URL: http://oracle:8000         # oracle service
+      TINKER_CDP_URL: http://neko:9223
+      TINKER_ORACLE_URL: http://oracle:8000
+      TINKER_EVALUATOR_MODE: deterministic
     volumes:
-      - /var/run/dstack.sock:/var/run/dstack.sock   # TDX attestation
+      - /var/run/dstack.sock:/var/run/dstack.sock:ro
 ```
 
-The API key is sealed via dstack-KMS after creation — only the same enclave can unseal it.
+The deterministic Deal evaluator does not consume the upstream Tinker API key;
+that credential remains purpose-separated for the product surfaces that need
+it. Merely rendering this service does not enable settlement. Production Deal
+settlement remains unavailable until the exact deterministic evaluator
+manifest and policy root, clean image, topology-v6 descriptor set, fresh
+contract bindings, measured main CVM, independent QVL evidence, and ceremony
+authority have all been verified.
 
 ## What's Next
 
-All core components are implemented. Remaining integration work:
+The complete SolidJS product surface lives in `web/`; it is no longer a React
+mockup. It includes wallet authentication, Diligence rooms, the sealed Bio
+Arena, Compute funding/authorization, proxy credentials, safeguards,
+collaboration, and layered verification. Every surface remains labeled live,
+modeled, or roadmap, and the modeled site is not evidence of a deployed TDX
+release.
 
-- **Web frontend** — the public publication + interactive gate demo lives in [`web/`](web/) ("The Gate: Health", Vite + React + TS). It renders the deployment-locality spine, the four-stage pre-inference safeguards gate, a live gate simulator (with per-run attestation JSON), the health/bio app catalog, and the capability registry — all against synthetic data. Run `cd web && npm install && npm run dev`. This is the missing "Frontend: TBD" from the root README.
-- **Deployment record** — see `docs/DEPLOYMENT-RUNBOOK.md` for the live Base Sepolia contract addresses, verification links, and current Phala CVM state
-- **Deploy DiligenceRoom.sol** to Base Sepolia via `/forge-deploy`
-- **On-chain watcher** — listen for DiligenceRoom events, call control plane API
-- **Docker packaging** — the delegate image installs the `agent` extra from `uv.lock`; a local image run returns `/health.agent_stack_available=true`
-- **Test SFT evaluator** end-to-end with real Tinker API key inside a deployed CVM
-- **TEE deployment** — merge docker-compose with email oracle, deploy to Phala Cloud
-- **API key sealing** — code uses the encrypted key store locally and `dstack_sdk.TappdClient.derive_key("tinker/api_key")` in dstack mode; deployed CVM validation is still pending
+Remaining activation work is operational and deliberately fail-closed:
+
+- publish the exact five reproducible image subjects from one clean source SHA
+  with external GitHub SLSA and SPDX attestations;
+- deploy a fresh operator-owned Base Sepolia suite, then complete the two-day
+  Diligence-QVL, Compute-metering, TEE-admission, and anchor-writer ceremonies;
+- deploy and independently verify all seven CVM descriptors and their bounded
+  Intel TDX/QVL evidence;
+- prove one exact Collaboration run from sponsor-funded reservation through
+  bounded Compute, sponsor-wallet `settleReserved`, and finalized permanent
+  reconciliation without substituting a test signer or aggregate balance;
+- run the canonical check-only release validator against the exact live chain,
+  deployment ledger, five external QVL roots, and evidence artifacts;
+- enable Deal settlement only after a separately attested confidential
+  evaluator replaces the research-only remote SFT path; and
+- rebuild and publish the SolidJS environment only from that successful
+  semantic release receipt.

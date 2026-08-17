@@ -32,13 +32,26 @@ from tinker_delegate.bio_validation import (
 )
 from tinker_delegate.review_queue import (
     ReviewQueueState,
+    ReviewTicket,
     ReviewTicketStatus,
     enqueue_handoff_tickets,
+    review_ticket_ref_hash,
 )
 
 
 def _bio_ticket_id(result_hash: str) -> str:
     return hashlib.sha256(f"bio_hold:{result_hash}".encode("utf-8")).hexdigest()[:16]
+
+
+def _bio_ticket(
+    state: ReviewQueueState, result_hash: str
+) -> ReviewTicket | None:
+    """Resolve both process-local/raw and authenticated/hash-only queue keys."""
+
+    ticket_id = _bio_ticket_id(result_hash)
+    return state.tickets.get(ticket_id) or state.tickets.get(
+        review_ticket_ref_hash(ticket_id)
+    )
 
 
 @dataclass(frozen=True)
@@ -129,7 +142,7 @@ def evaluate_and_route(
     receipt = evaluate_bio_release(candidate, readiness, **screens)
     if receipt.decision != BioReleaseDecision.HOLD:
         return receipt, queue_state
-    if _bio_ticket_id(receipt.result_hash) in queue_state.tickets:
+    if _bio_ticket(queue_state, receipt.result_hash) is not None:
         return receipt, queue_state
     updated = enqueue_bio_hold(
         queue_state,
@@ -156,7 +169,7 @@ def resolve_bio_release(
 
     if receipt.decision != BioReleaseDecision.HOLD:
         return receipt.decision
-    ticket = state.tickets.get(_bio_ticket_id(receipt.result_hash))
+    ticket = _bio_ticket(state, receipt.result_hash)
     if ticket is None:
         return BioReleaseDecision.HOLD
     if ticket.status == ReviewTicketStatus.RELEASED:
@@ -170,7 +183,7 @@ def bio_review_status(receipt: BioReleaseReceipt, state: ReviewQueueState) -> di
     """Bounded status record tying a held bio result to its review ticket."""
 
     resolved = resolve_bio_release(receipt, state)
-    ticket = state.tickets.get(_bio_ticket_id(receipt.result_hash))
+    ticket = _bio_ticket(state, receipt.result_hash)
     return {
         "kind": "bio_review_status",
         "result_hash": receipt.result_hash,

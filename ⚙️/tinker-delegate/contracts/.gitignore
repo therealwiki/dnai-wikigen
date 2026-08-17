@@ -1,2 +1,5 @@
 cache/
 out/
+# Read-only Forge simulations are reproducible and must not make the source
+# tree dirty before the guarded BROADCAST=true release step.
+broadcast/*/*/dry-run/

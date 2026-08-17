@@ -111,11 +111,21 @@ def cli():
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("genesis", help="Create a new email account")
+    sub.add_parser(
+        "genesis-profile",
+        help=(
+            "Run the measured one-shot main-CVM mailbox genesis profile; "
+            "never enables automatic genesis on the regular oracle"
+        ),
+    )
     sub.add_parser("serve", help="Start the API server")
     sub.add_parser("check", help="Verify IMAP connectivity")
     provision_p = sub.add_parser(
         "provision-credentials-encrypted-prompt",
-        help="Prompt for mailbox credentials, verify TEE attestation, encrypt, and provision",
+        help=(
+            "Prompt for mailbox credentials and provision locally; deployed TDX mode "
+            "remains blocked until an independent quote verifier is integrated"
+        ),
     )
     provision_p.add_argument("api_url", help="Email oracle API base URL")
     provision_p.add_argument(
@@ -151,6 +161,10 @@ def cli():
     if args.command == "genesis":
         assert store is not None
         asyncio.run(cmd_genesis(settings, store))
+    elif args.command == "genesis-profile":
+        from email_oracle.mailbox_genesis_profile import cli_run
+
+        sys.exit(asyncio.run(cli_run()))
     elif args.command == "serve":
         assert store is not None
         cmd_serve(settings, store)

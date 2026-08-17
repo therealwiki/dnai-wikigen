@@ -320,7 +320,16 @@ if resource is not None:
         pass
     try:
         memory_bytes = memory_megabytes * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        # Darwin accounts the interpreter's mapped images against RLIMIT_AS,
+        # so a modest limit can make a healthy child fail before candidate
+        # execution. RLIMIT_DATA still bounds candidate heap allocations there.
+        # Linux keeps the stronger whole-address-space limit used in CVMs.
+        memory_resource = (
+            resource.RLIMIT_DATA
+            if sys.platform == "darwin" and hasattr(resource, "RLIMIT_DATA")
+            else resource.RLIMIT_AS
+        )
+        resource.setrlimit(memory_resource, (memory_bytes, memory_bytes))
     except Exception:
         pass
 

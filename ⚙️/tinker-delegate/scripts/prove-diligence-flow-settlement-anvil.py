@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Full-stack proof: bio diligence flow -> derived plan -> on-chain settlement.
+"""Full-stack proof: bio diligence flow -> authorized plan -> settlement.
 
 Runs a real synthetic-assay diligence flow in Python, derives the royalty
-distribution plan from the settled receipt, deploys RoyaltyDistributor on Anvil,
-broadcasts the plan's exact calldata, and asserts each owner was credited the
-flow's payout and the contract drains to zero after withdrawal. Anvil unlocked
-accounts only — no raw keys, no dstack. Emits a bounded JSON summary.
+distribution plan from the settled receipt, deploys RoyaltyDistributor v2 on
+Anvil, timelock-configures its anchor and dual authority, anchors the exact
+decision, approves both EIP-712 digests through local ERC-1271 test doubles,
+broadcasts the exact calldata, and proves conservation. The doubles are not
+TDX/QVL evidence. Anvil unlocked accounts only; no raw keys or dstack.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from tinker_delegate.bio_data_quality import DataQualityBand
@@ -28,6 +32,7 @@ from tinker_delegate.diligence_flow import (
     run_bio_diligence_flow,
 )
 from tinker_delegate.rental_stages import RentalStage, default_rental_ladder
+from tinker_delegate.royalty_distribution_plan import DistributionRecipient
 from tinker_delegate.royalty_settlement import OwnerShare
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,7 +43,16 @@ PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 OWNER_A = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 OWNER_B = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
 
-QUERY_REF = "0x" + "d4" * 32
+SETTLEMENT_ID = "0x" + "d1" * 32
+ROOM_COMMITMENT = "0x" + "d2" * 32
+ROOM_STATE_COMMITMENT = "0x" + "d3" * 32
+QUERY_COMMITMENT = "0x" + "d4" * 32
+GRANT_SET_COMMITMENT = "0x" + "d5" * 32
+ALLOCATION_COMMITMENT = "0x" + "d6" * 32
+EXECUTION_COMMITMENT = "0x" + "d7" * 32
+RESULT_COMMITMENT = "0x" + "d8" * 32
+USAGE_COMMITMENT = "0x" + "d9" * 32
+ATTESTATION_EVIDENCE_HASH = "0x" + "da" * 32
 ROYALTY_TOTAL = 1_000_000_000  # 1 gwei, split 70/30
 
 
@@ -85,30 +99,54 @@ def main() -> int:
     anvil = _start_anvil(port)
     try:
         _wait_for_rpc(rpc_url)
-        contract = _deploy(rpc_url)
+        harness = _load_royalty_harness()
+        release = harness._deploy_configured_release(rpc_url)
+        recipients = [
+            DistributionRecipient(OWNER_A, expected["owner-a"]),
+            DistributionRecipient(OWNER_B, expected["owner-b"]),
+        ]
+        authorization, settlement_signature, qvl_signature = harness._authorize_native_settlement(
+            rpc_url,
+            release,
+            recipients,
+            settlement_id=SETTLEMENT_ID,
+            room_commitment=ROOM_COMMITMENT,
+            room_state_commitment=ROOM_STATE_COMMITMENT,
+            query_commitment=QUERY_COMMITMENT,
+            grant_set_commitment=GRANT_SET_COMMITMENT,
+            allocation_commitment=ALLOCATION_COMMITMENT,
+            execution_commitment=EXECUTION_COMMITMENT,
+            result_commitment=RESULT_COMMITMENT,
+            usage_commitment=USAGE_COMMITMENT,
+            attestation_evidence_hash=ATTESTATION_EVIDENCE_HASH,
+        )
 
         plan = distribution_plan_from_flow(
             receipt,
-            contract_address=contract,
-            query_ref=QUERY_REF,
+            contract_address=release.distributor,
             owner_addresses={"owner-a": OWNER_A, "owner-b": OWNER_B},
+            authorization=authorization,
+            settlement_signature=settlement_signature,
+            qvl_signature=qvl_signature,
         )
         _run([
-            "cast", "send", contract, plan.calldata,
+            "cast", "send", release.distributor, plan.calldata,
             "--value", str(plan.total_amount),
             "--rpc-url", rpc_url, "--unlocked", "--from", PAYER, "--json",
         ])
 
-        pending_a = _pending(rpc_url, contract, OWNER_A)
-        pending_b = _pending(rpc_url, contract, OWNER_B)
-        held = _balance(rpc_url, contract)
+        pending_a = _pending(rpc_url, release.distributor, OWNER_A)
+        pending_b = _pending(rpc_url, release.distributor, OWNER_B)
+        held = _balance(rpc_url, release.distributor)
 
-        _run(["cast", "send", contract, "withdraw()", "--rpc-url", rpc_url, "--unlocked", "--from", OWNER_A, "--json"])
-        _run(["cast", "send", contract, "withdraw()", "--rpc-url", rpc_url, "--unlocked", "--from", OWNER_B, "--json"])
-        drained = _balance(rpc_url, contract)
+        _run(["cast", "send", release.distributor, "withdraw()", "--rpc-url", rpc_url, "--unlocked", "--from", OWNER_A, "--json"])
+        _run(["cast", "send", release.distributor, "withdraw()", "--rpc-url", rpc_url, "--unlocked", "--from", OWNER_B, "--json"])
+        drained = _balance(rpc_url, release.distributor)
 
         ok = (
-            pending_a == expected["owner-a"]
+            release.fresh_state_verified
+            and release.active_state_verified
+            and pending_a == expected["owner-a"]
             and pending_b == expected["owner-b"]
             and held == plan.total_amount
             and drained == 0
@@ -116,7 +154,14 @@ def main() -> int:
         summary = {
             "proof": "diligence_flow_settlement_anvil",
             "flow_decision": receipt.flow_decision.value,
-            "contract_address": contract,
+            "contract_address": release.distributor,
+            "anchor_address": release.anchor,
+            "fresh_owner_paused_empty_authority_verified": release.fresh_state_verified,
+            "timelocked_active_release_verified": release.active_state_verified,
+            "anchor_currentness_verified": True,
+            "dual_erc1271_authorizations_verified": True,
+            "erc1271_signers_are_local_test_doubles": True,
+            "tdx_or_qvl_evidence_claimed": False,
             "owner_a_credited_flow_payout": pending_a == expected["owner-a"],
             "owner_b_credited_flow_payout": pending_b == expected["owner-b"],
             "held_full_total": held == plan.total_amount,
@@ -135,15 +180,15 @@ def main() -> int:
             anvil.wait(timeout=5)
 
 
-def _deploy(rpc_url: str) -> str:
-    output = _run_json([
-        "forge", "create", "src/RoyaltyDistributor.sol:RoyaltyDistributor",
-        "--rpc-url", rpc_url, "--unlocked", "--from", DEPLOYER, "--broadcast", "--json",
-    ], cwd=CONTRACTS_DIR)
-    address = output.get("deployedTo") or output.get("contractAddress")
-    if not address:
-        raise RuntimeError("forge create did not return a deployed address")
-    return str(address)
+def _load_royalty_harness() -> ModuleType:
+    path = Path(__file__).with_name("prove-royalty-distributor-anvil.py")
+    spec = importlib.util.spec_from_file_location("dnai_royalty_anvil_harness", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load the RoyaltyDistributor Anvil harness")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _pending(rpc_url: str, contract: str, owner: str) -> int:

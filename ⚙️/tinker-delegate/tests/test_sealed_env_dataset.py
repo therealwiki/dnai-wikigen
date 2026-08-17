@@ -20,7 +20,9 @@ def _seal_and_publish(backend, *, sensitivity=DataSensitivity.PUBLIC_BENCHMARK):
         data_sensitivity=sensitivity,
         recipient_public_keys=[keypair.public_key_bytes.hex()],
     )
-    return publish_dataset(blob, manifest, backend)["storage_ref"]
+    ref = backend.ref_for(manifest["dataset_id"])
+    publish_dataset(blob, manifest, backend)
+    return ref
 
 
 class LoadSealedEnvDatasetTest(unittest.TestCase):
@@ -117,7 +119,8 @@ class LoaderIsEnvAgnosticTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as root:
             backend = LocalStorageBackend(root)
-            ref = publish_dataset(blob, manifest, backend)["storage_ref"]
+            ref = backend.ref_for(manifest["dataset_id"])
+            publish_dataset(blob, manifest, backend)
             recs, receipt = load_sealed_env_dataset(ref, _KEY, parse=_parse, backend=backend)
 
         self.assertIsNotNone(recs)

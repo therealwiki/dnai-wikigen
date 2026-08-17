@@ -1,0 +1,94 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-current-status-proposal.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Unsigned operator proposal selecting active reviewer keys only from the finite v2 genesis inventory. It is not authority until both genesis guardians sign the derived canonical payload.",
+  "properties": {
+    "active_reviewers": {
+      "items": {
+        "$ref": "#/$defs/identity"
+      },
+      "maxItems": 32,
+      "minItems": 2,
+      "type": "array"
+    },
+    "epoch": {
+      "maximum": 4294967295,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/instant"
+    },
+    "not_before": {
+      "$ref": "#/$defs/instant"
+    },
+    "previous_status_sha256": {
+      "$ref": "#/$defs/sha256_allow_zero"
+    },
+    "revoked_controller_ids": {
+      "items": {
+        "$ref": "#/$defs/controller_id"
+      },
+      "maxItems": 32,
+      "type": "array"
+    },
+    "revoked_reviewer_addresses": {
+      "items": {
+        "$ref": "#/$defs/address"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "schema": {
+      "const": "dnai.release-reviewer-authority-current-status-proposal.v1"
+    }
+  },
+  "required": [
+    "active_reviewers",
+    "epoch",
+    "expires_at",
+    "not_before",
+    "previous_status_sha256",
+    "revoked_controller_ids",
+    "revoked_reviewer_addresses",
+    "schema"
+  ],
+  "title": "dnai-wikigen reviewer authority current-status proposal",
+  "type": "object",
+  "$defs": {
+    "address": {
+      "pattern": "^0x(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "controller_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$",
+      "type": "string"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/controller_id"
+        }
+      },
+      "required": [
+        "address",
+        "controller_id"
+      ],
+      "type": "object"
+    },
+    "instant": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "type": "string"
+    },
+    "sha256_allow_zero": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  }
+}

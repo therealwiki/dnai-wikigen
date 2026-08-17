@@ -13,7 +13,7 @@ from tinker_delegate.automation_receipts import (
     make_receipt,
 )
 from tinker_delegate.billing_uploader import encrypt_billing_card_payload
-from tinker_delegate.card_channel import attestation_report_data, get_tee_keypair
+from tinker_delegate.card_channel import BillingResponse, attestation_report_data, get_tee_keypair
 from tinker_delegate.config import Settings
 from tinker_delegate.funding_receipt_store import FundingReceiptStore
 from tinker_delegate.tinker_proxy import issue_proxy_token
@@ -26,6 +26,14 @@ CARD_PAYLOAD = {
     "cvc": "123",
     "cardholder_name": "Test User",
 }
+
+
+def _success_receipt(surface: AutomationSurface) -> dict:
+    return make_receipt(
+        surface=surface,
+        outcome=AutomationOutcome.SUCCESS,
+        furthest_stage=AutomationStage.BILLING_PAGE_LOADED,
+    ).to_public_dict()
 
 
 class BillingApiPolicyTest(unittest.TestCase):
@@ -68,13 +76,13 @@ class BillingApiPolicyTest(unittest.TestCase):
             patch("tinker_delegate.api.is_dstack_enabled", return_value=False),
             patch(
                 "tinker_delegate.api.handle_card_update",
-                new=AsyncMock(return_value={"success": False, "error": "stubbed"}),
+                new=AsyncMock(return_value={"success": False, "error": "unknown_failure"}),
             ) as handle_card_update,
         ):
             response = client.post("/billing/card", json=CARD_PAYLOAD)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"], "stubbed")
+        self.assertEqual(response.json()["error"], "unknown_failure")
         handle_card_update.assert_awaited_once()
 
     def test_payment_method_status_exception_is_bounded(self):
@@ -167,7 +175,10 @@ class BillingApiPolicyTest(unittest.TestCase):
         self.assertNotIn("Page.goto", rendered)
 
     def test_balance_exception_is_bounded(self):
-        api.settings = Settings()
+        api.settings = Settings(
+            runtime_auth_required=True,
+            runtime_auth_token="operator-secret",
+        )
         client = TestClient(api.app)
         raw_error = (
             "Page.goto: net::ERR_ABORTED at "
@@ -178,15 +189,103 @@ class BillingApiPolicyTest(unittest.TestCase):
             "tinker_delegate.card_channel.get_balance",
             new=AsyncMock(side_effect=RuntimeError(raw_error)),
         ):
-            response = client.get("/billing/balance")
+            response = client.get(
+                "/billing/balance",
+                headers={"Authorization": "Bearer operator-secret"},
+            )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
         rendered = str(body)
         self.assertFalse(body["success"])
         self.assertEqual(body["error"], "transient_browser_failure")
+        self.assertEqual(
+            set(body),
+            {"success", "error", "raw_secret_egress"},
+        )
+        self.assertNotIn("balance", body)
         self.assertNotIn("tinker-console.thinkingmachines.ai", rendered)
         self.assertNotIn("Page.goto", rendered)
+
+    def test_balance_requires_configured_runtime_or_proxy_auth(self):
+        api.settings = Settings(
+            runtime_auth_required=True,
+            runtime_auth_token="operator-secret",
+        )
+        client = TestClient(api.app)
+
+        with patch("tinker_delegate.api.handle_get_balance", new=AsyncMock()) as handle_balance:
+            missing = client.get("/billing/balance")
+            wrong = client.get(
+                "/billing/balance",
+                headers={"Authorization": "Bearer wrong"},
+            )
+
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(wrong.status_code, 403)
+        handle_balance.assert_not_awaited()
+
+    def test_balance_returns_exact_band_only_shape_for_runtime_auth(self):
+        api.settings = Settings(
+            runtime_auth_required=True,
+            runtime_auth_token="operator-secret",
+        )
+        client = TestClient(api.app)
+
+        with patch(
+            "tinker_delegate.api.handle_get_balance",
+            new=AsyncMock(
+                return_value=BillingResponse(success=True, balance_band="10_100_usd")
+            ),
+        ):
+            response = client.get(
+                "/billing/balance",
+                headers={"Authorization": "Bearer operator-secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "success": True,
+                "balance_band": "10_100_usd",
+                "raw_secret_egress": False,
+            },
+        )
+        self.assertNotIn("$", response.text)
+
+    def test_balance_accepts_only_the_balance_scoped_proxy_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            api.settings = Settings(
+                proxy_jwt_key="45" * 32,
+                proxy_token_store_path=f"{tmpdir}/proxy_tokens.enc",
+                proxy_token_store_key="45" * 32,
+            )
+            _, token = issue_proxy_token(
+                api.settings,
+                subject="buyer-agent-1",
+                scopes=["billing:balance"],
+                ttl_seconds=60,
+            )
+            client = TestClient(api.app)
+            with patch(
+                "tinker_delegate.api.handle_get_balance",
+                new=AsyncMock(
+                    return_value=BillingResponse(success=True, balance_band="lt_10_usd")
+                ),
+            ) as handle_balance:
+                response = client.get(
+                    "/billing/balance",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["balance_band"], "lt_10_usd")
+        self.assertEqual(body["proxy_auth_context"]["required_scope"], "billing:balance")
+        self.assertNotIn("balance", {key for key in body if key != "balance_band"})
+        self.assertNotIn("$", response.text)
+        handle_balance.assert_awaited_once()
 
     def test_attestation_endpoint_binds_requested_billing_context(self):
         client = TestClient(api.app)
@@ -200,6 +299,56 @@ class BillingApiPolicyTest(unittest.TestCase):
         self.assertEqual(
             body["report_data"],
             attestation_report_data("billing", keypair.public_key_bytes).hex(),
+        )
+
+    def test_attestation_endpoint_strips_nested_secret_metadata(self):
+        client = TestClient(api.app)
+        sentinel = "sentinel-runtime-auth-secret"
+        unbounded = {
+            "mode": "tdx",
+            "quote": "aa",
+            "encryption_public_key": "11" * 32,
+            "report_context": "artifact",
+            "report_data": "22" * 32,
+            "quote_report_data": "22" * 32,
+            "app_id": "app-ok",
+            "compose_hash": "compose-ok",
+            "os_image_hash": "os-ok",
+            # Even a lower layer that tries to self-assert verification must be
+            # clamped at the public service boundary.
+            "verified": True,
+            "event_log": {"secret": sentinel},
+            "vm_config": {"secret": sentinel},
+            "tcb_info": {
+                "app_compose": {
+                    "docker_compose_file": f"TINKER_RUNTIME_AUTH_TOKEN={sentinel}",
+                },
+            },
+        }
+
+        with patch("tinker_delegate.api.get_attestation", return_value=unbounded):
+            response = client.get("/attestation", params={"context": "artifact"})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["verified"])
+        self.assertNotIn(sentinel, response.text)
+        for forbidden in ("event_log", "vm_config", "tcb_info", "app_compose"):
+            self.assertNotIn(forbidden, body)
+        self.assertEqual(
+            set(body),
+            {
+                "mode",
+                "quote",
+                "encryption_public_key",
+                "report_context",
+                "report_data",
+                "quote_report_data",
+                "app_id",
+                "compose_hash",
+                "os_image_hash",
+                "verified",
+            },
         )
 
     def test_attestation_endpoint_rejects_unknown_context(self):
@@ -289,6 +438,32 @@ class BillingApiPolicyTest(unittest.TestCase):
         self.assertEqual(body["receipts"][0]["outcome"], "card_declined")
         self.assertNotIn("4242424242424242", repr(body))
 
+    def test_funding_receipt_store_failure_returns_only_store_failed(self):
+        class FailingStore:
+            def load(self):
+                raise RuntimeError(
+                    "disk failure at https://private.example/card/4242424242424242"
+                )
+
+        api.settings = Settings(
+            runtime_auth_required=True,
+            runtime_auth_token="operator-secret",
+        )
+        client = TestClient(api.app)
+        with patch(
+            "tinker_delegate.api.build_funding_receipt_store",
+            return_value=FailingStore(),
+        ):
+            response = client.get(
+                "/billing/funding-receipts",
+                headers={"Authorization": "Bearer operator-secret"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "store_failed"})
+        self.assertNotIn("private.example", response.text)
+        self.assertNotIn("4242424242424242", response.text)
+
     def test_payment_method_status_requires_runtime_auth_when_enabled(self):
         api.settings = Settings(
             runtime_auth_required=True,
@@ -321,20 +496,9 @@ class BillingApiPolicyTest(unittest.TestCase):
                     "success": True,
                     "card_on_file": True,
                     "payment_method_count_band": "one_or_more",
-                    "attempt_record": {
-                        "surface": "payment_method_status",
-                        "outcome": "success",
-                        "furthest_stage": "billing_page_loaded",
-                        "bounded_message": "payment_method_count:one_or_more",
-                        "evidence_hash": "a" * 64,
-                        "account_hash": "",
-                        "amount_band": "",
-                        "balance_band": "",
-                        "tdx_quote_hash": "",
-                        "card_payload_destroyed": False,
-                        "raw_secret_egress": False,
-                        "issued_at": 123,
-                    },
+                    "attempt_record": _success_receipt(
+                        AutomationSurface.PAYMENT_METHOD_STATUS
+                    ),
                 }
             ),
         ):
@@ -392,7 +556,7 @@ class BillingApiPolicyTest(unittest.TestCase):
 
         with patch(
             "tinker_delegate.api.handle_add_balance",
-            new=AsyncMock(return_value={"success": False, "error": "stubbed"}),
+            new=AsyncMock(return_value={"success": False, "error": "unknown_failure"}),
         ) as handle_add_balance:
             response = client.post(
                 "/billing/add-balance",
@@ -401,7 +565,7 @@ class BillingApiPolicyTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"], "stubbed")
+        self.assertEqual(response.json()["error"], "unknown_failure")
         handle_add_balance.assert_awaited_once()
 
     def test_payment_method_status_accepts_scoped_proxy_jwt(self):
@@ -426,20 +590,9 @@ class BillingApiPolicyTest(unittest.TestCase):
                         "success": True,
                         "card_on_file": True,
                         "payment_method_count_band": "one_or_more",
-                        "attempt_record": {
-                            "surface": "payment_method_status",
-                            "outcome": "success",
-                            "furthest_stage": "billing_page_loaded",
-                            "bounded_message": "payment_method_count:one_or_more",
-                            "evidence_hash": "a" * 64,
-                            "account_hash": "",
-                            "amount_band": "",
-                            "balance_band": "",
-                            "tdx_quote_hash": "",
-                            "card_payload_destroyed": False,
-                            "raw_secret_egress": False,
-                            "issued_at": 123,
-                        },
+                        "attempt_record": _success_receipt(
+                            AutomationSurface.PAYMENT_METHOD_STATUS
+                        ),
                     }
                 ),
             ) as handle_status:
@@ -471,7 +624,7 @@ class BillingApiPolicyTest(unittest.TestCase):
 
             with patch(
                 "tinker_delegate.api.handle_add_balance",
-                new=AsyncMock(return_value={"success": False, "error": "stubbed"}),
+                new=AsyncMock(return_value={"success": False, "error": "unknown_failure"}),
             ) as handle_add_balance:
                 response = client.post(
                     "/billing/add-balance",
@@ -480,7 +633,7 @@ class BillingApiPolicyTest(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"], "stubbed")
+        self.assertEqual(response.json()["error"], "unknown_failure")
         handle_add_balance.assert_awaited_once()
 
     def test_add_balance_endpoint_rejects_proxy_jwt_over_policy_limit(self):
@@ -532,7 +685,7 @@ class BillingApiPolicyTest(unittest.TestCase):
 
             with patch(
                 "tinker_delegate.api.handle_add_balance",
-                new=AsyncMock(return_value={"success": False, "error": "stubbed"}),
+                new=AsyncMock(return_value={"success": False, "error": "unknown_failure"}),
             ) as handle_add_balance:
                 response = client.post(
                     "/billing/add-balance",

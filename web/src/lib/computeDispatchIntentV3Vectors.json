@@ -1,0 +1,40 @@
+{
+  "schema": "dnai.compute.dispatch-intent-v3-vectors.v1",
+  "vectors": [
+    {
+      "name": "wallet_adopts_source_bound_workload",
+      "intent": {
+        "project_reference": "prj_alpha",
+        "job_reference": "job_alpha",
+        "user": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+        "asset": "0x0000000000000000000000000000000000000000",
+        "authorization_nonce": 4,
+        "max_asset_debit": 25,
+        "authorization_expiry": 1800000600,
+        "rate_policy_commitment": "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "compose_hash": "0x7777777777777777777777777777777777777777777777777777777777777777",
+        "operation": "inference",
+        "model": "qwen3_8b",
+        "recipe": "qwen3_8b_bounded",
+        "result_policy": "bounded_summary_receipt",
+        "max_prefill_tokens": 1024,
+        "max_sample_tokens": 128,
+        "max_train_tokens": 0,
+        "workload_id": "wrk_abababababababababababababababab",
+        "workload_schema": "dnai.compute.workload.inference.v1",
+        "manifest_commitment": "0x9191919191919191919191919191919191919191919191919191919191919191",
+        "workload_commitment": "0x9292929292929292929292929292929292929292929292929292929292929292",
+        "workload_source_kind": "wallet",
+        "workload_execution_binding_commitment": "sha256:9494949494949494949494949494949494949494949494949494949494949494",
+        "workload_recipient_release_commitment": "sha256:9595959595959595959595959595959595959595959595959595959595959595",
+        "authorization_kind": "standalone",
+        "authorization_context_commitment": "sha256:2ccd1f43cd30c8a45116e5423e67efad1ef2afb6603aa0fdd84ed527965e55c4"
+      },
+      "project_id": "0xfb2a1e982298183966782502376142dfc920790cd2ff6a447df0aafc4d27db82",
+      "job_id": "0x9ba0ebed66f5b5b8cfbc73d100232c7b92c083d75e19915a7ed458770cf0c925",
+      "intent_commitment": "0xc79c218b55018ea36ba3572943a5d4ec3a8325ab1cb56ee0656e56c575c6e431",
+      "recipe_policy_commitment": "0x35fb67189c209e95ceff92fbf24fa920a075c73b0335e4e2993c5e000742e161",
+      "execution_context_hash": "8f2b440512acc94cff71b759f071a2f7bebc19203e9524e5c2140b383ec8b9ac"
+    }
+  ]
+}

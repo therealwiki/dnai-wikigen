@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ SUPPORTED_PROXY_SCOPES = {
     "proxy:status",
     "tinker:smoke",
     "tinker:train",
+    "billing:balance",
     "billing:payment-method-status",
     "billing:add-balance",
 }
@@ -601,11 +603,19 @@ def _encode_jwt(payload: dict[str, Any], key: bytes) -> str:
 
 
 def _decode_jwt(token: str, key: bytes) -> dict[str, Any]:
-    parts = token.split(".")
-    if len(parts) != 3:
+    if not isinstance(token, str) or len(token) > 4096:
         raise ValueError("invalid proxy token format")
-    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
-    supplied = _b64url_decode(parts[2])
+    parts = token.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
+        raise ValueError("invalid proxy token format")
+    try:
+        signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("invalid proxy token format") from exc
+    try:
+        supplied = _b64url_decode(parts[2])
+    except ValueError as exc:
+        raise ValueError("invalid proxy token signature") from exc
     expected = hmac.new(key, signing_input, hashlib.sha256).digest()
     if not hmac.compare_digest(supplied, expected):
         raise ValueError("invalid proxy token signature")
@@ -1556,8 +1566,13 @@ def _b64url(value: bytes) -> bytes:
 
 
 def _b64url_decode(value: str) -> bytes:
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("invalid base64url")
     padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
+    decoded = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    if _b64url(decoded).decode("ascii") != value:
+        raise ValueError("non-canonical base64url")
+    return decoded
 
 
 def _next_required_configuration(*, api_key_configured: bool, project_id_configured: bool) -> list[str]:

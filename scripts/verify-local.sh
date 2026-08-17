@@ -12,7 +12,31 @@ run_foundry() {
   echo "== Foundry contracts =="
   pushd "$ROOT_DIR/⚙️/tinker-delegate/contracts" >/dev/null
   forge build --sizes
-  forge test
+  # Several deployment-script tests exercise vm.env* by setting process-wide
+  # variables through vm.setEnv. Foundry workers share that process environment,
+  # so parallel suites can race on purpose-specific role values. Keep the
+  # release gate deterministic until those script fixtures no longer use env.
+  forge test --threads 1
+  ./scripts/test-deployment-safety.sh
+  ./scripts/test-local-release-rehearsal-safety.sh
+  ./scripts/test-challenge-registry-release-safety.sh
+  ./scripts/test-compute-release-safety.sh
+  ./scripts/test-diligence-release-safety.sh
+  ./scripts/test-email-oracle-release-safety.sh
+  ./scripts/test-execution-policy-anchor-release-safety.sh
+  ./scripts/test-release-ceremony-storage-safety.sh
+  ./scripts/test-royalty-release-safety.sh
+  ./scripts/test-tinker-release-safety.sh
+  node --test \
+    "$ROOT_DIR/scripts/royalty-release-finalized-history-evidence.test.mjs" \
+    "$ROOT_DIR/scripts/royalty-release-history-receipt.test.mjs" \
+    "$ROOT_DIR/scripts/release-ceremony-ledger.test.mjs" \
+    "$ROOT_DIR/scripts/release-authority-stages.test.mjs" \
+    scripts/royalty-release-phase-plan.test.mjs \
+    scripts/royalty-release-manifest-filter.test.mjs \
+    scripts/royalty-release-runtime-binding-adapter.test.mjs \
+    scripts/royalty-release-ledger-binding.test.mjs \
+    scripts/royalty-release-finality.test.mjs
   popd >/dev/null
 }
 
@@ -23,19 +47,46 @@ run_python_package() {
 
   echo "== Python package: $package_dir =="
   pushd "$ROOT_DIR/$package_dir" >/dev/null
-  uv sync --frozen
+  if [ "$package_dir" = "⚙️/tinker-delegate" ]; then
+    # The production Compute/Tinker boundary lives in the locked agent extra.
+    # Release verification must exercise the real SDK capability audit instead
+    # of silently skipping it after a default-only sync removes that dependency.
+    uv sync --frozen --extra agent --group dev
+  else
+    uv sync --frozen
+  fi
   # Intentional word splitting: compile paths are repo-local paths without spaces.
   # shellcheck disable=SC2086
   uv run python -m compileall $compile_paths ${test_dir:+"$test_dir"}
   if [ -n "$test_dir" ]; then
-    uv run python -m unittest discover -s "$test_dir"
+    if [ "$package_dir" = "⚙️/tinker-delegate" ]; then
+      uv run --frozen python -m pytest "$test_dir"
+    else
+      uv run python -m unittest discover -s "$test_dir"
+    fi
   fi
+  popd >/dev/null
+}
+
+run_pytest_package() {
+  local package_dir="$1"
+  local compile_paths="$2"
+
+  echo "== Python package: $package_dir =="
+  pushd "$ROOT_DIR/$package_dir" >/dev/null
+  uv sync --frozen
+  # Intentional word splitting: compile paths are repo-local paths without spaces.
+  # shellcheck disable=SC2086
+  uv run python -m compileall $compile_paths tests
+  uv run --frozen python -m pytest
   popd >/dev/null
 }
 
 run_python() {
   run_python_package "⚙️/tinker-delegate" "tinker_delegate" "tests"
   run_python_package "⚙️/tee-email-oracle" "email_oracle captcha-solver/captcha_solver" "tests"
+  run_pytest_package "⚙️/attestation-qvl" "src/attestation_qvl"
+  run_pytest_package "⚙️/compute-metering" "src/compute_metering"
   run_python_package "⚙️/props-room" "props_room"
   run_python_package "⚙️/whatsapp-delegate" "whatsapp_delegate"
   run_python_package "⚙️/cdp-playground" "app"

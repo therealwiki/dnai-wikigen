@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ ALLOWED_RUN_METADATA_FIELDS = frozenset(
         "destruction_record_hash",
         "event",
         "expiry_band",
+        "evaluator_policy_commitment",
         "failed_checkpoint_count",
         "fee_band",
         "refund_band",
@@ -59,6 +61,11 @@ ALLOWED_RUN_METADATA_FIELDS = frozenset(
         "tee_identity_hash",
         "training_run_id_hash",
     }
+)
+
+
+EVALUATOR_POLICY_COMMITMENT_PATTERN = re.compile(
+    r"^0x(?!0{64}$)[0-9a-f]{64}$"
 )
 
 
@@ -197,6 +204,14 @@ class RunMetadataStore:
             raise ValueError(f"run metadata missing required fields: {sorted(missing)}")
         if bounded["event"] not in ALLOWED_RUN_METADATA_EVENTS:
             raise ValueError("run metadata contains unsupported event")
+        evaluator_policy = bounded.get("evaluator_policy_commitment")
+        if evaluator_policy is not None and (
+            not isinstance(evaluator_policy, str)
+            or EVALUATOR_POLICY_COMMITMENT_PATTERN.fullmatch(evaluator_policy) is None
+        ):
+            raise ValueError(
+                "run metadata evaluator policy commitment must be a nonzero lowercase bytes32"
+            )
         return bounded
 
 

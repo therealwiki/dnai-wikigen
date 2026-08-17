@@ -2,6 +2,15 @@
 
 Status: current technical stance, not legal advice.
 
+Product boundary: the twelve-route frontend—including the modeled,
+no-health-data-intake Health Guide—does not collect card data. Its card surface
+is roadmap-only and describes provider-hosted checkout followed by a verified
+signed webhook that may issue closed-loop, non-transferable service credits.
+Those credits are not `ComputeCreditVault` deposits or tokens. The encrypted
+raw-card path documented below is retained only as a historical, capped
+operator-validation mechanism; it is not an enabled customer flow and is not
+part of the fresh release.
+
 This note records the project stance for Tinker account funding before any real
 card funding attempt. It is based on the official Stripe documentation linked
 below and the current `tinker-delegate` implementation.
@@ -37,16 +46,18 @@ The current encrypted-card path is safer than plaintext delivery but is not the
 preferred production compliance posture:
 
 ```text
-operator -> attestation verifier -> encrypted payload -> TEE API
+operator -> independent DCAP/QVL verifier -> encrypted payload -> TEE API
          -> TEE memory -> browser-controlled Stripe Elements iframe -> Stripe
 ```
 
-[real] The implementation encrypts card details to an attestation-bound TEE
-public key, decrypts inside the delegate process, fills the Stripe iframe through
-browser automation, zeroes the parsed card object, suppresses card-bearing
-screenshots, purges known secret-bearing browser debug artifacts, disables core
-dumps in the delegate/browser compose path, returns bounded receipts, and caps
-add-balance attempts before browser launch.
+[partial] The implementation can encrypt card details to the public key carried
+in a context-bound attestation envelope, decrypt inside the delegate process,
+fill the Stripe iframe through browser automation, zero the parsed card object,
+suppress card-bearing screenshots, purge known secret-bearing browser debug
+artifacts, disable core dumps in the delegate/browser compose path, return
+bounded receipts, and cap add-balance attempts before browser launch. The
+service does not independently validate its own TDX quote, so its public
+`verified` field remains `false` even when dstack returns quote bytes.
 
 [partial] Even with those controls, the project's API and TEE process still
 process and transmit raw cardholder data before Stripe tokenization. That means
@@ -79,11 +90,12 @@ following are true:
 
 - The operator/card owner initiates the attempt and provides details out of
   band.
-- The target endpoint is a deployed attested CVM endpoint, not an unverified
-  local service.
-- The client verifies `/attestation?context=billing`, expected compose hash,
-  app ID when available, report-data key binding, public-key shape, and fetch
-  freshness before encrypting.
+- The target endpoint is a deployed CVM whose fresh quote has been validated by
+  an independent DCAP/QVL verifier, not merely an endpoint returning quote bytes.
+- The independent verifier validates quote signature and collateral/TCB status,
+  enforces the expected measurements/app/compose/OS policy, and binds the quote's
+  report data to the billing public key. The service's own `verified=false`
+  value is expected and is never upgraded based on quote presence alone.
 - `TINKER_MAX_ADD_BALANCE_USD` is set to the approved cap for the attempt.
 - Plaintext card API remains disabled.
 - Debug screenshots are off unless a non-secret step is being inspected.
@@ -92,10 +104,23 @@ following are true:
 - The public result is limited to bounded receipts: outcome class, furthest
   stage, amount/balance band, evidence hash, quote hash when present, and card
   payload destruction status.
+- Public billing errors and persisted `bounded_message` values are exact
+  `AutomationOutcome` enum codes, never Stripe/browser/page sentences.
+- Receipt evidence hashes commit only to the canonical bounded projection;
+  private sentences, URLs, selectors, card text, and timestamps cannot affect
+  the hash. Persisted receipts are rejected unless that hash recomputes exactly.
+- `GET /billing/balance` requires configured runtime or `billing:balance`
+  proxy authentication and emits only a stable band. Exact currency remains
+  inside the enclave.
+- Receipt-store failures emit only `store_failed` and never storage exceptions.
 
 This mode is for proving the system can reach the clear add-payment/add-balance
 attempt boundary. It does not authorize broad customer billing or repeated
 production top-ups.
+
+The independent quote-verifier handoff is not yet implemented in the bundled
+Python upload client. Until it is, deployed-TDX card submission remains blocked
+by the client; only the explicit local test-card path is runnable end to end.
 
 ### Production / Repeated Funding
 

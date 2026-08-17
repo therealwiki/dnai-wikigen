@@ -1,0 +1,32 @@
+{
+  "active_reviewers": [],
+  "all_guardians_required": true,
+  "approved_reviewer_hashes": [],
+  "chain_id": 84532,
+  "declaration": "both_genesis_pinned_guardians_authorize_only_this_nonoverlapping_release_scoped_status_selected_from_finite_preauthorized_reviewer_keys_for_at_most_fifteen_minutes",
+  "epoch": 1,
+  "expires_at": null,
+  "guardian_count": 2,
+  "minimum_active_reviewers": 2,
+  "not_before": null,
+  "previous_status_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "release_sha": null,
+  "reviewer_authority_genesis_sha256": null,
+  "reviewer_root_hash": null,
+  "reviewer_set_sha256": null,
+  "revoked_controller_ids": [],
+  "revoked_reviewer_addresses": [],
+  "schema": "dnai.release-reviewer-authority-current-status-signing-payload.v1",
+  "signature_scheme": "eip191_personal_sign_secp256k1_low_s_65_byte",
+  "signature_verifier": {
+    "build_profile": "maxperf",
+    "commit_sha": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2",
+    "executable_sha256": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d",
+    "executable_user_relative_path": ".foundry/bin/cast",
+    "tool": "cast wallet verify",
+    "version": "1.5.1-stable"
+  },
+  "status_guardian_root_hash": null,
+  "status_guardian_set_sha256": null,
+  "truth_status": "two_genesis_pinned_guardians_are_the_status_root_status_windows_never_overlap_and_omission_cannot_extend_the_anchored_status_past_its_bounded_expiry"
+}

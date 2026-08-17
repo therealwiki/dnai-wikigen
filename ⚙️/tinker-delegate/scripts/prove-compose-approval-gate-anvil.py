@@ -7,7 +7,8 @@ signature, or any raw private keys. It uses Anvil's unlocked default accounts
 ``submitResult`` on a funded deal whose only failing precondition is the gate:
 
 1. Gate ON, compose UNAPPROVED  -> ``submitResult`` reverts ComposeHashNotApproved.
-2. developer ``approveComposeHash(compose)``.
+2. developer proposes the compose hash, waits the fixed two-day on-chain
+   admission timelock, and activates it.
 3. Gate ON, compose APPROVED    -> the same call now passes the gate and reverts
    later on the dummy verifier signature (InvalidResultAuthorization).
 4. developer ``revokeComposeHash(compose)`` -> back to ComposeHashNotApproved.
@@ -42,7 +43,6 @@ TEE = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
 BUYER = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
 
 ARTIFACT_HASH = "0x" + "ab" * 32
-RESULT_HASH = "0x" + "cd" * 32
 COMPOSE_HASH = "0x" + "e5" * 32
 DUMMY_SIG = "0x" + "11" * 65
 
@@ -61,10 +61,14 @@ def main() -> int:
         _send(rpc_url, DEVELOPER, contract, "setComposeApprovalRequired(bool)", ["true"])
         expiry = _create_deal(rpc_url, contract)
         _fund_deal(rpc_url, contract)
-        auth_expiry = int(time.time()) + 3600
+        auth_expiry = _block_timestamp(rpc_url) + 3600
 
         unapproved = _submit_revert_reason(rpc_url, contract, auth_expiry)
-        _send(rpc_url, DEVELOPER, contract, "approveComposeHash(bytes32)", [COMPOSE_HASH])
+        _send(rpc_url, DEVELOPER, contract, "proposeComposeHash(bytes32)", [COMPOSE_HASH])
+        _run(["cast", "rpc", "evm_increaseTime", "172800", "--rpc-url", rpc_url])
+        _run(["cast", "rpc", "evm_mine", "--rpc-url", rpc_url])
+        _send(rpc_url, DEVELOPER, contract, "activateComposeHash(bytes32)", [COMPOSE_HASH])
+        auth_expiry = _block_timestamp(rpc_url) + 3600
         approved = _submit_revert_reason(rpc_url, contract, auth_expiry)
         _send(rpc_url, DEVELOPER, contract, "revokeComposeHash(bytes32)", [COMPOSE_HASH])
         revoked = _submit_revert_reason(rpc_url, contract, auth_expiry)
@@ -78,6 +82,7 @@ def main() -> int:
             "proof": "diligence_room_compose_approval_gate_anvil",
             "contract_address": contract,
             "gate_required": True,
+            "admission_timelock_seconds": 172800,
             "revert_when_unapproved": _classify(unapproved),
             "revert_when_approved": _classify(approved),
             "revert_after_revoke": _classify(revoked),
@@ -108,7 +113,7 @@ def _deploy(rpc_url: str) -> str:
 
 
 def _create_deal(rpc_url: str, contract: str) -> int:
-    expiry = int(time.time()) + 3600
+    expiry = int(time.time()) + (3 * 24 * 60 * 60)
     _send(
         rpc_url, SELLER, contract,
         "createDeal(uint256,uint256,bytes32,address)",
@@ -121,12 +126,18 @@ def _fund_deal(rpc_url: str, contract: str) -> None:
     _send(rpc_url, BUYER, contract, "fundDeal(uint256)", ["0"], value="1ether")
 
 
+def _block_timestamp(rpc_url: str) -> int:
+    block = _run_json(["cast", "block", "latest", "--rpc-url", rpc_url, "--json"])
+    value = block["timestamp"]
+    return int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+
+
 def _submit_revert_reason(rpc_url: str, contract: str, auth_expiry: int) -> str:
     """cast call submitResult from the TEE account; return the revert output."""
     args = [
         "cast", "call", contract,
-        "submitResult(uint256,uint8,uint256,bytes32,bytes32,uint256,bytes)",
-        "0", "3", "1000000000000000", RESULT_HASH, COMPOSE_HASH, str(auth_expiry), DUMMY_SIG,
+        "submitResult(uint256,uint8,uint256,bytes32,uint256,bytes)",
+        "0", "3", "1000000000000000", COMPOSE_HASH, str(auth_expiry), DUMMY_SIG,
         "--from", TEE, "--rpc-url", rpc_url,
     ]
     result = subprocess.run(

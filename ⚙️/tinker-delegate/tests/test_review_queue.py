@@ -28,6 +28,7 @@ from tinker_delegate.review_queue import (
     expire_review_tickets,
     load_review_queue,
     pending_tickets_for_role,
+    review_ticket_ref_hash,
     save_review_queue,
 )
 
@@ -249,7 +250,7 @@ class ReviewQueueTest(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "review-queue.json"
+            path = Path(tmpdir).resolve() / "review-queue.json"
             save_review_queue(path, queue)
             loaded = load_review_queue(path)
 
@@ -257,6 +258,106 @@ class ReviewQueueTest(unittest.TestCase):
         rendered = json.dumps(loaded.to_public_dict(), sort_keys=True)
         self.assertNotIn("access-officer", rendered)
         self.assertNotIn("dual-use review", rendered)
+
+    def test_authenticated_store_v2_persists_only_hashes_and_reloads_mutably(self):
+        record = _held_coordination_record()
+        queue = enqueue_handoff_tickets(
+            ReviewQueueState.empty(),
+            record.tickets,
+            opened_at=100,
+            ttl_seconds=300,
+        )
+        ticket_id = record.tickets[0].ticket_id
+        key = b"authenticated-review-store-key-32b"
+        context = "a" * 64
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir).resolve() / "review-queue.json"
+            save_review_queue(
+                path,
+                queue,
+                integrity_key=key,
+                authority_context_hash=context,
+            )
+            persisted = path.read_text(encoding="utf-8")
+            for plaintext in (
+                ticket_id,
+                "turn-1",
+                "corpus://atlas",
+                "cro-agent",
+                '"ticket_id":',
+                '"turn_id":',
+                '"corpus_ref":',
+            ):
+                self.assertNotIn(plaintext, persisted)
+
+            loaded = load_review_queue(
+                path,
+                integrity_key=key,
+                expected_authority_context_hash=context,
+            )
+            state_key, ticket = next(iter(loaded.tickets.items()))
+            self.assertEqual(state_key, review_ticket_ref_hash(ticket_id))
+            self.assertEqual((ticket.ticket_id, ticket.turn_id, ticket.corpus_ref), ("", "", ""))
+            decided = decide_review_ticket(
+                loaded,
+                state_key,
+                decision="release",
+                reviewer_ref="access-officer",
+                decided_at=120,
+                authorization_hash="b" * 64,
+                authority_context_hash=context,
+            )
+            save_review_queue(
+                path,
+                decided,
+                integrity_key=key,
+                authority_context_hash=context,
+            )
+            reloaded = load_review_queue(
+                path,
+                integrity_key=key,
+                expected_authority_context_hash=context,
+            )
+        self.assertEqual(
+            next(iter(reloaded.tickets.values())).status,
+            ReviewTicketStatus.RELEASED,
+        )
+
+    def test_authenticated_store_rejects_symlink_target_and_parent(self):
+        record = _held_coordination_record()
+        queue = enqueue_handoff_tickets(
+            ReviewQueueState.empty(), record.tickets, opened_at=100, ttl_seconds=300
+        )
+        key = b"authenticated-review-store-key-32b"
+        context = "a" * 64
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            real_parent = root / "real"
+            real_parent.mkdir(mode=0o700)
+            target = root / "target.json"
+            target.write_text("do not overwrite", encoding="utf-8")
+            linked_target = real_parent / "review.json"
+            linked_target.symlink_to(target)
+            with self.assertRaisesRegex(ReviewQueueError, "private file"):
+                save_review_queue(
+                    linked_target,
+                    queue,
+                    integrity_key=key,
+                    authority_context_hash=context,
+                )
+            self.assertEqual(target.read_text(encoding="utf-8"), "do not overwrite")
+
+            linked_parent = root / "linked-parent"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+            with self.assertRaisesRegex(ReviewQueueError, "symlink component"):
+                save_review_queue(
+                    linked_parent / "queue.json",
+                    queue,
+                    integrity_key=key,
+                    authority_context_hash=context,
+                )
 
 
 if __name__ == "__main__":

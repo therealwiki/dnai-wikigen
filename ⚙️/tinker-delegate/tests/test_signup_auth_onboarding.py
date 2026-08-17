@@ -1,9 +1,16 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from tinker_delegate.automation_receipts import AutomationStage
 from tinker_delegate.config import Settings
-from tinker_delegate.signup import AuthAccessBlockedError, _authenticate, _handle_onboarding, enter_otp
+from tinker_delegate.oracle_client import ORACLE_CALLER_IDENTITY
+from tinker_delegate.signup import (
+    AuthAccessBlockedError,
+    _authenticate,
+    _handle_onboarding,
+    enter_otp,
+    wait_for_otp,
+)
 
 
 class FakeFillable:
@@ -120,6 +127,20 @@ class FakeAuthPage:
 
 
 class SignupAuthOnboardingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_for_otp_uses_the_release_bound_caller_identity(self):
+        oracle = Mock()
+        oracle.get_pin.return_value = {"pin": "123456"}
+
+        result = await wait_for_otp(oracle, Settings())
+
+        self.assertEqual(result, "123456")
+        oracle.get_pin.assert_called_once_with(
+            max_age_seconds=Settings().otp_max_age,
+            caller_identity=ORACLE_CALLER_IDENTITY,
+            reason="tinker-passwordless-auth",
+            delete_after=True,
+        )
+
     async def test_enter_otp_fills_six_visible_boxes(self):
         page = FakeOtpPage({"input[inputmode=\"numeric\"]": 6})
 

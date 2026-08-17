@@ -1,0 +1,118 @@
+name: dnai-independent-compute-metering
+
+x-metering-image: &metering-image ${METERING_IMAGE_REPOSITORY:?set a registry image}@${METERING_IMAGE_DIGEST:?set an immutable sha256 digest}
+
+services:
+  policy-init:
+    image: *metering-image
+    user: "0:0"
+    init: true
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    network_mode: none
+    environment:
+      METERING_POLICY_SET_B64: ${METERING_POLICY_SET_B64:?inject the reviewed public immutable policy set with Phala encrypted environment variables}
+    entrypoint:
+      - /.venv/bin/python
+      - -m
+      - compute_metering.policy_bootstrap
+    volumes:
+      - type: volume
+        source: metering-policy
+        target: /run/compute-metering
+
+  state-init:
+    image: *metering-image
+    user: "0:0"
+    init: true
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    network_mode: none
+    entrypoint:
+      - /.venv/bin/python
+      - -m
+      - compute_metering.state_bootstrap
+    volumes:
+      - type: volume
+        source: metering-state
+        target: /var/lib/compute-metering-data
+
+  metering:
+    image: *metering-image
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    depends_on:
+      policy-init:
+        condition: service_completed_successfully
+      state-init:
+        condition: service_completed_successfully
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      METERING_POLICY_SET_PATH: /run/compute-metering/policy-set.json
+      METERING_STATE_PATH: /var/lib/compute-metering-data/state/replay.sqlite3
+      METERING_RPC_URL: ${METERING_RPC_URL:?inject an HTTPS Base Sepolia endpoint with Phala encrypted environment variables}
+      METERING_AUTH_TOKEN: ${METERING_AUTH_TOKEN:?inject with Phala encrypted environment variables}
+      METERING_QVL_URL: ${METERING_QVL_URL:?inject the dedicated compute-metering QVL HTTPS /verify URL}
+      METERING_QVL_AUTH_TOKEN: ${METERING_QVL_AUTH_TOKEN:?inject with Phala encrypted environment variables}
+      METERING_QVL_VERIFIER_ADDRESS: ${METERING_QVL_VERIFIER_ADDRESS:?pin the reviewed compute-metering QVL signer}
+      METERING_QVL_RELEASE_POLICY_HASH: ${METERING_QVL_RELEASE_POLICY_HASH:?pin the reviewed compute-metering QVL policy hash}
+      METERING_CVM_ID: ${METERING_CVM_ID:?pin the canonical independent metering CVM ID}
+      METERING_DEPLOYMENT_INTENT_SHA256: ${METERING_DEPLOYMENT_INTENT_SHA256:?pin the signed seven-CVM deployment intent}
+      METERING_RELEASE_AUTHORITY_SHA256: ${METERING_RELEASE_AUTHORITY_SHA256:?pin the signed seven-CVM release authority}
+      METERING_CEREMONY_NONCE: ${METERING_CEREMONY_NONCE:?pin the release ceremony nonce}
+      METERING_QVL_MEASUREMENT_POLICY_SHA256: ${METERING_QVL_MEASUREMENT_POLICY_SHA256:?pin the linked compute-metering QVL measurement policy}
+      METERING_RPC_TIMEOUT_SECONDS: ${METERING_RPC_TIMEOUT_SECONDS:-8}
+      METERING_MAX_CONCURRENCY: ${METERING_MAX_CONCURRENCY:-4}
+      METERING_RATE_CAPACITY: ${METERING_RATE_CAPACITY:-30}
+      METERING_RATE_REFILL_PER_SECOND: ${METERING_RATE_REFILL_PER_SECOND:-0.5}
+      METERING_REQUEST_BODY_TIMEOUT_SECONDS: ${METERING_REQUEST_BODY_TIMEOUT_SECONDS:-5}
+    volumes:
+      - type: volume
+        source: metering-policy
+        target: /run/compute-metering
+        read_only: true
+      - type: volume
+        source: metering-state
+        target: /var/lib/compute-metering-data
+      - type: bind
+        source: /var/run/dstack.sock
+        target: /var/run/dstack.sock
+        read_only: true
+    ports:
+      - "8443:8443"
+    networks:
+      - metering-egress
+    healthcheck:
+      test: ["CMD", "/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8443/health', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  metering-policy:
+  metering-state:
+
+networks:
+  metering-egress:
+    driver: bridge

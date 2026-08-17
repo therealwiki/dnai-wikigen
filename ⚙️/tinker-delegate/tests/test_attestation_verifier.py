@@ -26,6 +26,52 @@ def _tdx_attestation() -> dict:
 
 
 class AttestationVerifierTest(unittest.TestCase):
+    def test_rejects_service_evidence_without_independent_verification_verdict(self):
+        attestation = _tdx_attestation()
+        attestation["verified"] = False
+
+        with self.assertRaisesRegex(
+            AttestationVerificationError,
+            "cryptographic attestation verdict is unavailable",
+        ):
+            verify_attestation_envelope(
+                attestation,
+                AttestationPolicy(expected_compose_hash="compose-ok"),
+            )
+
+    def test_simulator_evidence_cannot_pass_a_production_policy(self):
+        attestation = _tdx_attestation()
+        attestation["mode"] = "simulator"
+        # Even a malicious/self-asserted flag cannot upgrade modeled evidence.
+        attestation["verified"] = True
+
+        with self.assertRaisesRegex(
+            AttestationVerificationError,
+            "attestation mode must be tdx",
+        ):
+            verify_attestation_envelope(
+                attestation,
+                AttestationPolicy(expected_compose_hash="compose-ok"),
+            )
+
+    def test_rejects_forbidden_or_unexpected_public_fields(self):
+        attestation = _tdx_attestation()
+        sentinel = "sentinel-runtime-auth-secret"
+        attestation["tcb_info"] = {
+            "app_compose": {
+                "docker_compose_file": f"TINKER_RUNTIME_AUTH_TOKEN={sentinel}",
+            },
+        }
+
+        with self.assertRaisesRegex(
+            AttestationVerificationError,
+            "forbidden or unexpected fields: tcb_info",
+        ):
+            verify_attestation_envelope(
+                attestation,
+                AttestationPolicy(expected_compose_hash="compose-ok"),
+            )
+
     def test_tdx_requires_expected_compose_hash(self):
         with self.assertRaisesRegex(AttestationVerificationError, "expected compose hash"):
             verify_attestation_envelope(_tdx_attestation(), AttestationPolicy())

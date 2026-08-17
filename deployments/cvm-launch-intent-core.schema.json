@@ -1,0 +1,2804 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wikigen.me/schemas/cvm-launch-intent-core.v3.json",
+  "title": "dnai-wikigen pre-Phala CVM launch intent core",
+  "description": "Secret-value-free reviewed launch gate created only after the fresh Base Sepolia suite and before any Phala CVM provision or commit. Version 3 binds an exact seven-CVM topology plus fail-closed public-value, AppCompose candidate, resource-target, API-origin, workspace-target, logging, compose-hash, and sealed production-execution policies; it is not runtime-value authority or deployment evidence. The contract receipt digest excludes renewable review and CVM history. Descriptor SHA-256 fields bind raw files and are not platform-observed compose hashes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "truth_status",
+    "release_sha",
+    "network",
+    "deployment_intent_sha256",
+    "contract_deployment_receipt_sha256",
+    "topology_sha256",
+    "image_release_manifest_sha256",
+    "image_attestation_bundle_sha256",
+    "sealed_production_execution_policy",
+    "dynamic_runtime_authorities",
+    "descriptors",
+    "compose_hash_authority",
+    "phala_control_plane_authority",
+    "phala_sdk_debug_secret_logging_policy",
+    "phala_workspace_account_target_authority",
+    "phala_cloud_sdk_wire_transform_authority",
+    "phala_provision_request_authority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dnai.cvm-launch-intent-core.v3"
+    },
+    "truth_status": {
+      "const": "value_free_pre_phala_launch_gate_specification_not_runtime_value_authority_cvm_deployment_tdx_quote_or_runtime_measurement"
+    },
+    "release_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "not": {
+        "const": "0000000000000000000000000000000000000000"
+      }
+    },
+    "network": {
+      "type": "object",
+      "const": {
+        "chain_id": 84532,
+        "name": "base-sepolia"
+      },
+      "additionalProperties": false
+    },
+    "deployment_intent_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "contract_deployment_receipt_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "topology_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "image_release_manifest_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "image_attestation_bundle_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": {
+        "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "sealed_production_execution_policy": {
+      "type": "object",
+      "const": {
+        "schema": "dnai.phala-production-execution-policy.v1",
+        "availability": true,
+        "reason_code": null,
+        "blocker_codes": [],
+        "caller_supplied_callbacks_accepted": false,
+        "caller_supplied_clients_accepted": false,
+        "manual_cli_or_sdk_bypass_authorized": false
+      },
+      "additionalProperties": false
+    },
+    "dynamic_runtime_authorities": {
+      "type": "object",
+      "const": {
+        "endpoint_origins": [],
+        "os_image_hashes": [],
+        "phala_app_ids": [],
+        "phala_cvm_ids": [],
+        "platform_compose_hashes": [],
+        "qvl_release_policy_hashes": [],
+        "tee_identities": [],
+        "verifier_addresses": []
+      },
+      "additionalProperties": false
+    },
+    "descriptors": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "main_runtime_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-main-runtime.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.large",
+                  "disk_size": 40,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [
+                  "delegate",
+                  "diligence-policy-init",
+                  "neko",
+                  "oracle",
+                  "tinker-customer-authority-init"
+                ],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "anchor-writer-ceremony",
+                  "arena-runtime",
+                  "collaboration-execution",
+                  "compute-execution",
+                  "deal-settlement",
+                  "mailbox-genesis",
+                  "review-operations",
+                  "tinker-account-genesis"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [
+                  "ORACLE_DOMAIN",
+                  "ORACLE_USE_BROWSER_FALLBACK",
+                  "TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH",
+                  "TINKER_ARENA_CANDIDATE_INGRESS_MAX_ENVELOPES",
+                  "TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH",
+                  "TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS",
+                  "TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS",
+                  "TINKER_ARENA_STORE_PATH",
+                  "TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS",
+                  "TINKER_ARENA_WALLET_AUTH_KEY_PATH",
+                  "TINKER_ARENA_WALLET_AUTH_MAX_PENDING_CHALLENGES",
+                  "TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS",
+                  "TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH",
+                  "TINKER_ARENA_WORKER_HEARTBEAT_TTL_SECONDS",
+                  "TINKER_ARENA_WORKER_POLL_INTERVAL_SECONDS",
+                  "TINKER_BOOTSTRAP_ORACLE_POLL_INTERVAL",
+                  "TINKER_BOOTSTRAP_ORACLE_TIMEOUT",
+                  "TINKER_BROWSER_SESSION_KEY_PATH",
+                  "TINKER_CHAIN_CONFIRMATIONS",
+                  "TINKER_CHAIN_POLL_INTERVAL",
+                  "TINKER_CHAIN_RESULT_AUTHORIZATION_TTL_SECONDS",
+                  "TINKER_COMPUTE_CREDENTIAL_KEY_PATH",
+                  "TINKER_COMPUTE_DISPATCH_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COMPUTE_DISPATCH_STORE_PATH",
+                  "TINKER_COMPUTE_EXECUTION_CONFIRMATIONS",
+                  "TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS",
+                  "TINKER_COMPUTE_EXECUTION_MAX_FUTURE_BLOCK_SKEW_SECONDS",
+                  "TINKER_COMPUTE_EXECUTION_POLL_INTERVAL_SECONDS",
+                  "TINKER_COMPUTE_EXECUTION_SIGNER_KEY_PATH",
+                  "TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COMPUTE_STORE_PATH",
+                  "TINKER_COMPUTE_WALLET_AUTH_KEY_PATH",
+                  "TINKER_DSTACK_KEY_PATH",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_MAX_VERDICT_AGE_SECONDS",
+                  "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_EXECUTION_POLICY_STORE_PATH",
+                  "TINKER_FIRST_NAME",
+                  "TINKER_FUNDING_MODE",
+                  "TINKER_FUNDING_RECEIPT_KEY_PATH",
+                  "TINKER_LAST_NAME",
+                  "TINKER_MAX_ADD_BALANCE_USD",
+                  "TINKER_MIN_ADD_BALANCE_USD",
+                  "TINKER_ORACLE_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_AUTHORITY_CHALLENGE_TTL_SECONDS",
+                  "TINKER_REVIEW_AUTHORITY_MAX_PENDING_CHALLENGES",
+                  "TINKER_REVIEW_OPERATIONS_MAXIMUM_NOTIFICATIONS_PER_TICK",
+                  "TINKER_REVIEW_OPERATIONS_MAXIMUM_QUEUE_PAGES",
+                  "TINKER_REVIEW_OPERATIONS_POLL_INTERVAL_SECONDS",
+                  "TINKER_REVIEW_OPERATIONS_REQUEST_TIMEOUT_SECONDS",
+                  "TINKER_REVIEW_QUEUE_PATH",
+                  "TINKER_REVIEW_QUEUE_READ_LIMIT_WINDOW_SECONDS",
+                  "TINKER_REVIEW_QUEUE_READ_MAX_PEERS",
+                  "TINKER_REVIEW_QUEUE_READ_PEER_LIMIT",
+                  "TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_REVIEW_TICKET_TTL_SECONDS",
+                  "TINKER_RUNTIME_AUTH_KEY_PATH",
+                  "TINKER_RUNTIME_AUTH_TOKEN",
+                  "TINKER_RUN_METADATA_KEY_PATH",
+                  "TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT",
+                  "TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER",
+                  "TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT",
+                  "TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS",
+                  "TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT",
+                  "TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS",
+                  "TINKER_WALLET_AUTH_KEY_PATH",
+                  "TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES",
+                  "TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES",
+                  "TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS"
+                ],
+                "descriptor_static_keys": [
+                  "DSTACK_ENABLED",
+                  "DSTACK_SIMULATOR_ENDPOINT",
+                  "EMAIL_ORACLE_AUTH_ADDRESS",
+                  "EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH",
+                  "ORACLE_REVIEW_NOTIFICATION_CALLER_IDENTITY",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_KEY",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_PATH",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_PORT",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_TIMEOUT_SECONDS",
+                  "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED",
+                  "TINKER_ARENA_PROVISION_EVALUATOR_SHA256",
+                  "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_ARENA_STORE_INTEGRITY_KEY",
+                  "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_ARENA_WORKER_IMAGE_DIGEST",
+                  "TINKER_ARENA_WORKER_RELEASE_SHA",
+                  "TINKER_CHAIN_CONTRACT_ADDRESS",
+                  "TINKER_CHAIN_START_BLOCK",
+                  "TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_POLL_INTERVAL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH",
+                  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_STORE_PATH",
+                  "TINKER_COLLABORATION_WALLET_AUTH_AUDIENCE",
+                  "TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS",
+                  "TINKER_COLLABORATION_WALLET_AUTH_ISSUER",
+                  "TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH",
+                  "TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES",
+                  "TINKER_COLLABORATION_WALLET_AUTH_SIGNING_KEY",
+                  "TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS",
+                  "TINKER_COMPUTE_VAULT_ADDRESS",
+                  "TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH",
+                  "TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE",
+                  "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+                  "TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON",
+                  "TINKER_CORS_ALLOWED_ORIGINS",
+                  "TINKER_CUSTOMER_AUTHORITY_PATH",
+                  "TINKER_CUSTOMER_CREDENTIAL_KEY_PATH",
+                  "TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY",
+                  "TINKER_CUSTOMER_SETTLEMENT_KEY_PATH",
+                  "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+                  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY",
+                  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_CUSTOMER_STORE_PATH",
+                  "TINKER_DILIGENCE_CHAIN_ID",
+                  "TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT",
+                  "TINKER_DILIGENCE_EVALUATOR_RELEASE_B64",
+                  "TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH",
+                  "TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256",
+                  "TINKER_DILIGENCE_ROOM_ADDRESS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                  "TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN",
+                  "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS",
+                  "TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH",
+                  "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY",
+                  "TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+                  "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+                  "TINKER_REVIEW_OPERATIONS_DELEGATE_URL",
+                  "TINKER_REVIEW_OPERATIONS_ENABLED",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_TOKEN",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_URL",
+                  "TINKER_REVIEW_OPERATIONS_PRODUCTION_RELEASE",
+                  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_TOKEN",
+                  "TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS",
+                  "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
+                  "TINKER_WALLET_AUTH_CHAIN_ID",
+                  "TINKER_WALLET_AUTH_DOMAIN",
+                  "TINKER_WALLET_AUTH_URI"
+                ],
+                "provisioning_result_keys": [
+                  "EMAIL_ORACLE_CONSUMER_APP_ID",
+                  "EMAIL_ORACLE_CONSUMER_COMPOSE_HASH",
+                  "TINKER_ARENA_WORKER_APP_ID",
+                  "TINKER_ARENA_WORKER_COMPOSE_HASH",
+                  "TINKER_ARENA_WORKER_OS_IMAGE_HASH",
+                  "TINKER_COMPUTE_VAULT_COMPOSE_HASH",
+                  "TINKER_COMPUTE_WORKLOAD_CVM_ID",
+                  "TINKER_DILIGENCE_ALLOWED_APP_ID",
+                  "TINKER_DILIGENCE_ALLOWED_COMPOSE_HASH",
+                  "TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH"
+                ],
+                "post_measurement_deferred_keys": [
+                  "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+                  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+                  "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+                  "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+                  "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_ARENA_REGISTRY_ADDRESS",
+                  "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
+                  "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
+                  "TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH",
+                  "TINKER_ARENA_WORKER_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_ARENA_WORKER_QVL_VERDICT_URL",
+                  "TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256",
+                  "TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT",
+                  "TINKER_COLLABORATION_ENABLED",
+                  "TINKER_COLLABORATION_EXECUTION_ENABLED",
+                  "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+                  "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+                  "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+                  "TINKER_COMPUTE_METERING_POLICY_SET_HASH",
+                  "TINKER_COMPUTE_METERING_URL",
+                  "TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_URL",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
+                  "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+                  "TINKER_CUSTOMER_AUTHORITY_SHA256",
+                  "TINKER_CUSTOMER_ENABLED",
+                  "TINKER_DILIGENCE_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_DILIGENCE_QVL_URL",
+                  "TINKER_DILIGENCE_QVL_VERIFIER_ADDRESS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS",
+                  "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                  "TINKER_ROYALTY_AUTHORITY_NONCE",
+                  "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+                  "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+                  "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+                  "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_ROYALTY_OWNER_ADDRESS",
+                  "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+                  "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+                  "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+                  "TINKER_ROYALTY_QVL_VERIFIER",
+                  "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+                  "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+                  "TINKER_ROYALTY_SETTLEMENT_VERIFIER"
+                ],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [
+                  "BASE_SEPOLIA_RPC_URL",
+                  "BASE_SEPOLIA_RPC_URL_SECONDARY",
+                  "NEKO_PASSWORD",
+                  "NEKO_PASSWORD_ADMIN",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+                  "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
+                  "TINKER_WALLET_AUTH_RPC_URL",
+                  "TINKER_WALLET_AUTH_RPC_URL_SECONDARY"
+                ],
+                "post_measurement_policy_bootstrap": [
+                  "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+                  "TINKER_ACCOUNT_BINDING_SHARE_TWO"
+                ],
+                "final_authority_runtime": [
+                  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
+                  "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
+                  "TINKER_ARENA_PROVISION_AUTH_TAG",
+                  "TINKER_ARENA_PROVISION_EVALUATOR_B64",
+                  "TINKER_ARENA_PROVISION_RELEASE_B64",
+                  "TINKER_ARENA_REGISTRY_RPC_URL",
+                  "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN",
+                  "TINKER_CHAIN_RPC_URL",
+                  "TINKER_COMPUTE_CHAIN_RPC_URL",
+                  "TINKER_COMPUTE_METERING_AUTH_TOKEN",
+                  "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+                  "TINKER_CUSTOMER_AUTHORITY_B64",
+                  "TINKER_DILIGENCE_QVL_AUTH_TOKEN",
+                  "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+                  "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN"
+                ],
+                "anchor_writer_ceremony": [
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "BASE_SEPOLIA_RPC_URL",
+                "BASE_SEPOLIA_RPC_URL_SECONDARY",
+                "COMPOSE_PROFILES",
+                "EMAIL_ORACLE_AUTH_ADDRESS",
+                "EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH",
+                "EMAIL_ORACLE_CONSUMER_APP_ID",
+                "EMAIL_ORACLE_CONSUMER_COMPOSE_HASH",
+                "NEKO_PASSWORD",
+                "NEKO_PASSWORD_ADMIN",
+                "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+                "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
+                "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+                "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+                "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+                "TINKER_ACCOUNT_BINDING_SHARE_TWO",
+                "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+                "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+                "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
+                "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
+                "TINKER_ARENA_PROVISION_AUTH_TAG",
+                "TINKER_ARENA_PROVISION_EVALUATOR_B64",
+                "TINKER_ARENA_PROVISION_EVALUATOR_SHA256",
+                "TINKER_ARENA_PROVISION_RELEASE_B64",
+                "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256",
+                "TINKER_ARENA_REGISTRY_ADDRESS",
+                "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
+                "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
+                "TINKER_ARENA_REGISTRY_RPC_URL",
+                "TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH",
+                "TINKER_ARENA_WORKER_APP_ID",
+                "TINKER_ARENA_WORKER_COMPOSE_HASH",
+                "TINKER_ARENA_WORKER_IMAGE_DIGEST",
+                "TINKER_ARENA_WORKER_OS_IMAGE_HASH",
+                "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN",
+                "TINKER_ARENA_WORKER_QVL_RELEASE_POLICY_HASH",
+                "TINKER_ARENA_WORKER_QVL_VERDICT_URL",
+                "TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256",
+                "TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT",
+                "TINKER_ARENA_WORKER_RELEASE_SHA",
+                "TINKER_CHAIN_CONTRACT_ADDRESS",
+                "TINKER_CHAIN_RPC_URL",
+                "TINKER_CHAIN_START_BLOCK",
+                "TINKER_COLLABORATION_ENABLED",
+                "TINKER_COLLABORATION_EXECUTION_ENABLED",
+                "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+                "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+                "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+                "TINKER_COMPUTE_CHAIN_RPC_URL",
+                "TINKER_COMPUTE_METERING_AUTH_TOKEN",
+                "TINKER_COMPUTE_METERING_POLICY_SET_HASH",
+                "TINKER_COMPUTE_METERING_URL",
+                "TINKER_COMPUTE_VAULT_ADDRESS",
+                "TINKER_COMPUTE_VAULT_COMPOSE_HASH",
+                "TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH",
+                "TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE",
+                "TINKER_COMPUTE_WORKLOAD_CVM_ID",
+                "TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+                "TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS",
+                "TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH",
+                "TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON",
+                "TINKER_COMPUTE_WORKLOAD_QVL_URL",
+                "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
+                "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+                "TINKER_CORS_ALLOWED_ORIGINS",
+                "TINKER_CUSTOMER_AUTHORITY_B64",
+                "TINKER_CUSTOMER_AUTHORITY_SHA256",
+                "TINKER_CUSTOMER_ENABLED",
+                "TINKER_DILIGENCE_ALLOWED_APP_ID",
+                "TINKER_DILIGENCE_ALLOWED_COMPOSE_HASH",
+                "TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH",
+                "TINKER_DILIGENCE_CHAIN_ID",
+                "TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT",
+                "TINKER_DILIGENCE_EVALUATOR_RELEASE_B64",
+                "TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_PATH",
+                "TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256",
+                "TINKER_DILIGENCE_QVL_AUTH_TOKEN",
+                "TINKER_DILIGENCE_QVL_RELEASE_POLICY_HASH",
+                "TINKER_DILIGENCE_QVL_URL",
+                "TINKER_DILIGENCE_QVL_VERIFIER_ADDRESS",
+                "TINKER_DILIGENCE_ROOM_ADDRESS",
+                "TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS",
+                "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+                "TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS",
+                "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                "TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN",
+                "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS",
+                "TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH",
+                "TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+                "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
+                "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+                "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                "TINKER_ROYALTY_AUTHORITY_NONCE",
+                "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+                "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+                "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+                "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+                "TINKER_ROYALTY_OWNER_ADDRESS",
+                "TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS",
+                "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+                "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+                "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
+                "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+                "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+                "TINKER_ROYALTY_QVL_VERIFIER",
+                "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+                "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN",
+                "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+                "TINKER_ROYALTY_SETTLEMENT_VERIFIER",
+                "TINKER_WALLET_AUTH_RPC_URL",
+                "TINKER_WALLET_AUTH_RPC_URL_SECONDARY"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 38,
+                  "key_names_sha256": "sha256:2852a81256ae93cbc88f53d8db3613720f29bc02007bf89589d1471ebd36e78b",
+                  "authority_status": "required_not_implemented",
+                  "source_authority_refs": [
+                    "contract_deployment_receipt_sha256",
+                    "deployment_intent_sha256",
+                    "image_release_manifest_sha256",
+                    "release_sha",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call",
+                    "bootstrap_service_start"
+                  ]
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 129,
+                  "key_names_sha256": "sha256:30300fdedbc6cf93404d20118404be79dd30b0746104ab7115477e427df13b4b",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 10,
+                  "key_names_sha256": "sha256:dccd665ec4a511180e3653291aa85957f9e9c0f0ccb1632a006d78f91b04a9f4",
+                  "authority_status": "required_derive_and_exactly_validate_from_prepare_not_operator_input",
+                  "source_authority_refs": [
+                    "pinned_sdk.nextAppIds",
+                    "pinned_sdk.provisionCvm"
+                  ],
+                  "required_checkpoint": "after_all_seven_prepare_before_first_commit",
+                  "required_before": [
+                    "first_phala_cvm_commit"
+                  ]
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 51,
+                  "key_names_sha256": "sha256:cba9d5b60a69fe9487a4c0c8924be7a3b4a0de3b21d9a425ff651e11d6c40b85",
+                  "authority_status": "required_not_implemented",
+                  "source_authority_refs": [
+                    "stage_specific_measured_cvm_authority_artifact",
+                    "stage_2_live_activation_authority_when_required_by_phase"
+                  ],
+                  "required_checkpoint": "stage_specific_after_measurement_before_environment_update_or_service_start",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-main-runtime"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4"
+                },
+                "allowed_envs_count": {
+                  "const": 126
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "diligence_qvl_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-diligence-qvl.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "qvl-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "QVL_CHALLENGE_CAPACITY",
+                  "QVL_CHALLENGE_TTL_SECONDS",
+                  "QVL_MAX_CONCURRENCY",
+                  "QVL_RATE_CAPACITY",
+                  "QVL_RATE_REFILL_PER_SECOND",
+                  "QVL_REQUEST_BODY_TIMEOUT_SECONDS",
+                  "QVL_VERIFICATION_TIMEOUT_SECONDS"
+                ],
+                "provisioning_result_keys": [],
+                "post_measurement_deferred_keys": [],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "QVL_AUTH_TOKEN",
+                  "QVL_RELEASE_POLICY_B64"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "QVL_AUTH_TOKEN",
+                "QVL_RELEASE_POLICY_B64"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 7,
+                  "key_names_sha256": "sha256:f5aa8bcce1bebd56d84ee24cbb7855bf9a5be9789bc29c42da65f9f4d04f3ae4",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-diligence-attestation-qvl"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+                },
+                "allowed_envs_count": {
+                  "const": 3
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "arena_qvl_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-arena-qvl.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "qvl-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "QVL_CHALLENGE_CAPACITY",
+                  "QVL_CHALLENGE_TTL_SECONDS",
+                  "QVL_MAX_CONCURRENCY",
+                  "QVL_RATE_CAPACITY",
+                  "QVL_RATE_REFILL_PER_SECOND",
+                  "QVL_REQUEST_BODY_TIMEOUT_SECONDS",
+                  "QVL_VERIFICATION_TIMEOUT_SECONDS"
+                ],
+                "provisioning_result_keys": [],
+                "post_measurement_deferred_keys": [],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "QVL_AUTH_TOKEN",
+                  "QVL_RELEASE_POLICY_B64"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "QVL_AUTH_TOKEN",
+                "QVL_RELEASE_POLICY_B64"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 7,
+                  "key_names_sha256": "sha256:f5aa8bcce1bebd56d84ee24cbb7855bf9a5be9789bc29c42da65f9f4d04f3ae4",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-arena-attestation-qvl"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+                },
+                "allowed_envs_count": {
+                  "const": 3
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "anchor_writer_qvl_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-anchor-writer-qvl.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "qvl-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "QVL_CHALLENGE_CAPACITY",
+                  "QVL_CHALLENGE_TTL_SECONDS",
+                  "QVL_MAX_CONCURRENCY",
+                  "QVL_RATE_CAPACITY",
+                  "QVL_RATE_REFILL_PER_SECOND",
+                  "QVL_REQUEST_BODY_TIMEOUT_SECONDS",
+                  "QVL_VERIFICATION_TIMEOUT_SECONDS"
+                ],
+                "provisioning_result_keys": [],
+                "post_measurement_deferred_keys": [],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "QVL_AUTH_TOKEN",
+                  "QVL_RELEASE_POLICY_B64"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "QVL_AUTH_TOKEN",
+                "QVL_RELEASE_POLICY_B64"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 7,
+                  "key_names_sha256": "sha256:f5aa8bcce1bebd56d84ee24cbb7855bf9a5be9789bc29c42da65f9f4d04f3ae4",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-anchor-writer-attestation-qvl"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+                },
+                "allowed_envs_count": {
+                  "const": 3
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "compute_workload_qvl_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-compute-workload-qvl.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "qvl-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "QVL_CHALLENGE_CAPACITY",
+                  "QVL_CHALLENGE_TTL_SECONDS",
+                  "QVL_MAX_CONCURRENCY",
+                  "QVL_RATE_CAPACITY",
+                  "QVL_RATE_REFILL_PER_SECOND",
+                  "QVL_REQUEST_BODY_TIMEOUT_SECONDS",
+                  "QVL_VERIFICATION_TIMEOUT_SECONDS"
+                ],
+                "provisioning_result_keys": [],
+                "post_measurement_deferred_keys": [],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "QVL_AUTH_TOKEN",
+                  "QVL_RELEASE_POLICY_B64"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "QVL_AUTH_TOKEN",
+                "QVL_RELEASE_POLICY_B64"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 7,
+                  "key_names_sha256": "sha256:f5aa8bcce1bebd56d84ee24cbb7855bf9a5be9789bc29c42da65f9f4d04f3ae4",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-compute-workload-attestation-qvl"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+                },
+                "allowed_envs_count": {
+                  "const": 3
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "compute_metering_qvl_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-compute-metering-qvl.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "qvl-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "QVL_CHALLENGE_CAPACITY",
+                  "QVL_CHALLENGE_TTL_SECONDS",
+                  "QVL_MAX_CONCURRENCY",
+                  "QVL_RATE_CAPACITY",
+                  "QVL_RATE_REFILL_PER_SECOND",
+                  "QVL_REQUEST_BODY_TIMEOUT_SECONDS",
+                  "QVL_VERIFICATION_TIMEOUT_SECONDS"
+                ],
+                "provisioning_result_keys": [],
+                "post_measurement_deferred_keys": [],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "QVL_AUTH_TOKEN",
+                  "QVL_RELEASE_POLICY_B64"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "QVL_AUTH_TOKEN",
+                "QVL_RELEASE_POLICY_B64"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 7,
+                  "key_names_sha256": "sha256:f5aa8bcce1bebd56d84ee24cbb7855bf9a5be9789bc29c42da65f9f4d04f3ae4",
+                  "authority_status": "descriptor_bytes_bound_not_injectable",
+                  "source_authority_refs": [
+                    "deployment_intent_sha256",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "descriptor_hash_validation_before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call"
+                  ]
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-compute-metering-attestation-qvl"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5"
+                },
+                "allowed_envs_count": {
+                  "const": 3
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trust_domain",
+            "descriptor_file",
+            "descriptor_sha256",
+            "descriptor_hash_semantics",
+            "launch_settings",
+            "public_environment_key_classification",
+            "public_environment_value_authority",
+            "encrypted_secret_environment_keys_by_phase",
+            "exact_allowed_environment_keys",
+            "exact_allowed_environment_keys_sha256",
+            "app_compose_candidate"
+          ],
+          "properties": {
+            "trust_domain": {
+              "const": "independent_metering_cvm"
+            },
+            "descriptor_file": {
+              "const": "dnai-independent-metering.phala.yaml"
+            },
+            "descriptor_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "not": {
+                "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "descriptor_hash_semantics": {
+              "const": "raw_descriptor_bytes_sha256_not_phala_compose_hash"
+            },
+            "launch_settings": {
+              "type": "object",
+              "const": {
+                "platform": "phala_cloud",
+                "phala_cli_version": "v1.1.19+d2300dd",
+                "phala_cloud_sdk_version": "0.2.10",
+                "phala_os_image": "dstack-0.5.10",
+                "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                "phala_os_image_catalog_entry": {
+                  "name": "dstack-0.5.10",
+                  "slug": "dstack-0.5.10-4c9bd024",
+                  "version": "0.5.10",
+                  "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+                  "is_dev": false,
+                  "requires_gpu": false
+                },
+                "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
+                "cvm_resource_target": {
+                  "authority_status": "reviewed_target_pending_authenticated_catalog_and_quota_probe",
+                  "instance_type": "tdx.small",
+                  "disk_size": 20,
+                  "placement": {
+                    "selection_mode": "automatic_best_match",
+                    "node_id": null,
+                    "region": null
+                  }
+                },
+                "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
+                "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
+                "fresh_cvm_required": true,
+                "fresh_cli_deploy_forbidden": true,
+                "provisioning_api": "provisionCvm_validate_all_seven_then_commitCvmProvision",
+                "deployment_flags": {
+                  "no_dev_os": true,
+                  "no_listed": true,
+                  "no_public_logs": true,
+                  "no_public_sysinfo": true
+                },
+                "post_create_assertions": {
+                  "listed": false,
+                  "os_is_dev": false,
+                  "public_logs": false,
+                  "public_sysinfo": false,
+                  "public_tcbinfo": false
+                },
+                "environment_update_policy": "encrypted_exact_allowed_keys_only",
+                "initial_phase": "bootstrap_provision",
+                "initial_services": [],
+                "initially_enabled_profiles": [],
+                "initially_disabled_profiles": [
+                  "metering-runtime"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "public_environment_key_classification": {
+              "type": "object",
+              "const": {
+                "descriptor_defaulted_keys": [],
+                "descriptor_static_keys": [
+                  "METERING_CEREMONY_NONCE",
+                  "METERING_DEPLOYMENT_INTENT_SHA256",
+                  "METERING_QVL_MEASUREMENT_POLICY_SHA256"
+                ],
+                "provisioning_result_keys": [
+                  "METERING_CVM_ID"
+                ],
+                "post_measurement_deferred_keys": [
+                  "METERING_QVL_RELEASE_POLICY_HASH",
+                  "METERING_QVL_URL",
+                  "METERING_QVL_VERIFIER_ADDRESS",
+                  "METERING_RELEASE_AUTHORITY_SHA256"
+                ],
+                "post_measurement_phase_control_keys": [
+                  "COMPOSE_PROFILES"
+                ]
+              },
+              "additionalProperties": false
+            },
+            "encrypted_secret_environment_keys_by_phase": {
+              "type": "object",
+              "const": {
+                "bootstrap_provision": [],
+                "post_measurement_policy_bootstrap": [
+                  "METERING_AUTH_TOKEN",
+                  "METERING_POLICY_SET_B64",
+                  "METERING_QVL_AUTH_TOKEN",
+                  "METERING_RPC_URL"
+                ],
+                "final_authority_runtime": [],
+                "anchor_writer_ceremony": []
+              },
+              "additionalProperties": false
+            },
+            "exact_allowed_environment_keys": {
+              "type": "array",
+              "const": [
+                "COMPOSE_PROFILES",
+                "METERING_AUTH_TOKEN",
+                "METERING_CEREMONY_NONCE",
+                "METERING_CVM_ID",
+                "METERING_DEPLOYMENT_INTENT_SHA256",
+                "METERING_POLICY_SET_B64",
+                "METERING_QVL_AUTH_TOKEN",
+                "METERING_QVL_MEASUREMENT_POLICY_SHA256",
+                "METERING_QVL_RELEASE_POLICY_HASH",
+                "METERING_QVL_URL",
+                "METERING_QVL_VERIFIER_ADDRESS",
+                "METERING_RELEASE_AUTHORITY_SHA256",
+                "METERING_RPC_URL"
+              ]
+            },
+            "exact_allowed_environment_keys_sha256": {
+              "type": "string",
+              "const": "sha256:669978f98627994d7b751d061bb4f0022595efafd40fdd81836099ab5b14453b"
+            },
+            "public_environment_value_authority": {
+              "type": "object",
+              "const": {
+                "truth_status": "value_free_gate_specification_not_runtime_value_authority",
+                "projector_schema": "dnai.cvm-public-environment-value-projector.v1",
+                "values_present": false,
+                "values_validated": false,
+                "bootstrap_static": {
+                  "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
+                  "key_count": 3,
+                  "key_names_sha256": "sha256:c0216fe9a9e8b3e5f3f50ce88b508e8a4fc76e63603fc48a138d6d7b08507fc6",
+                  "authority_status": "required_not_implemented",
+                  "source_authority_refs": [
+                    "contract_deployment_receipt_sha256",
+                    "deployment_intent_sha256",
+                    "image_release_manifest_sha256",
+                    "release_sha",
+                    "topology_sha256"
+                  ],
+                  "required_checkpoint": "before_any_phala_sdk_call",
+                  "required_before": [
+                    "any_phala_sdk_call",
+                    "bootstrap_service_start"
+                  ]
+                },
+                "descriptor_embedded_static": {
+                  "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
+                  "key_count": 0,
+                  "key_names_sha256": "sha256:e545656d61639d7d2a32168bc99b32b6766726be3e1e5ab15568ebb95e896557",
+                  "authority_status": "not_required_no_keys",
+                  "source_authority_refs": [],
+                  "required_checkpoint": "not_required",
+                  "required_before": []
+                },
+                "provisioning_results": {
+                  "keys_source": "classification.provisioning_result_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:d534750192685422aec329d30bd88fbb0f971ca621c5fa28eee3908efed5de3c",
+                  "authority_status": "required_derive_and_exactly_validate_from_prepare_not_operator_input",
+                  "source_authority_refs": [
+                    "pinned_sdk.nextAppIds",
+                    "pinned_sdk.provisionCvm"
+                  ],
+                  "required_checkpoint": "after_all_seven_prepare_before_first_commit",
+                  "required_before": [
+                    "first_phala_cvm_commit"
+                  ]
+                },
+                "post_measurement_deferred": {
+                  "keys_source": "classification.post_measurement_deferred_keys",
+                  "key_count": 4,
+                  "key_names_sha256": "sha256:29ccaa2a05bbea0bf5b5c5b741f57632493885c7dd128884b23485de36dfc5b8",
+                  "authority_status": "required_not_implemented",
+                  "source_authority_refs": [
+                    "stage_specific_measured_cvm_authority_artifact",
+                    "stage_2_live_activation_authority_when_required_by_phase"
+                  ],
+                  "required_checkpoint": "stage_specific_after_measurement_before_environment_update_or_service_start",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                },
+                "phase_control": {
+                  "keys_source": "classification.post_measurement_phase_control_keys",
+                  "key_count": 1,
+                  "key_names_sha256": "sha256:00a94ebfd7b8338acc307b40058a634764246840dfffa45c0c3b994b2cb2e2d8",
+                  "authority_status": "policy_derived_exact_value_not_operator_free_form",
+                  "source_authority_refs": [
+                    "launch_settings.initially_disabled_profiles",
+                    "public_environment_key_classification.post_measurement_phase_control_keys"
+                  ],
+                  "required_checkpoint": "same_stage_as_target_profile_value_projection",
+                  "required_before": [
+                    "encrypted_environment_update",
+                    "profile_activation",
+                    "service_start"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_compose_candidate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authority_status",
+                "name",
+                "manifest_version",
+                "runner",
+                "kms_enabled",
+                "gateway_enabled",
+                "secure_time",
+                "storage_fs",
+                "public_logs",
+                "public_sysinfo",
+                "public_tcbinfo",
+                "allowed_envs_source",
+                "allowed_envs_sha256",
+                "allowed_envs_count",
+                "docker_compose_file_sha256",
+                "docker_compose_file_byte_length",
+                "expected_compose_hash",
+                "tproxy_enabled",
+                "provision_wire_transform_source"
+              ],
+              "properties": {
+                "authority_status": {
+                  "const": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable"
+                },
+                "name": {
+                  "const": "dnai-independent-compute-metering"
+                },
+                "manifest_version": {
+                  "const": 2
+                },
+                "runner": {
+                  "const": "docker-compose"
+                },
+                "kms_enabled": {
+                  "const": true
+                },
+                "gateway_enabled": {
+                  "const": true
+                },
+                "secure_time": {
+                  "const": true
+                },
+                "storage_fs": {
+                  "const": "ext4"
+                },
+                "public_logs": {
+                  "const": false
+                },
+                "public_sysinfo": {
+                  "const": false
+                },
+                "public_tcbinfo": {
+                  "const": false
+                },
+                "allowed_envs_source": {
+                  "const": "descriptor.exact_allowed_environment_keys"
+                },
+                "allowed_envs_sha256": {
+                  "const": "sha256:669978f98627994d7b751d061bb4f0022595efafd40fdd81836099ab5b14453b"
+                },
+                "allowed_envs_count": {
+                  "const": 13
+                },
+                "docker_compose_file_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "not": {
+                    "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "docker_compose_file_byte_length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 204800
+                },
+                "expected_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  }
+                },
+                "tproxy_enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "provision_wire_transform_source": {
+                  "type": "string",
+                  "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "compose_hash_authority": {
+      "type": "object",
+      "const": {
+        "status": "local_expected_hash_projection_staging_server_semantics_evidence_pending_non_executable",
+        "package_name": "@phala/dstack-sdk",
+        "package_version": "0.5.8",
+        "import_path": "@phala/dstack-sdk/get-compose-hash",
+        "export_name": "getComposeHash",
+        "normalize": false,
+        "algorithm": "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
+        "output_pattern": "^[0-9a-f]{64}$",
+        "descriptor_bytes_semantics": "exact_stable_read_raw_descriptor_bytes",
+        "prepare_response_policy": "all_seven_prepare_compose_hashes_must_equal_their_exact_local_expected_hash_before_first_commit",
+        "staging_server_semantics_evidence_status": "required_not_implemented"
+      },
+      "additionalProperties": false
+    },
+    "phala_control_plane_authority": {
+      "type": "object",
+      "const": {
+        "api_origin": "https://cloud-api.phala.network/api/v1",
+        "api_version": "2026-01-21",
+        "redirects_allowed": false,
+        "origin_drift_allowed": false,
+        "phala_cloud_api_prefix_environment_override_allowed": false,
+        "default_discovery_allowed": false,
+        "adapter_status": "required_not_implemented"
+      },
+      "additionalProperties": false
+    },
+    "phala_sdk_debug_secret_logging_policy": {
+      "type": "object",
+      "const": {
+        "status": "required_not_implemented",
+        "forbidden_debug_selector": "phala::api-client",
+        "enforcement_checkpoint": "before_dynamic_import_of_phala_sdk",
+        "required_debug_environment_state": "absent_or_empty",
+        "stdout_secret_bytes_allowed": false,
+        "stderr_secret_bytes_allowed": false,
+        "required_proof": "zero_secret_bytes_in_captured_stdout_and_stderr"
+      },
+      "additionalProperties": false
+    },
+    "phala_workspace_account_target_authority": {
+      "type": "object",
+      "const": {
+        "status": "required_external_reviewed_target_artifact_not_present",
+        "target_artifact_schema": "dnai.phala-workspace-account-target.v1",
+        "workspace_id_present": false,
+        "account_id_present": false,
+        "target_artifact_digest_present": false,
+        "required_checkpoint": "before_any_phala_sdk_call"
+      },
+      "additionalProperties": false
+    },
+    "phala_cloud_sdk_wire_transform_authority": {
+      "type": "object",
+      "const": {
+        "status": "reviewed_transform_and_staging_capture_required_not_present",
+        "package": {
+          "name": "@phala/cloud",
+          "version": "0.2.10",
+          "registry_origin": "https://registry.npmjs.org",
+          "npm_dist_integrity_sha512": "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+          "installed_integrity_source": "stable_nofollow_package_manifest_and_exact_dist_index_mjs_bytes",
+          "installed_manifest_sha256": null,
+          "installed_esm_module_sha256": null
+        },
+        "provision_transform": {
+          "entrypoint": "provisionCvm",
+          "parse_step": "ProvisionCvmRequestSchema.parse",
+          "function": "handleGatewayCompatibility",
+          "rule": "when_compose_file_gateway_enabled_and_tproxy_enabled_are_both_boolean_delete_compose_file_tproxy_enabled",
+          "additional_transform_allowed": false
+        },
+        "digest": {
+          "schema": "dnai.phala-sdk-json-body-semantic-digest.v1",
+          "domain": "dnai-wikigen/phala-sdk-json-body-semantic/v1\u0000",
+          "algorithm": "sha256_domain_then_recursive_lexical_key_sort_compact_json_utf8",
+          "unit": "parsed_json_body_semantics_excluding_headers_and_http_framing"
+        },
+        "required_evidence": [
+          "pre_transform_request_sha256",
+          "expected_post_transform_body_sha256",
+          "captured_post_transform_body_sha256",
+          "prepare_server_compose_hash",
+          "authenticated_staging_receipt_sha256"
+        ]
+      },
+      "additionalProperties": false
+    },
+    "phala_provision_request_authority": {
+      "type": "object",
+      "const": {
+        "status": "dynamic_authorities_pending_non_executable",
+        "request_defaults_allowed": false,
+        "request_extra_fields_allowed": false,
+        "listed": false,
+        "image": "dstack-0.5.10",
+        "kms_id": null,
+        "key_provider_mode": "kms",
+        "compose_file_source": "descriptor.app_compose_candidate",
+        "name_source": "descriptor.app_compose_candidate.name",
+        "resource_source": "descriptor.launch_settings.cvm_resource_target",
+        "env_keys_source": "descriptor.exact_allowed_environment_keys",
+        "unresolved_fields": [
+          "kms_id",
+          "nonce",
+          "app_id",
+          "exact_request_sha256"
+        ],
+        "candidates": {
+          "main_runtime_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "diligence_qvl_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "arena_qvl_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "anchor_writer_qvl_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "compute_workload_qvl_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "compute_metering_qvl_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          },
+          "independent_metering_cvm": {
+            "nonce": null,
+            "app_id": null,
+            "exact_request_sha256": null
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -9,14 +9,20 @@ boundary. The construction reuses the existing X25519 + AES-256-GCM channel
     DEK   = fresh random AES-256 key (per dataset)
     blob  = chunked AES-256-GCM(plaintext, DEK)   # large, storage-agnostic
     wrap  = encrypt_for_tee(DEK, recipient CVM pubkey)  # one per measurement
-    manifest = bounded { dataset_id, hashes, wrapped-DEK per recipient,
-                         data_sensitivity, storage ref, optional signature }
+    manifest = internal transport metadata { exact chunk topology, wrapped-DEK
+                                             per recipient, optional signature }
 
-Bounded-output rule: every public function here returns only hashes, sizes,
-counts, labels, and ciphertext. The DEK and plaintext never appear in a
-manifest or receipt. Storage backends (local/HF/S3/https) are intentionally out
-of scope for this module — it produces/consumes the ciphertext blob + manifest;
-where those bytes are published is a separate adapter.
+The transport manifest is intentionally *not* a public response schema: exact
+plaintext size, chunk topology, nonces, recipient envelopes, and an optional
+storage ref are required for integrity and decryption. Public surfaces must use
+``public_manifest_projection`` / ``seal_receipt`` instead. Those projections
+replace private cardinalities with coarse bands and storage locations with a
+domain-separated opaque commitment. The DEK and plaintext never appear in
+either representation.
+
+Storage backends (local/HF/S3/https) are intentionally out of scope for this
+module — it produces/consumes the ciphertext blob + internal manifest; where
+those bytes are published is a separate adapter.
 """
 from __future__ import annotations
 
@@ -34,8 +40,25 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from tinker_delegate.crypto import NONCE_SIZE, EncryptedPayload, TEEKeyPair, encrypt_for_tee
 
 SCHEMA_VERSION = "sealed-dataset-manifest-v1"
+PUBLIC_PROJECTION_VERSION = "sealed-dataset-public-v2"
 DEK_HKDF_INFO_PREFIX = b"tinker-delegate-dataset-dek"
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB
+
+# Deliberately coarse, fixed labels. Bounds are committed in code rather than
+# being derived from a particular private dataset. They are public disclosure
+# policy, not estimates from the ciphertext.
+_PRIVATE_SIZE_BANDS: tuple[tuple[int, str], ...] = (
+    (4 * 1024, "xs_le_4_kib"),
+    (64 * 1024, "small_le_64_kib"),
+    (1024 * 1024, "medium_le_1_mib"),
+    (16 * 1024 * 1024, "large_le_16_mib"),
+    (256 * 1024 * 1024, "xl_le_256_mib"),
+)
+_PRIVATE_COUNT_BANDS: tuple[tuple[int, str], ...] = (
+    (4, "small_1_to_4"),
+    (16, "medium_5_to_16"),
+    (64, "large_17_to_64"),
+)
 
 
 class DataSensitivity(str, Enum):
@@ -54,6 +77,46 @@ def _sha256_hex(data: bytes) -> str:
 
 def _hash_prefixed(value: str, *, prefix: str) -> str:
     return f"{prefix}_{hashlib.sha256(f'{prefix}:{value}'.encode()).hexdigest()[:48]}"
+
+
+def bounded_plaintext_size_band(size: int) -> str:
+    """Return the fixed public disclosure band for an internal byte length."""
+
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise SealedDatasetError("plaintext size must be a non-negative int")
+    if size == 0:
+        return "empty"
+    for upper, label in _PRIVATE_SIZE_BANDS:
+        if size <= upper:
+            return label
+    return "xxl_gt_256_mib"
+
+
+def bounded_chunk_count_band(count: int) -> str:
+    """Return the fixed public disclosure band for an internal chunk count."""
+
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise SealedDatasetError("chunk count must be a non-negative int")
+    if count == 0:
+        return "none"
+    for upper, label in _PRIVATE_COUNT_BANDS:
+        if count <= upper:
+            return label
+    return "very_large_gt_64"
+
+
+def storage_ref_commitment(storage_ref: str | None) -> str | None:
+    """Opaque public commitment to an internal storage location.
+
+    The raw ref may contain a local absolute path, a private bucket name, or a
+    signed URL. It is therefore never copied into a public projection. ``None``
+    remains ``None`` so callers can distinguish "not yet published" without
+    learning a location.
+    """
+
+    if storage_ref is None:
+        return None
+    return _hash_prefixed(str(storage_ref), prefix="sealed_storage_ref")
 
 
 def generate_dek() -> bytes:
@@ -99,7 +162,7 @@ def _chunk_aad(dataset_id: str, index: int, total: int) -> bytes:
 
 @dataclass(frozen=True)
 class EncryptedBlob:
-    """Chunked AES-GCM ciphertext for a dataset, plus bounded chunk metadata."""
+    """Chunked AES-GCM ciphertext plus exact, TEE-internal integrity metadata."""
 
     dataset_id: str
     blob: bytes
@@ -269,11 +332,12 @@ def build_manifest(
     storage_ref: str | None = None,
     provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble the bounded, egress-safe dataset manifest.
+    """Assemble the exact internal transport/integrity manifest.
 
-    Contains only hashes, sizes, chunk metadata, per-recipient wrapped-DEK
-    envelopes, a sensitivity label, an optional storage reference, and optional
-    signed provenance. Never the DEK or plaintext.
+    This object is consumed by storage/decryption and deliberately preserves
+    exact size, chunk topology, nonces, wrapped-DEK envelopes, and an optional
+    storage reference. It never contains the DEK or plaintext, but it is *not* a
+    public API response. Use :func:`public_manifest_projection` for egress.
     """
 
     if not recipients:
@@ -308,22 +372,73 @@ def build_manifest(
     return manifest
 
 
-def seal_receipt(encrypted: EncryptedBlob, manifest: dict[str, Any]) -> dict[str, Any]:
-    """Bounded, egress-safe receipt for a seal operation. No DEK/plaintext."""
+def public_manifest_projection(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project an internal manifest onto the bounded public response schema.
 
+    Opaque cryptographic commitments remain exact because they do not reveal
+    their preimages. Private cardinalities become fixed bands; wrapped keys,
+    nonces, provenance values, and the raw storage ref are omitted. Exact values
+    remain available only on the internal manifest for decrypt/integrity work.
+    """
+
+    chunk = manifest.get("chunk")
+    if not isinstance(chunk, dict):
+        raise SealedDatasetError("manifest chunk metadata must be a mapping")
+    chunk_count = chunk.get("chunk_count")
+    if isinstance(chunk_count, bool) or not isinstance(chunk_count, int):
+        raise SealedDatasetError("manifest chunk_count must be an int")
+
+    plaintext_size = manifest.get("plaintext_size")
+    if isinstance(plaintext_size, bool) or not isinstance(plaintext_size, int):
+        raise SealedDatasetError("manifest plaintext_size must be an int")
+    recipient_rows = manifest.get("recipients")
+    if not isinstance(recipient_rows, list):
+        raise SealedDatasetError("manifest recipients must be a list")
+    storage_ref = manifest.get("storage_ref")
+    if storage_ref is not None and not isinstance(storage_ref, str):
+        raise SealedDatasetError("manifest storage_ref must be a string or None")
     return {
-        "dataset_id": encrypted.dataset_id,
+        "schema_version": PUBLIC_PROJECTION_VERSION,
+        "dataset_id": manifest.get("dataset_id"),
         "task": manifest.get("task"),
         "data_sensitivity": manifest.get("data_sensitivity"),
-        "ciphertext_sha256": encrypted.ciphertext_sha256,
-        "plaintext_size": encrypted.plaintext_size,
-        "chunk_count": encrypted.chunk_count,
-        "recipient_count": len(manifest.get("recipients", [])),
-        "recipient_key_hashes": [r["recipient_key_hash"] for r in manifest.get("recipients", [])],
+        "ciphertext_sha256": manifest.get("ciphertext_sha256"),
+        "plaintext_size_band": bounded_plaintext_size_band(plaintext_size),
+        "chunk_count_band": bounded_chunk_count_band(chunk_count),
+        "recipient_count": len(recipient_rows),
+        "recipient_key_hashes": [
+            row.get("recipient_key_hash")
+            for row in recipient_rows
+            if isinstance(row, dict) and row.get("recipient_key_hash")
+        ],
         "manifest_hash": manifest_hash(manifest),
-        "storage_ref": manifest.get("storage_ref"),
+        "storage_ref_hash": storage_ref_commitment(storage_ref),
+        "storage_ref_returned": False,
         "raw_secret_egress": False,
     }
+
+
+def seal_receipt(encrypted: EncryptedBlob, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Bounded public receipt for a seal operation. No exact private metadata."""
+
+    projection = public_manifest_projection(manifest)
+    expected_internal = {
+        "dataset_id": encrypted.dataset_id,
+        "ciphertext_sha256": encrypted.ciphertext_sha256,
+        "plaintext_sha256": encrypted.plaintext_sha256,
+        "plaintext_size": encrypted.plaintext_size,
+        "chunk_count": encrypted.chunk_count,
+    }
+    actual_internal = {
+        "dataset_id": manifest.get("dataset_id"),
+        "ciphertext_sha256": manifest.get("ciphertext_sha256"),
+        "plaintext_sha256": manifest.get("plaintext_sha256"),
+        "plaintext_size": manifest.get("plaintext_size"),
+        "chunk_count": manifest.get("chunk", {}).get("chunk_count"),
+    }
+    if actual_internal != expected_internal:
+        raise SealedDatasetError("manifest does not match encrypted blob metadata")
+    return {"surface": "seal_dataset", **projection}
 
 
 def seal_dataset(
@@ -339,10 +454,11 @@ def seal_dataset(
 ) -> tuple[bytes, dict[str, Any], dict[str, Any]]:
     """Envelope-encrypt a dataset for one or more attested CVM recipients.
 
-    Returns `(ciphertext_blob, manifest, bounded_receipt)`. The DEK is generated,
-    used, and dropped here; it never appears in the manifest or receipt. Optional
-    `provenance` (see `build_provenance`) is committed into the manifest so a
-    later owner/witness signature binds the distribution claim to this dataset.
+    Returns ``(ciphertext_blob, internal_manifest, bounded_receipt)``. The exact
+    manifest is for storage/decryption and MUST NOT be serialized as a public API
+    response; the receipt is the public projection. The DEK is generated, used,
+    and dropped here. Optional ``provenance`` is committed into the internal
+    manifest so a later owner/witness signature binds the claim to this dataset.
     """
 
     if not recipient_public_keys:

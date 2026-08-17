@@ -1,0 +1,1 @@
+{"fields":[{"allowed_values":[0.02,0.06,0.12],"name":"quality_delta","type":"number"}],"raw_artifact_egress":false,"schema":"dnai.diligence-evaluator-output.v1"}

@@ -97,10 +97,31 @@ class ThresholdoutQueryTest(unittest.TestCase):
     def test_release_and_manifest_are_bounded_egress_safe(self):
         gate, _ = _gate()
         rel = gate.query(0.5, 0.9)
-        assert_bounded_egress(rel.to_public_dict())
+        public_release = rel.to_public_dict()
+        assert_bounded_egress(public_release)
+        self.assertNotIn("used_holdout", public_release)
+        self.assertNotIn("holdout_access_count", public_release)
         # The manifest carries public DP params (floats live under `policy`);
-        # the release itself is ints/bools only.
-        self.assertEqual(gate.public_manifest()["variant"], "thresholdout")
+        # the release itself is bands, ints, bools, and a status enum only.
+        public_manifest = gate.public_manifest()
+        self.assertEqual(public_manifest["variant"], "thresholdout")
+        self.assertNotIn("holdout_access_count", public_manifest)
+        self.assertEqual(public_manifest["budget_status"], "available")
+
+    def test_secret_dependent_access_branch_has_identical_public_shape(self):
+        free_gate, _ = _gate(max_epsilon=2.0)
+        charged_gate, _ = _gate(max_epsilon=2.0)
+
+        # Both queries release band 5. Internally, one is a free reward-stat
+        # release and the other consults the secret holdout and spends epsilon.
+        free = free_gate.query(reward_stat=0.5, holdout_stat=0.5)
+        charged = charged_gate.query(reward_stat=0.0, holdout_stat=0.5)
+        self.assertFalse(free.used_holdout)
+        self.assertTrue(charged.used_holdout)
+        self.assertNotEqual(free.holdout_access_count, charged.holdout_access_count)
+
+        self.assertEqual(free.to_public_dict(), charged.to_public_dict())
+        self.assertEqual(free_gate.public_manifest(), charged_gate.public_manifest())
 
     def test_total_leakage_bounded_by_epsilon_times_accesses(self):
         # The headline bound: spent epsilon == epsilon_per_access * holdout accesses,

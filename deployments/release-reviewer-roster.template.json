@@ -1,0 +1,27 @@
+{
+  "reviewer_controllers": [
+    {
+      "controller_id": "reviewer-alpha",
+      "preauthorized_addresses": [
+        null
+      ]
+    },
+    {
+      "controller_id": "reviewer-bravo",
+      "preauthorized_addresses": [
+        null
+      ]
+    }
+  ],
+  "schema": "dnai.release-reviewer-roster.v2",
+  "status_guardians": [
+    {
+      "address": null,
+      "controller_id": "status-guardian-alpha"
+    },
+    {
+      "address": null,
+      "controller_id": "status-guardian-bravo"
+    }
+  ]
+}

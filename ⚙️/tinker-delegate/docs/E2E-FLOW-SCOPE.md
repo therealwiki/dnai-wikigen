@@ -1,5 +1,57 @@
 # End-to-End Flow Scoping Document
 
+> **Historical design snapshot.** The estimates, “implemented/missing” tables,
+> old attestation shape, test counts, and deployment checklist below predate the
+> current release architecture. Do not use them to authorize a contract write,
+> CVM deployment, or live product label. The current sources of truth are
+> `STATUS.md`, `ARCHITECTURE.md`, `web/RELEASE-MANIFEST.md`, and
+> `docs/DEPLOYMENT-RUNBOOK.md`.
+
+## Current release delta (2026-07-21)
+
+- The frontend is an eleven-route SolidJS product, not a mockup. EIP-6963 and
+  injected EIP-1193 wallets are supported; WalletConnect is conditional on
+  public deployment configuration.
+- The fresh chain unit is seven contracts: Diligence, Tinker encumbrance,
+  royalties, challenges, exact-asset Compute capacity, email authorization,
+  and the execution-policy anchor. It has been rehearsed locally but not
+  deployed to Base Sepolia from this working tree.
+- The fresh TEE unit is seven CVMs: one main runtime, five independent QVL CVMs,
+  and one independent deterministic Compute meter. None is deployed for this
+  release.
+- QVL admission uses signed challenge schema v2 and the active independent
+  verdict schema/signing domain v4. A signed, single-use,
+  profile/policy-scoped challenge valid for at most 120 seconds occupies the
+  second half of exact 64-byte quote report data, and DCAP appraisal must finish
+  strictly before expiry. The v4 verdict binds exact release lineage and CVM
+  identity and carries the separately reviewed exact 900-second
+  activation-evidence lease. That lease may outlive the consumed challenge but
+  is not renewed challenge freshness. Post-restart Compute recipient activation
+  is schema v3 with an explicit recipient lease of at most 300 seconds; its
+  stable recipient-release commitment remains schema v2. Legacy reusable
+  verdicts and a QVL's self-asserted identity are rejected.
+- The Diligence QVL root also evaluates the separate Email/KMS restart profile.
+  It does not create a sixth root or eighth CVM.
+- `TinkerAccountEncumbrance` uses one exact account/caps/compose/manager policy,
+  a two-day review, atomic activation/freeze, and monotonic narrowing afterward.
+- Email boot authorization requires same-CVM bearer possession, the fixed
+  `tinker-delegate.signup` capability, two independent HTTPS RPCs agreeing on
+  one fresh finalized block and exact authorization state, and a persisted
+  restart checkpoint. Whole-volume rollback remains an explicit assumption.
+- Production Deal evaluation is disabled: the historical remote SFT helper
+  would send artifact-derived tokens outside the CVM. It is not a confidential
+  evaluator simply because the caller runs in dstack.
+- Paid Compute provider dispatch remains activation-gated. The compiled adapter
+  uses an at-most-once attempt checkpoint and terminal ambiguity hold; it makes
+  no upstream replay claim and requires the exact release pins, recipient
+  activation, and fresh authenticated worker heartbeat before dispatch.
+- `ComputeCreditVault` exact-asset capacity and off-chain non-transferable
+  service credits are separate ledgers with no conversion. Provider-hosted card
+  checkout and signed-webhook credit issuance remain roadmap-only.
+
+Everything below remains useful for historical rationale and failure-mode
+brainstorming, but its current-status cells are superseded by this delta.
+
 > **Status**: Draft
 > **Date**: 2026-03-10
 > **Context**: NDAI Diligence Room — Tinker Delegate
@@ -31,23 +83,40 @@ Control plane starts, emits genesis attestation (TDX quote binding identity)
 
  PHASE 1: DEAL CREATION (on-chain)
  ──────────────────────────────────
+ Seller generates an exact 32-byte random secret and computes:
+   artifactHash = keccak256(
+     ASCII("dnai-wikigen/artifact-commitment/v2") || 0x00 || secret32 || rawArtifact
+   )
+ Seller privately saves the strict v2 recovery receipt; secret32 never goes on-chain.
  Seller → DiligenceRoom.createDeal(reservePrice, expiry, artifactHash, teeIdentity)
    → On-chain: State = Created
    → Event: DealCreated(dealId, seller, reservePrice, expiry, artifactHash, teeIdentity)
 
- PHASE 2: ARTIFACT UPLOAD (off-chain, to TEE)
- ─────────────────────────────────────────────
- Seller → POST /deal/{dealId}/artifact {artifact_hex, artifact_hash}
-   → TEE holds encrypted artifact in memory only (never disk)
-   → TEE verifies keccak256(artifact) == artifactHash from on-chain deal
-
- PHASE 3: DEAL FUNDING (on-chain)
+ PHASE 2: DEAL FUNDING (on-chain)
  ────────────────────────────────
- Buyer → DiligenceRoom.fundDeal{value: budgetCap}(dealId)
+ Buyer → DiligenceRoom.fundDeal{value: budgetCap}(dealId, evaluatorPolicyCommitment)
    → On-chain: State = Funded
    → Event: DealFunded(dealId, buyer, budgetCap)
-   → On-chain watcher detects event, notifies control plane
-     → POST /deal/notify-funded {deal_id, buyer, seller, budget_cap, reserve_price}
+   → On-chain watcher joins the immutable DealCreated context, then notifies control plane
+     → POST /deal/notify-funded
+       {deal_id, buyer, seller, budget_cap, reserve_price, artifact_hash,
+        evaluator_policy_commitment}
+
+ PHASE 3: ARTIFACT UPLOAD (off-chain, to TEE)
+ ─────────────────────────────────────────────
+ Seller → POST /deal/{dealId}/artifact/encrypted
+   → Authenticated artifact_hash must equal the immutable funded context
+     before the service attempts decryption.
+   → TEE accepts only the exact 1,048,644-byte AES-GCM ciphertext for
+     envelope v3. Its authenticated plaintext is the 16-byte
+     `DNAIARTIFACTV3\0\0` magic, uint32be private length, secret32, raw bytes,
+     and CSPRNG padding filling one fixed 1,048,576-byte payload area.
+   → HKDF/AAD bind Base Sepolia 84532, the fresh DiligenceRoom, canonical
+     deal ID, artifactHash, immutable funded evaluatorPolicyCommitment, and the
+     exact v3 envelope scheme.
+   → TEE recomputes the salted v2 commitment before custody and immediately
+     before evaluation. Raw unwrapped bytes and legacy raw hashes fail closed.
+   → Exact artifact bytes remain in TEE memory only (never disk).
 
  PHASE 4: EVALUATION (inside TEE boundary)
  ──────────────────────────────────────────
@@ -65,8 +134,9 @@ Control plane starts, emits genesis attestation (TDX quote binding identity)
    → ScoreBand × budget_cap → offer_price (clamped to reserve_price floor)
    → Attaches TDX quote binding deal_id + score_band + offer_price
  TEE submits result on-chain:
-   → DiligenceRoom.submitResult(dealId, scoreBand, computeCost, resultHash,
+   → DiligenceRoom.submitResult(dealId, scoreBand, policyComputeCost,
                                 composeHash, authorizationExpiry, verifierSignature)
+   → Contract derives resultHash from the immutable deal + bounded public fields
    → On-chain: State = Evaluated
    → Event: EvaluationSubmitted(dealId, scoreBand, computeCost, resultHash)
  Bounded result available to buyer:
@@ -261,14 +331,14 @@ async def evaluate(
 DiligenceRoom.submitResult(
     dealId,                    # uint256
     scoreBand,                 # ScoreBand enum (0-4)
-    computeCost,               # uint256 (wei)
-    resultHash,                # bytes32 (replay-bound result commitment)
+    computeCost,               # uint256 deterministic public tariff (wei)
     composeHash,               # bytes32 (approved app/compose measurement)
     authorizationExpiry,       # uint256
     verifierSignature          # bytes (resultVerifier authorization)
 )
 # msg.sender must == deal.teeIdentity (KMS-derived address)
-# verifierSignature must bind the bounded submission context.
+# verifierSignature must bind the contract-derived canonical result hash.
+# Callers cannot supply an opaque payload/result/transcript commitment.
 ```
 
 **Encrypted Card Channel: Developer → TEE**
@@ -581,17 +651,22 @@ Step 3: Evaluation Attestation
 Step 4: On-chain Submission
   TEE calls DiligenceRoom.submitResult() from its KMS-derived address.
   The contract verifies msg.sender == deal.teeIdentity.
-  The resultHash (keccak256 of full EvaluationResult) is stored on-chain.
+  The contract rejects non-policy compute cost and derives resultHash as the
+  domain-separated `DiligenceRoomPublicResult(...)` commitment over chain ID,
+  contract, immutable funded-deal fields, compose hash, score band, and tariff.
 
 Step 5: Buyer Verification
   Buyer retrieves:
     a) On-chain: resultHash, scoreBand, computeCost from DiligenceRoom.getDeal()
-    b) Off-chain: full EvaluationResult + TDX quote from GET /deal/{id}/result
+    b) Off-chain: bounded result + independent TDX/QVL verdict
   Buyer verifies:
-    a) keccak256(evaluationResult) == resultHash (result matches chain)
+    a) canonicalResultHash(...) == resultHash (public policy fields match chain)
     b) TDX quote is valid (Intel signature chain)
     c) Quote's RTMR matches expected compose hash (correct code)
-    d) Quote's report_data matches deal_id and score_band (correct deal)
+    d) Quote's report_data matches the bounded public projection (correct deal)
+
+Raw evaluator details and private reward transcripts are intentionally not
+recoverable from, or committed through a caller-selected field in, resultHash.
 ```
 
 ### 7.2 Current Implementation vs Full Attestation

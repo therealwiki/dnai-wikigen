@@ -1,0 +1,50 @@
+{
+  "schema": "dnai.web-pitch-asset-provenance.v1",
+  "truth_status": "tracked_png_origin_and_deterministic_webp_recipe_not_asset_rights_or_c2pa_chain_verification",
+  "encoder": {
+    "name": "cwebp",
+    "version": "1.6.0",
+    "libsharpyuv_version": "0.4.2",
+    "local_binary_sha256": "beed71767112f3374e2178b75384fac6e0d448932ea11b5cafda2793ecfb2eaf",
+    "arguments": ["-quiet", "-q", "84", "-m", "4"]
+  },
+  "assets": [
+    {
+      "name": "attested-network",
+      "width": 1672,
+      "height": 941,
+      "source": {
+        "path": "outputs/wikigen-pitch-assets/attested-network.png",
+        "git_blob": "44bb90203aebc374b02173553db8417dbe5d3ddb",
+        "bytes": 2020938,
+        "sha256": "f975a6d1d33bd7ee50a0f376746397fe670f9c04cf8be98e04424a94897bbddd",
+        "origin_metadata": "embedded_c2pa_jumbf_present_not_independently_verified"
+      },
+      "output": {
+        "path": "web/src/assets/pitch/attested-network.webp",
+        "bytes": 170256,
+        "sha256": "74988af25153a37684555bb6713782ce248c4de8270121792c4ad9eaf183ebd1",
+        "embedded_metadata": "none"
+      }
+    },
+    {
+      "name": "private-reward-oracle",
+      "width": 1672,
+      "height": 941,
+      "source": {
+        "path": "outputs/wikigen-pitch-assets/private-reward-oracle.png",
+        "git_blob": "1ee640620bc8e343cc2f363a00d934c2978faf33",
+        "bytes": 2145155,
+        "sha256": "7297a78244aff235a500b9658c0f984d7115a77a4a58b25bacecc05126394f94",
+        "origin_metadata": "embedded_c2pa_jumbf_present_not_independently_verified"
+      },
+      "output": {
+        "path": "web/src/assets/pitch/private-reward-oracle.webp",
+        "bytes": 199296,
+        "sha256": "14aa2ed2e42f7f38b95316f06a4bc0c50e136e883811bcbf1277ce94f3645fc9",
+        "embedded_metadata": "none"
+      }
+    }
+  ],
+  "rights_status": "repository_license_intent_is_agplv3_but_asset_specific_rights_are_not_independently_confirmed"
+}

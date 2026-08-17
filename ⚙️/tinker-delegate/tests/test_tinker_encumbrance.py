@@ -6,6 +6,7 @@ from tinker_delegate.tinker_encumbrance import (
     EMERGENCY_HALTED_SELECTOR,
     MAX_ADD_BALANCE_SELECTOR,
     MAX_SPEND_SELECTOR,
+    RELEASE_POLICY_FROZEN_SELECTOR,
     TinkerEncumbranceChecker,
     TinkerOperationKind,
     amount_dollars_to_policy_wei,
@@ -23,11 +24,13 @@ class FakeRpc:
     def __init__(
         self,
         *,
+        release_policy_frozen: bool = True,
         emergency_halted: bool = False,
         compose_approved: bool = True,
         max_add_balance_wei: int = 5 * 10**18,
         max_spend_wei: int = 9 * 10**18,
     ):
+        self.release_policy_frozen = release_policy_frozen
         self.emergency_halted = emergency_halted
         self.compose_approved = compose_approved
         self.max_add_balance_wei = max_add_balance_wei
@@ -38,6 +41,8 @@ class FakeRpc:
         self.calls.append(tx)
         data = bytes.fromhex(tx["data"][2:])
         selector = data[:4]
+        if selector == RELEASE_POLICY_FROZEN_SELECTOR:
+            return encode_bool(self.release_policy_frozen)
         if selector == EMERGENCY_HALTED_SELECTOR:
             return encode_bool(self.emergency_halted)
         if selector == APPROVED_COMPOSE_SELECTOR:
@@ -88,7 +93,27 @@ class TinkerEncumbranceTest(unittest.TestCase):
         self.assertEqual(result.reason, "allowed")
         self.assertEqual(result.max_amount_wei, 5 * 10**18)
         self.assertEqual(result.limit_kind, "add_balance")
-        self.assertEqual(len(rpc.calls), 3)
+        self.assertTrue(result.release_policy_frozen)
+        self.assertEqual(len(rpc.calls), 4)
+
+    def test_policy_denies_unfrozen_release_before_other_policy_checks(self):
+        result = TinkerEncumbranceChecker(
+            FakeRpc(
+                release_policy_frozen=False,
+                emergency_halted=True,
+                compose_approved=False,
+                max_spend_wei=0,
+            ),
+            CONTRACT,
+        ).check_operation(
+            operation_kind=TinkerOperationKind.SPEND_TINKER_COMPUTE,
+            compose_hash=COMPOSE_HASH,
+            amount_wei=1,
+        )
+
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.reason, "release_policy_not_frozen")
+        self.assertFalse(result.release_policy_frozen)
 
     def test_add_balance_policy_denies_over_cap(self):
         result = TinkerEncumbranceChecker(FakeRpc(max_add_balance_wei=5 * 10**18), CONTRACT).check_operation(

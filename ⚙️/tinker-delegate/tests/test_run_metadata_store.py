@@ -4,8 +4,9 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
+from tinker_delegate.artifacts import artifact_commitment
 from tinker_delegate.run_metadata_store import (
     RunMetadataStore,
     make_run_metadata_event,
@@ -13,6 +14,9 @@ from tinker_delegate.run_metadata_store import (
     stable_hash,
     value_band,
 )
+
+
+COMMITMENT_SECRET = bytes(range(32))
 
 
 class RunMetadataStoreTest(unittest.TestCase):
@@ -61,6 +65,36 @@ class RunMetadataStoreTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "raw_secret_egress=false"):
                 store.append(record)
+
+    def test_accepts_only_exact_public_evaluator_policy_commitments(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "run_metadata.enc"
+            store = RunMetadataStore(str(path), key_hex="ab" * 32)
+            policy = "0x" + "12" * 32
+            record = make_run_metadata_event(
+                "deal_funded",
+                "deal-1",
+                evaluator_policy_commitment=policy,
+            )
+
+            persisted = store.append(record)
+
+            self.assertEqual(persisted["evaluator_policy_commitment"], policy)
+            for malformed in (
+                "0x" + "00" * 32,
+                "0x" + "AB" * 32,
+                "12" * 32,
+                "0x1234",
+                12,
+            ):
+                rejected = make_run_metadata_event(
+                    "deal_funded",
+                    "deal-2",
+                    evaluator_policy_commitment=malformed,
+                )
+                with self.subTest(malformed=malformed):
+                    with self.assertRaisesRegex(ValueError, "nonzero lowercase bytes32"):
+                        store.append(rejected)
 
     def test_helpers_bound_and_hash_values(self):
         self.assertEqual(value_band(0), "zero")
@@ -118,9 +152,18 @@ class ControlPlaneRunMetadataTest(unittest.TestCase):
         cp = ControlPlane.__new__(ControlPlane)
         cp._run_metadata_store = Store()
         cp._deals = {}
+        cp._enable_tinker_session = True
         cp._create_service_client = lambda: object()
 
-        ctx = cp.on_deal_funded("deal-raw", "buyer-raw", "seller-raw", 10**18, 10**15)
+        commitment = artifact_commitment(b"private-artifact", COMMITMENT_SECRET)
+        ctx = cp.on_deal_funded(
+            "deal-raw",
+            "buyer-raw",
+            "seller-raw",
+            10**18,
+            10**15,
+            commitment,
+        )
         self.assertEqual(ctx.deal_id, "deal-raw")
         self.assertEqual(records[0]["event"], "deal_funded")
         self.assertIn("buyer_hash", records[0])
@@ -130,7 +173,8 @@ class ControlPlaneRunMetadataTest(unittest.TestCase):
         cp.receive_artifact(
             "deal-raw",
             b"private-artifact",
-            "0xecf12e1baabfc7f190573602c3bc8beef404c2a38fc9a3d35d34f3c8f9d820eb",
+            commitment,
+            COMMITMENT_SECRET,
         )
         self.assertEqual(records[1]["event"], "artifact_received")
         self.assertEqual(records[1]["artifact_size_band"], "<=1KiB")
@@ -177,17 +221,31 @@ class ControlPlaneRunMetadataTest(unittest.TestCase):
         )
         cp = ControlPlane.__new__(ControlPlane)
         cp._run_metadata_store = Store()
-        ctx = DealContext("deal-raw", "buyer", "seller", 10**18, 10**15, session=Session())
+        commitment = artifact_commitment(b"private-artifact", COMMITMENT_SECRET)
+        ctx = DealContext(
+            "deal-raw",
+            "buyer",
+            "seller",
+            10**18,
+            10**15,
+            commitment,
+            session=Session(),
+        )
         ctx.artifact = bytearray(b"private-artifact")
+        ctx.artifact_commitment_secret = bytearray(COMMITMENT_SECRET)
+        ctx.artifact_hash = commitment
         cp._deals = {"deal-raw": ctx}
 
-        result = asyncio.run(cp.evaluate("deal-raw", evaluator))
+        with patch.object(cp, "_get_tdx_quote", return_value=b"test-only-attestation"):
+            result = asyncio.run(cp.evaluate("deal-raw", evaluator))
         cp.on_deal_resolved("deal-raw")
 
         self.assertEqual(result.score_band.value, "high")
         self.assertEqual(records[0]["event"], "evaluation_completed")
         self.assertEqual(records[0]["offer_price_band"], "1e15-1e18")
-        self.assertEqual(records[0]["compute_cost_band"], "1e9-1e12")
+        # Public settlement is the deterministic 1% tariff, not the private
+        # 1e9-wei session meter.
+        self.assertEqual(records[0]["compute_cost_band"], "1e15-1e18")
         self.assertEqual(records[1]["event"], "deal_resolved")
         self.assertEqual(records[1]["cleanup_success"], True)
         self.assertEqual(records[1]["checkpoint_ids_hash"], "c" * 64)

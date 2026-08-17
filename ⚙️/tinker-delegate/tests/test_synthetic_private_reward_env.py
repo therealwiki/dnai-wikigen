@@ -52,7 +52,10 @@ class SyntheticHiddenKeywordEnvironmentTest(unittest.TestCase):
         env.evaluate(Candidate(b"alpha"))
 
         self.assertEqual(env.environment_hash, before)
-        self.assertEqual(env.problem().public_metadata["holdout"]["partition_counts"]["train"], 6)
+        self.assertEqual(
+            env.problem().public_metadata["holdout"]["partition_counts"]["train"],
+            "small_1_to_8",
+        )
         self.assertNotIn("reward_query_count", str(env.problem().to_public_dict()))
 
     def test_finalize_uses_final_holdout_once_and_closes_reward_queries(self):
