@@ -6,7 +6,7 @@ import {
   CVM_LAUNCH_DOMAINS,
   CVM_LAUNCH_SECRET_PHASES,
   PHALA_CVM_APP_COMPOSE_NAMES,
-} from "./cvm-launch-intent-core.mjs";
+} from "./cvm-descriptor-runtime-authority-v1-policy.mjs";
 import {
   CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX,
   CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,

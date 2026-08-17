@@ -7,7 +7,6 @@ CHAIN_ID=84532
 ACCOUNT=dev
 MAX_SAFE_JSON_INTEGER=9007199254740991
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
-MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$ROOT_DIR/deployments/base-sepolia.json}"
 MANIFEST_FILTER="$CONTRACTS_DIR/scripts/update-challenge-registry-release-manifest.jq"
 CHALLENGE_REGISTRY_MANIFEST_TEMP_PATH=""
 CHALLENGE_REGISTRY_RELEASE_CATALOG_JSON=""
@@ -25,6 +24,12 @@ if [ -f "$ROOT_DIR/.env" ]; then
   . "$ROOT_DIR/.env"
   set +a
 fi
+
+# DEPLOYMENT_MANIFEST_PATH and RELEASE_CEREMONY_LEDGER_PATH are resolved only
+# after .env; repository history is never a ceremony fallback.
+# shellcheck disable=SC1091
+. "$CONTRACTS_DIR/scripts/release-ceremony-paths.sh"
+operator_policy_resolve_release_ceremony_paths
 
 # shellcheck disable=SC1091
 . "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"

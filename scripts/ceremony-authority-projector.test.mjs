@@ -33,6 +33,10 @@ import {
   finalReleaseAuthorityCoreDigest,
 } from "./execution-policy-release-core.mjs";
 import { knownVector } from "./execution-policy-release-core.fixture.mjs";
+import {
+  royaltyReleasePolicyCommitment,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
 
 function validQvlPolicy() {
   return {
@@ -46,7 +50,64 @@ function validQvlPolicy() {
   };
 }
 
-test("deployment-intent projector owns the exact eight prebroadcast environment values", () => {
+function rebindReleaseAuthority(authority, {
+  deploymentIntentSha256,
+  cvmLaunchIntentSha256 = authority.cvm_launch_intent_sha256,
+}) {
+  const writerReleaseCommitment =
+    `0x${cvmLaunchIntentSha256.slice("sha256:".length)}`;
+
+  authority.deployment_intent_sha256 = deploymentIntentSha256;
+  authority.cvm_launch_intent_sha256 = cvmLaunchIntentSha256;
+  authority.execution_policy.rollback_anchor_target.writer_release_commitment =
+    writerReleaseCommitment;
+
+  Object.assign(authority.shared_release_lineage, {
+    release_sha: authority.release_sha,
+    deployment_intent_sha256: deploymentIntentSha256,
+    cvm_launch_intent_sha256: cvmLaunchIntentSha256,
+    seven_cvm_release_verification_authority_sha256:
+      authority.seven_cvm_release_verification_authority_sha256,
+    main_runtime_cvm_id: authority.cvm.cvm_id,
+    main_runtime_compose_hash: authority.cvm.compose_hash,
+    main_runtime_app_id: authority.cvm.app_id,
+    main_runtime_os_image_hash: authority.cvm.os_image_hash,
+  });
+
+  const royaltyAuthority = authority.royalty_release_authority;
+  royaltyAuthority.anchor_writer_release_commitment = writerReleaseCommitment;
+  const releasePolicyCommitment = royaltyReleasePolicyCommitment({
+    chainId: royaltyAuthority.chain_id,
+    distributorAddress: royaltyAuthority.distributor_address,
+    authorityNonce: royaltyAuthority.authority_nonce,
+    settlementVerifier: royaltyAuthority.settlement_verifier,
+    qvlVerifier: royaltyAuthority.qvl_verifier,
+    executionPolicyAnchor: royaltyAuthority.execution_policy_anchor,
+    anchorWriterReleaseCommitment: writerReleaseCommitment,
+  });
+  royaltyAuthority.release_policy_commitment = releasePolicyCommitment;
+
+  const activeState = authority.royalty_release_active_state;
+  activeState.anchor_writer_release_commitment = writerReleaseCommitment;
+  activeState.release_policy_commitment = releasePolicyCommitment;
+  activeState.computed_release_policy_commitment = releasePolicyCommitment;
+  authority.royalty_release_active_state_sha256 = royaltyReleaseStateSha256(
+    activeState,
+    { authority: royaltyAuthority, phase: "phase_two_active" },
+  );
+
+  Object.assign(authority.royalty_settlement_release_binding_template, {
+    anchor_writer_release_commitment: writerReleaseCommitment,
+    release_policy_commitment: releasePolicyCommitment,
+    main_runtime_cvm_id: authority.cvm.cvm_id,
+    deployment_intent_sha256: deploymentIntentSha256,
+    compose_hash: `0x${authority.cvm.compose_hash}`,
+    app_id: authority.cvm.app_id,
+    os_image_hash: authority.cvm.os_image_hash,
+  });
+}
+
+test("deployment-intent projector owns the exact nine prebroadcast environment values", () => {
   const { intent } = authorityPair();
   const projection = projectDeploymentIntentEnvironment(intent);
   assert.equal(
@@ -56,6 +117,7 @@ test("deployment-intent projector owns the exact eight prebroadcast environment 
   assert.deepEqual(Object.keys(projection.assertions), [
     "DEPLOYMENT_OPERATOR",
     "RELEASE_SHA",
+    "DILIGENCE_GOVERNANCE_CONTROLLER",
     "COMPUTE_VAULT_DEVELOPER",
     "TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT",
     "COMPUTE_VAULT_DEVELOPER_FEE_BPS",
@@ -92,12 +154,14 @@ function authorityPair() {
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress =
     "0x0000000000000000000000000000000000000001";
+  intent.staticContractInputs.diligenceRoom.governanceController =
+    "0x0000000000000000000000000000000000000015";
   intent.staticContractInputs.computeCreditVault.developer =
     "0x000000000000000000000000000000000000000a";
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment =
     `0x${"22".repeat(32)}`;
   intent.numericPolicy.contract = {
-    computeDeveloperFeeBps: 500,
+    computeDeveloperFeeBps: 100,
     emailOracleUpgradeDelaySeconds: 172_800,
     tinkerMaxAddBalanceWei: "1000000000000000000",
     tinkerMaxSpendWei: "250000000000000000",
@@ -112,8 +176,9 @@ function authorityPair() {
   for (const name of Object.keys(intent.numericPolicy.qvl)) {
     intent.numericPolicy.qvl[name] = validQvlPolicy();
   }
+  const deploymentIntentSha256 = canonicalArtifactSha256(intent);
   const authority = knownVector();
-  authority.deployment_intent_sha256 = canonicalArtifactSha256(intent);
+  rebindReleaseAuthority(authority, { deploymentIntentSha256 });
   return { intent, authority };
 }
 
@@ -137,9 +202,10 @@ function reviewedAuthorityContext() {
       (index + 1).toString(16).repeat(64);
   });
   const launchDigest = cvmLaunchIntentCoreDigest(launch);
-  authority.cvm_launch_intent_sha256 = `sha256:${launchDigest}`;
-  authority.execution_policy.rollback_anchor_target.writer_release_commitment =
-    `0x${launchDigest}`;
+  rebindReleaseAuthority(authority, {
+    deploymentIntentSha256: canonicalArtifactSha256(intent),
+    cvmLaunchIntentSha256: `sha256:${launchDigest}`,
+  });
   const finalAuthoritySha256 = `sha256:${finalReleaseAuthorityCoreDigest(authority)}`;
   const reviewEvidenceBytes = Buffer.from('{"review":"approved"}\n', "utf8");
   const reviewEnvelope = createDraftAuthorityReviewEnvelope(
@@ -171,11 +237,11 @@ function reviewedAuthorityContext() {
   };
 }
 
-test("code-owned projector emits the exact 31 ceremony assertions and aliases", () => {
+test("code-owned projector emits the exact 36 ceremony assertions and aliases", () => {
   const { intent, authority } = authorityPair();
   const projection = projectCeremonyAuthorityEnvironment(intent, authority);
   assert.equal(projection.assertionCount, CEREMONY_AUTHORITY_ASSERTION_COUNT);
-  assert.equal(Object.keys(projection.assertions).length, 31);
+  assert.equal(Object.keys(projection.assertions).length, 36);
   assert.equal(projection.aliasCount, CEREMONY_AUTHORITY_ALIAS_COUNT);
   assert.equal(Object.keys(projection.aliases).length, 4);
   for (const [name, entry] of Object.entries(projection.assertions)) {
@@ -195,6 +261,7 @@ test("code-owned projector emits the exact 31 ceremony assertions and aliases", 
       [entry.section, entry.projectionName],
     ])),
     {
+      DILIGENCE_GOVERNANCE_CONTROLLER: ["contractEnv", "DILIGENCE_GOVERNANCE_CONTROLLER"],
       DILIGENCE_RESULT_VERIFIER: ["contractEnv", "DILIGENCE_RESULT_VERIFIER"],
       DILIGENCE_TEE_IDENTITY: ["postDeployEnv", "DILIGENCE_TEE_IDENTITY"],
       DILIGENCE_COMPOSE_HASH: ["postDeployEnv", "DILIGENCE_COMPOSE_HASH"],
@@ -215,6 +282,10 @@ test("code-owned projector emits the exact 31 ceremony assertions and aliases", 
       COMPUTE_VAULT_NATIVE_PROVIDER: ["postDeployEnv", "COMPUTE_VAULT_NATIVE_PROVIDER"],
       COMPUTE_VAULT_ERC20_PROVIDER: ["postDeployEnv", "COMPUTE_VAULT_ERC20_PROVIDER"],
       COMPUTE_METERING_POLICY_SET_HASH: ["postDeployEnv", "COMPUTE_METERING_POLICY_SET_HASH"],
+      COMPUTE_VAULT_ERC20_ASSET_ADDRESS: ["postDeployEnv", "COMPUTE_VAULT_ERC20_ASSET_ADDRESS"],
+      COMPUTE_VAULT_ERC20_ASSET_CODE_HASH: ["postDeployEnv", "COMPUTE_VAULT_ERC20_ASSET_CODE_HASH"],
+      COMPUTE_VAULT_ERC20_ASSET_SYMBOL: ["postDeployEnv", "COMPUTE_VAULT_ERC20_ASSET_SYMBOL"],
+      COMPUTE_VAULT_ERC20_ASSET_DECIMALS: ["postDeployEnv", "COMPUTE_VAULT_ERC20_ASSET_DECIMALS"],
       EMAIL_ORACLE_UPGRADE_DELAY: ["contractEnv", "EMAIL_ORACLE_UPGRADE_DELAY"],
       EMAIL_ORACLE_CONSUMER_APP_ID: ["postDeployEnv", "EMAIL_ORACLE_CONSUMER_APP_ID"],
       EMAIL_ORACLE_COMPOSE_HASH: ["postDeployEnv", "EMAIL_ORACLE_COMPOSE_HASH"],
@@ -308,7 +379,7 @@ test("intent-to-final static and numeric mismatches fail closed", () => {
         `0x${"23".repeat(32)}`;
     }],
     ["ComputeCreditVault developer fee", (intent) => {
-      intent.numericPolicy.contract.computeDeveloperFeeBps = 501;
+      intent.numericPolicy.contract.computeDeveloperFeeBps = 99;
     }],
     ["EmailOracleAuth upgrade delay", (intent) => {
       intent.numericPolicy.contract.emailOracleUpgradeDelaySeconds = 172_801;
@@ -323,7 +394,9 @@ test("intent-to-final static and numeric mismatches fail closed", () => {
   for (const [label, mutate] of cases) {
     const { intent, authority } = authorityPair();
     mutate(intent);
-    authority.deployment_intent_sha256 = canonicalArtifactSha256(intent);
+    rebindReleaseAuthority(authority, {
+      deploymentIntentSha256: canonicalArtifactSha256(intent),
+    });
     assert.throws(
       () => projectCeremonyAuthorityEnvironment(intent, authority),
       new RegExp(label),
@@ -368,7 +441,7 @@ test("CLI checks canonical files and all three supplied pins", async () => {
       "--release-sha", intent.release.releaseSha,
     ];
     const projection = await runCeremonyAuthorityProjectorCli(args);
-    assert.equal(projection.assertionCount, 31);
+    assert.equal(projection.assertionCount, 36);
     await assert.rejects(
       runCeremonyAuthorityProjectorCli(args.with(7, `sha256:${"ff".repeat(32)}`)),
       /final-authority SHA-256 pin/,

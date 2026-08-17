@@ -79,7 +79,9 @@ function publicValue(key) {
   if (key === "TINKER_WALLET_AUTH_CHAIN_ID") return "84532";
   if (key === "TINKER_CHAIN_START_BLOCK") return "12345678";
   if (key.endsWith("_RUNTIME_CODE_HASH")) return `0x${bare("a")}`;
-  if (key.endsWith("_SHA256") || key.endsWith("_HASH")) return bare("a");
+  if (key.endsWith("_EPOCH")) return "1";
+  if (key.endsWith("_SHA256")) return sha("a");
+  if (key.endsWith("_HASH")) return bare("a");
   return `reviewed-${key.toLowerCase()}`;
 }
 

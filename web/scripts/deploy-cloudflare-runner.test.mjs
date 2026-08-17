@@ -34,6 +34,9 @@ import {
   FRONTEND_BUILD_CANDIDATE_STATUS,
   FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS,
 } from "./frontend-build-candidate-core.mjs";
+import {
+  royaltyReleasePolicyCommitment,
+} from "../../scripts/royalty-release-authority-core.mjs";
 
 const SHA = "1".repeat(40);
 const GIT_TREE_OID = `sha1:${"2".repeat(40)}`;
@@ -74,6 +77,67 @@ const ARENA_BINDINGS = Object.freeze({
     release_policy_commitment: `0x${"44".repeat(32)}`,
   }),
 });
+const ROYALTY = "0x3333333333333333333333333333333333333333";
+const ROYALTY_OWNER = "0x4444444444444444444444444444444444444444";
+const ROYALTY_SETTLEMENT_VERIFIER = "0x5555555555555555555555555555555555555555";
+const ROYALTY_QVL_VERIFIER = "0x6666666666666666666666666666666666666666";
+const EXECUTION_POLICY_ANCHOR = "0x8888888888888888888888888888888888888888";
+const EXECUTION_POLICY_WRITER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const EXECUTION_POLICY_WRITER_RELEASE = `0x${"ab".repeat(32)}`;
+const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
+const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+const ROYALTY_RELEASE_POLICY = royaltyReleasePolicyCommitment({
+  chainId: 84532,
+  distributorAddress: ROYALTY,
+  authorityNonce: 1,
+  settlementVerifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvlVerifier: ROYALTY_QVL_VERIFIER,
+  executionPolicyAnchor: EXECUTION_POLICY_ANCHOR,
+  anchorWriterReleaseCommitment: EXECUTION_POLICY_WRITER_RELEASE,
+});
+const ROYALTY_AUTHORITY_JSON = JSON.stringify({
+  schema: "dnai.royalty-release-authority.v1",
+  chain_id: 84532,
+  distributor_address: ROYALTY,
+  owner: ROYALTY_OWNER,
+  settlement_verifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvl_verifier: ROYALTY_QVL_VERIFIER,
+  execution_policy_anchor: EXECUTION_POLICY_ANCHOR,
+  anchor_writer: EXECUTION_POLICY_WRITER,
+  anchor_writer_release_commitment: EXECUTION_POLICY_WRITER_RELEASE,
+  authority_nonce: 1,
+  authority_timelock_seconds: 172800,
+  release_policy_commitment: ROYALTY_RELEASE_POLICY,
+});
+const ROYALTY_ACTIVE_STATE_JSON = JSON.stringify({
+  schema: "dnai.royalty-release-state.v1",
+  chain_id: 84532,
+  contract_address: ROYALTY,
+  block_number: 123456,
+  block_hash: `0x${"bc".repeat(32)}`,
+  block_timestamp: 1_800_000_000,
+  owner: ROYALTY_OWNER,
+  pending_owner: ZERO_ADDRESS,
+  paused: false,
+  settlement_verifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvl_verifier: ROYALTY_QVL_VERIFIER,
+  execution_policy_anchor: EXECUTION_POLICY_ANCHOR,
+  anchor_writer_release_commitment: EXECUTION_POLICY_WRITER_RELEASE,
+  release_policy_commitment: ROYALTY_RELEASE_POLICY,
+  authority_nonce: 1,
+  pending_settlement_verifier: ZERO_ADDRESS,
+  pending_qvl_verifier: ZERO_ADDRESS,
+  pending_execution_policy_anchor: ZERO_ADDRESS,
+  pending_anchor_writer_release_commitment: ZERO_BYTES32,
+  pending_release_policy_commitment: ZERO_BYTES32,
+  pending_authority_nonce: 0,
+  pending_authority_activates_at: 0,
+  pending_authority_revocation: false,
+  settlement_verifier_ever_configured: true,
+  qvl_verifier_ever_configured: true,
+  anchor_writer_ever_configured: true,
+  computed_release_policy_commitment: ROYALTY_RELEASE_POLICY,
+});
 const LIVE_ENV = {
   ...Object.fromEntries(releaseEnvTest.ENV_KEYS.map((key) => [key, ""])),
   ...Object.fromEntries(cloudflareTest.REQUIRED_LIVE_BINDINGS.map((key) => [key, "release-pinned"])),
@@ -81,6 +145,26 @@ const LIVE_ENV = {
   VITE_BASE_SEPOLIA_SECONDARY_RPC_URL: "https://base-sepolia-rpc.publicnode.com",
   VITE_RELEASE_SHA: SHA,
   VITE_DILIGENCE_ROOM_ADDRESS: "0x1111111111111111111111111111111111111111",
+  VITE_ROYALTY_DISTRIBUTOR_ADDRESS: ROYALTY,
+  VITE_ROYALTY_DISTRIBUTOR_CODE_HASH: `0x${"77".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_AUTHORITY_JSON: ROYALTY_AUTHORITY_JSON,
+  VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON: ROYALTY_ACTIVE_STATE_JSON,
+  VITE_ROYALTY_RELEASE_HISTORY_SHA256: `sha256:${"78".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256: `sha256:${"79".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_ACTIVE_STATE_SHA256: `sha256:${"7a".repeat(32)}`,
+  VITE_FINAL_RELEASE_AUTHORITY_SHA256: `sha256:${"7b".repeat(32)}`,
+  VITE_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256:
+    `sha256:${"7c".repeat(32)}`,
+  VITE_COLLABORATION_EXECUTION_SERVICE: "collaboration-execution-worker",
+  VITE_COLLABORATION_EXECUTION_PROFILE: "collaboration-execution",
+  VITE_COLLABORATION_EXECUTION_RELEASE_SHA: SHA,
+  VITE_COLLABORATION_EXECUTION_MAIN_RUNTIME_CVM_ID: "release-pinned",
+  VITE_COLLABORATION_EXECUTION_ENABLED: "true",
+  VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED: "false",
+  VITE_EXECUTION_POLICY_ANCHOR_ADDRESS: EXECUTION_POLICY_ANCHOR,
+  VITE_EXECUTION_POLICY_ANCHOR_WRITER: EXECUTION_POLICY_WRITER,
+  VITE_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:
+    EXECUTION_POLICY_WRITER_RELEASE,
   VITE_COMPUTE_CREDIT_VAULT_ADDRESS: "0x7777777777777777777777777777777777777777",
   VITE_COMPUTE_CREDIT_VAULT_CODE_HASH: `0x${"88".repeat(32)}`,
   VITE_ENABLE_CONTRACT_WRITES: "true",

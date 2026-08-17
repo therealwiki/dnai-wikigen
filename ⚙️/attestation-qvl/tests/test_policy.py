@@ -53,6 +53,7 @@ def test_checked_in_example_is_schema_valid():
         == 84_532
     )
     assert diligence.policy.report_data_binding.kind == "diligence_result_signer_v1"
+    assert diligence.policy.royalty_settlement_binding is not None
     assert diligence.policy.email_oracle_kms_restart_binding is not None
     assert arena.policy.report_data_binding.kind == "arena_candidate_ingress_v1"
     assert (
@@ -211,6 +212,54 @@ def test_email_kms_restart_binding_is_exact_and_diligence_only(tmp_path, mutatio
     payload = policy_payload(email_restart=True)
     mutation(payload)
     path = tmp_path / "invalid-email-kms.json"
+    _write_raw(path, json.dumps(payload).encode())
+    with pytest.raises(VerifierUnavailable):
+        load_release_policy(str(path.resolve()))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value.update({"chain_id": 1}),
+        lambda value: value.update(
+            {
+                "report_data_binding": policy_payload(arena=True)[
+                    "report_data_binding"
+                ]
+            }
+        ),
+        lambda value: value.update(
+            {"allowed_signer_addresses": ["0x" + "24" * 20]}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"distributor_address": value["contract_address"]}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"authority_nonce": "0"}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"qvl_signer_key_id": "0x" + "00" * 32}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"max_authorization_lifetime_seconds": 601}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"settlement_verifier_key_path": "tinker/shared_signer"}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"settlement_verifier_custody": "operator_key"}
+        ),
+        lambda value: value["royalty_settlement_binding"].update(
+            {"release_authority_sha256": "sha256:" + "00" * 32}
+        ),
+    ],
+)
+def test_royalty_binding_is_diligence_only_and_role_release_exact(
+    tmp_path, mutation
+):
+    payload = policy_payload(royalty=True)
+    mutation(payload)
+    path = tmp_path / "invalid-royalty.json"
     _write_raw(path, json.dumps(payload).encode())
     with pytest.raises(VerifierUnavailable):
         load_release_policy(str(path.resolve()))

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -22,9 +21,11 @@ import {
 } from "./phala-pinned-private-directory.mjs";
 
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_SCHEMA =
-  "dnai.phala-seven-cvm-historical-transcript-persistence-receipt.v1";
+  "dnai.phala-seven-cvm-historical-transcript-persistence-receipt.v2";
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_DOMAIN =
-  "dnai-wikigen/phala-seven-cvm-historical-transcript-persistence-receipt/v1\0";
+  "dnai-wikigen/phala-seven-cvm-historical-transcript-persistence-receipt/v2\0";
+export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA =
+  "dnai.phala-seven-cvm-historical-transcript-persistence-preflight.v1";
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MANIFEST_BASENAME =
   "phala-transcript-set.manifest.json";
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_LOCK_BASENAME =
@@ -33,6 +34,7 @@ export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_LOCK_BASENAME =
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const MANIFEST_MAX_BYTES = 128 * 1024;
 const RECEIPTS = new WeakMap();
+const PREPARED_PERSISTENCE = new WeakMap();
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -117,7 +119,10 @@ export function normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt(
     "write_once",
     "descriptor_relative_io",
     "stable_reread_verified",
-    "raw_quote_public_egress",
+    "private_historical_transcript_persisted",
+    "private_historical_transcript_contains_raw_quote_and_collateral",
+    "raw_quote_publicly_disclosed",
+    "raw_collateral_publicly_disclosed",
     "raw_secret_egress",
     "live_traffic_authorized",
   ], "historical transcript persistence receipt");
@@ -129,7 +134,11 @@ export function normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt(
     || parsed.write_once !== true
     || parsed.descriptor_relative_io !== true
     || parsed.stable_reread_verified !== true
-    || parsed.raw_quote_public_egress !== false
+    || parsed.private_historical_transcript_persisted !== true
+    || parsed.private_historical_transcript_contains_raw_quote_and_collateral
+      !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
     || parsed.raw_secret_egress !== false
     || parsed.live_traffic_authorized !== false) {
     throw new Error("historical transcript persistence truth boundary is invalid");
@@ -161,7 +170,121 @@ export function normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt(
     write_once: true,
     descriptor_relative_io: true,
     stable_reread_verified: true,
-    raw_quote_public_egress: false,
+    private_historical_transcript_persisted: true,
+    private_historical_transcript_contains_raw_quote_and_collateral: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+    live_traffic_authorized: false,
+  });
+}
+
+function persistenceReceiptCandidate({
+  directoryIdentityAnchorSha256,
+  sevenCvmVerifiedEvidenceSetSha256,
+  transcriptFileSet,
+}) {
+  const fileSet = normalizePhalaSevenCvmHistoricalTranscriptFileSet(
+    transcriptFileSet,
+  );
+  return normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt({
+    schema: PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_SCHEMA,
+    status: "exact_14_verified_envelopes_durably_persisted",
+    truth_status:
+      "live_branded_verifier_envelopes_written_once_and_reread_via_one_pinned_recovery_directory",
+    phala_recovery_directory_identity_anchor_sha256:
+      directoryIdentityAnchorSha256,
+    seven_cvm_verified_evidence_set_sha256:
+      sevenCvmVerifiedEvidenceSetSha256,
+    historical_transcript_file_set_sha256:
+      phalaSevenCvmHistoricalTranscriptFileSetSha256(fileSet),
+    transcript_file_set: fileSet,
+    file_basenames: frozenBasenames(),
+    file_mode: "0600",
+    write_once: true,
+    descriptor_relative_io: true,
+    stable_reread_verified: true,
+    private_historical_transcript_persisted: true,
+    private_historical_transcript_contains_raw_quote_and_collateral: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+    live_traffic_authorized: false,
+  });
+}
+
+export function normalizePhalaSevenCvmHistoricalTranscriptPersistencePreflight(
+  value,
+) {
+  const parsed = exactRecord(value, [
+    "schema",
+    "status",
+    "truth_status",
+    "phala_recovery_directory_identity_anchor_sha256",
+    "seven_cvm_verified_evidence_set_sha256",
+    "historical_transcript_file_set_sha256",
+    "transcript_file_set",
+    "anticipated_persistence_receipt_sha256",
+    "private_historical_transcript_required",
+    "durable_persistence_completed",
+    "raw_quote_publicly_disclosed",
+    "raw_collateral_publicly_disclosed",
+    "raw_secret_egress",
+    "live_traffic_authorized",
+  ], "historical transcript persistence preflight");
+  if (parsed.schema
+      !== PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA
+    || parsed.status !== "exact_14_verified_envelopes_prepared_not_persisted"
+    || parsed.truth_status
+      !== "live_branded_verifier_envelopes_validated_in_memory_before_first_descriptor_relative_write"
+    || parsed.private_historical_transcript_required !== true
+    || parsed.durable_persistence_completed !== false
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false
+    || parsed.live_traffic_authorized !== false) {
+    throw new Error("historical transcript persistence preflight truth boundary is invalid");
+  }
+  const anchor = sha256(
+    parsed.phala_recovery_directory_identity_anchor_sha256,
+    "transcript preflight recovery-directory identity anchor",
+  );
+  const evidenceSetSha256 = sha256(
+    parsed.seven_cvm_verified_evidence_set_sha256,
+    "transcript preflight verified evidence set",
+  );
+  const fileSet = normalizePhalaSevenCvmHistoricalTranscriptFileSet(
+    parsed.transcript_file_set,
+  );
+  const fileSetSha256 = phalaSevenCvmHistoricalTranscriptFileSetSha256(fileSet);
+  if (parsed.historical_transcript_file_set_sha256 !== fileSetSha256) {
+    throw new Error("historical transcript persistence preflight file-set digest drifted");
+  }
+  const candidate = persistenceReceiptCandidate({
+    directoryIdentityAnchorSha256: anchor,
+    sevenCvmVerifiedEvidenceSetSha256: evidenceSetSha256,
+    transcriptFileSet: fileSet,
+  });
+  const anticipated = phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(
+    candidate,
+  );
+  if (parsed.anticipated_persistence_receipt_sha256 !== anticipated) {
+    throw new Error("historical transcript persistence preflight receipt digest drifted");
+  }
+  return Object.freeze({
+    schema: PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA,
+    status: "exact_14_verified_envelopes_prepared_not_persisted",
+    truth_status:
+      "live_branded_verifier_envelopes_validated_in_memory_before_first_descriptor_relative_write",
+    phala_recovery_directory_identity_anchor_sha256: anchor,
+    seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
+    historical_transcript_file_set_sha256: fileSetSha256,
+    transcript_file_set: fileSet,
+    anticipated_persistence_receipt_sha256: anticipated,
+    private_historical_transcript_required: true,
+    durable_persistence_completed: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
     live_traffic_authorized: false,
   });
@@ -247,6 +370,7 @@ function persistExportedEntries(options = {}, {
   afterLock = null,
   afterEnvelope = null,
   afterManifest = null,
+  authorizeReceipt = false,
 } = {}) {
   for (const [name, callback] of Object.entries({
     afterLock,
@@ -256,6 +380,9 @@ function persistExportedEntries(options = {}, {
     if (callback !== null && typeof callback !== "function") {
       throw new Error(`historical transcript test control ${name} is invalid`);
     }
+  }
+  if (typeof authorizeReceipt !== "boolean") {
+    throw new Error("historical transcript receipt authorization mode is invalid");
   }
   const {
     directory,
@@ -345,23 +472,10 @@ function persistExportedEntries(options = {}, {
       }));
       afterEnvelope?.(index);
     }
-    receipt = normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt({
-      schema: PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_SCHEMA,
-      status: "exact_14_verified_envelopes_durably_persisted",
-      truth_status:
-        "live_branded_verifier_envelopes_written_once_and_reread_via_one_pinned_recovery_directory",
-      phala_recovery_directory_identity_anchor_sha256: anchor,
-      seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
-      historical_transcript_file_set_sha256: exported.fileSetSha256,
-      transcript_file_set: exported.fileSet,
-      file_basenames: frozenBasenames(),
-      file_mode: "0600",
-      write_once: true,
-      descriptor_relative_io: true,
-      stable_reread_verified: true,
-      raw_quote_public_egress: false,
-      raw_secret_egress: false,
-      live_traffic_authorized: false,
+    receipt = persistenceReceiptCandidate({
+      directoryIdentityAnchorSha256: anchor,
+      sevenCvmVerifiedEvidenceSetSha256: evidenceSetSha256,
+      transcriptFileSet: exported.fileSet,
     });
     const bytes = manifestBytes(receipt);
     const manifestIdentity = createExclusivePhalaPinnedPrivateFile(
@@ -449,19 +563,128 @@ function persistExportedEntries(options = {}, {
   if (!publicationComplete || !receipt) {
     throw new Error("historical transcript publication did not reach its commit boundary");
   }
-  RECEIPTS.set(receipt, Object.freeze({
-    directory,
-    directory_identity_anchor_sha256: anchor,
-    seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
-    historical_transcript_file_set_sha256: expectedFileSetSha256,
-    receipt_sha256:
-      phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(receipt),
-    text_entries: Object.freeze(exported.entries),
-  }));
+  if (authorizeReceipt) {
+    RECEIPTS.set(receipt, Object.freeze({
+      directory,
+      directory_identity_anchor_sha256: anchor,
+      seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
+      historical_transcript_file_set_sha256: expectedFileSetSha256,
+      receipt_sha256:
+        phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(receipt),
+      text_entries: Object.freeze(exported.entries),
+    }));
+  }
   return receipt;
 }
 
-export async function persistProductionPhalaSevenCvmHistoricalTranscriptFiles(
+function assertEmptyAnchoredTranscriptDirectory(directory, anchor) {
+  const pinnedDirectory = pinPhalaPrivateDirectory(directory, {
+    expectedIdentityAnchorSha256: anchor,
+  });
+  try {
+    rejectExistingTranscriptState(pinnedDirectory);
+    assertPinnedPhalaPrivateDirectoryPathIdentity(pinnedDirectory);
+  } finally {
+    closePhalaPinnedPrivateDirectory(pinnedDirectory);
+  }
+}
+
+function prepareExportedTranscriptEntries(options = {}) {
+  const {
+    directory,
+    directoryIdentityAnchorSha256,
+    sevenCvmVerifiedEvidenceSetSha256,
+    expectedHistoricalTranscriptFileSetSha256,
+    entries,
+  } = exactRecord(options, [
+    "directory",
+    "directoryIdentityAnchorSha256",
+    "sevenCvmVerifiedEvidenceSetSha256",
+    "expectedHistoricalTranscriptFileSetSha256",
+    "entries",
+  ], "exported historical transcript persistence preflight input");
+  const anchor = sha256(
+    directoryIdentityAnchorSha256,
+    "transcript persistence preflight recovery-directory anchor",
+  );
+  const evidenceSetSha256 = sha256(
+    sevenCvmVerifiedEvidenceSetSha256,
+    "transcript persistence preflight evidence set",
+  );
+  const expectedFileSetSha256 = sha256(
+    expectedHistoricalTranscriptFileSetSha256,
+    "transcript persistence preflight historical file set",
+  );
+  const exported = validateExportedEntries(entries);
+  if (exported.fileSetSha256 !== expectedFileSetSha256) {
+    throw new Error(
+      "exported exact-14 transcript bytes differ from verified evidence authority",
+    );
+  }
+  const candidate = persistenceReceiptCandidate({
+    directoryIdentityAnchorSha256: anchor,
+    sevenCvmVerifiedEvidenceSetSha256: evidenceSetSha256,
+    transcriptFileSet: exported.fileSet,
+  });
+  const anticipatedReceiptSha256 =
+    phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(candidate);
+  const preflight =
+    normalizePhalaSevenCvmHistoricalTranscriptPersistencePreflight({
+      schema:
+        PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA,
+      status: "exact_14_verified_envelopes_prepared_not_persisted",
+      truth_status:
+        "live_branded_verifier_envelopes_validated_in_memory_before_first_descriptor_relative_write",
+      phala_recovery_directory_identity_anchor_sha256: anchor,
+      seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
+      historical_transcript_file_set_sha256: exported.fileSetSha256,
+      transcript_file_set: exported.fileSet,
+      anticipated_persistence_receipt_sha256: anticipatedReceiptSha256,
+      private_historical_transcript_required: true,
+      durable_persistence_completed: false,
+      raw_quote_publicly_disclosed: false,
+      raw_collateral_publicly_disclosed: false,
+      raw_secret_egress: false,
+      live_traffic_authorized: false,
+    });
+  assertEmptyAnchoredTranscriptDirectory(directory, anchor);
+  PREPARED_PERSISTENCE.set(preflight, Object.freeze({
+    directory,
+    directory_identity_anchor_sha256: anchor,
+    seven_cvm_verified_evidence_set_sha256: evidenceSetSha256,
+    historical_transcript_file_set_sha256: exported.fileSetSha256,
+    anticipated_persistence_receipt_sha256: anticipatedReceiptSha256,
+    entries: Object.freeze(exported.entries),
+  }));
+  return preflight;
+}
+
+export function assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence(
+  value,
+) {
+  const state = value && PREPARED_PERSISTENCE.get(value);
+  if (!state) {
+    throw new Error(
+      "a live one-shot exact-14 transcript persistence preflight is required",
+    );
+  }
+  const normalized =
+    normalizePhalaSevenCvmHistoricalTranscriptPersistencePreflight(value);
+  if (canonicalText(normalized) !== canonicalText(value)
+    || normalized.anticipated_persistence_receipt_sha256
+      !== state.anticipated_persistence_receipt_sha256
+    || normalized.phala_recovery_directory_identity_anchor_sha256
+      !== state.directory_identity_anchor_sha256
+    || normalized.seven_cvm_verified_evidence_set_sha256
+      !== state.seven_cvm_verified_evidence_set_sha256
+    || normalized.historical_transcript_file_set_sha256
+      !== state.historical_transcript_file_set_sha256) {
+    throw new Error("exact-14 transcript persistence preflight authority drifted");
+  }
+  return value;
+}
+
+export async function prepareProductionPhalaSevenCvmHistoricalTranscriptPersistence(
   options = {},
 ) {
   const {
@@ -476,9 +699,21 @@ export async function persistProductionPhalaSevenCvmHistoricalTranscriptFiles(
     "verifiedEvidenceSet",
     "qvlIdentityEvidence",
     "workloadVerdictEvidence",
-  ], "production historical transcript persistence input");
+  ], "production historical transcript persistence preflight input");
+  const anchor = sha256(
+    directoryIdentityAnchorSha256,
+    "transcript persistence preflight recovery-directory anchor",
+  );
+
+  // This first pinned-FD pass is intentionally non-mutating. It proves that
+  // the externally authenticated recovery directory is empty before any raw
+  // quote/collateral transcript bytes are even exported into process memory.
+  assertEmptyAnchoredTranscriptDirectory(directory, anchor);
+
   const verifier = await import("./phala-seven-cvm-verifier-evidence.mjs");
-  if (typeof verifier.exportPhalaSevenCvmHistoricalTranscriptFiles !== "function") {
+  if (typeof verifier.exportPhalaSevenCvmHistoricalTranscriptFiles !== "function"
+    || typeof verifier.assertProductionPhalaSevenCvmEvidenceSet !== "function"
+    || typeof verifier.phalaSevenCvmVerifiedEvidenceSetSha256 !== "function") {
     throw new Error("the frozen exact-14 verifier transcript exporter is unavailable");
   }
   const entries = await verifier.exportPhalaSevenCvmHistoricalTranscriptFiles({
@@ -489,14 +724,67 @@ export async function persistProductionPhalaSevenCvmHistoricalTranscriptFiles(
   const evidenceSet = verifier.assertProductionPhalaSevenCvmEvidenceSet(
     verifiedEvidenceSetValue,
   );
-  return persistExportedEntries({
+  const evidenceSetSha256 = verifier.phalaSevenCvmVerifiedEvidenceSetSha256(
+    evidenceSet,
+  );
+  // The exporter and evidence checks may await local verifier work. Reopen the
+  // path and authenticate the same sibling identity anchor again immediately
+  // before returning a persistence capability.
+  return prepareExportedTranscriptEntries({
     directory,
-    directoryIdentityAnchorSha256,
-    sevenCvmVerifiedEvidenceSetSha256:
-      verifier.phalaSevenCvmVerifiedEvidenceSetSha256(evidenceSet),
+    directoryIdentityAnchorSha256: anchor,
+    sevenCvmVerifiedEvidenceSetSha256: evidenceSetSha256,
     expectedHistoricalTranscriptFileSetSha256:
       evidenceSet.historical_transcript_file_set_sha256,
     entries,
+  });
+}
+
+export function persistPreparedProductionPhalaSevenCvmHistoricalTranscriptFiles(
+  options = {},
+) {
+  const { preflight } = exactRecord(options, [
+    "preflight",
+  ], "prepared production historical transcript persistence input");
+  const prepared =
+    assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence(
+      preflight,
+    );
+  const state = PREPARED_PERSISTENCE.get(prepared);
+
+  // Burn before entering the first create-only write. A partial write, lock,
+  // manifest, or release-quarantine failure can never reuse the same in-memory
+  // persistence capability.
+  PREPARED_PERSISTENCE.delete(prepared);
+  const receipt = persistExportedEntries({
+    directory: state.directory,
+    directoryIdentityAnchorSha256: state.directory_identity_anchor_sha256,
+    sevenCvmVerifiedEvidenceSetSha256:
+      state.seven_cvm_verified_evidence_set_sha256,
+    expectedHistoricalTranscriptFileSetSha256:
+      state.historical_transcript_file_set_sha256,
+    entries: state.entries,
+  }, {
+    authorizeReceipt: true,
+  });
+  if (phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(receipt)
+      !== state.anticipated_persistence_receipt_sha256) {
+    throw new Error(
+      "durable transcript receipt differs from its complete pre-write preflight",
+    );
+  }
+  return receipt;
+}
+
+export async function persistProductionPhalaSevenCvmHistoricalTranscriptFiles(
+  options = {},
+) {
+  const preflight =
+    await prepareProductionPhalaSevenCvmHistoricalTranscriptPersistence(
+      options,
+    );
+  return persistPreparedProductionPhalaSevenCvmHistoricalTranscriptFiles({
+    preflight,
   });
 }
 
@@ -670,46 +958,30 @@ export function readDurablyPersistedPhalaSevenCvmHistoricalTranscriptTextEntries
   return RECEIPTS.get(value).text_entries;
 }
 
-function isExactNodeTestEntrypoint() {
-  const entrypoint = process.argv[1];
-  if (process.env.NODE_TEST_CONTEXT !== "child-v8"
-    || typeof entrypoint !== "string" || !entrypoint.endsWith(".test.mjs")) {
-    return false;
-  }
-  try {
-    return path.resolve(entrypoint) === fs.realpathSync.native(entrypoint);
-  } catch {
-    return false;
-  }
-}
-
-function persistSyntheticPhalaSevenCvmHistoricalTranscriptFiles(options = {}) {
-  if (!isExactNodeTestEntrypoint()) {
-    throw new Error("synthetic transcript persistence is available only in node --test");
-  }
-  return persistExportedEntries(options);
-}
-
-function persistSyntheticPhalaSevenCvmHistoricalTranscriptFilesWithControls(
+/**
+ * Exercise the descriptor-relative persistence machinery without minting the
+ * module-private production receipt brand. This is intentionally useful to
+ * fault-injection harnesses, but its result cannot satisfy
+ * `assertDurablyPersisted...`; production authority is created only after the
+ * branded verifier preflight or an authenticated crash-recovery reload.
+ */
+export function persistUnbrandedPhalaSevenCvmHistoricalTranscriptFilesForHarness(
   options = {},
 ) {
-  if (!isExactNodeTestEntrypoint()) {
-    throw new Error("controlled synthetic transcript persistence is available only in node --test");
-  }
   const parsed = exactRecord(options, [
     "persistenceOptions",
     "afterLock",
     "afterEnvelope",
     "afterManifest",
   ], "controlled synthetic transcript persistence input");
-  return persistExportedEntries(parsed.persistenceOptions, {
+  const receipt = persistExportedEntries(parsed.persistenceOptions, {
     afterLock: parsed.afterLock,
     afterEnvelope: parsed.afterEnvelope,
     afterManifest: parsed.afterManifest,
+    authorizeReceipt: false,
   });
+  if (RECEIPTS.has(receipt)) {
+    throw new Error("unbranded transcript harness unexpectedly minted authority");
+  }
+  return receipt;
 }
-
-export const __test = Object.freeze({
-  persistSyntheticPhalaSevenCvmHistoricalTranscriptFiles,
-  persistSyntheticPhalaSevenCvmHistoricalTranscriptFilesWithControls,
-});

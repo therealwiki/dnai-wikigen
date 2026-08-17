@@ -24,8 +24,10 @@ import {
 import networkImage from "../assets/pitch/attested-network.webp";
 import { keccak256, type Address, type Hex } from "viem";
 import { computeVaultDeployment, deployment, explorerAddress } from "../config";
+import { CvmTopology } from "../components/CvmTopology";
 import { EmailOracleReadinessPanel } from "../components/EmailOracleReadinessPanel";
 import { publicClient, shortAddress } from "../lib/contract";
+import type { MainRuntimeObservation } from "../lib/cvmTopology";
 import type {
   VerificationContext,
   VerificationContextClassification,
@@ -201,15 +203,15 @@ function selectedEvidencePresentation(context: VerificationContext): SelectedEvi
 
     if (context.classification === "illustrative_only") {
       return {
-        title: "Illustrative Deal Room result",
-        subtitle: "Designed sample · no chain read, worker execution, or attestation verification",
+        title: `Illustrative Deal Room ${context.roomId} result`,
+        subtitle: `Designed sample for public room ${context.roomId} · no chain read, worker execution, or attestation verification`,
         caveat: "These are modeled display values. No contract reported them, no evaluator ran, and no raw TDX quote, QVL verdict, Intel collateral, result signature, or release-policy match exists for this sample.",
         facts,
       };
     }
     return {
-      title: "Deal Room result projection",
-      subtitle: "Contract-reported public fields · independent browser verification not performed",
+      title: `Deal Room ${context.roomId} result projection`,
+      subtitle: `Room ${context.roomId} contract-reported public fields · independent browser verification not performed`,
       caveat: "The Deal Room read path reports these public result and attestation commitments. This browser has not authenticated the result-verifier or QVL signatures, received or checked a raw TDX quote, verified Intel collateral, or matched the evidence to the approved release policy.",
       facts,
     };
@@ -348,10 +350,12 @@ export function Verify(props: {
   const receiptByteLength = createMemo(() => new TextEncoder().encode(receiptText()).byteLength);
   const observationSummary = createMemo(() => {
     const contracts = observedContractCount();
-    const endpointObserved = ["observed", "incomplete", "modeled"].includes(envelopeState());
+    const endpointObserved = ["observed", "incomplete"].includes(envelopeState());
     if (contracts > 0 && endpointObserved) return { title: "Reachability observed", detail: `${contracts} configured contract${contracts === 1 ? " has" : "s have"} bytecode, and the configured endpoint returned a bounded envelope. Neither observation verifies deployment policy.` };
+    if (contracts > 0 && envelopeState() === "modeled") return { title: "Contract runtime + local model", detail: `${contracts} configured contract${contracts === 1 ? " has" : "s have"} bytecode. The endpoint returned only a local simulator envelope, not production TDX runtime evidence.` };
     if (contracts > 0) return { title: "Contract runtime observed", detail: `${contracts} configured address${contracts === 1 ? " has" : "es have"} bytecode; every row carrying a release code-hash pin also matched it. The confidential-runtime envelope has not been observed.` };
     if (endpointObserved) return { title: "Endpoint envelope observed", detail: "The configured endpoint returned an allowlisted envelope. No configured contract bytecode has been observed." };
+    if (envelopeState() === "modeled") return { title: "Local model observed", detail: "The configured endpoint returned a bounded simulator envelope. It is not production TDX runtime, deployment, or QVL evidence." };
     if (configuredContractCount() > 0 || deployment.delegateUrl) return { title: "Configuration present", detail: "Addresses or an endpoint are configured, but this browser has not yet observed the corresponding evidence." };
     return { title: "No fresh deployment config", detail: "This build intentionally does not inherit the previous operator's contracts or CVM." };
   });
@@ -514,6 +518,20 @@ export function Verify(props: {
     }
   };
 
+  const topologyObservation = (): MainRuntimeObservation => {
+    switch (envelopeState()) {
+      case "observed": return "tdx_envelope_observed";
+      case "incomplete": return "tdx_envelope_incomplete";
+      case "modeled": return "local_modeled";
+      case "loading": return "loading";
+      case "unsafe":
+      case "error":
+        return "rejected";
+      default:
+        return "not_checked";
+    }
+  };
+
   return (
     <div class="product-page verify-page">
       <section class="verify-hero">
@@ -561,6 +579,8 @@ export function Verify(props: {
             </section>
           )}
         </Show>
+
+        <CvmTopology mainRuntimeObservation={topologyObservation()} />
 
         <section class="verification-ladder">
           <div class="section-heading split-heading compact-heading"><div><p class="overline">Evidence maturity</p><h2 id="verification-ladder-title" tabindex="-1">Six levels—not one boolean.</h2></div><p>Each level adds a distinct claim. A result may proceed only to the highest independently checked level.</p></div>

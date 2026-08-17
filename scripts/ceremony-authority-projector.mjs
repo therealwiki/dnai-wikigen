@@ -19,11 +19,11 @@ import {
 
 export const CEREMONY_AUTHORITY_PROJECTION_SCHEMA =
   "dnai.ceremony-authority-projection.v1";
-export const CEREMONY_AUTHORITY_ASSERTION_COUNT = 31;
+export const CEREMONY_AUTHORITY_ASSERTION_COUNT = 36;
 export const CEREMONY_AUTHORITY_ALIAS_COUNT = 4;
 export const DEPLOYMENT_INTENT_ENVIRONMENT_PROJECTION_SCHEMA =
   "dnai.deployment-intent-environment-projection.v1";
-export const DEPLOYMENT_INTENT_ENVIRONMENT_ASSERTION_COUNT = 8;
+export const DEPLOYMENT_INTENT_ENVIRONMENT_ASSERTION_COUNT = 9;
 
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const SHA256_PIN = /^sha256:[0-9a-f]{64}$/;
@@ -76,6 +76,12 @@ export function projectDeploymentIntentEnvironment(deploymentIntentValue) {
       "RELEASE_SHA",
       intent.release.releaseSha,
       "deployment_intent.release.releaseSha",
+    ),
+    DILIGENCE_GOVERNANCE_CONTROLLER: assertion(
+      "contractEnv",
+      "DILIGENCE_GOVERNANCE_CONTROLLER",
+      intent.staticContractInputs.diligenceRoom.governanceController,
+      "deployment_intent.staticContractInputs.diligenceRoom.governanceController",
     ),
     COMPUTE_VAULT_DEVELOPER: assertion(
       "contractEnv",
@@ -177,6 +183,7 @@ export function projectCeremonyAuthorityEnvironment(
   const diligence = authority.contracts.diligence_room;
   const tinker = authority.contracts.tinker_account_encumbrance;
   const compute = authority.contracts.compute_credit_vault;
+  const usdc = authority.contracts.usdc;
   const email = authority.contracts.email_oracle_auth;
   const nativeRate = compute.rate_policies.native;
   const erc20Rate = compute.rate_policies.erc20;
@@ -194,6 +201,11 @@ export function projectCeremonyAuthorityEnvironment(
     "ExecutionPolicyAnchor writer launch-intent commitment",
   );
 
+  same(
+    diligence.developer,
+    intentStatic.diligenceRoom.governanceController,
+    "DiligenceRoom constructor release governance controller",
+  );
   same(
     compute.developer,
     intentStatic.computeCreditVault.developer,
@@ -238,6 +250,12 @@ export function projectCeremonyAuthorityEnvironment(
   }
 
   const assertions = {
+    DILIGENCE_GOVERNANCE_CONTROLLER: assertion(
+      "contractEnv",
+      "DILIGENCE_GOVERNANCE_CONTROLLER",
+      intentStatic.diligenceRoom.governanceController,
+      "deployment_intent.staticContractInputs.diligenceRoom.governanceController",
+    ),
     DILIGENCE_RESULT_VERIFIER: assertion(
       "contractEnv",
       "DILIGENCE_RESULT_VERIFIER",
@@ -358,6 +376,30 @@ export function projectCeremonyAuthorityEnvironment(
       "COMPUTE_METERING_POLICY_SET_HASH",
       compute.metering_policy_set_hash,
       "final_authority.contracts.compute_credit_vault.metering_policy_set_hash",
+    ),
+    COMPUTE_VAULT_ERC20_ASSET_ADDRESS: assertion(
+      "postDeployEnv",
+      "COMPUTE_VAULT_ERC20_ASSET_ADDRESS",
+      usdc.address,
+      "final_authority.contracts.usdc.address",
+    ),
+    COMPUTE_VAULT_ERC20_ASSET_CODE_HASH: assertion(
+      "postDeployEnv",
+      "COMPUTE_VAULT_ERC20_ASSET_CODE_HASH",
+      usdc.runtime_code_hash,
+      "final_authority.contracts.usdc.runtime_code_hash",
+    ),
+    COMPUTE_VAULT_ERC20_ASSET_SYMBOL: assertion(
+      "postDeployEnv",
+      "COMPUTE_VAULT_ERC20_ASSET_SYMBOL",
+      usdc.symbol,
+      "final_authority.contracts.usdc.symbol",
+    ),
+    COMPUTE_VAULT_ERC20_ASSET_DECIMALS: assertion(
+      "postDeployEnv",
+      "COMPUTE_VAULT_ERC20_ASSET_DECIMALS",
+      usdc.decimals,
+      "final_authority.contracts.usdc.decimals",
     ),
 
     EMAIL_ORACLE_UPGRADE_DELAY: assertion(

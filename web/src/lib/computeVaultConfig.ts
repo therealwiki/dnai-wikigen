@@ -8,6 +8,7 @@ export interface ComputeVaultTokenConfig {
   symbol: string;
   decimals: number;
   ratePolicyCommitment?: Hex;
+  ratePolicyProvider?: Address;
 }
 
 export interface ComputeVaultDeploymentConfig {
@@ -20,9 +21,11 @@ export interface ComputeVaultDeploymentConfig {
   meteringQvlVerifier?: Address;
   meteringPolicySetHash?: Hex;
   meteringVerifiedQuoteSha256?: `sha256:${string}`;
+  developerFeeBps?: number;
   teeIdentity?: Address;
   composeHash?: Hex;
   nativeRatePolicyCommitment?: Hex;
+  nativeRatePolicyProvider?: Address;
   token?: ComputeVaultTokenConfig;
   fundingConfigured: boolean;
   authorizationConfigured: boolean;
@@ -32,6 +35,7 @@ export interface ComputeVaultDeploymentConfig {
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const SHA256_PIN = /^sha256:[0-9a-f]{64}$/;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function clean(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -70,6 +74,27 @@ function bytes32Value(env: EnvLike, key: string, issues: string[]): Hex | undefi
     return undefined;
   }
   return value.toLowerCase() as Hex;
+}
+
+function integerValue(
+  env: EnvLike,
+  key: string,
+  minimum: number,
+  maximum: number,
+  issues: string[],
+): number | undefined {
+  const value = clean(env[key]);
+  if (!value) return undefined;
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    issues.push(`${key} must be a canonical unsigned integer`);
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    issues.push(`${key} must be an integer from ${minimum} through ${maximum}`);
+    return undefined;
+  }
+  return parsed;
 }
 
 function sha256PinValue(
@@ -113,6 +138,13 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     "VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256",
     issues,
   );
+  const developerFeeBps = integerValue(
+    env,
+    "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
+    0,
+    2_000,
+    issues,
+  );
   const teeIdentity = addressValue(env, "VITE_COMPUTE_VAULT_TEE_IDENTITY", issues);
   const composeHash = bytes32Value(env, "VITE_COMPUTE_VAULT_COMPOSE_HASH", issues);
   const nativeRatePolicyCommitment = bytes32Value(
@@ -120,6 +152,14 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     "VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT",
     issues,
   );
+  const nativeRatePolicyProvider = addressValue(
+    env,
+    "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
+    issues,
+  );
+  if (nativeRatePolicyProvider?.toLowerCase() === ZERO_ADDRESS) {
+    issues.push("VITE_COMPUTE_VAULT_NATIVE_PROVIDER cannot be the zero address");
+  }
 
   const tokenAddress = addressValue(env, "VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS", issues);
   const tokenCodeHash = bytes32Value(env, "VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH", issues);
@@ -128,10 +168,23 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
     issues,
   );
+  const tokenRatePolicyProvider = addressValue(
+    env,
+    "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
+    issues,
+  );
+  if (tokenRatePolicyProvider?.toLowerCase() === ZERO_ADDRESS) {
+    issues.push("VITE_COMPUTE_VAULT_ERC20_PROVIDER cannot be the zero address");
+  }
   const tokenSymbol = clean(env.VITE_COMPUTE_VAULT_ERC20_SYMBOL).toUpperCase();
   const decimalsRaw = clean(env.VITE_COMPUTE_VAULT_ERC20_DECIMALS);
   const tokenGroupPresent = Boolean(
-    tokenAddress || tokenCodeHash || tokenRatePolicyCommitment || tokenSymbol || decimalsRaw,
+    tokenAddress
+      || tokenCodeHash
+      || tokenRatePolicyCommitment
+      || tokenRatePolicyProvider
+      || tokenSymbol
+      || decimalsRaw,
   );
   let tokenDecimals: number | undefined;
   if (decimalsRaw) {
@@ -157,6 +210,12 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
       true,
       tokenRatePolicyCommitment,
       "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
+      issues,
+    );
+    requireWhen(
+      true,
+      tokenRatePolicyProvider,
+      "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
       issues,
     );
   }
@@ -201,6 +260,12 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     "VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256",
     issues,
   );
+  requireWhen(
+    fundingRequested,
+    developerFeeBps,
+    "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
+    issues,
+  );
   requireWhen(fundingRequested, teeIdentity, "VITE_COMPUTE_VAULT_TEE_IDENTITY", issues);
   requireWhen(fundingRequested, composeHash, "VITE_COMPUTE_VAULT_COMPOSE_HASH", issues);
   requireWhen(
@@ -209,6 +274,19 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     "VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT",
     issues,
   );
+  requireWhen(
+    fundingRequested,
+    nativeRatePolicyProvider,
+    "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
+    issues,
+  );
+  if (
+    nativeRatePolicyProvider
+    && tokenRatePolicyProvider
+    && nativeRatePolicyProvider.toLowerCase() === tokenRatePolicyProvider.toLowerCase()
+  ) {
+    issues.push("Compute vault native and ERC20 rate-policy providers must be distinct");
+  }
 
   const token = tokenAddress && tokenCodeHash && tokenSymbol && tokenDecimals !== undefined
     ? {
@@ -217,6 +295,7 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
         symbol: tokenSymbol,
         decimals: tokenDecimals,
         ratePolicyCommitment: tokenRatePolicyCommitment,
+        ratePolicyProvider: tokenRatePolicyProvider,
       }
     : undefined;
   // Funding is risk-increasing in the vault and is guarded by the same exact,
@@ -229,11 +308,14 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
       && meteringQvlVerifier
       && meteringPolicySetHash
       && meteringVerifiedQuoteSha256
+      && developerFeeBps !== undefined
       && teeIdentity
       && composeHash
       && nativeRatePolicyCommitment
+      && nativeRatePolicyProvider
       && token
       && token.ratePolicyCommitment
+      && token.ratePolicyProvider
       && issues.length === 0,
   );
   const authorizationConfigured = Boolean(
@@ -245,11 +327,14 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
       && meteringQvlVerifier
       && meteringPolicySetHash
       && meteringVerifiedQuoteSha256
+      && developerFeeBps !== undefined
       && teeIdentity
       && composeHash
       && nativeRatePolicyCommitment
+      && nativeRatePolicyProvider
       && token
       && token.ratePolicyCommitment
+      && token.ratePolicyProvider
       && issues.length === 0,
   );
 
@@ -263,9 +348,11 @@ export function parseComputeVaultConfig(env: EnvLike): ComputeVaultDeploymentCon
     meteringQvlVerifier,
     meteringPolicySetHash,
     meteringVerifiedQuoteSha256,
+    developerFeeBps,
     teeIdentity,
     composeHash,
     nativeRatePolicyCommitment,
+    nativeRatePolicyProvider,
     token,
     fundingConfigured,
     authorizationConfigured,

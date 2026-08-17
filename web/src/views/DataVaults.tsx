@@ -72,7 +72,7 @@ export function DataVaults(props: { navigate: (route: RouteKey) => void }) {
           <p>Center health records, physical specimens, molecular tests, and private inferences around the person or the biobank that governs them—then route approved questions into separate, bounded deal rooms.</p>
         </div>
         <button class="primary-button large" type="button" onClick={() => props.navigate("collaborate")}>
-          <Network size={17} /> Compose a vault network
+          <Network size={17} /> Open collaboration workspace
         </button>
       </header>
 
@@ -218,7 +218,7 @@ export function DataVaults(props: { navigate: (route: RouteKey) => void }) {
 
       <section class="vault-closing-cta">
         <div><CalendarClock size={25} /><div><p class="overline">Time-shifted biological value</p><h2>Preserve today. Ask better questions tomorrow.</h2><p>Model a multi-owner vault network now, or preview the release-gated single-seller room shape for a future bounded private evaluation.</p></div></div>
-        <div><button class="secondary-button large" type="button" onClick={() => props.navigate("collaborate")}><Workflow size={16} /> Model federation</button><button class="primary-button large" type="button" onClick={() => props.navigate("deals")}>Preview deal room <ArrowRight size={16} /></button></div>
+        <div><button class="secondary-button large" type="button" onClick={() => props.navigate("collaborate")}><Workflow size={16} /> Open collaboration workspace</button><button class="primary-button large" type="button" onClick={() => props.navigate("deals")}>Preview deal room <ArrowRight size={16} /></button></div>
       </section>
     </div>
   );

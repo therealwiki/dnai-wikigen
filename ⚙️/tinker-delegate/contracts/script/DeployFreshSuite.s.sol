@@ -20,6 +20,7 @@ contract DeployFreshSuiteScript is Script {
     uint256 internal constant BASE_SEPOLIA_CHAIN_ID = 84532;
     uint256 internal constant MIN_EMAIL_ORACLE_UPGRADE_DELAY = 2 days;
     uint256 internal constant MAX_EMAIL_ORACLE_UPGRADE_DELAY = 365 days;
+    uint256 internal constant MAX_FRESH_RELEASE_DEVELOPER_FEE_BPS = 100;
 
     function run()
         public
@@ -36,6 +37,7 @@ contract DeployFreshSuiteScript is Script {
         require(block.chainid == BASE_SEPOLIA_CHAIN_ID, "fresh suite is Base Sepolia only");
 
         address operator = vm.envAddress("DEPLOYMENT_OPERATOR");
+        address diligenceGovernanceController = vm.envAddress("DILIGENCE_GOVERNANCE_CONTROLLER");
         address computeDeveloper = vm.envAddress("COMPUTE_VAULT_DEVELOPER");
         uint256 computeDeveloperFeeBps = vm.envUint("COMPUTE_VAULT_DEVELOPER_FEE_BPS");
         bytes32 accountCommitment = vm.envBytes32("TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT");
@@ -47,15 +49,17 @@ contract DeployFreshSuiteScript is Script {
             vm.envBytes32("REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256_BYTES32");
 
         require(operator != address(0), "DEPLOYMENT_OPERATOR must be nonzero");
+        require(
+            diligenceGovernanceController != address(0) && diligenceGovernanceController != operator,
+            "DILIGENCE_GOVERNANCE_CONTROLLER must be nonzero and separate from operator"
+        );
+        require(
+            diligenceGovernanceController != computeDeveloper,
+            "diligence governance controller must be separate from compute developer"
+        );
         require(computeDeveloper != address(0), "COMPUTE_VAULT_DEVELOPER must be nonzero");
         require(computeDeveloper != operator, "compute developer must be separate from operator");
-        require(
-            computeDeveloperFeeBps <= 2000 && computeDeveloperFeeBps <= type(uint16).max,
-            "compute developer fee exceeds reviewed cap"
-        );
-        // The explicit reviewed-cap check above makes this narrowing exact.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint16 reviewedComputeDeveloperFeeBps = uint16(computeDeveloperFeeBps);
+        uint16 reviewedComputeDeveloperFeeBps = _reviewedComputeDeveloperFee(computeDeveloperFeeBps);
         require(accountCommitment != bytes32(0), "account commitment must be nonzero");
         require(deploymentIntentSha256 != bytes32(0), "deployment intent digest must be nonzero");
         require(
@@ -75,8 +79,17 @@ contract DeployFreshSuiteScript is Script {
 
         // Production posture is constructor-bound so the room is fail-closed
         // in the deployment transaction, before the later governance calls.
-        room = new DiligenceRoom(true);
+        room = new DiligenceRoom(true, diligenceGovernanceController);
         require(room.developer() == operator, "broadcast signer does not match DEPLOYMENT_OPERATOR");
+        require(room.initialDeveloper() == operator, "diligence initial developer mismatch");
+        require(
+            room.releaseGovernanceController() == diligenceGovernanceController,
+            "diligence release governance controller mismatch"
+        );
+        require(
+            room.pendingDeveloper() == address(0) && room.pendingDeveloperActivatesAt() == 0,
+            "diligence governance handoff must start unstaged"
+        );
         require(room.productionRelease(), "diligence room must deploy in production mode");
         // The public settlement meter must be deterministic for every deal in
         // this release. Freeze the reviewed 1% default before any contract can
@@ -124,7 +137,13 @@ contract DeployFreshSuiteScript is Script {
         require(encumbrance.approvedComposeCount() == 0, "encumbrance compose authority must start empty");
         require(encumbrance.managerCount() == 0, "encumbrance manager authority must start empty");
 
-        royalties = new RoyaltyDistributor();
+        // The royalty rail is intentionally fail-closed at deployment. The
+        // exact settlement-CVM/QVL/ExecutionPolicyAnchor binding completes a
+        // separate two-day release ceremony after final CVM measurement.
+        royalties = new RoyaltyDistributor(operator);
+        require(royalties.owner() == operator, "royalty owner mismatch");
+        require(royalties.paused(), "royalty distributor must deploy paused");
+        require(royalties.releasePolicyCommitment() == bytes32(0), "royalty authority must start empty");
         challenges = new ChallengeRegistry(operator);
         computeVault = new ComputeCreditVault(operator, computeDeveloper, reviewedComputeDeveloperFeeBps);
         // The fee embedded into every future timelocked rate-policy commitment
@@ -152,9 +171,20 @@ contract DeployFreshSuiteScript is Script {
         console.log("EmailOracleAuth:", address(emailOracleAuth));
         console.log("ExecutionPolicyAnchor:", address(executionPolicyAnchor));
         console.log("Operator:", operator);
+        console.log("Diligence governance controller:", diligenceGovernanceController);
         console.log("Result verifier (post-deploy):", room.resultVerifier());
         console.log("Compute developer:", computeDeveloper);
         console.log("Compute developer fee bps:", computeDeveloperFeeBps);
         console.log("Email oracle upgrade delay:", emailOracleUpgradeDelay);
+    }
+
+    function _reviewedComputeDeveloperFee(uint256 computeDeveloperFeeBps) internal pure returns (uint16) {
+        require(
+            computeDeveloperFeeBps <= MAX_FRESH_RELEASE_DEVELOPER_FEE_BPS && computeDeveloperFeeBps <= type(uint16).max,
+            "compute developer fee exceeds fresh-release cap"
+        );
+        // The explicit fresh-release cap above makes this narrowing exact.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(computeDeveloperFeeBps);
     }
 }

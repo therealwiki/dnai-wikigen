@@ -132,6 +132,9 @@
     "computeCreditVault": {
       "developer": null
     },
+    "diligenceRoom": {
+      "governanceController": null
+    },
     "tinkerAccountEncumbrance": {
       "accountCommitment": null
     }

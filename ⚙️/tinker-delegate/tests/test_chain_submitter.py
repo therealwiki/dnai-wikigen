@@ -16,6 +16,7 @@ from tinker_delegate.chain_submitter import (
     DealRead,
     DiligenceRoomSubmitter,
     DstackEthereumSigner,
+    PreparedSubmissionAttempt,
     PUBLIC_RESULT_TYPEHASH,
     SignerAttestationEvidence,
     SignerUnavailable,
@@ -217,7 +218,7 @@ class FakeRpc:
 
     def send_raw_transaction(self, raw_transaction: bytes):
         self.sent_raw_transactions.append(raw_transaction)
-        return "0x" + "ab" * 32
+        return "0x" + keccak(raw_transaction).hex()
 
 
 def _authorization_args(
@@ -270,6 +271,33 @@ def _authorization_args(
 
 
 class ChainSubmitterTest(unittest.TestCase):
+    def test_prepared_hash_and_nonce_are_exposed_before_network_send(self):
+        signer = InjectedTestSigner()
+        rpc = FakeRpc(_deal_response(tee_identity=signer.address))
+        attempts: list[PreparedSubmissionAttempt] = []
+
+        def checkpoint(attempt):
+            self.assertEqual(rpc.sent_raw_transactions, [])
+            attempts.append(attempt)
+
+        receipt = DiligenceRoomSubmitter(
+            rpc,
+            CONTRACT_ADDRESS,
+            signer,
+        ).submit_result(
+            deal_id=1,
+            score_band="medium",
+            compute_cost_wei=POLICY_COMPUTE,
+            compose_hash=COMPOSE_HASH,
+            before_broadcast=checkpoint,
+            **_authorization_args(rpc),
+        )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0].tx_hash, receipt.tx_hash)
+        self.assertEqual(attempts[0].nonce, receipt.nonce)
+        self.assertEqual(attempts[0].result_hash, receipt.result_hash)
+
     def test_submit_result_encodes_bounded_contract_call(self):
         calldata = encode_submit_result_calldata(
             deal_id=5,
@@ -395,7 +423,10 @@ class ChainSubmitterTest(unittest.TestCase):
         )
 
         self.assertTrue(receipt.submitted)
-        self.assertEqual(receipt.tx_hash, "0x" + "ab" * 32)
+        self.assertEqual(
+            receipt.tx_hash,
+            "0x" + keccak(rpc.sent_raw_transactions[0]).hex(),
+        )
         self.assertEqual(receipt.score_band, "medium")
         self.assertEqual(receipt.score_band_value, 2)
         self.assertEqual(receipt.chain_id, 31337)

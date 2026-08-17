@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { renderProductionHeadersForEnv } from "./security-headers-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./build-security-headers.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const output = path.join(webDir, "dist", "_headers");
 const env = { ...loadEnv("production", webDir, ""), ...process.env };
 const headers = renderProductionHeadersForEnv(env);

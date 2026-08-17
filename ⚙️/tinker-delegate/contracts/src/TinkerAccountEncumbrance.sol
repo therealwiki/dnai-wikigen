@@ -22,6 +22,9 @@ contract TinkerAccountEncumbrance {
 
     bytes32 public constant COMPOSE_SET_TYPEHASH = keccak256("TinkerComposeSet(bytes32[] composeHashes)");
     bytes32 public constant MANAGER_SET_TYPEHASH = keccak256("TinkerManagerSet(address[] managers)");
+    bytes32 public constant ACCOUNT_BINDING_TYPEHASH =
+        keccak256("DnaiTinkerAccountBindingV1(uint256 chainId,bytes32 providerNamespace,bytes32 bindingRoot)");
+    bytes32 public constant TINKER_PROVIDER_NAMESPACE = keccak256("thinking-machines/tinker");
     bytes32 public constant RELEASE_POLICY_TYPEHASH = keccak256(
         "TinkerReleasePolicy(uint256 chainId,address encumbrance,bytes32 accountCommitment,uint256 maxAddBalanceWei,uint256 maxSpendWei,bytes32 composeRoot,uint256 composeCount,bytes32 managerRoot,uint256 managerCount)"
     );

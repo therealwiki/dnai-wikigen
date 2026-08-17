@@ -41,6 +41,7 @@ import {
   postCommitProvisioningEnvironmentAuthorityDigest,
   privateEnvironmentAssemblyReceipt,
   privateEnvironmentEntries,
+  projectFinalReleaseAuthorityRuntimeFeatureValues,
   projectProvisioningEnvironmentAuthority,
   provisioningEnvironmentAuthorityDigest,
   readExactPhaseSecretInputFile,
@@ -116,8 +117,12 @@ function publicValue(key, digit = "a") {
   if (key === "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS") return address(digit);
   if (key === "TINKER_WALLET_AUTH_CHAIN_ID") return "84532";
   if (key === "TINKER_CHAIN_START_BLOCK") return "12345678";
+  if (key === "TINKER_COLLABORATION_ENABLED") return "false";
+  if (key === "TINKER_CUSTOMER_ENABLED") return "true";
+  if (key.endsWith("_EPOCH")) return "1";
   if (key.endsWith("_RUNTIME_CODE_HASH")) return `0x${bare(digit)}`;
-  if (key.endsWith("_SHA256") || key.endsWith("_HASH")) return bare(digit);
+  if (key.endsWith("_SHA256")) return sha(digit);
+  if (key.endsWith("_HASH")) return bare(digit);
   return `reviewed-${key.toLowerCase()}`;
 }
 
@@ -319,21 +324,36 @@ test("bootstrap public authority is strict, canonical, and imports canonical key
   );
 
   const secretShaped = structuredClone(authority);
-  secretShaped.domains[0].values.TINKER_WALLET_AUTH_DOMAIN = "phak_abcdefghijk";
+  secretShaped.domains[0].values.TINKER_CORS_ALLOWED_ORIGINS = "phak_abcdefghijk";
   assert.throws(
     () => normalizeBootstrapPublicEnvironmentAuthority(secretShaped),
     /secret-shaped/,
   );
 
-  for (const [key, value] of [
-    ["TINKER_WALLET_AUTH_DOMAIN", "dnai-wikigen"],
-    ["TINKER_WALLET_AUTH_URI", "urn:dnai:wikigen"],
+  for (const [key, invalid, pattern] of [
+    ["TINKER_REVIEW_AUTHORITY_POLICY_SHA256", bare("c"), /canonical SHA-256/],
+    ["TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256", sha("0"), /canonical SHA-256/],
+    ["TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH", "01", /canonical uint32 epoch/],
+    ["TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH", "4294967296", /canonical uint32 epoch/],
   ]) {
-    const driftedWalletAuth = structuredClone(authority);
-    driftedWalletAuth.domains[0].values[key] = value;
+    const drifted = structuredClone(authority);
+    drifted.domains[0].values[key] = invalid;
     assert.throws(
-      () => normalizeBootstrapPublicEnvironmentAuthority(driftedWalletAuth),
-      /must equal the final-release wallet-auth value/,
+      () => normalizeBootstrapPublicEnvironmentAuthority(drifted),
+      pattern,
+    );
+  }
+
+  for (const key of [
+    "TINKER_WALLET_AUTH_DOMAIN",
+    "TINKER_WALLET_AUTH_URI",
+    "TINKER_WALLET_AUTH_CHAIN_ID",
+    "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+  ]) {
+    assert.equal(
+      Object.hasOwn(authority.domains[0].values, key),
+      false,
+      `${key} must be descriptor-bound rather than bootstrap-injectable`,
     );
   }
 
@@ -778,6 +798,10 @@ test("Arena sealed policy payloads match reviewed hashes and authentication befo
 test("deferred authority is strict and remains a non-mutating blocked plan", () => {
   const authority = deferredAuthority();
   assert.deepEqual(normalizeDeferredPublicEnvironmentAuthority(authority), authority);
+  assert.equal(
+    authority.domains[0].values.TINKER_COLLABORATION_ENABLED,
+    "false",
+  );
   const plan = createDeferredEnvironmentAssemblyPlan({
     domain: "main_runtime_cvm",
     phase: "final_authority_runtime",
@@ -822,5 +846,44 @@ test("deferred authority is strict and remains a non-mutating blocked plan", () 
   assert.throws(
     () => normalizeDeferredPublicEnvironmentAuthority(collapsedDomains),
     /pairwise distinct across trust domains/,
+  );
+
+  const disabledTinkerCustomer = structuredClone(authority);
+  disabledTinkerCustomer.domains[0].values.TINKER_CUSTOMER_ENABLED = "false";
+  assert.throws(
+    () => normalizeDeferredPublicEnvironmentAuthority(disabledTinkerCustomer),
+    /TINKER_CUSTOMER_ENABLED must be the exact reviewed final-authority enable marker/,
+  );
+
+  for (const invalid of ["", "0", "TRUE", "False"]) {
+    const malformedCollaboration = structuredClone(authority);
+    malformedCollaboration.domains[0].values.TINKER_COLLABORATION_ENABLED =
+      invalid;
+    assert.throws(
+      () => normalizeDeferredPublicEnvironmentAuthority(malformedCollaboration),
+      /TINKER_COLLABORATION_ENABLED.*(?:bounded|canonical false or true)/,
+    );
+  }
+});
+
+test("Collaboration runtime marker is projected only from current final authority", () => {
+  const disabled = knownVector();
+  assert.deepEqual(
+    projectFinalReleaseAuthorityRuntimeFeatureValues(disabled),
+    { TINKER_COLLABORATION_ENABLED: "false" },
+  );
+
+  const enabled = knownVector();
+  enabled.requested_features.collaboration = true;
+  assert.deepEqual(
+    projectFinalReleaseAuthorityRuntimeFeatureValues(enabled),
+    { TINKER_COLLABORATION_ENABLED: "true" },
+  );
+
+  const ambiguous = knownVector();
+  ambiguous.requested_features.collaboration = "true";
+  assert.throws(
+    () => projectFinalReleaseAuthorityRuntimeFeatureValues(ambiguous),
+    /requested_features\.collaboration/,
   );
 });

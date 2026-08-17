@@ -192,7 +192,7 @@ contract DiligenceRoomTest is Test {
     function setUp() public {
         verifier = vm.addr(verifierPk);
         attestationVerifier = vm.addr(attestationVerifierPk);
-        room = new DiligenceRoom(false);
+        room = new DiligenceRoom(false, address(0));
         room.proposeResultVerifier(verifier);
         vm.warp(room.pendingResultVerifierActivatesAt());
         room.activateResultVerifier();
@@ -206,8 +206,12 @@ contract DiligenceRoomTest is Test {
     }
 
     function test_FreshRoomLeavesResultVerifierUnsetAndCannotFreezeIt() public {
-        DiligenceRoom fresh = new DiligenceRoom(false);
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
         assertEq(fresh.developer(), address(this));
+        assertEq(fresh.initialDeveloper(), address(this));
+        assertEq(fresh.pendingDeveloper(), address(0));
+        assertEq(fresh.pendingDeveloperActivatesAt(), 0);
+        assertEq(fresh.DEVELOPER_TRANSFER_DELAY(), 2 days);
         assertEq(fresh.resultVerifier(), address(0));
         assertEq(fresh.pendingResultVerifier(), address(0));
         assertEq(fresh.pendingResultVerifierActivatesAt(), 0);
@@ -216,9 +220,196 @@ contract DiligenceRoomTest is Test {
         fresh.freezeResultVerifier();
     }
 
+    function test_DeveloperTransferRequiresDelayedTwoStepAcceptanceAndStopsNewDealActivity() public {
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
+        address permanentController = makeAddr("permanent-diligence-governance");
+
+        fresh.proposeDeveloper(permanentController);
+        uint256 activatesAt = fresh.pendingDeveloperActivatesAt();
+
+        assertEq(fresh.developer(), address(this));
+        assertEq(fresh.pendingDeveloper(), permanentController);
+        assertEq(activatesAt, block.timestamp + fresh.DEVELOPER_TRANSFER_DELAY());
+
+        vm.prank(permanentController);
+        vm.expectRevert(abi.encodeWithSelector(DiligenceRoom.DeveloperTransferActivationTooEarly.selector, activatesAt));
+        fresh.acceptDeveloper();
+
+        vm.prank(seller);
+        vm.expectRevert(DiligenceRoom.AttestationBindingNotReady.selector);
+        fresh.createDeal(1 ether, block.timestamp + 1 days, keccak256("handoff-artifact"), tee);
+
+        vm.warp(activatesAt);
+        vm.prank(permanentController);
+        fresh.acceptDeveloper();
+
+        assertEq(fresh.developer(), permanentController);
+        assertEq(fresh.pendingDeveloper(), address(0));
+        assertEq(fresh.pendingDeveloperActivatesAt(), 0);
+
+        vm.expectRevert(DiligenceRoom.NotDeveloper.selector);
+        fresh.proposeComposeHash(keccak256("old-controller-cannot-govern"));
+
+        vm.prank(seller);
+        uint256 dealId = fresh.createDeal(1 ether, activatesAt + 1 days, keccak256("post-handoff-artifact"), tee);
+        assertEq(dealId, 0);
+    }
+
+    function test_DeveloperTransferRejectsInvalidOrConflictingControllersAndSupportsCancellation() public {
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
+        address permanentController = makeAddr("cancelled-permanent-controller");
+
+        vm.expectRevert(DiligenceRoom.ZeroDeveloper.selector);
+        fresh.proposeDeveloper(address(0));
+        vm.expectRevert(DiligenceRoom.DeveloperUnchanged.selector);
+        fresh.proposeDeveloper(address(this));
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        fresh.proposeDeveloper(address(fresh));
+
+        fresh.proposeDeveloper(permanentController);
+        vm.expectRevert(DiligenceRoom.DeveloperTransferProposalExists.selector);
+        fresh.proposeDeveloper(makeAddr("second-permanent-controller"));
+
+        vm.prank(permanentController);
+        vm.expectRevert(DiligenceRoom.NotDeveloper.selector);
+        fresh.cancelDeveloperProposal();
+
+        fresh.cancelDeveloperProposal();
+        assertEq(fresh.developer(), address(this));
+        assertEq(fresh.pendingDeveloper(), address(0));
+        assertEq(fresh.pendingDeveloperActivatesAt(), 0);
+
+        vm.expectRevert(DiligenceRoom.DeveloperTransferProposalMissing.selector);
+        fresh.cancelDeveloperProposal();
+        vm.prank(permanentController);
+        vm.expectRevert(DiligenceRoom.NotPendingDeveloper.selector);
+        fresh.acceptDeveloper();
+    }
+
+    function test_DeveloperTransferRejectsVerifierAndTeeRoleConflicts() public {
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        room.proposeDeveloper(verifier);
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        room.proposeDeveloper(attestationVerifier);
+
+        _admitCompose(composeHash);
+        _admitTee(tee, composeHash);
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        room.proposeDeveloper(tee);
+    }
+
+    function test_ProductionGovernanceControllerIsPermanentAfterAcceptance() public {
+        address permanentController = makeAddr("permanent-controller");
+        DiligenceRoom production = new DiligenceRoom(true, permanentController);
+
+        production.proposeDeveloper(permanentController);
+        vm.warp(production.pendingDeveloperActivatesAt());
+        vm.prank(permanentController);
+        production.acceptDeveloper();
+
+        assertEq(production.initialDeveloper(), address(this));
+        assertEq(production.developer(), permanentController);
+        vm.prank(permanentController);
+        vm.expectRevert(DiligenceRoom.FinalReleaseGovernanceControllerCannotTransfer.selector);
+        production.proposeDeveloper(address(this));
+        vm.prank(permanentController);
+        vm.expectRevert(DiligenceRoom.FinalReleaseGovernanceControllerCannotTransfer.selector);
+        production.proposeDeveloper(makeAddr("unreviewed-successor"));
+    }
+
+    function test_ProductionConstructorBindsOneDistinctReleaseGovernanceController() public {
+        vm.expectRevert(DiligenceRoom.ZeroReleaseGovernanceController.selector);
+        new DiligenceRoom(true, address(0));
+        vm.expectRevert(DiligenceRoom.InvalidReleaseGovernanceController.selector);
+        new DiligenceRoom(true, address(this));
+        vm.expectRevert(DiligenceRoom.InvalidReleaseGovernanceController.selector);
+        new DiligenceRoom(false, makeAddr("unexpected-local-governance"));
+
+        address reviewedController = makeAddr("reviewed-production-governance");
+        DiligenceRoom production = new DiligenceRoom(true, reviewedController);
+        assertEq(production.releaseGovernanceController(), reviewedController);
+        assertEq(production.protocolFeeRecipient(), reviewedController);
+
+        vm.expectRevert(DiligenceRoom.UnreviewedInitialGovernanceHandoff.selector);
+        production.proposeDeveloper(makeAddr("unreviewed-initial-controller"));
+        production.proposeDeveloper(reviewedController);
+    }
+
+    function test_PendingDeveloperCannotBeStagedAsResultAttestationOrTeeRole() public {
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
+        address pendingController = makeAddr("pending-controller-role-conflict");
+
+        fresh.proposeDeveloper(pendingController);
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        fresh.proposeResultVerifier(pendingController);
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        fresh.proposeAttestationBinding(pendingController, keccak256("policy"));
+
+        fresh.cancelDeveloperProposal();
+        bytes32 admittedCompose = keccak256("pending-controller-compose");
+        fresh.proposeComposeHash(admittedCompose);
+        vm.warp(fresh.pendingComposeActivations(admittedCompose));
+        fresh.activateComposeHash(admittedCompose);
+        fresh.proposeDeveloper(pendingController);
+        vm.expectRevert(DiligenceRoom.RoleConflict.selector);
+        fresh.proposeTeeIdentity(pendingController, admittedCompose);
+    }
+
+    function test_ProductionSettlementPaysImmutableReleaseControllerAndGovernanceCannotTransfer() public {
+        address reviewedController = makeAddr("immutable-production-fee-recipient");
+        _configureProductionRoom(reviewedController);
+
+        uint256 dealId = _createDeal();
+        _fundDeal(dealId);
+        _submitResult(dealId, DiligenceRoom.ScoreBand.High, room.policyComputeCost(dealId));
+        DiligenceRoom.Deal memory evaluated = room.getDeal(dealId);
+        uint256 expectedControllerPayment = evaluated.computeCost + evaluated.fee;
+
+        vm.prank(reviewedController);
+        vm.expectRevert(DiligenceRoom.FinalReleaseGovernanceControllerCannotTransfer.selector);
+        room.proposeDeveloper(makeAddr("temporary-nonrelease-controller"));
+
+        assertEq(room.developer(), reviewedController);
+        assertEq(room.protocolFeeRecipient(), reviewedController);
+
+        vm.prank(buyer);
+        room.acceptDeal(dealId, reservePrice);
+        assertEq(room.pendingWithdrawals(address(0), reviewedController), expectedControllerPayment);
+
+        vm.prank(makeAddr("seller-after-rejected-governance-transfer"));
+        uint256 restoredDealId =
+            room.createDeal(1 ether, vm.getBlockTimestamp() + 1 days, keccak256("permanent-release-controller"), tee);
+        assertEq(restoredDealId, 1);
+    }
+
+    function testFuzz_DeveloperTransferCannotActivateBeforeFixedDelay(address permanentController, uint256 elapsed)
+        public
+    {
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
+        vm.assume(
+            permanentController != address(0) && permanentController != address(this)
+                && permanentController != address(fresh)
+        );
+
+        fresh.proposeDeveloper(permanentController);
+        uint256 activatesAt = fresh.pendingDeveloperActivatesAt();
+        elapsed = bound(elapsed, 0, fresh.DEVELOPER_TRANSFER_DELAY() - 1);
+        vm.warp(activatesAt - fresh.DEVELOPER_TRANSFER_DELAY() + elapsed);
+
+        vm.prank(permanentController);
+        vm.expectRevert(abi.encodeWithSelector(DiligenceRoom.DeveloperTransferActivationTooEarly.selector, activatesAt));
+        fresh.acceptDeveloper();
+
+        vm.warp(activatesAt);
+        vm.prank(permanentController);
+        fresh.acceptDeveloper();
+        assertEq(fresh.developer(), permanentController);
+    }
+
     function test_ProductionConstructorIsFailClosedBeforeAnyConfigurationTransaction() public {
-        DiligenceRoom production = new DiligenceRoom(true);
+        DiligenceRoom production = new DiligenceRoom(true, makeAddr("production-governance"));
         assertTrue(production.productionRelease());
+        assertEq(production.initialDeveloper(), address(this));
         assertFalse(production.approvalRequirementsFrozen());
 
         vm.expectRevert(DiligenceRoom.AttestationBindingNotReady.selector);
@@ -228,7 +419,7 @@ contract DiligenceRoomTest is Test {
     }
 
     function test_ResultVerifierRequiresDeveloperTimelockActivationAndFreeze() public {
-        DiligenceRoom fresh = new DiligenceRoom(false);
+        DiligenceRoom fresh = new DiligenceRoom(false, address(0));
         address proposedVerifier = makeAddr("post-deploy-result-verifier");
         address unauthorized = makeAddr("unauthorized-result-verifier-governor");
 
@@ -343,7 +534,7 @@ contract DiligenceRoomTest is Test {
     }
 
     function _resetRoomWithoutAttestationBinding() internal {
-        room = new DiligenceRoom(false);
+        room = new DiligenceRoom(false, address(0));
         room.proposeResultVerifier(verifier);
         vm.warp(room.pendingResultVerifierActivatesAt());
         room.activateResultVerifier();
@@ -360,6 +551,26 @@ contract DiligenceRoomTest is Test {
         vm.warp(target.pendingAttestationBindingActivatesAt());
         target.activateAttestationBinding();
         target.freezeAttestationBinding();
+    }
+
+    function _configureProductionRoom(address reviewedController) internal {
+        room = new DiligenceRoom(true, reviewedController);
+        _configureFullyFrozenAuthorizationBindings(room, attestationReleasePolicyHash);
+        room.freezeFeeBps();
+        room.enableComputeSettlementPolicy();
+        room.setComposeApprovalRequired(true);
+        room.setTeeIdentityApprovalRequired(true);
+        room.freezeApprovalRequirements();
+        _admitEvaluatorPolicySet();
+        _admitCompose(composeHash);
+        _admitTee(tee, composeHash);
+        room.freezeComposeAdditions();
+        room.freezeTeeIdentityAdditions();
+        room.proposeDeveloper(reviewedController);
+        vm.warp(room.pendingDeveloperActivatesAt());
+        vm.prank(reviewedController);
+        room.acceptDeveloper();
+        expiry = block.timestamp + 1 days;
     }
 
     function _authorizationSignature(
@@ -571,7 +782,7 @@ contract DiligenceRoomTest is Test {
     }
 
     function test_ProductionLegacyFundingOverloadsAreUnavailable() public {
-        DiligenceRoom production = new DiligenceRoom(true);
+        DiligenceRoom production = new DiligenceRoom(true, makeAddr("legacy-overload-production-governance"));
 
         vm.expectRevert(DiligenceRoom.LegacyFundingUnavailable.selector);
         production.fundDeal(0);
@@ -1211,7 +1422,7 @@ contract DiligenceRoomTest is Test {
 
     function test_SubmitResult_RevertResultSignatureFromAnotherRoom() public {
         DiligenceRoom firstRoom = room;
-        DiligenceRoom secondRoom = new DiligenceRoom(false);
+        DiligenceRoom secondRoom = new DiligenceRoom(false, address(0));
         _configureFullyFrozenAuthorizationBindings(secondRoom, attestationReleasePolicyHash);
         expiry = block.timestamp + 1 days;
 

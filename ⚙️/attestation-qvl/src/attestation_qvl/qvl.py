@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, Protocol
 import dcap_qvl
 
 from .errors import VerificationRejected, VerifierUnavailable
-from .challenge import qvl_profile
+from .challenge import qvl_profiles
 from .models import (
     ArenaCandidateIngressBinding,
     ComputeMeteringSignerBinding,
@@ -25,6 +25,8 @@ from .models import (
     IndependentVerificationRequest,
     MAX_QUOTE_BYTES,
     MIN_QUOTE_BYTES,
+    RoyaltySettlementAuthorizationRequest,
+    RoyaltySettlementQvlBinding,
 )
 from .policy import LoadedReleasePolicy
 from .signing import (
@@ -32,6 +34,13 @@ from .signing import (
     compute_metering_qvl_authorization_digest,
     diligence_qvl_result_authorization_digest,
     independent_verdict_digest,
+    RoyaltySettlementSigner,
+    royalty_collaboration_resource_hash,
+    recover_raw_digest_address,
+    royalty_release_policy_commitment,
+    royalty_settlement_authorization_digest,
+    royalty_settlement_decision_hash,
+    royalty_settlement_qvl_authorization_digest,
 )
 
 
@@ -64,6 +73,18 @@ EMAIL_ORACLE_KMS_RESTART_DOMAIN = (
 )
 COMPUTE_WORKLOAD_RECIPIENT_REPORT_DATA_DOMAIN = (
     b"dnai-wikigen/compute-workload-recipient-attestation/v1\x00"
+)
+ROYALTY_SETTLEMENT_POLICY_DOMAIN = (
+    b"dnai-wikigen/royalty-settlement-qvl-policy/v2\x00"
+)
+ROYALTY_SETTLEMENT_REPORT_DATA_DOMAIN = (
+    b"dnai-wikigen/royalty-settlement-signer-attestation/v1\x00"
+)
+ROYALTY_SETTLEMENT_EVIDENCE_DOMAIN = (
+    b"dnai-wikigen/royalty-settlement-attestation-evidence/v1\x00"
+)
+ROYALTY_SETTLEMENT_ANCHOR_EVIDENCE_DOMAIN = (
+    b"dnai-wikigen/royalty-settlement-anchor-evidence/v2\x00"
 )
 
 
@@ -172,6 +193,144 @@ def derive_compute_metering_attestation_evidence_hash(
         ensure_ascii=True,
     ).encode("ascii")
     return "0x" + hashlib.sha256(COMPUTE_METERING_EVIDENCE_DOMAIN + encoded).hexdigest()
+
+
+def _canonical_commitment(domain: bytes, payload: dict[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return "0x" + hashlib.sha256(domain + encoded).hexdigest()
+
+
+def derive_royalty_settlement_policy_commitment(
+    *,
+    release: LoadedReleasePolicy,
+    binding: RoyaltySettlementQvlBinding,
+    royalty_verifier_address: str,
+) -> str:
+    """Commit the complete reviewed secondary policy and its derived signer."""
+
+    payload = {
+        "schema": "dnai.royalty-settlement-qvl-policy.v2",
+        "authorization_schema": (
+            "dnai.royalty-settlement-qvl-authorization-request.v2"
+        ),
+        "qvl_release_policy_hash": release.policy_hash,
+        "chain_id": release.policy.chain_id,
+        "compose_hash": release.policy.compose_hash,
+        "app_id": release.policy.app_id,
+        "os_image_hash": release.policy.os_image_hash,
+        "royalty_qvl_verifier": royalty_verifier_address,
+        "binding": binding.model_dump(mode="json"),
+    }
+    return _canonical_commitment(ROYALTY_SETTLEMENT_POLICY_DOMAIN, payload)
+
+
+def derive_royalty_settlement_report_data(
+    *,
+    release: LoadedReleasePolicy,
+    binding: RoyaltySettlementQvlBinding,
+    royalty_verifier_address: str,
+    royalty_policy_commitment: str,
+) -> bytes:
+    """Purpose-separate the main-runtime royalty signer quote from Diligence."""
+
+    payload = {
+        "schema": "dnai.royalty-settlement-signer-attestation.v1",
+        "chain_id": release.policy.chain_id,
+        "main_runtime_cvm_id": binding.main_runtime_cvm_id,
+        "deployment_intent_sha256": binding.deployment_intent_sha256,
+        "release_authority_sha256": binding.release_authority_sha256,
+        "measurement_policy_sha256": binding.measurement_policy_sha256,
+        "compose_hash": release.policy.compose_hash,
+        "app_id": release.policy.app_id,
+        "os_image_hash": release.policy.os_image_hash,
+        "distributor_address": binding.distributor_address,
+        "distributor_runtime_code_hash": binding.distributor_runtime_code_hash,
+        "settlement_verifier": binding.settlement_verifier,
+        "settlement_verifier_key_path": binding.settlement_verifier_key_path,
+        "settlement_verifier_custody": binding.settlement_verifier_custody,
+        "release_policy_commitment": binding.release_policy_commitment,
+        "royalty_qvl_verifier": royalty_verifier_address,
+        "royalty_policy_commitment": royalty_policy_commitment,
+    }
+    return bytes.fromhex(
+        _canonical_commitment(ROYALTY_SETTLEMENT_REPORT_DATA_DOMAIN, payload)[2:]
+    )
+
+
+def derive_royalty_settlement_attestation_evidence_hash(
+    *,
+    request: IndependentVerificationRequest,
+    binding: RoyaltySettlementQvlBinding,
+    royalty_verifier_address: str,
+    royalty_policy_commitment: str,
+) -> str:
+    """Commit the fresh quote packet without creating a self-hash cycle."""
+
+    challenge = request.challenge
+    expectation = request.expectation
+    payload = {
+        "schema": "dnai.royalty-settlement-attestation-evidence.v1",
+        "chain_id": challenge.chain_id,
+        "domain": challenge.domain,
+        "profile": challenge.profile,
+        "cvm_id": challenge.cvm_id,
+        "deployment_intent_sha256": challenge.deployment_intent_sha256,
+        "release_authority_sha256": challenge.release_authority_sha256,
+        "ceremony_nonce": challenge.ceremony_nonce,
+        "measurement_policy_sha256": challenge.measurement_policy_sha256,
+        "qvl_release_policy_hash": challenge.release_policy_hash,
+        "challenge_id": challenge.challenge_id,
+        "challenge_digest": challenge.challenge_digest,
+        "quote_hash": expectation.quote_hash,
+        "report_data": expectation.report_data,
+        "quote_report_data": expectation.quote_report_data,
+        "compose_hash": expectation.compose_hash,
+        "app_id": expectation.app_id,
+        "os_image_hash": expectation.os_image_hash,
+        "settlement_verifier": expectation.signer_address,
+        "distributor_address": expectation.contract_address,
+        "distributor_runtime_code_hash": binding.distributor_runtime_code_hash,
+        "release_policy_commitment": binding.release_policy_commitment,
+        "execution_policy_anchor": binding.execution_policy_anchor,
+        "anchor_writer_release_commitment": (
+            binding.anchor_writer_release_commitment
+        ),
+        "royalty_qvl_verifier": royalty_verifier_address,
+        "royalty_policy_commitment": royalty_policy_commitment,
+    }
+    return _canonical_commitment(ROYALTY_SETTLEMENT_EVIDENCE_DOMAIN, payload)
+
+
+def derive_royalty_settlement_anchor_evidence_commitment(
+    *,
+    authorization: RoyaltySettlementAuthorizationRequest,
+    binding: RoyaltySettlementQvlBinding,
+    attestation_evidence_hash: str,
+) -> str:
+    """Bounded commitment to the exact policy-pinned on-chain anchor tuple."""
+
+    payload = {
+        "schema": "dnai.royalty-settlement-anchor-evidence.v2",
+        "execution_policy_anchor": binding.execution_policy_anchor,
+        "anchor_writer_release_commitment": (
+            binding.anchor_writer_release_commitment
+        ),
+        "release_policy_commitment": authorization.release_policy_commitment,
+        "funding_reservation_id": authorization.funding_reservation_id,
+        "anchor_resource_hash": authorization.anchor_resource_hash,
+        "anchor_decision_hash": authorization.anchor_decision_hash,
+        "anchor_sequence": authorization.anchor_sequence,
+        "attestation_evidence_hash": attestation_evidence_hash,
+    }
+    return _canonical_commitment(
+        ROYALTY_SETTLEMENT_ANCHOR_EVIDENCE_DOMAIN, payload
+    )
 
 
 def derive_arena_report_data(*, encryption_public_key: str, key_id: str) -> bytes:
@@ -374,14 +533,51 @@ class IndependentQuoteVerifier:
         release: LoadedReleasePolicy,
         backend: QuoteVerificationBackend,
         signer: VerdictSigner,
+        royalty_signer: RoyaltySettlementSigner | None = None,
         clock: Callable[[], int] | None = None,
     ):
         self.release = release
         self.backend = backend
         self.signer = signer
+        self.royalty_signer = royalty_signer
         self._clock = clock or (lambda: int(time.time()))
         if signer.address in release.policy.allowed_signer_addresses:
             raise VerifierUnavailable
+        royalty_binding = release.policy.royalty_settlement_binding
+        if (royalty_binding is None) != (royalty_signer is None):
+            raise VerifierUnavailable
+        self.royalty_policy_commitment: str | None = None
+        if royalty_binding is not None and royalty_signer is not None:
+            forbidden_roles = {
+                signer.address,
+                release.policy.contract_address,
+                royalty_binding.owner,
+                royalty_binding.distributor_address,
+                royalty_binding.settlement_verifier,
+                royalty_binding.execution_policy_anchor,
+            }
+            if royalty_signer.address in forbidden_roles:
+                raise VerifierUnavailable
+            expected_release = royalty_release_policy_commitment(
+                chain_id=release.policy.chain_id,
+                distributor_address=royalty_binding.distributor_address,
+                authority_nonce=int(royalty_binding.authority_nonce),
+                settlement_verifier=royalty_binding.settlement_verifier,
+                qvl_verifier=royalty_signer.address,
+                execution_policy_anchor=royalty_binding.execution_policy_anchor,
+                anchor_writer_release_commitment=(
+                    royalty_binding.anchor_writer_release_commitment
+                ),
+            )
+            if expected_release != royalty_binding.release_policy_commitment:
+                raise VerifierUnavailable
+            self.royalty_policy_commitment = (
+                derive_royalty_settlement_policy_commitment(
+                    release=release,
+                    binding=royalty_binding,
+                    royalty_verifier_address=royalty_signer.address,
+                )
+            )
 
     async def verify(self, request: IndependentVerificationRequest) -> IndependentTdxVerdict:
         policy = self.release.policy
@@ -396,7 +592,33 @@ class IndependentQuoteVerifier:
             raise VerificationRejected
 
         challenge = request.challenge
-        if isinstance(policy.report_data_binding, ComputeWorkloadRecipientBinding):
+        royalty_binding = policy.royalty_settlement_binding
+        royalty_profile = challenge.profile == "royalty_settlement"
+        if royalty_profile:
+            if (
+                royalty_binding is None
+                or self.royalty_signer is None
+                or self.royalty_policy_commitment is None
+                or request.royalty_authorization is None
+                or request.compute_workload_recipient is not None
+                or challenge.cvm_id != royalty_binding.main_runtime_cvm_id
+                or challenge.deployment_intent_sha256
+                != royalty_binding.deployment_intent_sha256
+                or challenge.release_authority_sha256
+                != royalty_binding.release_authority_sha256
+                or challenge.measurement_policy_sha256
+                != royalty_binding.measurement_policy_sha256
+            ):
+                raise VerificationRejected
+            signer_address = royalty_binding.settlement_verifier
+            expected_contract_address = royalty_binding.distributor_address
+            expected_report_data = derive_royalty_settlement_report_data(
+                release=self.release,
+                binding=royalty_binding,
+                royalty_verifier_address=self.royalty_signer.address,
+                royalty_policy_commitment=self.royalty_policy_commitment,
+            )
+        elif isinstance(policy.report_data_binding, ComputeWorkloadRecipientBinding):
             recipient_attestation = request.compute_workload_recipient
             if (
                 recipient_attestation is None
@@ -409,6 +631,7 @@ class IndependentQuoteVerifier:
             ):
                 raise VerificationRejected
             signer_address = recipient_attestation.activation_signer_address
+            expected_contract_address = policy.contract_address
             expected_report_data = derive_compute_workload_recipient_report_data(
                 recipient_attestation
             )
@@ -421,6 +644,7 @@ class IndependentQuoteVerifier:
             signer_address = allowed_signers.get(expectation.signer_address)
             if signer_address is None:
                 raise VerificationRejected
+            expected_contract_address = policy.contract_address
         if challenge.profile == "email_oracle_kms_restart":
             binding = policy.email_oracle_kms_restart_binding
             if binding is None:
@@ -430,6 +654,8 @@ class IndependentQuoteVerifier:
                 chain_id=policy.chain_id,
                 binding=binding,
             )
+        elif royalty_profile:
+            pass
         elif not isinstance(
             policy.report_data_binding, ComputeWorkloadRecipientBinding
         ):
@@ -441,13 +667,13 @@ class IndependentQuoteVerifier:
             )
         report_data_hex = "0x" + expected_report_data.hex()
         profile = challenge.profile
-        if profile != "email_oracle_kms_restart" and profile != qvl_profile(
-            policy.report_data_binding
-        ):
+        if profile not in qvl_profiles(policy):
             raise VerificationRejected
         if request.result_authorization is not None and profile != "diligence":
             raise VerificationRejected
         if request.compute_authorization is not None and profile != "compute_metering":
+            raise VerificationRejected
+        if request.royalty_authorization is not None and profile != "royalty_settlement":
             raise VerificationRejected
         expected_quote_report_data = (
             "0x" + expected_report_data.hex() + challenge.challenge_digest[2:]
@@ -460,7 +686,7 @@ class IndependentQuoteVerifier:
             or challenge.expires_at <= started_at
             or expectation.mode != "tdx"
             or expectation.chain_id != policy.chain_id
-            or expectation.contract_address != policy.contract_address
+            or expectation.contract_address != expected_contract_address
             or expectation.compose_hash != policy.compose_hash
             or expectation.app_id != policy.app_id
             or expectation.os_image_hash != policy.os_image_hash
@@ -525,7 +751,7 @@ class IndependentQuoteVerifier:
             "app_id": policy.app_id,
             "os_image_hash": policy.os_image_hash,
             "signer_address": signer_address,
-            "contract_address": policy.contract_address,
+            "contract_address": expected_contract_address,
             "issued_at": completed_at,
             "activation_evidence_lease_expires_at": expires_at,
             "expires_at": expires_at,
@@ -639,6 +865,184 @@ class IndependentQuoteVerifier:
                     "qvl_compute_authorization_digest": authorization_digest,
                     "qvl_compute_authorization_signature": self.signer.sign_raw_digest(
                         authorization_digest
+                    ),
+                }
+            )
+        royalty_authorization = request.royalty_authorization
+        if royalty_authorization is not None:
+            binding = policy.royalty_settlement_binding
+            royalty_signer = self.royalty_signer
+            royalty_policy_commitment = self.royalty_policy_commitment
+            if (
+                profile != "royalty_settlement"
+                or binding is None
+                or royalty_signer is None
+                or royalty_policy_commitment is None
+            ):
+                raise VerificationRejected
+            evidence_hash = derive_royalty_settlement_attestation_evidence_hash(
+                request=request,
+                binding=binding,
+                royalty_verifier_address=royalty_signer.address,
+                royalty_policy_commitment=royalty_policy_commitment,
+            )
+            resource_hash = royalty_collaboration_resource_hash(
+                chain_id=policy.chain_id,
+                distributor_address=binding.distributor_address,
+                room_commitment=royalty_authorization.room_commitment,
+                query_commitment=royalty_authorization.query_commitment,
+            )
+            decision_hash = royalty_settlement_decision_hash(
+                chain_id=policy.chain_id,
+                distributor_address=binding.distributor_address,
+                settlement_id=royalty_authorization.settlement_id,
+                settlement_nonce=int(royalty_authorization.settlement_nonce),
+                funding_reservation_id=(
+                    royalty_authorization.funding_reservation_id
+                ),
+                release_policy_commitment=(
+                    royalty_authorization.release_policy_commitment
+                ),
+                room_commitment=royalty_authorization.room_commitment,
+                room_state_commitment=(
+                    royalty_authorization.room_state_commitment
+                ),
+                query_commitment=royalty_authorization.query_commitment,
+                grant_set_commitment=royalty_authorization.grant_set_commitment,
+                allocation_commitment=(
+                    royalty_authorization.allocation_commitment
+                ),
+                owners_amounts_hash=royalty_authorization.owners_amounts_hash,
+                asset=royalty_authorization.asset,
+                total=int(royalty_authorization.total),
+                execution_commitment=royalty_authorization.execution_commitment,
+                result_commitment=royalty_authorization.result_commitment,
+                usage_commitment=royalty_authorization.usage_commitment,
+                attestation_evidence_hash=evidence_hash,
+                anchor_resource_hash=resource_hash,
+                expiry=royalty_authorization.expiry,
+            )
+            settlement_authorization_digest = (
+                royalty_settlement_authorization_digest(
+                    chain_id=policy.chain_id,
+                    distributor_address=binding.distributor_address,
+                    settlement_id=royalty_authorization.settlement_id,
+                    settlement_nonce=int(royalty_authorization.settlement_nonce),
+                    funding_reservation_id=(
+                        royalty_authorization.funding_reservation_id
+                    ),
+                    release_policy_commitment=(
+                        royalty_authorization.release_policy_commitment
+                    ),
+                    room_commitment=royalty_authorization.room_commitment,
+                    room_state_commitment=(
+                        royalty_authorization.room_state_commitment
+                    ),
+                    query_commitment=royalty_authorization.query_commitment,
+                    grant_set_commitment=(
+                        royalty_authorization.grant_set_commitment
+                    ),
+                    allocation_commitment=(
+                        royalty_authorization.allocation_commitment
+                    ),
+                    owners_amounts_hash=(
+                        royalty_authorization.owners_amounts_hash
+                    ),
+                    asset=royalty_authorization.asset,
+                    total=int(royalty_authorization.total),
+                    execution_commitment=(
+                        royalty_authorization.execution_commitment
+                    ),
+                    result_commitment=royalty_authorization.result_commitment,
+                    usage_commitment=royalty_authorization.usage_commitment,
+                    attestation_evidence_hash=evidence_hash,
+                    anchor_resource_hash=resource_hash,
+                    anchor_decision_hash=decision_hash,
+                    anchor_sequence=int(royalty_authorization.anchor_sequence),
+                    expiry=royalty_authorization.expiry,
+                )
+            )
+            try:
+                recovered_settlement_verifier = recover_raw_digest_address(
+                    digest=settlement_authorization_digest,
+                    signature=(
+                        royalty_authorization.settlement_authorization_signature
+                    ),
+                )
+            except VerifierUnavailable as exc:
+                raise VerificationRejected from exc
+            if (
+                royalty_authorization.release_policy_commitment
+                != binding.release_policy_commitment
+                or royalty_authorization.attestation_evidence_hash != evidence_hash
+                or royalty_authorization.anchor_resource_hash != resource_hash
+                or royalty_authorization.anchor_decision_hash != decision_hash
+                or royalty_authorization.settlement_authorization_digest
+                != settlement_authorization_digest
+                or recovered_settlement_verifier != binding.settlement_verifier
+                or royalty_authorization.expiry <= completed_at
+                or royalty_authorization.expiry
+                > completed_at + binding.max_authorization_lifetime_seconds
+                or royalty_authorization.expiry > expires_at
+                or royalty_authorization.expiry > challenge.expires_at
+            ):
+                raise VerificationRejected
+            anchor_evidence_commitment = (
+                derive_royalty_settlement_anchor_evidence_commitment(
+                    authorization=royalty_authorization,
+                    binding=binding,
+                    attestation_evidence_hash=evidence_hash,
+                )
+            )
+            authorization_digest = royalty_settlement_qvl_authorization_digest(
+                chain_id=policy.chain_id,
+                distributor_address=binding.distributor_address,
+                settlement_id=royalty_authorization.settlement_id,
+                settlement_nonce=int(royalty_authorization.settlement_nonce),
+                funding_reservation_id=(
+                    royalty_authorization.funding_reservation_id
+                ),
+                release_policy_commitment=(
+                    royalty_authorization.release_policy_commitment
+                ),
+                room_commitment=royalty_authorization.room_commitment,
+                room_state_commitment=(
+                    royalty_authorization.room_state_commitment
+                ),
+                query_commitment=royalty_authorization.query_commitment,
+                grant_set_commitment=royalty_authorization.grant_set_commitment,
+                allocation_commitment=(
+                    royalty_authorization.allocation_commitment
+                ),
+                owners_amounts_hash=royalty_authorization.owners_amounts_hash,
+                asset=royalty_authorization.asset,
+                total=int(royalty_authorization.total),
+                execution_commitment=royalty_authorization.execution_commitment,
+                result_commitment=royalty_authorization.result_commitment,
+                usage_commitment=royalty_authorization.usage_commitment,
+                attestation_evidence_hash=evidence_hash,
+                anchor_resource_hash=resource_hash,
+                anchor_decision_hash=decision_hash,
+                anchor_sequence=int(royalty_authorization.anchor_sequence),
+                expiry=royalty_authorization.expiry,
+            )
+            unsigned.update(
+                {
+                    "qvl_royalty_verifier_address": royalty_signer.address,
+                    "qvl_royalty_policy_commitment": royalty_policy_commitment,
+                    "qvl_royalty_release_policy_commitment": (
+                        binding.release_policy_commitment
+                    ),
+                    "qvl_royalty_attestation_evidence_hash": evidence_hash,
+                    "qvl_royalty_anchor_evidence_commitment": (
+                        anchor_evidence_commitment
+                    ),
+                    "qvl_royalty_authorization_expiry": (
+                        royalty_authorization.expiry
+                    ),
+                    "qvl_royalty_authorization_digest": authorization_digest,
+                    "qvl_royalty_authorization_signature": (
+                        royalty_signer.sign_raw_digest(authorization_digest)
                     ),
                 }
             )

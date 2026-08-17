@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,8 @@ import {
   PhalaWorkloadVerdictChallengeLedger,
   assertProductionPhalaComputeWorkloadRecipientActivation,
   assertProductionPhalaSevenCvmEvidenceSet,
+  assertHistoricallyVerifiedProductionPhalaComputeWorkloadRecipientActivation,
+  assertHistoricallyVerifiedProductionPhalaSevenCvmEvidenceSet,
   assertPinnedSevenCvmLocalDcapVerifierRuntime,
   assertVerifiedPhalaQvlIdentityLaunchEvidence,
   assertVerifiedPhalaComputeWorkloadRecipientActivation,
@@ -39,15 +42,33 @@ import {
   phalaComputeWorkloadRecipientSourceActivationSha256,
   phalaComputeWorkloadRecipientReportData,
   phalaSevenCvmVerifiedEvidenceSetSha256,
+  phalaSevenCvmReleaseVerificationAuthoritySha256,
   phalaWorkloadTdxVerdictVerificationSha256,
+  consumePhalaSevenCvmHistoricalTranscriptCapabilities,
   independentTdxVerdictSigningDigest,
   qvlChallengeSigningDigest,
+  replayPersistedHistoricalPhalaComputeWorkloadRecipientActivation,
+  replayPersistedHistoricalPhalaSevenCvmEvidence,
   verifyPhalaQvlIdentityLaunchEvidence,
   verifyPhalaComputeWorkloadRecipientActivation,
   verifyPinnedSevenCvmLocalDcapQuote,
   verifyPinnedSevenCvmIsolatedRuntimeEnvironment,
   verifyPhalaWorkloadIndependentTdxVerdict,
 } from "./phala-seven-cvm-verifier-evidence.mjs";
+import {
+  OPENED_FD_RUNTIME_AUTHORITY_MODES,
+  createPinnedSevenCvmOpenedFdRuntime,
+} from "./phala-seven-cvm-opened-fd-runtime-core.mjs";
+import {
+  phalaExecutorStateDigest,
+} from "./phala-executor-state-core.mjs";
+import {
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES,
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES,
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER,
+  createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries,
+  phalaSevenCvmHistoricalTranscriptFileSetSha256,
+} from "./phala-seven-cvm-historical-transcript.mjs";
 import {
   verifyIndependentEip191PersonalSignature,
   verifyIndependentEip191RawDigestSignature,
@@ -75,6 +96,297 @@ function fixture() {
   return fixturePromise;
 }
 
+const historicalTestSha = (seed) =>
+  `sha256:${seed.toString(16).padStart(64, "0")}`;
+const historicalTestTimestamp = (seconds) => new Date(seconds * 1_000)
+  .toISOString().replace(".000Z", "Z");
+
+function sortedPlainData(value) {
+  if (Array.isArray(value)) return value.map(sortedPlainData);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, sortedPlainData(value[key])]),
+  );
+}
+
+function compactHistoricalText(value) {
+  return JSON.stringify(sortedPlainData(value));
+}
+
+function canonicalHistoricalText(value) {
+  return `${JSON.stringify(sortedPlainData(value), null, 2)}\n`;
+}
+
+function historicalFileIdentity(text) {
+  return {
+    sha256: `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`,
+    size: Buffer.byteLength(text, "utf8"),
+  };
+}
+
+function syntheticHistoricalPosture(descriptor) {
+  return {
+    expectedAuthority: {
+      domain: descriptor.domain,
+      app_id: descriptor.app_id,
+      cvm_id: descriptor.cvm_id,
+      compose_hash: descriptor.compose_hash,
+      kms_id: descriptor.kms_id,
+      instance_type: descriptor.instance_type,
+      disk_size: descriptor.disk_size,
+    },
+    receipt: {
+      schema: "dnai.synthetic-historical-phala-production-cvm-posture-receipt.v2",
+      status: "private_posture_fixture_prepared",
+      truth_status: "synthetic_node_test_posture_never_production_authority",
+      domain: descriptor.domain,
+      app_id: descriptor.app_id,
+      cvm_id: descriptor.cvm_id,
+      compose_hash: descriptor.compose_hash,
+      os_image_hash: descriptor.os_image_hash,
+      kms_id: descriptor.kms_id,
+      instance_type: descriptor.instance_type,
+      disk_size: descriptor.disk_size,
+      listed: false,
+      public_logs: false,
+      public_sysinfo: false,
+      public_tcbinfo: false,
+      observed_at: descriptor.posture_observed_at,
+      receipt_sha256: descriptor.posture_receipt_sha256,
+      raw_secret_egress: false,
+    },
+  };
+}
+
+function syntheticHistoricalEnvelope({
+  flag,
+  domain,
+  role,
+  rawArtifactText,
+  artifactSha256,
+  verificationRecord,
+}) {
+  const raw = historicalFileIdentity(rawArtifactText);
+  return canonicalHistoricalText({
+    schema: "dnai.phala-verifier-historical-transcript-artifact.v2",
+    chain_id: 84_532,
+    flag,
+    domain,
+    role,
+    artifact_sha256: artifactSha256,
+    raw_artifact_sha256: raw.sha256,
+    raw_artifact_size: raw.size,
+    raw_artifact_text: rawArtifactText,
+    verification_record: verificationRecord,
+  });
+}
+
+function syntheticHistoricalTranscriptFiles(value) {
+  const byFlag = new Map();
+  value.qvlRawInputs.forEach((raw, index) => {
+    const proof = value.qvlIdentityEvidence[index];
+    const descriptor = value.releaseAuthority.descriptors.find(
+      ({ domain }) => domain === raw.domain,
+    );
+    const posture = syntheticHistoricalPosture(descriptor);
+    const collateralJson = compactHistoricalText({
+      schema: "dnai.synthetic-historical-dcap-collateral.v2",
+      domain: raw.domain,
+      verification_time: proof.verified_at,
+      never_production_authority: true,
+    });
+    const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[raw.domain];
+    const requestText = syntheticHistoricalEnvelope({
+      flag: flags.request,
+      domain: raw.domain,
+      role: "request",
+      rawArtifactText: raw.rawRequestText,
+      artifactSha256: proof.identity_attestation_request_sha256,
+      verificationRecord: null,
+    });
+    const responseText = syntheticHistoricalEnvelope({
+      flag: flags.response,
+      domain: raw.domain,
+      role: "response",
+      rawArtifactText: raw.rawResponseText,
+      artifactSha256: proof.identity_attestation_response_sha256,
+      verificationRecord: {
+        schema: "dnai.phala-verifier-historical-dcap-replay-record.v2",
+        verification_time: proof.verified_at,
+        activation_evidence_lease_issued_at:
+          proof.activation_evidence_lease_issued_at,
+        activation_evidence_lease_expires_at:
+          proof.activation_evidence_lease_expires_at,
+        runtime_environment_sha256:
+          PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256,
+        collateral_sha256: historicalFileIdentity(collateralJson).sha256,
+        collateral_json: collateralJson,
+        local_dcap_verification_receipt_sha256:
+          proof.local_dcap_verification_receipt_sha256,
+        posture_expected_authority: posture.expectedAuthority,
+        production_posture_receipt: posture.receipt,
+        production_posture_receipt_sha256: descriptor.posture_receipt_sha256,
+      },
+    });
+    assert.deepEqual(historicalFileIdentity(requestText), {
+      sha256: proof.identity_attestation_request_file_sha256,
+      size: proof.identity_attestation_request_file_size,
+    });
+    assert.deepEqual(historicalFileIdentity(responseText), {
+      sha256: proof.identity_attestation_response_file_sha256,
+      size: proof.identity_attestation_response_file_size,
+    });
+    byFlag.set(flags.request, requestText);
+    byFlag.set(flags.response, responseText);
+  });
+  value.workloadRawInputs.forEach((raw, index) => {
+    const proof = value.workloadVerdictEvidence[index];
+    const descriptor = value.releaseAuthority.descriptors.find(
+      ({ domain }) => domain === raw.challenge.domain,
+    );
+    const posture = syntheticHistoricalPosture(descriptor);
+    const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[raw.challenge.domain];
+    const challengeText = syntheticHistoricalEnvelope({
+      flag: flags.challenge,
+      domain: raw.challenge.domain,
+      role: "challenge",
+      rawArtifactText: raw.rawChallengeText,
+      artifactSha256: proof.qvl_challenge_artifact_sha256,
+      verificationRecord: null,
+    });
+    const verdictText = syntheticHistoricalEnvelope({
+      flag: flags.verdict,
+      domain: raw.challenge.domain,
+      role: "verdict",
+      rawArtifactText: raw.rawVerdictText,
+      artifactSha256: proof.qvl_verdict_artifact_sha256,
+      verificationRecord: {
+        schema: "dnai.phala-verifier-historical-signature-replay-record.v2",
+        verification_time: proof.verified_at,
+        verdict_activation_evidence_lease_expires_at:
+          proof.verdict_activation_evidence_lease_expires_at,
+        activation_evidence_lease_expires_at:
+          proof.activation_evidence_lease_expires_at,
+        report_data_binding: proof.report_data_binding,
+        posture_expected_authority: posture.expectedAuthority,
+        production_posture_receipt: posture.receipt,
+        production_posture_receipt_sha256: descriptor.posture_receipt_sha256,
+      },
+    });
+    assert.deepEqual(historicalFileIdentity(challengeText), {
+      sha256: proof.qvl_challenge_file_sha256,
+      size: proof.qvl_challenge_file_size,
+    });
+    assert.deepEqual(historicalFileIdentity(verdictText), {
+      sha256: proof.qvl_verdict_file_sha256,
+      size: proof.qvl_verdict_file_size,
+    });
+    byFlag.set(flags.challenge, challengeText);
+    byFlag.set(flags.verdict, verdictText);
+  });
+  return PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.map((flag) => ({
+    flag,
+    text: byFlag.get(flag),
+  }));
+}
+
+function syntheticHistoricalPostureAndExecutor(value) {
+  const authority = value.releaseAuthority;
+  const order = [
+    ...PHALA_SEVEN_CVM_EXECUTION_ORDER.slice(1),
+    PHALA_SEVEN_CVM_EXECUTION_ORDER[0],
+  ];
+  const preparationBase = value.now - 300;
+  const commitBase = value.now - 180;
+  return {
+    schema: "dnai.phala-executor-state.v3",
+    status: "complete_seven_commits_posture_observed_attestation_unverified",
+    sequence: 38,
+    batch_id: historicalTestSha(700),
+    bootstrap_authorization_id: `sha256:${authority.ceremony_nonce.slice(2)}`,
+    bootstrap_authorization_receipt_sha256:
+      authority.bootstrap_authorization_receipt_sha256,
+    release_sha: authority.release_sha,
+    launch_intent_sha256: historicalTestSha(701),
+    target_authority_sha256: historicalTestSha(702),
+    phala_recovery_directory_identity_anchor_sha256: historicalTestSha(703),
+    reservations: order.map((domain, index) => ({
+      domain,
+      app_id: authority.descriptors.find((entry) => entry.domain === domain).app_id,
+      nonce: index + 1,
+    })),
+    preparations: order.map((domain, index) => ({
+      domain,
+      request_sha256: historicalTestSha(800 + index * 3),
+      readiness_sha256: historicalTestSha(801 + index * 3),
+      attempted_at: historicalTestTimestamp(preparationBase + index * 3),
+      observed_at: historicalTestTimestamp(preparationBase + index * 3 + 1),
+      observation_sha256: historicalTestSha(802 + index * 3),
+    })),
+    signed_key_bindings: order.map((domain, index) => ({
+      domain,
+      binding_sha256: historicalTestSha(900 + index * 2),
+      public_key_sha256: historicalTestSha(901 + index * 2),
+    })),
+    committed_prefix: order.map((domain, index) => ({
+      domain,
+      cvm_id: authority.descriptors.find((entry) => entry.domain === domain).cvm_id,
+      request_sha256: historicalTestSha(1_000 + index * 3),
+      readiness_sha256: historicalTestSha(1_001 + index * 3),
+      attempted_at: historicalTestTimestamp(commitBase + index * 3),
+      observed_at: historicalTestTimestamp(commitBase + index * 3 + 1),
+      observation_sha256: historicalTestSha(1_002 + index * 3),
+    })),
+    pending_mutation: null,
+    reconciliation: null,
+    posture_receipts: order.map((domain) => ({
+      domain,
+      receipt_sha256: authority.descriptors.find((entry) => entry.domain === domain)
+        .posture_receipt_sha256,
+    })),
+    preparations_validation_sha256: historicalTestSha(1_100),
+  };
+}
+
+async function syntheticHistoricalReplayInputs(value) {
+  const rawTranscriptFiles = syntheticHistoricalTranscriptFiles(value);
+  const transcriptFileSet =
+    createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries(
+      rawTranscriptFiles,
+    );
+  assert.equal(
+    phalaSevenCvmHistoricalTranscriptFileSetSha256(transcriptFileSet),
+    value.evidenceSet.historical_transcript_file_set_sha256,
+  );
+  const executorFinalState = syntheticHistoricalPostureAndExecutor(value);
+  const localResultByDomain = {};
+  for (const raw of value.qvlRawInputs) {
+    const policy = value.releaseAuthority.qvl_measurement_policies.find(
+      (entry) => entry.domain === raw.domain,
+    );
+    localResultByDomain[raw.domain] = await raw.testOnlyVerifyQuote(
+      Buffer.from(raw.response.quote.slice(2), "hex"),
+      policy,
+    );
+  }
+  return {
+    releaseAuthority: value.releaseAuthority,
+    rawTranscriptFiles,
+    executorFinalState,
+    persistedEvidenceSet: structuredClone(value.evidenceSet),
+    testOnlyHistoricalReplayCommitments: {
+      executor_final_state_sha256: phalaExecutorStateDigest(executorFinalState),
+      historical_transcript_file_set_sha256:
+        phalaSevenCvmHistoricalTranscriptFileSetSha256(transcriptFileSet),
+      seven_cvm_verified_evidence_set_sha256:
+        phalaSevenCvmVerifiedEvidenceSetSha256(value.evidenceSet),
+    },
+    localResultByDomain,
+    testOnlyVerifyQuote: async (_quote, policy) =>
+      structuredClone(localResultByDomain[policy.domain]),
+  };
+}
+
 test("seven machine-verifier proofs have stable domains and canonical form", async () => {
   const value = await fixture();
   assert.equal(
@@ -91,7 +403,9 @@ test("seven machine-verifier proofs have stable domains and canonical form", asy
       Object.hasOwn(PHALA_QVL_IDENTITY_DOMAIN_PROFILE, domain)),
   );
   assert.equal(value.evidenceSet.all_seven_machine_verified, true);
-  assert.equal(value.evidenceSet.raw_quote_persisted, false);
+  assert.equal(value.evidenceSet.private_historical_transcript_required, true);
+  assert.equal(value.evidenceSet.raw_quote_publicly_disclosed, false);
+  assert.equal(value.evidenceSet.raw_collateral_publicly_disclosed, false);
   assert.equal(value.evidenceSet.raw_secret_egress, false);
   assert.match(phalaQvlIdentityLaunchEvidenceSha256(value.qvlIdentityEvidence[0]),
     /^sha256:[0-9a-f]{64}$/);
@@ -119,15 +433,15 @@ test("verified evidence carries exact raw transcript byte identities and a polic
   const value = await fixture();
   assert.equal(
     value.qvlIdentityEvidence[0].schema,
-    "dnai.phala-qvl-identity-launch-verification.v4",
+    "dnai.phala-qvl-identity-launch-verification.v5",
   );
   assert.equal(
     value.workloadVerdictEvidence[0].schema,
-    "dnai.phala-workload-tdx-verdict-verification.v4",
+    "dnai.phala-workload-tdx-verdict-verification.v5",
   );
   assert.equal(
     value.evidenceSet.schema,
-    "dnai.phala-seven-cvm-verified-evidence-set.v4",
+    "dnai.phala-seven-cvm-verified-evidence-set.v5",
   );
   value.qvlIdentityEvidence.forEach((proof, index) => {
     const raw = value.qvlRawInputs[index];
@@ -142,13 +456,13 @@ test("verified evidence carries exact raw transcript byte identities and a polic
     );
     assert.equal(proof.expires_at, proof.activation_evidence_lease_expires_at);
     assert.ok(proof.challenge_expires_at < proof.activation_evidence_lease_expires_at);
-    assert.equal(
-      proof.identity_attestation_request_file_size,
-      Buffer.byteLength(raw.rawRequestText, "utf8"),
+    assert.ok(
+      proof.identity_attestation_request_file_size
+        > Buffer.byteLength(raw.rawRequestText, "utf8"),
     );
-    assert.equal(
-      proof.identity_attestation_response_file_size,
-      Buffer.byteLength(raw.rawResponseText, "utf8"),
+    assert.ok(
+      proof.identity_attestation_response_file_size
+        > Buffer.byteLength(raw.rawResponseText, "utf8"),
     );
   });
   value.workloadVerdictEvidence.forEach((proof) => {
@@ -162,13 +476,13 @@ test("verified evidence carries exact raw transcript byte identities and a polic
   });
   value.workloadVerdictEvidence.forEach((proof, index) => {
     const raw = value.workloadRawInputs[index];
-    assert.equal(
-      proof.qvl_challenge_file_size,
-      Buffer.byteLength(raw.rawChallengeText, "utf8"),
+    assert.ok(
+      proof.qvl_challenge_file_size
+        > Buffer.byteLength(raw.rawChallengeText, "utf8"),
     );
-    assert.equal(
-      proof.qvl_verdict_file_size,
-      Buffer.byteLength(raw.rawVerdictText, "utf8"),
+    assert.ok(
+      proof.qvl_verdict_file_size
+        > Buffer.byteLength(raw.rawVerdictText, "utf8"),
     );
   });
   const proofByDomain = new Map([
@@ -398,6 +712,99 @@ test("production exact-14 transcript exporter is real and never exports syntheti
       workloadVerdictEvidence: value.workloadVerdictEvidence,
     }),
     /not reconstructed from seven machine-verifier proofs/,
+  );
+});
+
+test("exact-seven private transcript capabilities are atomic and one-shot", () => {
+  const capabilityStore = new WeakMap();
+  const proofs = Array.from({ length: 7 }, () => ({}));
+  proofs.forEach((proof, index) => capabilityStore.set(proof, index));
+  assert.throws(
+    () => consumePhalaSevenCvmHistoricalTranscriptCapabilities(
+      capabilityStore,
+      [...proofs.slice(0, 6), {}],
+    ),
+    /unavailable or already consumed/,
+  );
+  assert.equal(proofs.every((proof) => capabilityStore.has(proof)), true);
+  consumePhalaSevenCvmHistoricalTranscriptCapabilities(capabilityStore, proofs);
+  assert.equal(proofs.every((proof) => !capabilityStore.has(proof)), true);
+  assert.throws(
+    () => consumePhalaSevenCvmHistoricalTranscriptCapabilities(
+      capabilityStore,
+      proofs,
+    ),
+    /unavailable or already consumed/,
+  );
+  const verifierSource = fs.readFileSync(
+    new URL("./phala-seven-cvm-verifier-evidence.mjs", import.meta.url),
+    "utf8",
+  );
+  const exporterStart = verifierSource.indexOf(
+    "export function exportPhalaSevenCvmHistoricalTranscriptFiles",
+  );
+  const exporterEnd = verifierSource.indexOf(
+    "\nfunction parseExactPhalaSevenCvmHistoricalTranscriptFiles",
+    exporterStart,
+  );
+  const exporterSource = verifierSource.slice(exporterStart, exporterEnd);
+  const exact14DigestValidation = exporterSource.lastIndexOf(
+    "phalaSevenCvmHistoricalTranscriptFileSetSha256",
+  );
+  const capabilityConsumption = exporterSource.indexOf(
+    "consumePhalaSevenCvmHistoricalTranscriptCapabilities",
+  );
+  assert.equal(exporterStart >= 0 && exporterEnd > exporterStart, true);
+  assert.equal(exact14DigestValidation >= 0, true);
+  assert.equal(capabilityConsumption > exact14DigestValidation, true);
+});
+
+test("exact-14 bounds admit worst-case escaped 512 KiB collateral envelopes", () => {
+  assert.equal(
+    PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES,
+    2 * 1024 * 1024,
+  );
+  assert.equal(
+    PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES,
+    16 * 1024 * 1024,
+  );
+  const collateralBudget = 512 * 1024;
+  const emptyCollateral = JSON.stringify({ payload: "" });
+  const slashCount = Math.floor(
+    (collateralBudget - Buffer.byteLength(emptyCollateral, "ascii")) / 2,
+  );
+  const asciiCount = collateralBudget
+    - Buffer.byteLength(emptyCollateral, "ascii")
+    - slashCount * 2;
+  const collateralJson = JSON.stringify({
+    payload: `${"\\".repeat(slashCount)}${"a".repeat(asciiCount)}`,
+  });
+  assert.equal(Buffer.byteLength(collateralJson, "ascii"), collateralBudget);
+  const entries = PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.map(
+    (flag, index) => ({
+      flag,
+      text: canonicalHistoricalText({ collateral_json: collateralJson, index }),
+    }),
+  );
+  const sizes = entries.map(({ text }) => Buffer.byteLength(text, "utf8"));
+  const totalBytes = sizes.reduce((total, size) => total + size, 0);
+  assert.equal(sizes.every((size) => size > 1024 * 1024), true);
+  assert.equal(
+    sizes.every((size) =>
+      size <= PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES),
+    true,
+  );
+  assert.equal(totalBytes > 8 * 1024 * 1024, true);
+  assert.equal(
+    totalBytes <= PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES,
+    true,
+  );
+  const fileSet = createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries(
+    entries,
+  );
+  assert.deepEqual(
+    fileSet.files.map(({ size }) => size),
+    sizes,
   );
 });
 
@@ -1162,7 +1569,191 @@ test("the retired six-CVM authority is explicit and rejected by the seven-CVM no
   );
 });
 
+test("exact-14 historical replay reconstructs L and O at recorded seconds without fresh brands", async () => {
+  const value = await fixture();
+  const inputs = await syntheticHistoricalReplayInputs(value);
+  const replay = await replayPersistedHistoricalPhalaSevenCvmEvidence(inputs);
+  assert.equal(
+    phalaSevenCvmVerifiedEvidenceSetSha256(replay.evidenceSet),
+    phalaSevenCvmVerifiedEvidenceSetSha256(value.evidenceSet),
+  );
+  assert.throws(() => assertVerifiedPhalaSevenCvmEvidenceSet(replay.evidenceSet));
+  for (const proof of replay.qvlIdentityEvidence) {
+    assert.throws(() => assertVerifiedPhalaQvlIdentityLaunchEvidence(proof));
+  }
+  for (const proof of replay.workloadVerdictEvidence) {
+    assert.throws(() => assertVerifiedPhalaWorkloadTdxVerdict(proof));
+  }
+  assert.throws(
+    () => assertHistoricallyVerifiedProductionPhalaSevenCvmEvidenceSet(
+      replay.evidenceSet,
+    ),
+    /synthetic seven-CVM evidence has no production historical authority/,
+  );
+  const commitmentSelectedReplay =
+    await replayPersistedHistoricalPhalaSevenCvmEvidence({
+      ...inputs,
+      persistedEvidenceSet: undefined,
+    });
+  assert.equal(
+    phalaSevenCvmVerifiedEvidenceSetSha256(
+      commitmentSelectedReplay.evidenceSet,
+    ),
+    phalaSevenCvmVerifiedEvidenceSetSha256(value.evidenceSet),
+  );
+  const computeQvl = replay.qvlIdentityEvidence.find(
+    ({ domain }) => domain === "compute_workload_qvl_cvm",
+  );
+  const mainProof = replay.workloadVerdictEvidence.find(
+    ({ domain }) => domain === "main_runtime_cvm",
+  );
+  const activation =
+    replayPersistedHistoricalPhalaComputeWorkloadRecipientActivation({
+      activation: structuredClone(value.computeWorkloadActivationEvidence),
+      releaseAuthority: inputs.releaseAuthority,
+      qvlIdentityEvidence: computeQvl,
+      mainRuntimeEvidence: mainProof,
+    });
+  assert.equal(
+    phalaComputeWorkloadRecipientActivationVerificationSha256(activation),
+    phalaComputeWorkloadRecipientActivationVerificationSha256(
+      value.computeWorkloadActivationEvidence,
+    ),
+  );
+  assert.throws(
+    () => assertVerifiedPhalaComputeWorkloadRecipientActivation(activation),
+  );
+  assert.throws(
+    () => assertHistoricallyVerifiedProductionPhalaComputeWorkloadRecipientActivation(
+      activation,
+    ),
+    /synthetic activation has no production historical authority/,
+  );
+});
+
+test("historical replay rejects collateral, ordering, persisted-L, posture, and executor drift", async () => {
+  const value = await fixture();
+  const inputs = await syntheticHistoricalReplayInputs(value);
+  const replay = (overrides) => replayPersistedHistoricalPhalaSevenCvmEvidence({
+    ...inputs,
+    ...overrides,
+  });
+  const collateralDrift = structuredClone(inputs.rawTranscriptFiles);
+  const responseIndex = collateralDrift.findIndex(({ flag }) =>
+    flag.endsWith("qvl-identity-response"));
+  const responseEnvelope = JSON.parse(collateralDrift[responseIndex].text);
+  responseEnvelope.verification_record.collateral_json += " ";
+  collateralDrift[responseIndex].text = canonicalHistoricalText(responseEnvelope);
+  await assert.rejects(
+    () => replay({ rawTranscriptFiles: collateralDrift }),
+    /collateral|replay record drifted|transcript file set drifted/,
+  );
+
+  const reordered = structuredClone(inputs.rawTranscriptFiles);
+  [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
+  await assert.rejects(
+    () => replay({ rawTranscriptFiles: reordered }),
+    /reordered/,
+  );
+
+  const postureDrift = structuredClone(inputs.rawTranscriptFiles);
+  const verdictIndex = postureDrift.findIndex(({ flag }) =>
+    flag.endsWith("independent-tdx-verdict"));
+  const verdictEnvelope = JSON.parse(postureDrift[verdictIndex].text);
+  verdictEnvelope.verification_record.production_posture_receipt.public_logs = true;
+  postureDrift[verdictIndex].text = canonicalHistoricalText(verdictEnvelope);
+  await assert.rejects(
+    () => replay({ rawTranscriptFiles: postureDrift }),
+    /posture|transcript file set drifted/,
+  );
+
+  const executorDrift = structuredClone(inputs.executorFinalState);
+  executorDrift.committed_prefix[0].cvm_id =
+    executorDrift.committed_prefix[1].cvm_id;
+  await assert.rejects(
+    () => replay({ executorFinalState: executorDrift }),
+    /executor|distinct|terminal state/,
+  );
+
+  const persistedDrift = structuredClone(inputs.persistedEvidenceSet);
+  persistedDrift.issued_at += 1;
+  await assert.rejects(
+    () => replay({ persistedEvidenceSet: persistedDrift }),
+    /persisted seven-CVM evidence set drifted/,
+  );
+});
+
+test("historical L and O replay survive a spawned verifier-process restart", async () => {
+  const value = await fixture();
+  const inputs = await syntheticHistoricalReplayInputs(value);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dnai-historical-restart-"));
+  const bundlePath = path.join(directory, "bundle.json");
+  const childPath = path.join(directory, "historical-restart.test.mjs");
+  const verifierUrl = new URL(
+    "./phala-seven-cvm-verifier-evidence.mjs",
+    import.meta.url,
+  ).href;
+  fs.writeFileSync(bundlePath, JSON.stringify({
+    releaseAuthority: value.releaseAuthority,
+    rawTranscriptFiles: inputs.rawTranscriptFiles,
+    executorFinalState: inputs.executorFinalState,
+    persistedEvidenceSet: inputs.persistedEvidenceSet,
+    testOnlyHistoricalReplayCommitments:
+      inputs.testOnlyHistoricalReplayCommitments,
+    localResultByDomain: inputs.localResultByDomain,
+    activation: value.computeWorkloadActivationEvidence,
+  }));
+  fs.writeFileSync(childPath, `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import {
+  assertVerifiedPhalaComputeWorkloadRecipientActivation,
+  assertVerifiedPhalaSevenCvmEvidenceSet,
+  replayPersistedHistoricalPhalaComputeWorkloadRecipientActivation,
+  replayPersistedHistoricalPhalaSevenCvmEvidence,
+} from ${JSON.stringify(verifierUrl)};
+const bundle = JSON.parse(fs.readFileSync(${JSON.stringify(bundlePath)}, "utf8"));
+test("restart replay", async () => {
+  const replay = await replayPersistedHistoricalPhalaSevenCvmEvidence({
+    releaseAuthority: bundle.releaseAuthority,
+    rawTranscriptFiles: bundle.rawTranscriptFiles,
+    executorFinalState: bundle.executorFinalState,
+    persistedEvidenceSet: bundle.persistedEvidenceSet,
+    testOnlyHistoricalReplayCommitments:
+      bundle.testOnlyHistoricalReplayCommitments,
+    testOnlyVerifyQuote: async (_quote, policy) =>
+      bundle.localResultByDomain[policy.domain],
+  });
+  assert.throws(() => assertVerifiedPhalaSevenCvmEvidenceSet(replay.evidenceSet));
+  const activation = replayPersistedHistoricalPhalaComputeWorkloadRecipientActivation({
+    activation: bundle.activation,
+    releaseAuthority: bundle.releaseAuthority,
+    qvlIdentityEvidence: replay.qvlIdentityEvidence.find(
+      (proof) => proof.domain === "compute_workload_qvl_cvm",
+    ),
+    mainRuntimeEvidence: replay.workloadVerdictEvidence.find(
+      (proof) => proof.domain === "main_runtime_cvm",
+    ),
+  });
+  assert.throws(() => assertVerifiedPhalaComputeWorkloadRecipientActivation(activation));
+});
+`);
+  try {
+    const child = spawnSync(process.execPath, ["--test", childPath], {
+      cwd: directory,
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 256 * 1024,
+    });
+    assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 const DCAP_SOURCE_URL = new URL("./phala-seven-cvm-dcap-verify.py", import.meta.url);
+const DCAP_KAT_URL = new URL("./phala-seven-cvm-dcap-verify-kat.py", import.meta.url);
 const DCAP_NATIVE_URL = new URL(
   "../⚙️/attestation-qvl/.venv/lib/python3.12/site-packages/dcap_qvl/_dcap_qvl.abi3.so",
   import.meta.url,
@@ -1181,6 +1772,49 @@ function createOpenedFdRuntimeCopies(prefix = "dnai-opened-fd-runtime-") {
   return { directory, paths };
 }
 
+function createOpenedFdSnapshotBarrier() {
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "dnai-snapshot-barrier-")),
+  );
+  fs.chmodSync(directory, 0o700);
+  for (const name of [
+    "snapshot-ready",
+    "continue",
+    "snapshot-loaded",
+    "original-restored",
+  ]) {
+    const created = spawnSync("/usr/bin/mkfifo", ["-m", "600", path.join(directory, name)], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    assert.equal(created.status, 0, created.stderr);
+  }
+  return directory;
+}
+
+test("Python recorded-second DCAP KAT makes live and replay collateral paths identical", () => {
+  const kat = spawnSync("/usr/bin/python3", [
+    "-I", "-S", "-B", DCAP_KAT_URL.pathname,
+  ], {
+    cwd: "/",
+    encoding: "utf8",
+    env: { HOME: "/var/empty", LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  });
+  assert.equal(kat.status, 0, kat.stderr);
+  assert.equal(kat.stderr, "");
+  assert.deepEqual(JSON.parse(kat.stdout), {
+    collateral_sha256:
+      "sha256:6c93e4b045e141aeb5b6a02c4c23e772552a84528e5f30c996ca016c2a42ffc7",
+    measurements_sha256:
+      "sha256:009f360e600a98bded234d15f3a0871953057c452edcb219d8745e97a579ef81",
+    policy_sha256:
+      "sha256:47765642e5f9bc8f041dd5ba70a371d03765b454cb9413eb3574df838f79bdd7",
+    report_data: `0x${"42".repeat(64)}`,
+  });
+});
+
 test("opened-FD verifier source, native, root runtime, bootstrap, and manifest pins are exact", () => {
   const sourceDigest = createHash("sha256").update(fs.readFileSync(DCAP_SOURCE_URL)).digest("hex");
   const nativeDigest = createHash("sha256").update(fs.readFileSync(DCAP_NATIVE_URL)).digest("hex");
@@ -1190,7 +1824,7 @@ test("opened-FD verifier source, native, root runtime, bootstrap, and manifest p
     assert.equal(nativeDigest, PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.dcap_qvl_abi3_sha256);
     assert.equal(
       PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.bootstrap_sha256,
-      "9bdc99d17e92ca311326dc21e9ee82093962d05894a326b98f4df9970e930d92",
+      "b6e79f5ca1b214036d7e11e26aac0a249a26faa1ed702ef908ad27d0cdebb968",
     );
     assert.equal(
       PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.system_python_runtime_tree_sha256,
@@ -1209,7 +1843,7 @@ test("opened-FD verifier source, native, root runtime, bootstrap, and manifest p
       unsafeAssertPinnedSevenCvmOpenedFdFixtureRuntime({
         testOnlyPaths: runtime.paths,
       }).isolated_runtime_environment_sha256,
-      "sha256:62be45b60bcf7ad7434ad78247997256ab7282bb91d829ee87c301a3b55a146d",
+      "sha256:0acd40fb80dd000f367583017643ac07fe31becd2372bc20ceca3e91aa8b8beb",
     );
   } finally {
     fs.rmSync(runtime.directory, { recursive: true, force: true });
@@ -1271,6 +1905,86 @@ test("opened source and native descriptors survive pathname swaps and execute au
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test("read-only native snapshot is isolated from original mutation, unlinked, and cleaned", async () => {
+  const { directory, paths } = createOpenedFdRuntimeCopies("dnai-snapshot-isolation-");
+  const barrier = createOpenedFdSnapshotBarrier();
+  const beforeSnapshots = new Set(
+    fs.readdirSync("/private/tmp").filter((name) => name.startsWith("dnai-dcap-")),
+  );
+  const originalSha256 = createHash("sha256")
+    .update(fs.readFileSync(paths.native)).digest("hex");
+  let helper;
+  try {
+    helper = spawn(process.execPath, ["-e", `
+const fs = require("node:fs");
+const path = require("node:path");
+const nativePath = process.argv[1];
+const barrierPath = process.argv[2];
+const marker = (name) => path.join(barrierPath, name);
+if (fs.readFileSync(marker("snapshot-ready"), "utf8") !== "snapshot-ready\\n") {
+  process.exit(31);
+}
+const original = fs.readFileSync(nativePath);
+const drifted = Buffer.from(original);
+drifted[Math.floor(drifted.length / 2)] ^= 0xff;
+let fd = fs.openSync(nativePath, "r+");
+fs.writeSync(fd, drifted, 0, drifted.length, 0);
+fs.fsyncSync(fd);
+fs.closeSync(fd);
+fs.writeFileSync(marker("continue"), "continue\\n");
+if (fs.readFileSync(marker("snapshot-loaded"), "utf8") !== "snapshot-loaded\\n") {
+  process.exit(32);
+}
+fd = fs.openSync(nativePath, "r+");
+fs.writeSync(fd, original, 0, original.length, 0);
+fs.fsyncSync(fd);
+fs.closeSync(fd);
+fs.writeFileSync(marker("original-restored"), "original-restored\\n");
+`, paths.native, barrier], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let helperStdout = "";
+    let helperStderr = "";
+    helper.stdout.on("data", (chunk) => { helperStdout += chunk; });
+    helper.stderr.on("data", (chunk) => { helperStderr += chunk; });
+    const helperExit = once(helper, "exit");
+    const runtime = createPinnedSevenCvmOpenedFdRuntime({
+      authority: PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER,
+      host: { platform: process.platform, architecture: process.arch },
+      nativeAuthorityMode: OPENED_FD_RUNTIME_AUTHORITY_MODES.operatorOwnedFixture,
+      nativePath: paths.native,
+      sourcePath: paths.script,
+      nativeSnapshotBarrier: barrier,
+    });
+    const parsed = runtime.probe();
+    const [helperStatus] = await helperExit;
+    assert.equal(helperStatus, 0, `${helperStdout}\n${helperStderr}`);
+    assert.deepEqual(parsed, {
+      native_snapshot_authenticated: true,
+      native_snapshot_link_count: 0,
+      native_snapshot_mode: "0500",
+      runtime_environment_sha256:
+        PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256,
+    });
+    assert.equal(
+      createHash("sha256").update(fs.readFileSync(paths.native)).digest("hex"),
+      originalSha256,
+    );
+    assert.deepEqual(
+      new Set(
+        fs.readdirSync("/private/tmp")
+          .filter((name) => name.startsWith("dnai-dcap-")),
+      ),
+      beforeSnapshots,
+    );
+  } finally {
+    if (helper && helper.exitCode === null) helper.kill("SIGKILL");
+    fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(barrier, { recursive: true, force: true });
   }
 });
 

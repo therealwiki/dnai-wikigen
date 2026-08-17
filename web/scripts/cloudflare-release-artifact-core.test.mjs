@@ -42,7 +42,7 @@ test("reviewed Pages configuration omits Wrangler's unsupported account_id field
   assert.match(artifactTest.EXPECTED_WRANGLER_CONFIG, /^pages_build_output_dir = "\.\/dist"$/m);
 });
 
-test("D build controls are an exact stable 24-file projection", async () => {
+test("D build controls are an exact stable 26-file projection", async () => {
   assert.deepEqual(CLOUDFLARE_D_BUILD_CONTROL_PATHS, [
     "web/functions/_middleware.js",
     "web/index.html",
@@ -52,6 +52,7 @@ test("D build controls are an exact stable 24-file projection", async () => {
     "web/scripts/build-release-env.mjs",
     "web/scripts/build-security-headers.mjs",
     "web/scripts/cloudflare-build-sandbox-core.mjs",
+    "web/scripts/collaboration-execution-release-env-core.mjs",
     "web/scripts/cloudflare-external-build-closure-core.mjs",
     "web/scripts/cloudflare-release-artifact-core.mjs",
     "web/scripts/deploy-cloudflare-core.mjs",
@@ -64,6 +65,7 @@ test("D build controls are an exact stable 24-file projection", async () => {
     "web/scripts/release-build-home-core.mjs",
     "web/scripts/release-runtime-pins-core.mjs",
     "web/scripts/release-env-core.mjs",
+    "web/scripts/royalty-release-env-core.mjs",
     "web/scripts/security-headers-core.mjs",
     "web/tsconfig.json",
     "web/vite.config.ts",
@@ -196,7 +198,7 @@ test("modeled and live build audits bind exact headers, assets, and release SHA"
   }
 });
 
-test("pre-C candidate audit requires exactly 35 acyclic inputs and scans the fresh dist", async () => {
+test("pre-C candidate audit requires exactly 36 acyclic inputs and scans the fresh dist", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-cloudflare-candidate-audit-"));
   try {
     const privateInputs = await writePrivateReleaseInputs(
@@ -209,7 +211,7 @@ test("pre-C candidate audit requires exactly 35 acyclic inputs and scans the fre
     ));
     const audit = await loadPrivateFrontendCandidateArtifactAudit(candidateArgs);
     assert.equal(audit.schema, artifactTest.PRIVATE_FRONTEND_CANDIDATE_AUDIT_SCHEMA);
-    assert.equal(audit.inputs.length, 35);
+    assert.equal(audit.inputs.length, 36);
     assert.deepEqual(
       audit.inputs.map(({ flag }) => flag),
       [...artifactTest.REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS]
@@ -459,11 +461,18 @@ test("private release audit rejects aliased files and duplicate semantic inputs"
   }
 });
 
-test("private release audit normalization rejects a fingerprinted 38th input", async () => {
+test("private release audit normalization rejects a fingerprinted 39th input", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-cloudflare-extra-private-input-"));
   try {
     const privateInputs = await writePrivateReleaseInputs(
       path.join(directory, "private-release-inputs"),
+    );
+    assert.equal(artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS.length, 38);
+    assert.equal(privateInputs.audit.inputs.length, 38);
+    assert.deepEqual(
+      privateInputs.audit.inputs.map(({ flag }) => flag),
+      [...artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS]
+        .sort((left, right) => left.localeCompare(right, "en")),
     );
     const forged = structuredClone(privateInputs.audit);
     forged.inputs.push({

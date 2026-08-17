@@ -1,15 +1,26 @@
 import {
   CVM_LAUNCH_DESCRIPTOR_FILES,
   freshContractDeploymentReceiptDigest,
+  historicalFreshContractDeploymentReceiptV3Digest,
+  normalizeHistoricalFreshContractDeploymentReceiptV3,
   normalizeFreshContractDeploymentReceipt,
 } from "./cvm-launch-intent-core.mjs";
 import {
   assertCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
 import {
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
   cvmReleaseDescriptorSetReceiptSha256,
   normalizeCvmReleaseDescriptorSetReceipt,
-} from "./cvm-release-descriptor-set.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
+import {
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA as
+    HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
+  cvmReleaseDescriptorSetReceiptSha256 as
+    historicalCvmReleaseDescriptorSetReceiptSha256,
+  normalizeCvmReleaseDescriptorSetReceipt as
+    normalizeHistoricalCvmReleaseDescriptorSetReceipt,
+} from "./release-manifest-descriptor-historical-core.mjs";
 import {
   assertHistoricallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt,
   phalaNonLiveBootstrapAuthorizationReceiptSha256,
@@ -30,15 +41,28 @@ import {
   phalaSevenCvmVerifiedEvidenceSetSha256,
 } from "./phala-seven-cvm-verifier-evidence.mjs";
 import {
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
+import {
+  assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority,
+} from "./phala-seven-cvm-historical-release-verification-authority.mjs";
 import {
   normalizePhalaSevenCvmHistoricalTranscriptFileSet,
   phalaSevenCvmHistoricalTranscriptFileSetSha256,
 } from "./phala-seven-cvm-historical-transcript.mjs";
 import {
+  assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence,
   assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt,
-  persistProductionPhalaSevenCvmHistoricalTranscriptFiles,
+  persistPreparedProductionPhalaSevenCvmHistoricalTranscriptFiles,
+  prepareProductionPhalaSevenCvmHistoricalTranscriptPersistence,
   phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256,
 } from "./phala-seven-cvm-historical-transcript-persistence.mjs";
 import {
@@ -80,6 +104,18 @@ function digest(value, label) {
     throw new TypeError(`${label} must be a nonzero canonical SHA-256 digest`);
   }
   return value;
+}
+
+function ownSchema(value, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${label} must be one versioned object`);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, "schema");
+  if (!descriptor || !Object.hasOwn(descriptor, "value")
+    || typeof descriptor.value !== "string") {
+    throw new TypeError(`${label} must carry one own data schema`);
+  }
+  return descriptor.value;
 }
 
 function same(left, right) {
@@ -133,7 +169,21 @@ function externalAuthorityFromDependencies({
   releaseVerificationAuthority,
   verifiedEvidenceSet,
   historicalTranscriptPersistenceReceipt,
-} = {}, { historicalEvidence = false } = {}) {
+} = {}, {
+  historicalEvidence = false,
+  transcriptPersistencePreflight = null,
+} = {}) {
+  if (transcriptPersistencePreflight !== null
+    && historicalTranscriptPersistenceReceipt !== undefined) {
+    throw new TypeError(
+      "seven-CVM completion accepts either a pre-write transcript preflight or one durable receipt",
+    );
+  }
+  if (historicalEvidence && transcriptPersistencePreflight !== null) {
+    throw new TypeError(
+      "historical seven-CVM reconstruction cannot use a pre-persistence authority",
+    );
+  }
   const signedA =
     assertHistoricallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt(
       signedAReceipt,
@@ -142,30 +192,64 @@ function externalAuthorityFromDependencies({
     reviewerAuthorityGenesisAcceptanceSha256,
     "seven-CVM completion reviewer genesis acceptance",
   );
-  const contractReceipt = normalizeFreshContractDeploymentReceipt(
-    freshContractDeploymentReceipt,
-    {
-      expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
-    },
+  const descriptorReceiptSchema = ownSchema(
+    descriptorSetReceipt,
+    "seven-CVM completion descriptor-set receipt",
   );
-  const contractReceiptSha256 = `sha256:${freshContractDeploymentReceiptDigest(
-    contractReceipt,
-    {
-      expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
-    },
-  )}`;
+  const descriptors = descriptorReceiptSchema
+      === CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+    ? normalizeCvmReleaseDescriptorSetReceipt(descriptorSetReceipt)
+    : historicalEvidence
+        && descriptorReceiptSchema
+          === HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+      ? normalizeHistoricalCvmReleaseDescriptorSetReceipt(descriptorSetReceipt)
+      : (() => {
+          throw new TypeError(
+            "seven-CVM completion descriptor-set receipt version is unsupported",
+          );
+        })();
+  const descriptorSetSha256 = descriptorReceiptSchema
+      === CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+    ? cvmReleaseDescriptorSetReceiptSha256(descriptors)
+    : historicalCvmReleaseDescriptorSetReceiptSha256(descriptors);
+  const contractReceiptPins = {
+    expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
+    ...(descriptorReceiptSchema
+        === CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+      ? {
+          expectedTinkerAccountBindingCeremonyReceiptSha256:
+            descriptors
+              .tinker_account_binding_ceremony_receipt_sha256,
+        }
+      : {}),
+  };
+  const contractReceipt = descriptorReceiptSchema
+      === CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+    ? normalizeFreshContractDeploymentReceipt(
+      freshContractDeploymentReceipt,
+      contractReceiptPins,
+    )
+    : normalizeHistoricalFreshContractDeploymentReceiptV3(
+      freshContractDeploymentReceipt,
+      contractReceiptPins,
+    );
+  const contractReceiptSha256 = `sha256:${
+    descriptorReceiptSchema === CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA
+      ? freshContractDeploymentReceiptDigest(
+        contractReceipt,
+        contractReceiptPins,
+      )
+      : historicalFreshContractDeploymentReceiptV3Digest(
+        contractReceipt,
+        contractReceiptPins,
+      )
+  }`;
   const sigstore = assertProductionReleaseManifestSigstoreVerificationReceipt(
     releaseManifestSigstoreVerificationReceipt,
   );
   const sigstoreSha256 =
     releaseManifestSigstoreVerificationReceiptSha256(sigstore);
-  const descriptors = normalizeCvmReleaseDescriptorSetReceipt(
-    descriptorSetReceipt,
-  );
-  const descriptorSetSha256 =
-    cvmReleaseDescriptorSetReceiptSha256(descriptors);
   const executor = assertProvenanceVerifiedCompletedPhalaExecutorState(
     executorFinalState,
   );
@@ -178,28 +262,75 @@ function externalAuthorityFromDependencies({
     )
     : assertProductionPhalaSevenCvmEvidenceSet(verifiedEvidenceSet);
   const proofSetSha256 = phalaSevenCvmVerifiedEvidenceSetSha256(proofSet);
-  const releaseAuthority = historicalEvidence
-    ? assertBrandedPhalaSevenCvmReleaseVerificationAuthority(
-      releaseVerificationAuthority,
-    )
-    : assertFreshProductionPhalaSevenCvmReleaseVerificationAuthority(
-      releaseVerificationAuthority,
+  const releaseAuthoritySchema = ownSchema(
+    releaseVerificationAuthority,
+    "seven-CVM completion release-verification authority",
+  );
+  const releaseAuthority = releaseAuthoritySchema
+      === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+    ? historicalEvidence
+      ? assertBrandedPhalaSevenCvmReleaseVerificationAuthority(
+        releaseVerificationAuthority,
+      )
+      : assertFreshProductionPhalaSevenCvmReleaseVerificationAuthority(
+        releaseVerificationAuthority,
+      )
+    : historicalEvidence
+        && releaseAuthoritySchema
+          === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+      ? assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority(
+        releaseVerificationAuthority,
+      )
+      : (() => {
+          throw new TypeError(
+            "seven-CVM completion release-verification authority version is unsupported",
+          );
+        })();
+  if ((releaseAuthoritySchema
+        === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+      && descriptorReceiptSchema
+        !== CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)
+    || (releaseAuthoritySchema
+        === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+      && descriptorReceiptSchema
+        !== HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)) {
+    throw new TypeError(
+      "seven-CVM completion release and descriptor authority versions are crossed",
     );
-  const releaseAuthoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
-  const transcriptPersistence =
-    assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt(
+  }
+  const releaseAuthoritySha256 = releaseAuthoritySchema
+      === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+    ? currentPhalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority)
+    : legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  const transcriptPersistence = transcriptPersistencePreflight === null
+    ? assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt(
       historicalTranscriptPersistenceReceipt,
+    )
+    : null;
+  const preparedTranscriptPersistence = transcriptPersistencePreflight === null
+    ? null
+    : assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence(
+      transcriptPersistencePreflight,
     );
-  const transcriptPersistenceSha256 =
-    phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(
+  const transcriptPersistenceSha256 = transcriptPersistence === null
+    ? preparedTranscriptPersistence.anticipated_persistence_receipt_sha256
+    : phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(
       transcriptPersistence,
     );
   const transcriptFileSet = normalizePhalaSevenCvmHistoricalTranscriptFileSet(
-    transcriptPersistence.transcript_file_set,
+    (transcriptPersistence ?? preparedTranscriptPersistence).transcript_file_set,
   );
   const transcriptFileSetSha256 =
     phalaSevenCvmHistoricalTranscriptFileSetSha256(transcriptFileSet);
+  const transcriptDirectoryIdentityAnchorSha256 =
+    (transcriptPersistence ?? preparedTranscriptPersistence)
+      .phala_recovery_directory_identity_anchor_sha256;
+  const transcriptEvidenceSetSha256 =
+    (transcriptPersistence ?? preparedTranscriptPersistence)
+      .seven_cvm_verified_evidence_set_sha256;
+  const transcriptAuthorityFileSetSha256 =
+    (transcriptPersistence ?? preparedTranscriptPersistence)
+      .historical_transcript_file_set_sha256;
 
   if (!Array.isArray(productionPostureReceipts)
     || productionPostureReceipts.length !== 7) {
@@ -252,11 +383,21 @@ function externalAuthorityFromDependencies({
     || releaseAuthority.bootstrap_authorization_receipt_sha256 !== signedASha256
     || releaseAuthority.contracts.fresh_contract_deployment_receipt_sha256
       !== contractReceiptSha256
-    || transcriptPersistence.phala_recovery_directory_identity_anchor_sha256
+    || (releaseAuthoritySchema
+        === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+      && (releaseAuthority
+        .tinker_account_binding_ceremony_receipt_sha256
+          !== descriptors
+            .tinker_account_binding_ceremony_receipt_sha256
+        || contractReceipt
+          .tinker_account_binding_ceremony_receipt_sha256
+            !== descriptors
+              .tinker_account_binding_ceremony_receipt_sha256))
+    || transcriptDirectoryIdentityAnchorSha256
       !== executor.phala_recovery_directory_identity_anchor_sha256
-    || transcriptPersistence.seven_cvm_verified_evidence_set_sha256
+    || transcriptEvidenceSetSha256
       !== proofSetSha256
-    || transcriptPersistence.historical_transcript_file_set_sha256
+    || transcriptAuthorityFileSetSha256
       !== transcriptFileSetSha256
     || proofSet.historical_transcript_file_set_sha256
       !== transcriptFileSetSha256) {
@@ -452,6 +593,10 @@ export function normalizePhalaSevenCvmHistoricalRuntimeBinding(value) {
 
 export function createPhalaSevenCvmLaunchCompletionReceipt(options = {}) {
   const expected = externalAuthorityFromDependencies(options);
+  return createBrandedCompletionFromExpectedAuthority(expected);
+}
+
+function createBrandedCompletionFromExpectedAuthority(expected) {
   const receipt =
     launchCompletionCore.createPhalaSevenCvmLaunchCompletionReceiptCandidate(
       expected,
@@ -469,8 +614,8 @@ export async function createPersistedPhalaSevenCvmLaunchCompletionReceipt({
   const executor = assertProvenanceVerifiedCompletedPhalaExecutorState(
     dependencies.executorFinalState,
   );
-  const historicalTranscriptPersistenceReceipt =
-    await persistProductionPhalaSevenCvmHistoricalTranscriptFiles({
+  const transcriptPersistencePreflight =
+    await prepareProductionPhalaSevenCvmHistoricalTranscriptPersistence({
       directory: recoveryDirectory,
       directoryIdentityAnchorSha256:
         executor.phala_recovery_directory_identity_anchor_sha256,
@@ -478,10 +623,45 @@ export async function createPersistedPhalaSevenCvmLaunchCompletionReceipt({
       qvlIdentityEvidence,
       workloadVerdictEvidence,
     });
-  return createPhalaSevenCvmLaunchCompletionReceipt({
-    ...dependencies,
-    historicalTranscriptPersistenceReceipt,
+  // Validate the complete signed-A -> descriptor -> executor -> posture ->
+  // verifier -> release-authority lineage before the first create-only write.
+  // The preflight carries only exact file identities and the anticipated
+  // durable-receipt digest; it does not claim that persistence happened.
+  const expected = externalAuthorityFromDependencies(dependencies, {
+    transcriptPersistencePreflight,
   });
+  const historicalTranscriptPersistenceReceipt =
+    persistPreparedProductionPhalaSevenCvmHistoricalTranscriptFiles({
+      preflight: transcriptPersistencePreflight,
+    });
+
+  // Everything after the durable commit boundary is deterministic. Recheck
+  // only the returned durable receipt against the already-frozen preflight,
+  // then mint L from the precomputed authority. No live proof, clock, network,
+  // descriptor, or signer input is interpreted after persistence.
+  const durable =
+    assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt(
+      historicalTranscriptPersistenceReceipt,
+    );
+  if (phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(durable)
+      !== transcriptPersistencePreflight
+        .anticipated_persistence_receipt_sha256
+    || durable.phala_recovery_directory_identity_anchor_sha256
+      !== transcriptPersistencePreflight
+        .phala_recovery_directory_identity_anchor_sha256
+    || durable.seven_cvm_verified_evidence_set_sha256
+      !== transcriptPersistencePreflight.seven_cvm_verified_evidence_set_sha256
+    || durable.historical_transcript_file_set_sha256
+      !== transcriptPersistencePreflight.historical_transcript_file_set_sha256
+    || !same(
+      durable.transcript_file_set,
+      transcriptPersistencePreflight.transcript_file_set,
+    )) {
+    throw new Error(
+      "durable exact-14 transcript differs from the complete pre-write launch preflight; explicit recovery is required",
+    );
+  }
+  return createBrandedCompletionFromExpectedAuthority(expected);
 }
 
 export function assertBrandedPhalaSevenCvmLaunchCompletionReceipt(value) {

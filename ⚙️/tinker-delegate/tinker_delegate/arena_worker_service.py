@@ -329,6 +329,13 @@ class ArenaSafeWorkerService:
     def run_once(self, *, occurred_at: int) -> ArenaWorkerStatus:
         """Select one item; refresh every external gate at its safe boundary."""
 
+        # Cleanup is idempotent and bounded. Running it before queue selection
+        # closes the crash window where a prior process persisted a terminal
+        # state but exited before unlink evidence reached the Arena store.
+        self.worker.cleanup_terminal_ciphertexts(
+            occurred_at=occurred_at,
+            limit=32,
+        )
         record = self.arena_store.next_safe_ir_work_item()
         if record is None:
             return ArenaWorkerStatus(
@@ -358,6 +365,7 @@ class ArenaSafeWorkerService:
 def build_verified_arena_worker_service(
     *,
     arena_store_path: str | Path,
+    arena_store_integrity_key: bytes,
     ingress_store_path: str | Path,
     recipient: ArenaIngressRecipient,
     evaluator: DnaseqVariantQcSafeIrEvaluator,
@@ -373,7 +381,10 @@ def build_verified_arena_worker_service(
 ) -> ArenaSafeWorkerService:
     """Build the service around concrete per-job QVL and registry refreshes."""
 
-    arena_store = ArenaStore(arena_store_path)
+    arena_store = ArenaStore(
+        arena_store_path,
+        integrity_key=arena_store_integrity_key,
+    )
     ingress_store = ArenaCandidateIngressStore(ingress_store_path)
     if not isinstance(activation_provider, RefreshingArenaActivationProvider):
         raise ArenaWorkerServiceError(

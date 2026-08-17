@@ -127,15 +127,18 @@ describe("Verify selected evidence projection", () => {
     expect(html).toContain("Worker-reported · not independently verified");
     expect(html).toContain("QVL signer claim");
     expect(html).toContain("has not received the raw quote");
-    expect(html).not.toContain("QVL verified");
+    expect(html).toContain("0</strong><span>QVL verified");
+    expect(html).toContain("Not QVL verified");
+    expect(html).not.toContain('class="cvm-evidence-state verified"');
     expect(html).toContain("Quote verified");
     expect(html).toContain('class="layer-state pending"');
   });
 
   it("renders contract-reported Deal Room commitments without promoting them to QVL or Intel proof", () => {
     const html = renderSelected(contractDealResult);
+    expect(html).toContain("Deal Room 17 result projection");
+    expect(html).toContain("Room 17 contract-reported public fields");
     expect(html).toContain("Contract-reported · not independently verified");
-    expect(html).toContain("Contract-reported public fields · independent browser verification not performed");
     expect(html).toContain("Attestation evidence commitment");
     expect(html).toContain(contractDealResult.attestationEvidenceCommitment);
     expect(html).toContain("has not authenticated the result-verifier or QVL signatures");
@@ -146,7 +149,8 @@ describe("Verify selected evidence projection", () => {
 
   it("keeps modeled Deal Room cards explicitly illustrative in Trust Center", () => {
     const html = renderSelected(illustrativeDealResult);
-    expect(html).toContain("Illustrative Deal Room result");
+    expect(html).toContain("Illustrative Deal Room 17 result");
+    expect(html).toContain("Designed sample for public room 17");
     expect(html).toContain("Modeled preview · no contract source");
     expect(html).toContain("No contract reported them, no evaluator ran");
     expect(html).not.toContain("Contract-reported · not independently verified");

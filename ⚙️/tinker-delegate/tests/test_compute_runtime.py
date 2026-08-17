@@ -1,4 +1,7 @@
 import copy
+import hashlib
+import hmac
+import inspect
 import json
 import os
 import tempfile
@@ -16,14 +19,18 @@ from tinker_delegate.compute_runtime import (
     BASE_SEPOLIA_CHAIN_ID,
     COMPILED_RECIPES,
     CompiledRecipePolicy,
+    ComputeCancellationUnavailable,
     ComputeDispatchIntent,
     ComputeExecutionPolicyNotPassed,
     ComputeExecutionJournal,
     ComputeExecutionWorker,
     ComputeIntentConflict,
+    ComputeIntentNotFound,
+    ComputeProviderDispatchFailure,
     ComputeRuntimePolicyError,
     ComputeRuntimeRetryable,
     ComputeRuntimeStateError,
+    ComputeUsageReceiptNotReady,
     ExecutionStage,
     MeteringDecision,
     PreparedTransaction,
@@ -32,7 +39,9 @@ from tinker_delegate.compute_runtime import (
     VaultSnapshot,
     canonical_compute_job_id,
     canonical_compute_project_id,
+    compute_collaboration_one_shot_authorization_context_commitment,
     compute_execution_policy_context_hash,
+    compute_standalone_authorization_context_commitment,
 )
 from tinker_delegate.compute_runtime_cli import AnchoredComputeExecutionAuthorizer
 from tinker_delegate.config import Settings
@@ -67,6 +76,9 @@ WORKLOAD_ID = "wrk_" + "ab" * 16
 WORKLOAD_SCHEMA = "dnai.compute.workload.inference.v1"
 WORKLOAD_MANIFEST = "0x" + "91" * 32
 WORKLOAD_COMMITMENT = "0x" + "92" * 32
+WORKLOAD_EXECUTION_BINDING = "sha256:" + "94" * 32
+WORKLOAD_RECIPIENT_RELEASE = "sha256:" + "95" * 32
+WORKLOAD_CLAIM = "sha256:" + "96" * 32
 ATTESTATION_EVIDENCE = "0x" + "93" * 32
 QVL_PRIVATE_KEY = bytes.fromhex("7a" * 32)
 
@@ -108,6 +120,13 @@ def _intent(identity: TestOnlyExecutionIdentity, **updates) -> ComputeDispatchIn
         "workload_schema": WORKLOAD_SCHEMA,
         "manifest_commitment": WORKLOAD_MANIFEST,
         "workload_commitment": WORKLOAD_COMMITMENT,
+        "workload_source_kind": "wallet",
+        "workload_execution_binding_commitment": (
+            WORKLOAD_EXECUTION_BINDING
+        ),
+        "workload_recipient_release_commitment": (
+            WORKLOAD_RECIPIENT_RELEASE
+        ),
     }
     values.update(updates)
     return ComputeDispatchIntent.create(**values)
@@ -336,14 +355,17 @@ class TestOnlyVaultGateway:
 
 
 class TestOnlyIdempotentRecipeExecutor:
-    supports_idempotent_dispatch = True
+    supports_idempotent_dispatch = False
+    supports_at_most_once_dispatch = True
+    supports_checkpointed_workload_release = True
 
     def __init__(self, gateway):
         self.gateway = gateway
         self.calls = []
         self.results = {}
+        self.release_calls = []
 
-    def execute(self, intent, policy, *, dispatch_id):
+    def _execute(self, intent, policy, *, dispatch_id):
         self.gateway.events.append("provider_called")
         self.calls.append(dispatch_id)
         if dispatch_id not in self.results:
@@ -356,6 +378,32 @@ class TestOnlyIdempotentRecipeExecutor:
                 provider_authoritative_invoice=False,
             )
         return self.results[dispatch_id]
+
+    @contextmanager
+    def prepare_attempt(self, intent, policy, *, dispatch_id):
+        owner = self
+
+        class Attempt:
+            provider_boundary_crossed = False
+
+            def execute(self):
+                self.provider_boundary_crossed = True
+                return owner._execute(intent, policy, dispatch_id=dispatch_id)
+
+        yield Attempt()
+
+    def release_after_usage_checkpoint(
+        self,
+        intent,
+        policy,
+        *,
+        dispatch_id,
+        usage,
+        release_checkpoint_commitment,
+    ):
+        self.release_calls.append(
+            (dispatch_id, usage.result_commitment, release_checkpoint_commitment)
+        )
 
 
 class TestOnlyMeteringClient:
@@ -474,6 +522,11 @@ class ComputeRuntimeTest(unittest.TestCase):
             idempotency_key="dispatch-create-0001",
             created_at=NOW,
         )
+        self.journal.confirm_workload_claim(
+            self.intent.job_id,
+            claim_commitment=WORKLOAD_CLAIM,
+            updated_at=NOW,
+        )
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -562,21 +615,114 @@ class ComputeRuntimeTest(unittest.TestCase):
         with self.assertRaises(ComputeRuntimePolicyError):
             canonical_compute_job_id("0x" + "00" * 32)
 
+    def test_collaboration_one_shot_context_is_non_circular_and_field_complete(self):
+        parameters = tuple(
+            inspect.signature(
+                compute_collaboration_one_shot_authorization_context_commitment
+            ).parameters
+        )
+        self.assertEqual(
+            parameters,
+            (
+                "collaboration_execution_basis_commitment",
+                "collaboration_execution_grant_set_commitment",
+                "project_id",
+                "job_id",
+                "user",
+                "asset",
+                "authorization_nonce",
+                "max_asset_debit",
+                "authorization_expiry",
+                "rate_policy_commitment",
+                "workload_commitment",
+                "manifest_commitment",
+            ),
+        )
+        self.assertNotIn("compute_dispatch_intent_commitment", parameters)
+        fields = {
+            "collaboration_execution_basis_commitment": "sha256:" + "b1" * 32,
+            "collaboration_execution_grant_set_commitment": "sha256:" + "b2" * 32,
+            "project_id": "0x" + "11" * 32,
+            "job_id": "0x" + "22" * 32,
+            "user": "0x" + "33" * 20,
+            "asset": ZERO_ADDRESS,
+            "authorization_nonce": 7,
+            "max_asset_debit": 123_456,
+            "authorization_expiry": NOW + 3_600,
+            "rate_policy_commitment": "0x" + "44" * 32,
+            "workload_commitment": "0x" + "55" * 32,
+            "manifest_commitment": "0x" + "66" * 32,
+        }
+        context = compute_collaboration_one_shot_authorization_context_commitment(
+            **fields
+        )
+        self.assertEqual(
+            context,
+            "sha256:e1e6a62d78894cccfee48f506b8bc658d498dd922c9a6c2c371784a597e21c4e",
+        )
+        substitutions = (
+            {"collaboration_execution_basis_commitment": "sha256:" + "b3" * 32},
+            {"collaboration_execution_grant_set_commitment": "sha256:" + "b4" * 32},
+            {"project_id": "0x" + "12" * 32},
+            {"job_id": "0x" + "23" * 32},
+            {"user": "0x" + "34" * 20},
+            {"asset": "0x" + "35" * 20},
+            {"authorization_nonce": 8},
+            {"max_asset_debit": 123_457},
+            {"authorization_expiry": NOW + 3_601},
+            {"rate_policy_commitment": "0x" + "45" * 32},
+            {"workload_commitment": "0x" + "56" * 32},
+            {"manifest_commitment": "0x" + "67" * 32},
+        )
+        for substitution in substitutions:
+            self.assertNotEqual(
+                compute_collaboration_one_shot_authorization_context_commitment(
+                    **(fields | substitution)
+                ),
+                context,
+            )
+        standalone = compute_standalone_authorization_context_commitment(
+            **{
+                key: value
+                for key, value in fields.items()
+                if not key.startswith("collaboration_execution_")
+            }
+        )
+        self.assertNotEqual(standalone, context)
+        with self.assertRaises(ComputeRuntimePolicyError):
+            compute_collaboration_one_shot_authorization_context_commitment(
+                **(
+                    fields
+                    | {"collaboration_execution_basis_commitment": "sha256:" + "0" * 64}
+                )
+            )
+        with self.assertRaises(TypeError):
+            compute_collaboration_one_shot_authorization_context_commitment(
+                **(fields | {"compute_dispatch_intent_commitment": "0x" + "99" * 32})
+            )
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(
+                self.identity,
+                authorization_kind="collaboration_one_shot",
+                authorization_context_commitment=None,
+            )
+
     def test_cross_language_execution_context_vector_normalizes_0x_inputs_to_bare_hex(self):
         vector_path = (
             Path(__file__).resolve().parents[3]
             / "web"
             / "src"
             / "lib"
-            / "computeExecutionPolicyContextVectors.json"
+            / "computeDispatchIntentV3Vectors.json"
         )
         payload = json.loads(vector_path.read_text(encoding="utf-8"))
         self.assertEqual(
             payload["schema"],
-            "dnai.compute.execution-policy-context-vectors.v1",
+            "dnai.compute.dispatch-intent-v3-vectors.v1",
         )
         vector = payload["vectors"][0]
         intent = ComputeDispatchIntent.create(**vector["intent"])
+        self.assertEqual(intent.project_id, vector["project_id"])
         self.assertEqual(intent.job_id, vector["job_id"])
         self.assertEqual(intent.commitment, vector["intent_commitment"])
         self.assertEqual(
@@ -602,6 +748,23 @@ class ComputeRuntimeTest(unittest.TestCase):
             {"workload_id": "wrk_" + "cd" * 16},
             {"manifest_commitment": "0x" + "a1" * 32},
             {"workload_commitment": "0x" + "a2" * 32},
+            {"workload_source_kind": "credential"},
+            {
+                "workload_execution_binding_commitment": (
+                    "sha256:" + "a3" * 32
+                )
+            },
+            {
+                "workload_recipient_release_commitment": (
+                    "sha256:" + "a4" * 32
+                )
+            },
+            {
+                "authorization_kind": "collaboration_one_shot",
+                "authorization_context_commitment": (
+                    "sha256:" + "a5" * 32
+                ),
+            },
         ):
             substituted = _intent(self.identity, **update)
             self.assertEqual(substituted.job_id, baseline.job_id)
@@ -614,6 +777,29 @@ class ComputeRuntimeTest(unittest.TestCase):
             _intent(self.identity, manifest_commitment=ZERO32)
         with self.assertRaises(ComputeRuntimePolicyError):
             _intent(self.identity, workload_commitment=ZERO32)
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(self.identity, workload_source_kind="device")
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(
+                self.identity,
+                workload_execution_binding_commitment="sha256:" + "0" * 64,
+            )
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(
+                self.identity,
+                workload_recipient_release_commitment="sha256:" + "0" * 64,
+            )
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(
+                self.identity,
+                authorization_context_commitment="sha256:" + "a5" * 32,
+            )
+        with self.assertRaises(ComputeRuntimePolicyError):
+            _intent(
+                self.identity,
+                authorization_kind="collaboration_one_shot",
+                authorization_context_commitment="sha256:" + "0" * 64,
+            )
         with self.assertRaises(ComputeRuntimePolicyError):
             _intent(
                 self.identity,
@@ -634,6 +820,11 @@ class ComputeRuntimeTest(unittest.TestCase):
             substituted,
             idempotency_key="substituted-dispatch-0001",
             created_at=NOW,
+        )
+        substituted_journal.confirm_workload_claim(
+            substituted.job_id,
+            claim_commitment=WORKLOAD_CLAIM,
+            updated_at=NOW,
         )
         gateway = TestOnlyVaultGateway(
             substituted, self.identity, bytes.fromhex("25" * 32)
@@ -727,6 +918,235 @@ class ComputeRuntimeTest(unittest.TestCase):
         with self.assertRaises(ComputeRuntimeStateError):
             self.journal.get(self.intent.job_id)
 
+    def test_workload_claim_pending_is_recoverable_exact_and_non_actionable(self):
+        path = Path(self.temporary.name) / "pending-dispatch.json"
+        journal = ComputeExecutionJournal(path, integrity_key=b"p" * 32)
+        pending, created = journal.enqueue(
+            self.intent,
+            idempotency_key="pending-dispatch-0001",
+            created_at=NOW,
+        )
+        self.assertTrue(created)
+        self.assertEqual(
+            pending["stage"], ExecutionStage.WORKLOAD_CLAIM_PENDING.value
+        )
+        self.assertFalse(pending["workload_claim_confirmed"])
+        self.assertIsNone(journal.next_actionable())
+
+        restarted = ComputeExecutionJournal(path, integrity_key=b"p" * 32)
+        replay, replay_created = restarted.enqueue(
+            self.intent,
+            idempotency_key="pending-dispatch-0001",
+            created_at=NOW + 1,
+        )
+        self.assertFalse(replay_created)
+        self.assertEqual(
+            replay["stage"], ExecutionStage.WORKLOAD_CLAIM_PENDING.value
+        )
+        confirmed, changed = restarted.confirm_workload_claim(
+            self.intent.job_id,
+            claim_commitment=WORKLOAD_CLAIM,
+            updated_at=NOW + 2,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(confirmed["stage"], ExecutionStage.INTENT_CREATED.value)
+        self.assertEqual(confirmed["workload_claim_commitment"], WORKLOAD_CLAIM)
+        self.assertTrue(confirmed["workload_claim_confirmed"])
+
+        exact, changed = restarted.confirm_workload_claim(
+            self.intent.job_id,
+            claim_commitment=WORKLOAD_CLAIM,
+            updated_at=NOW + 3,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(exact, confirmed)
+        with self.assertRaises(ComputeIntentConflict):
+            restarted.confirm_workload_claim(
+                self.intent.job_id,
+                claim_commitment="sha256:" + "97" * 32,
+                updated_at=NOW + 4,
+            )
+
+    def test_workload_claim_failure_and_one_workload_one_job_fail_closed(self):
+        path = Path(self.temporary.name) / "claim-failed-dispatch.json"
+        journal = ComputeExecutionJournal(path, integrity_key=b"f" * 32)
+        journal.enqueue(
+            self.intent,
+            idempotency_key="claim-failed-dispatch-0001",
+            created_at=NOW,
+        )
+        failed = journal.fail_workload_claim(
+            self.intent.job_id,
+            updated_at=NOW + 1,
+        )
+        self.assertEqual(failed["stage"], ExecutionStage.BLOCKED.value)
+        self.assertFalse(failed["workload_claim_confirmed"])
+        self.assertIsNone(journal.next_actionable())
+        self.assertEqual(
+            journal.fail_workload_claim(
+                self.intent.job_id,
+                updated_at=NOW + 2,
+            ),
+            failed,
+        )
+        with self.assertRaises(ComputeRuntimeStateError):
+            journal.confirm_workload_claim(
+                self.intent.job_id,
+                claim_commitment=WORKLOAD_CLAIM,
+                updated_at=NOW + 3,
+            )
+
+        other_job = _intent(self.identity, job_reference="job_beta")
+        with self.assertRaises(ComputeIntentConflict):
+            journal.enqueue(
+                other_job,
+                idempotency_key="claim-failed-dispatch-0002",
+                created_at=NOW + 4,
+            )
+
+    def test_authenticated_v1_journal_is_not_opened_as_v2_state(self):
+        path = Path(self.temporary.name) / "legacy-dispatch.json"
+        journal = ComputeExecutionJournal(path, integrity_key=b"l" * 32)
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+        envelope["body"]["schema"] = "dnai.compute.execution-journal.v1"
+        envelope["body"]["schema_version"] = 1
+        encoded = json.dumps(
+            envelope["body"],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        envelope["mac"] = hmac.new(
+            b"l" * 32,
+            b"dnai-wikigen/compute-execution-journal/v2\0" + encoded,
+            hashlib.sha256,
+        ).hexdigest()
+        path.write_text(
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.chmod(path, 0o600)
+        with self.assertRaises(ComputeRuntimeStateError):
+            journal.next_actionable()
+
+    def test_pre_start_cancellation_is_serialized_idempotent_and_bounded(self):
+        receipt, changed = self.journal.cancel_before_start(
+            self.intent.job_id,
+            user=self.identity.address,
+            idempotency_key="dispatch-cancel-0001",
+            canceled_at=NOW + 1,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(receipt["surface"], "compute_dispatch_cancellation")
+        self.assertTrue(receipt["journal_execution_prevented"])
+        self.assertFalse(receipt["provider_dispatch_performed"])
+        self.assertFalse(receipt["provider_dispatch_may_have_occurred"])
+        self.assertFalse(receipt["workload_ciphertext_released"])
+        self.assertFalse(receipt["vault_authorization_released"])
+        self.assertTrue(receipt["onchain_cancel_required"])
+        self.assertFalse(receipt["exact_asset_capacity_released"])
+        self.assertRegex(
+            receipt["cancellation_checkpoint_commitment"],
+            r"^sha256:[0-9a-f]{64}$",
+        )
+        self.assertIsNone(self.journal.next_actionable())
+
+        confirmed = self.journal.confirm_cancellation_workload_release(
+            self.intent.job_id,
+            checkpoint_commitment=receipt[
+                "cancellation_checkpoint_commitment"
+            ],
+            updated_at=NOW + 2,
+        )
+        self.assertTrue(confirmed["workload_ciphertext_released"])
+        replay, replay_changed = self.journal.cancel_before_start(
+            self.intent.job_id,
+            user=self.identity.address,
+            idempotency_key="dispatch-cancel-0001",
+            canceled_at=NOW + 50,
+        )
+        self.assertFalse(replay_changed)
+        self.assertEqual(replay, confirmed)
+        self.assertEqual(replay["canceled_at"], NOW + 1)
+
+        with self.assertRaises(ComputeIntentConflict):
+            self.journal.cancel_before_start(
+                self.intent.job_id,
+                user=self.identity.address,
+                idempotency_key="dispatch-cancel-other",
+                canceled_at=NOW + 3,
+            )
+        with self.assertRaises(ComputeIntentNotFound):
+            self.journal.cancel_before_start(
+                self.intent.job_id,
+                user=TestOnlyExecutionIdentity("0x" + "12" * 32).address,
+                idempotency_key="dispatch-cancel-0001",
+                canceled_at=NOW + 3,
+            )
+
+    def test_cancellation_cannot_cross_start_preparation_boundary(self):
+        gateway = TestOnlyVaultGateway(
+            self.intent, self.identity, bytes.fromhex("21" * 32)
+        )
+        provider = TestOnlyIdempotentRecipeExecutor(gateway)
+        worker = ComputeExecutionWorker(
+            journal=self.journal,
+            gateway=gateway,
+            identity=self.identity,
+            provider=provider,
+            metering=TestOnlyMeteringClient(gateway),
+            policy_authorizer=TestOnlyExecutionPolicyAuthorizer(),
+            metering_policy_set_hash=POLICY_SET,
+            confirmations=2,
+            clock=lambda: NOW,
+        )
+        first = worker.run_once()
+        self.assertEqual(first.state, ExecutionStage.START_BROADCAST.value)
+        with self.assertRaises(ComputeCancellationUnavailable):
+            self.journal.cancel_before_start(
+                self.intent.job_id,
+                user=self.identity.address,
+                idempotency_key="dispatch-cancel-0001",
+                canceled_at=NOW + 1,
+            )
+        self.assertEqual(provider.calls, [])
+        self.assertFalse(
+            self.journal.public_get(self.intent.job_id)[
+                "provider_dispatch_may_have_occurred"
+            ]
+        )
+
+    def test_cancellation_waits_for_the_same_cross_process_cycle_lease(self):
+        started = threading.Event()
+        finished = threading.Event()
+        errors: list[Exception] = []
+
+        def cancel():
+            started.set()
+            try:
+                self.journal.cancel_before_start(
+                    self.intent.job_id,
+                    user=self.identity.address,
+                    idempotency_key="dispatch-cancel-0001",
+                    canceled_at=NOW + 1,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        with self.journal.execution_cycle_lease():
+            thread = threading.Thread(target=cancel)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(finished.wait(0.2))
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(errors)
+        self.assertTrue(finished.is_set())
+        self.assertIsNone(self.journal.next_actionable())
+
     def test_worker_reuses_provider_id_and_identical_usage_after_retry(self):
         gateway = TestOnlyVaultGateway(
             self.intent, self.identity, bytes.fromhex("22" * 32)
@@ -773,6 +1193,101 @@ class ComputeRuntimeTest(unittest.TestCase):
             signature=signed["tee_signature"],
         )
         self.assertEqual(recovered.lower(), self.identity.address)
+        receipt = self.journal.public_usage_receipt(self.intent.job_id)
+        self.assertEqual(
+            receipt["surface"],
+            "compute_exact_asset_usage_receipt",
+        )
+        self.assertEqual(receipt["job_id"], self.intent.job_id)
+        self.assertTrue(receipt["settlement"]["confirmed"])
+        self.assertEqual(
+            receipt["settlement"]["transaction_hash"],
+            record["settlement_transaction"]["tx_hash"],
+        )
+        self.assertEqual(
+            receipt["provider_usage"]["result_commitment"],
+            RESULT,
+        )
+        self.assertFalse(receipt["provider_authoritative_invoice"])
+        self.assertFalse(receipt["raw_prompt_egress"])
+        self.assertFalse(receipt["raw_examples_egress"])
+        self.assertFalse(receipt["raw_output_egress"])
+        self.assertFalse(receipt["provider_identifier_egress"])
+        self.assertFalse(receipt["raw_transaction_egress"])
+        self.assertNotIn(
+            record["settlement_transaction"]["raw_transaction"],
+            json.dumps(receipt, sort_keys=True),
+        )
+
+    def test_blocked_post_usage_status_preserves_provider_boundary(self):
+        gateway = TestOnlyVaultGateway(
+            self.intent, self.identity, bytes.fromhex("24" * 32)
+        )
+        provider = TestOnlyIdempotentRecipeExecutor(gateway)
+
+        class RejectingMetering(TestOnlyMeteringClient):
+            def decide(self, signed_usage):
+                self.envelopes.append(copy.deepcopy(signed_usage.to_dict()))
+                raise ComputeRuntimePolicyError("test-only metering rejection")
+
+        worker = ComputeExecutionWorker(
+            journal=self.journal,
+            gateway=gateway,
+            identity=self.identity,
+            provider=provider,
+            metering=RejectingMetering(gateway, fail_first=False),
+            policy_authorizer=TestOnlyExecutionPolicyAuthorizer(),
+            metering_policy_set_hash=POLICY_SET,
+            confirmations=2,
+            clock=lambda: NOW,
+        )
+        self.assertEqual(
+            worker.run_once().state,
+            ExecutionStage.START_BROADCAST.value,
+        )
+        self.assertEqual(worker.run_once().state, ExecutionStage.BLOCKED.value)
+
+        public = self.journal.public_get(self.intent.job_id)
+        self.assertEqual(public["provider_dispatch_status"], "usage_finalized")
+        self.assertTrue(public["provider_dispatch_may_have_occurred"])
+        self.assertTrue(public["provider_usage_finalized"])
+        self.assertIsNotNone(public["bounded_result"])
+        self.assertTrue(public["workload_ciphertext_released"])
+
+    def test_usage_receipt_fails_closed_before_settlement_and_on_cross_binding_drift(self):
+        with self.assertRaises(ComputeUsageReceiptNotReady):
+            self.journal.public_usage_receipt(self.intent.job_id)
+
+        gateway = TestOnlyVaultGateway(
+            self.intent, self.identity, bytes.fromhex("23" * 32)
+        )
+        worker = ComputeExecutionWorker(
+            journal=self.journal,
+            gateway=gateway,
+            identity=self.identity,
+            provider=TestOnlyIdempotentRecipeExecutor(gateway),
+            metering=TestOnlyMeteringClient(gateway),
+            policy_authorizer=TestOnlyExecutionPolicyAuthorizer(),
+            metering_policy_set_hash=POLICY_SET,
+            confirmations=2,
+            clock=lambda: NOW,
+        )
+        for _ in range(4):
+            result = worker.run_once()
+        self.assertTrue(result.settled)
+        self.journal.public_usage_receipt(self.intent.job_id)
+
+        # Simulate an authenticated-writer regression rather than an external
+        # file attacker: the envelope MAC remains valid, but the receipt's
+        # independent cross-binding must still reject a different job.
+        with self.journal._exclusive_lock():
+            body = self.journal._load_unlocked()
+            body["records"][self.intent.job_id]["metering_decision"][
+                "job_id"
+            ] = "0x" + "fe" * 32
+            self.journal._write_unlocked(body)
+        with self.assertRaises(ComputeRuntimeStateError):
+            self.journal.public_usage_receipt(self.intent.job_id)
 
     def test_snapshot_mismatch_blocks_before_start_or_provider(self):
         gateway = TestOnlyVaultGateway(
@@ -807,13 +1322,14 @@ class ComputeRuntimeTest(unittest.TestCase):
         self.assertEqual(provider.calls, [])
         self.assertEqual(gateway.broadcasted, set())
 
-    def test_non_idempotent_provider_is_rejected_before_start_job(self):
+    def test_provider_without_at_most_once_hold_is_rejected_before_start_job(self):
         gateway = TestOnlyVaultGateway(
             self.intent, self.identity, bytes.fromhex("44" * 32)
         )
 
         class TestOnlyUnsafeProvider:
             supports_idempotent_dispatch = False
+            supports_at_most_once_dispatch = False
 
         worker = ComputeExecutionWorker(
             journal=self.journal,
@@ -832,6 +1348,74 @@ class ComputeRuntimeTest(unittest.TestCase):
         public = self.journal.public_get(self.intent.job_id)
         self.assertEqual(public["provider_dispatch_status"], "not_started")
         self.assertFalse(public["provider_dispatch_may_have_occurred"])
+
+    def test_crossed_provider_boundary_is_held_and_never_auto_redispatched(self):
+        gateway = TestOnlyVaultGateway(
+            self.intent, self.identity, bytes.fromhex("4a" * 32)
+        )
+
+        class AmbiguousProvider:
+            supports_idempotent_dispatch = False
+            supports_at_most_once_dispatch = True
+            supports_checkpointed_workload_release = True
+
+            def __init__(self):
+                self.calls = 0
+
+            @contextmanager
+            def prepare_attempt(self, intent, policy, *, dispatch_id):
+                owner = self
+
+                class Attempt:
+                    provider_boundary_crossed = False
+
+                    def execute(self):
+                        owner.calls += 1
+                        self.provider_boundary_crossed = True
+                        raise ComputeProviderDispatchFailure(
+                            provider_boundary_crossed=True
+                        )
+
+                yield Attempt()
+
+            def release_after_usage_checkpoint(self, *args, **kwargs):
+                raise AssertionError("ambiguous provider usage cannot be released")
+
+        provider = AmbiguousProvider()
+
+        def worker():
+            return ComputeExecutionWorker(
+                journal=self.journal,
+                gateway=gateway,
+                identity=self.identity,
+                provider=provider,
+                metering=TestOnlyMeteringClient(gateway, fail_first=False),
+                policy_authorizer=TestOnlyExecutionPolicyAuthorizer(),
+                metering_policy_set_hash=POLICY_SET,
+                confirmations=2,
+                clock=lambda: NOW,
+            )
+
+        self.assertEqual(
+            worker().run_once().state,
+            ExecutionStage.START_BROADCAST.value,
+        )
+        ambiguous = worker().run_once()
+        self.assertEqual(
+            ambiguous.state,
+            ExecutionStage.PROVIDER_OUTCOME_AMBIGUOUS.value,
+        )
+        self.assertTrue(ambiguous.provider_dispatch_may_have_occurred)
+        self.assertEqual(provider.calls, 1)
+
+        recovered = worker().run_once()
+        self.assertEqual(recovered.state, "idle")
+        self.assertEqual(provider.calls, 1)
+        public = self.journal.public_get(self.intent.job_id)
+        self.assertFalse(public["automatic_provider_redispatch"])
+        self.assertTrue(public["ambiguous_outcome_hold"])
+        self.assertTrue(public["workload_ciphertext_retained_for_reconciliation"])
+        self.assertFalse(public["workload_ciphertext_released"])
 
     def test_revocation_before_dispatch_id_does_not_overclaim_provider_call(self):
         gateway = TestOnlyVaultGateway(
@@ -934,7 +1518,7 @@ class ComputeRuntimeTest(unittest.TestCase):
         provider = TestOnlyIdempotentRecipeExecutor(gateway)
         provider_entered = threading.Event()
         release_provider = threading.Event()
-        original_execute = provider.execute
+        original_execute = provider._execute
 
         def blocking_execute(intent, policy, *, dispatch_id):
             provider_entered.set()
@@ -946,7 +1530,7 @@ class ComputeRuntimeTest(unittest.TestCase):
                 dispatch_id=dispatch_id,
             )
 
-        provider.execute = blocking_execute
+        provider._execute = blocking_execute
         worker = ComputeExecutionWorker(
             journal=self.journal,
             gateway=gateway,

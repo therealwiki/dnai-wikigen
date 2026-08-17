@@ -1,10 +1,10 @@
 """Production bootstrap for the exact-asset Compute execution CVM.
 
 The bootstrap deliberately has no local-key, simulator, raw-prompt, arbitrary
-provider module, or unverified-attestation flags. A provider is accepted only
-when a compiled adapter explicitly guarantees replay by the worker's stable
-``dispatch_id``. Until Tinker's upstream replay contract is proven, the public
-CLI reports that release blocker and performs no chain or provider mutation.
+provider module, or unverified-attestation flags. The only installed provider
+is the release-pinned Tinker adapter. It checkpoints one attempt before the
+first provider request and treats every post-boundary uncertainty as a terminal
+ambiguity hold; it never claims upstream idempotent replay or redispatches.
 """
 
 from __future__ import annotations
@@ -54,6 +54,11 @@ from tinker_delegate.compute_vault_gateway import (
     HttpsComputeVaultGateway,
 )
 from tinker_delegate.config import Settings
+from tinker_delegate.compute_tinker_provider import (
+    TinkerProviderReleaseError,
+    build_tinker_compute_provider,
+    compute_provider_status_store,
+)
 
 
 STATUS_SCHEMA = "dnai.compute.execution-bootstrap-status.v1"
@@ -167,8 +172,17 @@ def build_compute_runtime(
     coordinator and every actionable cycle requires its exact job PASS lease.
     """
 
-    if getattr(provider, "supports_idempotent_dispatch", False) is not True:
-        raise ComputeBootstrapError("idempotent_provider_adapter_unavailable")
+    if (
+        getattr(provider, "supports_idempotent_dispatch", True) is not False
+        or getattr(provider, "supports_at_most_once_dispatch", False) is not True
+        or not callable(getattr(provider, "prepare_attempt", None))
+    ):
+        raise ComputeBootstrapError("at_most_once_provider_adapter_unavailable")
+    if (
+        getattr(provider, "supports_checkpointed_workload_release", False)
+        is not True
+    ):
+        raise ComputeBootstrapError("checkpointed_workload_release_unavailable")
     if not dstack_utils.is_dstack_enabled() or dstack_utils.is_dstack_simulator():
         raise ComputeBootstrapError("real_dstack_cvm_required")
     policy_path = str(settings.execution_policy_store_path or "").strip()
@@ -331,10 +345,13 @@ def _verify_current_execution_attestation(
         raise ComputeBootstrapError("dstack_attestation_binding_mismatch")
 
 
-def _installed_provider() -> CompiledRecipeExecutor | None:
-    """Return no adapter until upstream Tinker replay semantics are proven."""
+def _installed_provider(settings: Settings) -> CompiledRecipeExecutor:
+    """Construct the sole compiled, release-pinned provider adapter."""
 
-    return None
+    try:
+        return build_tinker_compute_provider(settings)
+    except TinkerProviderReleaseError as exc:
+        raise ComputeBootstrapError("tinker_provider_release_unavailable") from exc
 
 
 def _public_status(state: str, reason: str) -> dict[str, Any]:
@@ -391,20 +408,12 @@ def main(argv: list[str] | None = None) -> int:
             _public_status("blocked", "explicit_execution_mode_required"),
         )
         return 64
-    provider = _installed_provider()
-    if provider is None:
-        # Do not mark queued records terminal and do not call startJob. This is
-        # a release-readiness failure, not a job-specific policy verdict.
-        _write_status(
-            sys.stdout,
-            _public_status(
-                "blocked", "idempotent_tinker_provider_adapter_unavailable"
-            ),
-        )
-        return 78
     try:
         settings = Settings()
+        provider = _installed_provider(settings)
         with build_compute_runtime(settings, provider=provider) as runtime:
+            heartbeat = compute_provider_status_store(settings)
+            heartbeat.write_ready(settings)
             if args.once:
                 result: ComputeCycleResult = runtime.worker.run_once()
                 _write_status(sys.stdout, result.to_public_dict())
@@ -415,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                     "compute_execution_poll_interval_invalid"
                 )
             while True:
+                heartbeat.write_ready(settings)
                 result = runtime.worker.run_once()
                 _write_status(sys.stdout, result.to_public_dict())
                 time.sleep(interval)

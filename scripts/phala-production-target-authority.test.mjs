@@ -14,6 +14,8 @@ import {
   PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
   PHALA_READ_ONLY_COMPATIBILITY_CALLS,
   PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
+  PHALA_COLLABORATION_LAUNCH_GATE_POLICY,
+  assertPhalaProductionTargetCollaborationLaunchGatePolicy,
   assertPhalaTargetFreshForCheckpoint,
   assertSecretFreePhalaAuthorityArtifact,
   canonicalPhalaCompatibilityReceiptText,
@@ -331,6 +333,17 @@ test("staging receipt binds exact SDK transform capture, server hash, cleanup, a
 });
 
 test("target authority binds origin, account, KMS signer, OS, quota, resources, and AppCompose", () => {
+  assert.deepEqual(
+    assertPhalaProductionTargetCollaborationLaunchGatePolicy(),
+    PHALA_COLLABORATION_LAUNCH_GATE_POLICY,
+  );
+  assert.deepEqual(PHALA_COLLABORATION_LAUNCH_GATE_POLICY, {
+    environment_key: "TINKER_COLLABORATION_ENABLED",
+    bootstrap_default: "false",
+    runtime_authority:
+      "current_final_release_authority_v3_requested_features_collaboration",
+    operator_mutable: false,
+  });
   const compatibility = compatibilityFixture();
   const staging = stagingFixture(compatibility);
   const target = targetFixture(compatibility, staging);

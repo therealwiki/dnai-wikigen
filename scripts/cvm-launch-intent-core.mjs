@@ -13,10 +13,14 @@ export const CVM_LAUNCH_ENVIRONMENT_KEYS_DOMAIN =
   "dnai-wikigen/cvm-launch-intent-environment-keys/v1\0";
 export const CVM_LAUNCH_OS_IMAGE_CATALOG_ENTRY_DOMAIN =
   "dnai-wikigen/phala-os-image-catalog-entry/v1\0";
-export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_SCHEMA =
+export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_SCHEMA =
   "dnai.fresh-contract-deployment-receipt.v3";
-export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_DOMAIN =
+export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_DOMAIN =
   "dnai-wikigen/fresh-contract-deployment-receipt/v3\0";
+export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_SCHEMA =
+  "dnai.fresh-contract-deployment-receipt.v4";
+export const FRESH_CONTRACT_DEPLOYMENT_RECEIPT_DOMAIN =
+  "dnai-wikigen/fresh-contract-deployment-receipt/v4\0";
 export const FRESH_CONTRACT_CREATION_INPUT_PROOF =
   "mined_transaction_input_equals_release_snapshot_creation_input_all_contracts";
 export const FRESH_CONTRACT_BROADCAST_PROOF =
@@ -56,11 +60,30 @@ export const CVM_LAUNCH_SECRET_PHASES = Object.freeze([
   "anchor_writer_ceremony",
 ]);
 
-// COMPOSE_PROFILES is replacement state, not an additive toggle. The final
-// main-runtime activation therefore has one code-owned, sorted profile set.
-// Activating either member alone would leave half of the reviewed product
-// surface disabled; adding either ceremony/settlement profile would widen the
-// signed activation boundary.
+// COMPOSE_PROFILES is replacement state, not an additive toggle. Every
+// production transition therefore owns the complete, sorted profile set.
+// Account genesis is one exact two-profile attempt followed by permanent
+// retirement to the empty set. The existing Arena/Compute set remains the
+// non-live post-measurement boundary. Deal settlement and the bounded review
+// operations worker may join that complete long-running set only through the
+// separate post-ceremony live gate.
+export const CVM_MAIN_DISABLED_PROFILE_NAMES = Object.freeze([]);
+export const CVM_MAIN_DISABLED_COMPOSE_PROFILES_VALUE = "";
+export const CVM_MAIN_DISABLED_PROFILE_POLICY = Object.freeze({
+  profile_names: CVM_MAIN_DISABLED_PROFILE_NAMES,
+  compose_profiles_value: CVM_MAIN_DISABLED_COMPOSE_PROFILES_VALUE,
+});
+export const CVM_MAIN_ACCOUNT_GENESIS_PROFILE_NAMES = Object.freeze([
+  "mailbox-genesis",
+  "tinker-account-genesis",
+]);
+export const CVM_MAIN_ACCOUNT_GENESIS_COMPOSE_PROFILES_VALUE =
+  CVM_MAIN_ACCOUNT_GENESIS_PROFILE_NAMES.join(",");
+export const CVM_MAIN_ACCOUNT_GENESIS_PROFILE_POLICY = Object.freeze({
+  profile_names: CVM_MAIN_ACCOUNT_GENESIS_PROFILE_NAMES,
+  compose_profiles_value:
+    CVM_MAIN_ACCOUNT_GENESIS_COMPOSE_PROFILES_VALUE,
+});
 export const CVM_MAIN_FINAL_ACTIVATION_PROFILE_NAMES = Object.freeze([
   "arena-runtime",
   "compute-execution",
@@ -72,6 +95,56 @@ export const CVM_MAIN_FINAL_ACTIVATION_PROFILE_POLICY = Object.freeze({
   compose_profiles_value:
     CVM_MAIN_FINAL_ACTIVATION_COMPOSE_PROFILES_VALUE,
 });
+export const CVM_MAIN_LIVE_DEAL_PROFILE_NAMES = Object.freeze([
+  "arena-runtime",
+  "collaboration-execution",
+  "compute-execution",
+  "deal-settlement",
+  "review-operations",
+]);
+export const CVM_MAIN_LIVE_DEAL_COMPOSE_PROFILES_VALUE =
+  CVM_MAIN_LIVE_DEAL_PROFILE_NAMES.join(",");
+export const CVM_MAIN_LIVE_DEAL_PROFILE_POLICY = Object.freeze({
+  profile_names: CVM_MAIN_LIVE_DEAL_PROFILE_NAMES,
+  compose_profiles_value: CVM_MAIN_LIVE_DEAL_COMPOSE_PROFILES_VALUE,
+});
+export const CVM_MAIN_PRODUCTION_PROFILE_TRANSITIONS = Object.freeze([
+  Object.freeze({
+    sequence: 1,
+    name: "account_genesis_start",
+    from: CVM_MAIN_DISABLED_PROFILE_POLICY,
+    to: CVM_MAIN_ACCOUNT_GENESIS_PROFILE_POLICY,
+    one_shot: true,
+    live_traffic_after_transition: false,
+  }),
+  Object.freeze({
+    sequence: 2,
+    name: "account_genesis_retire",
+    from: CVM_MAIN_ACCOUNT_GENESIS_PROFILE_POLICY,
+    to: CVM_MAIN_DISABLED_PROFILE_POLICY,
+    one_shot: true,
+    live_traffic_after_transition: false,
+  }),
+  Object.freeze({
+    sequence: 3,
+    name: "nonlive_runtime_start",
+    from: CVM_MAIN_DISABLED_PROFILE_POLICY,
+    to: CVM_MAIN_FINAL_ACTIVATION_PROFILE_POLICY,
+    one_shot: false,
+    live_traffic_after_transition: false,
+  }),
+  Object.freeze({
+    sequence: 4,
+    name: "deal_runtime_start",
+    from: CVM_MAIN_FINAL_ACTIVATION_PROFILE_POLICY,
+    to: CVM_MAIN_LIVE_DEAL_PROFILE_POLICY,
+    one_shot: false,
+    // Starting the service is not itself a live-routing authorization. The
+    // independent post-restart TDX and service-presence verifier must still
+    // issue the terminal traffic gate.
+    live_traffic_after_transition: false,
+  }),
+]);
 
 export const CVM_LAUNCH_DESCRIPTOR_FILES = Object.freeze({
   main_runtime_cvm: "dnai-main-runtime.phala.yaml",
@@ -290,6 +363,13 @@ const MAIN_STATIC_KEYS = Object.freeze([
   "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS",
   "TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH",
   "TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS",
+  "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+  "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+  "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+  "TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS",
+  "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
   "TINKER_WALLET_AUTH_CHAIN_ID",
   "TINKER_WALLET_AUTH_DOMAIN",
   "TINKER_WALLET_AUTH_URI",
@@ -309,6 +389,9 @@ const MAIN_PROVISIONING_KEYS = Object.freeze([
 ]);
 
 const MAIN_DEFERRED_KEYS = Object.freeze([
+  "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+  "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
   "TINKER_ARENA_REGISTRY_ADDRESS",
   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -324,6 +407,14 @@ const MAIN_DEFERRED_KEYS = Object.freeze([
   "TINKER_COMPUTE_WORKLOAD_QVL_URL",
   "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
   "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+  "TINKER_COLLABORATION_ENABLED",
+  "TINKER_COLLABORATION_EXECUTION_ENABLED",
+  "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+  "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+  "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+  "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+  "TINKER_CUSTOMER_AUTHORITY_SHA256",
+  "TINKER_CUSTOMER_ENABLED",
   "TINKER_DILIGENCE_QVL_RELEASE_POLICY_HASH",
   "TINKER_DILIGENCE_QVL_URL",
   "TINKER_DILIGENCE_QVL_VERIFIER_ADDRESS",
@@ -331,6 +422,24 @@ const MAIN_DEFERRED_KEYS = Object.freeze([
   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH",
   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL",
   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS",
+  "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+  "TINKER_ROYALTY_AUTHORITY_NONCE",
+  "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+  "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+  "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+  "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+  "TINKER_ROYALTY_OWNER_ADDRESS",
+  "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+  "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+  "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+  "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+  "TINKER_ROYALTY_QVL_VERIFIER",
+  "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+  "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+  "TINKER_ROYALTY_SETTLEMENT_VERIFIER",
+  "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+  "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+  "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
 ]);
 
 const MAIN_SECRET_KEYS_BY_PHASE = Object.freeze({
@@ -339,11 +448,17 @@ const MAIN_SECRET_KEYS_BY_PHASE = Object.freeze({
     "BASE_SEPOLIA_RPC_URL_SECONDARY",
     "NEKO_PASSWORD",
     "NEKO_PASSWORD_ADMIN",
+    "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+    "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
     "TINKER_WALLET_AUTH_RPC_URL",
     "TINKER_WALLET_AUTH_RPC_URL_SECONDARY",
   ]),
-  post_measurement_policy_bootstrap: Object.freeze([]),
+  post_measurement_policy_bootstrap: Object.freeze([
+    "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+    "TINKER_ACCOUNT_BINDING_SHARE_TWO",
+  ]),
   final_authority_runtime: Object.freeze([
+    "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
     "TINKER_ARENA_REGISTRY_RPC_URL",
     "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
     "TINKER_ARENA_PROVISION_AUTH_TAG",
@@ -354,8 +469,10 @@ const MAIN_SECRET_KEYS_BY_PHASE = Object.freeze({
     "TINKER_COMPUTE_CHAIN_RPC_URL",
     "TINKER_COMPUTE_METERING_AUTH_TOKEN",
     "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+    "TINKER_CUSTOMER_AUTHORITY_B64",
     "TINKER_DILIGENCE_QVL_AUTH_TOKEN",
     "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+    "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN",
   ]),
   anchor_writer_ceremony: Object.freeze([
     "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN",
@@ -418,6 +535,18 @@ const MAIN_DESCRIPTOR_DEFAULTED_KEYS = Object.freeze([
   "TINKER_ORACLE_AUTH_KEY_PATH",
   "TINKER_RUNTIME_AUTH_KEY_PATH",
   "TINKER_RUNTIME_AUTH_TOKEN",
+  "TINKER_REVIEW_AUTHORITY_CHALLENGE_TTL_SECONDS",
+  "TINKER_REVIEW_AUTHORITY_MAX_PENDING_CHALLENGES",
+  "TINKER_REVIEW_OPERATIONS_MAXIMUM_NOTIFICATIONS_PER_TICK",
+  "TINKER_REVIEW_OPERATIONS_MAXIMUM_QUEUE_PAGES",
+  "TINKER_REVIEW_OPERATIONS_POLL_INTERVAL_SECONDS",
+  "TINKER_REVIEW_OPERATIONS_REQUEST_TIMEOUT_SECONDS",
+  "TINKER_REVIEW_QUEUE_PATH",
+  "TINKER_REVIEW_QUEUE_READ_LIMIT_WINDOW_SECONDS",
+  "TINKER_REVIEW_QUEUE_READ_MAX_PEERS",
+  "TINKER_REVIEW_QUEUE_READ_PEER_LIMIT",
+  "TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY_PATH",
+  "TINKER_REVIEW_TICKET_TTL_SECONDS",
   "TINKER_RUN_METADATA_KEY_PATH",
   "TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT",
   "TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER",
@@ -431,14 +560,81 @@ const MAIN_DESCRIPTOR_DEFAULTED_KEYS = Object.freeze([
   "TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS",
 ]);
 
+// These values are product runtime policy encoded directly into the signed
+// main descriptor. They are deliberately absent from Phala's mutable
+// allowed-environment surface: empty explicit secret overrides force dstack
+// key derivation, purpose-separated key paths prevent cross-feature key reuse,
+// and durable paths bind state to the main CVM's encrypted /data volume.
+export const CVM_MAIN_PRODUCT_EMBEDDED_ENVIRONMENT_KEYS = Object.freeze([
+  "DSTACK_ENABLED",
+  "DSTACK_SIMULATOR_ENDPOINT",
+  "ORACLE_REVIEW_NOTIFICATION_CALLER_IDENTITY",
+  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH",
+  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_KEY",
+  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_PATH",
+  "ORACLE_REVIEW_NOTIFICATION_SMTP_PORT",
+  "ORACLE_REVIEW_NOTIFICATION_SMTP_TIMEOUT_SECONDS",
+  "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED",
+  "TINKER_ARENA_STORE_INTEGRITY_KEY",
+  "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH",
+  "TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS",
+  "TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS",
+  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY",
+  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH",
+  "TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH",
+  "TINKER_COLLABORATION_EXECUTION_POLL_INTERVAL_SECONDS",
+  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY",
+  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH",
+  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH",
+  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS",
+  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY",
+  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH",
+  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH",
+  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY",
+  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH",
+  "TINKER_COLLABORATION_STORE_PATH",
+  "TINKER_COLLABORATION_WALLET_AUTH_AUDIENCE",
+  "TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS",
+  "TINKER_COLLABORATION_WALLET_AUTH_ISSUER",
+  "TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH",
+  "TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES",
+  "TINKER_COLLABORATION_WALLET_AUTH_SIGNING_KEY",
+  "TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS",
+  "TINKER_CUSTOMER_AUTHORITY_PATH",
+  "TINKER_CUSTOMER_CREDENTIAL_KEY_PATH",
+  "TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY",
+  "TINKER_CUSTOMER_SETTLEMENT_KEY_PATH",
+  "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY",
+  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH",
+  "TINKER_CUSTOMER_STORE_PATH",
+  "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY",
+  "TINKER_REVIEW_OPERATIONS_DELEGATE_URL",
+  "TINKER_REVIEW_OPERATIONS_ENABLED",
+  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_KEY_PATH",
+  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_TOKEN",
+  "TINKER_REVIEW_OPERATIONS_ORACLE_URL",
+  "TINKER_REVIEW_OPERATIONS_PRODUCTION_RELEASE",
+  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_KEY_PATH",
+  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_TOKEN",
+]);
+
 // These late values are intentionally consumed by the already-active delegate
 // after the reviewed post-measurement environment update. They remain empty at
 // bootstrap and every corresponding request path fails closed until the exact
 // authority projector and encrypted runtime input install them. The two Arena
 // release pins grant no execution authority: they only let the delegate compare
-// an authenticated worker heartbeat with the reviewed release. All other late
-// values are restricted to one initially-disabled profile.
+// an authenticated worker heartbeat with the reviewed release. The Tinker
+// Collaboration and the Tinker customer adapter additionally require signed
+// enable markers. Collaboration's marker is projected only from the current
+// final-release authority; the customer runtime independently verifies its exact
+// pinned authority file. All other late values are restricted to one
+// initially-disabled profile.
 export const CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS = Object.freeze([
+  "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
+  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+  "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
   "TINKER_ARENA_REGISTRY_ADDRESS",
   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -452,7 +648,42 @@ export const CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS = Object.freeze([
   "TINKER_COMPUTE_WORKLOAD_QVL_URL",
   "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
   "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+  "TINKER_COLLABORATION_ENABLED",
+  "TINKER_COLLABORATION_EXECUTION_ENABLED",
+  "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+  "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+  "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+  "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+  "TINKER_CUSTOMER_AUTHORITY_B64",
+  "TINKER_CUSTOMER_AUTHORITY_SHA256",
+  "TINKER_CUSTOMER_ENABLED",
+  "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+  "TINKER_ROYALTY_AUTHORITY_NONCE",
+  "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+  "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+  "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+  "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+  "TINKER_ROYALTY_OWNER_ADDRESS",
+  "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+  "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+  "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+  "TINKER_ROYALTY_QVL_VERIFIER",
+  "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+  "TINKER_ROYALTY_SETTLEMENT_VERIFIER",
 ]);
+
+// Collaboration and the customer lifecycle are late, signed-authority features,
+// but the delegate itself is part of the bootstrap service set. Their booleans
+// therefore need one parseable fail-closed descriptor default until their
+// reviewed authority projectors install the exact live value.
+export const CVM_MAIN_LATE_INPUT_FAIL_CLOSED_DEFAULTS = Object.freeze({
+  ORACLE_REVIEW_NOTIFICATIONS_ENABLED: "false",
+  TINKER_COLLABORATION_ENABLED: "false",
+  TINKER_COLLABORATION_EXECUTION_ENABLED: "false",
+  TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS: "900",
+  TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED: "false",
+  TINKER_CUSTOMER_ENABLED: "false",
+});
 
 function sortedUnique(values) {
   return [...new Set(values)].sort();
@@ -645,13 +876,22 @@ function appComposeCandidateAuthority(domain, environment) {
 }
 
 const MAIN_ENVIRONMENT = environmentClassification({
-  descriptorStaticKeys: MAIN_STATIC_KEYS,
+  descriptorStaticKeys: [
+    ...MAIN_STATIC_KEYS,
+    ...CVM_MAIN_PRODUCT_EMBEDDED_ENVIRONMENT_KEYS,
+  ],
   provisioningResultKeys: MAIN_PROVISIONING_KEYS,
   postMeasurementDeferredKeys: MAIN_DEFERRED_KEYS,
   postMeasurementPhaseControlKeys: ["COMPOSE_PROFILES"],
   descriptorDefaultedKeys: MAIN_DESCRIPTOR_DEFAULTED_KEYS,
   encryptedSecretKeysByPhase: MAIN_SECRET_KEYS_BY_PHASE,
-  embeddedOnlyKeys: ["TINKER_COMPUTE_WORKLOAD_CHAIN_ID"],
+  embeddedOnlyKeys: [
+    ...CVM_MAIN_PRODUCT_EMBEDDED_ENVIRONMENT_KEYS,
+    "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+    "TINKER_WALLET_AUTH_CHAIN_ID",
+    "TINKER_WALLET_AUTH_DOMAIN",
+    "TINKER_WALLET_AUTH_URI",
+  ],
 });
 
 const QVL_ENVIRONMENT = environmentClassification({
@@ -729,11 +969,26 @@ function launchSettings(domain) {
     environment_update_policy: "encrypted_exact_allowed_keys_only",
     initial_phase: "bootstrap_provision",
     initial_services: main
-      ? ["delegate", "diligence-policy-init", "neko", "oracle"]
+      ? [
+          "delegate",
+          "diligence-policy-init",
+          "neko",
+          "oracle",
+          "tinker-customer-authority-init",
+        ]
       : [],
     initially_enabled_profiles: [],
     initially_disabled_profiles: main
-      ? ["anchor-writer-ceremony", "arena-runtime", "compute-execution", "deal-settlement"]
+      ? [
+          "anchor-writer-ceremony",
+          "arena-runtime",
+          "collaboration-execution",
+          "compute-execution",
+          "deal-settlement",
+          "mailbox-genesis",
+          "review-operations",
+          "tinker-account-genesis",
+        ]
       : [qvl ? "qvl-runtime" : "metering-runtime"],
   };
 }
@@ -777,7 +1032,7 @@ export const FRESH_DEPLOYMENT_TRANSACTION_SPEC = Object.freeze([
     contract_key: "diligenceRoom",
     name: "DiligenceRoom",
     transaction_type: "CREATE",
-    function_signature: "constructor(bool)",
+    function_signature: "constructor(bool,address)",
   }),
   Object.freeze({
     contract_key: "diligenceRoom",
@@ -819,7 +1074,7 @@ export const FRESH_DEPLOYMENT_TRANSACTION_SPEC = Object.freeze([
     contract_key: "royaltyDistributor",
     name: "RoyaltyDistributor",
     transaction_type: "CREATE",
-    function_signature: "constructor()",
+    function_signature: "constructor(address)",
   }),
   Object.freeze({
     contract_key: "challengeRegistry",
@@ -852,6 +1107,17 @@ export const FRESH_DEPLOYMENT_TRANSACTION_SPEC = Object.freeze([
     function_signature: "constructor(address,bytes32,bytes32)",
   }),
 ]);
+
+// Historical v3 receipts predate the operator-owned RoyaltyDistributor v2
+// constructor. Keep their exact transaction vocabulary independently frozen so
+// a current release evolution cannot silently reinterpret historical evidence.
+const FRESH_DEPLOYMENT_TRANSACTION_SPEC_V3 = Object.freeze(
+  FRESH_DEPLOYMENT_TRANSACTION_SPEC.map((entry) => Object.freeze(
+    entry.contract_key === "royaltyDistributor"
+      ? { ...entry, function_signature: "constructor()" }
+      : { ...entry },
+  )),
+);
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -1747,9 +2013,10 @@ function normalizeFreshBroadcastTransactions(transactions, {
   operatorAddress,
   contractAddresses,
   source = "receipt",
+  transactionSpec = FRESH_DEPLOYMENT_TRANSACTION_SPEC,
 } = {}) {
   if (!Array.isArray(transactions)
-    || transactions.length !== FRESH_DEPLOYMENT_TRANSACTION_SPEC.length) {
+    || transactions.length !== transactionSpec.length) {
     throw new Error("fresh deployment must contain exactly 13 ordered broadcast transactions");
   }
   const ledgerSource = source === "ledger";
@@ -1787,7 +2054,7 @@ function normalizeFreshBroadcastTransactions(transactions, {
       "block_hash",
     ];
   const read = (entry, camel, snake) => entry[ledgerSource ? camel : snake];
-  const normalized = FRESH_DEPLOYMENT_TRANSACTION_SPEC.map((spec, index) => {
+  const normalized = transactionSpec.map((spec, index) => {
     const entry = exactRecord(transactions[index], fields, `fresh broadcast transactions[${index}]`);
     const sequence = read(entry, "sequence", "sequence");
     const contractKey = read(entry, "contractKey", "contract_key");
@@ -1907,6 +2174,7 @@ export function projectFreshContractDeploymentReceipt(ledger, {
   releaseSha: expectedReleaseSha,
   expectedDeploymentIntentSha256,
   expectedReviewerAuthorityGenesisAcceptanceSha256,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
 } = {}) {
   const value = isRecord(ledger) ? ledger : (() => { throw new Error("contract ledger must be an object"); })();
   if (value.schemaVersion !== 2) throw new Error("contract ledger schemaVersion must be 2");
@@ -1938,6 +2206,10 @@ export function projectFreshContractDeploymentReceipt(ledger, {
     expectedReviewerAuthorityGenesisAcceptanceSha256,
     "expected reviewer authority genesis acceptance SHA-256",
   );
+  const tinkerAccountBindingCeremonyReceiptSha256 = normalizedSha256(
+    expectedTinkerAccountBindingCeremonyReceiptSha256,
+    "expected Tinker account-binding ceremony receipt SHA-256",
+  );
   const operator = isRecord(value.currentOperatorDeployer)
     ? value.currentOperatorDeployer
     : (() => { throw new Error("contract ledger currentOperatorDeployer is missing"); })();
@@ -1960,6 +2232,8 @@ export function projectFreshContractDeploymentReceipt(ledger, {
     || suite.deploymentIntentSha256 !== intent
     || suite.reviewerAuthorityGenesisAcceptanceSha256
       !== reviewerAuthorityGenesisAcceptance
+    || suite.tinkerAccountBindingCeremonyReceiptSha256
+      !== tinkerAccountBindingCeremonyReceiptSha256
     || suite.keystoreAccount !== "dev"
     || suite.runtimeCodeProof !== "exact_creation_reexecution_match_all_contracts"
     || suite.exactCreationInputProof !== FRESH_CONTRACT_CREATION_INPUT_PROOF
@@ -1967,17 +2241,26 @@ export function projectFreshContractDeploymentReceipt(ledger, {
     || suite.broadcastTransactionCount !== FRESH_DEPLOYMENT_TRANSACTION_SPEC.length) {
     throw new Error("contract ledger does not contain the exact fresh fail-closed suite deployment");
   }
-  const matchingHistory = Array.isArray(value.deploymentHistory)
-    ? value.deploymentHistory.find((entry) => (
+  const matchingHistoryEntries = Array.isArray(value.deploymentHistory)
+    ? value.deploymentHistory.filter((entry) => (
       entry?.kind === "fresh_reviewed_scope_contract_suite"
       && entry.sourceCommit === release
       && entry.deploymentIntentSha256 === intent
       && entry.reviewerAuthorityGenesisAcceptanceSha256
         === reviewerAuthorityGenesisAcceptance
     ))
-    : null;
-  if (!matchingHistory) {
-    throw new Error("contract ledger lacks the matching append-only fresh-suite history record");
+    : [];
+  if (matchingHistoryEntries.length !== 1) {
+    throw new Error(
+      "contract ledger must contain exactly one matching append-only fresh-suite history record",
+    );
+  }
+  const [matchingHistory] = matchingHistoryEntries;
+  if (matchingHistory.tinkerAccountBindingCeremonyReceiptSha256
+      !== tinkerAccountBindingCeremonyReceiptSha256) {
+    throw new Error(
+      "contract ledger fresh-suite history does not bind the expected Tinker account-binding ceremony receipt",
+    );
   }
   const contracts = isRecord(value.contracts)
     ? value.contracts
@@ -2116,6 +2399,8 @@ export function projectFreshContractDeploymentReceipt(ledger, {
     deployment_intent_sha256: intent,
     reviewer_authority_genesis_acceptance_sha256:
       reviewerAuthorityGenesisAcceptance,
+    tinker_account_binding_ceremony_receipt_sha256:
+      tinkerAccountBindingCeremonyReceiptSha256,
     operator_address: operatorAddress,
     keystore_account: "dev",
     exact_creation_proof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -2129,8 +2414,42 @@ export function projectFreshContractDeploymentReceipt(ledger, {
 export function normalizeFreshContractDeploymentReceipt(receipt, {
   expectedDeploymentIntentSha256,
   expectedReviewerAuthorityGenesisAcceptanceSha256,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
 } = {}) {
-  const parsed = exactRecord(receipt, [
+  return normalizeFreshContractDeploymentReceiptVersion(receipt, {
+    expectedDeploymentIntentSha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256,
+  }, {
+    schema: FRESH_CONTRACT_DEPLOYMENT_RECEIPT_SCHEMA,
+    includeTinkerAccountBindingCeremonyReceipt: true,
+  });
+}
+
+export function normalizeHistoricalFreshContractDeploymentReceiptV3(receipt, {
+  expectedDeploymentIntentSha256,
+  expectedReviewerAuthorityGenesisAcceptanceSha256,
+} = {}) {
+  return normalizeFreshContractDeploymentReceiptVersion(receipt, {
+    expectedDeploymentIntentSha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256,
+  }, {
+    schema: FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_SCHEMA,
+    includeTinkerAccountBindingCeremonyReceipt: false,
+    transactionSpec: FRESH_DEPLOYMENT_TRANSACTION_SPEC_V3,
+  });
+}
+
+function normalizeFreshContractDeploymentReceiptVersion(receipt, {
+  expectedDeploymentIntentSha256,
+  expectedReviewerAuthorityGenesisAcceptanceSha256,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
+}, {
+  schema,
+  includeTinkerAccountBindingCeremonyReceipt,
+  transactionSpec = FRESH_DEPLOYMENT_TRANSACTION_SPEC,
+}) {
+  const receiptFields = [
     "schema",
     "network",
     "release_sha",
@@ -2143,8 +2462,14 @@ export function normalizeFreshContractDeploymentReceipt(receipt, {
     "broadcast_transactions_sha256",
     "broadcast_transactions",
     "contracts",
+  ];
+  if (includeTinkerAccountBindingCeremonyReceipt) {
+    receiptFields.push("tinker_account_binding_ceremony_receipt_sha256");
+  }
+  const parsed = exactRecord(receipt, [
+    ...receiptFields,
   ], "fresh contract deployment receipt");
-  if (parsed.schema !== FRESH_CONTRACT_DEPLOYMENT_RECEIPT_SCHEMA) {
+  if (parsed.schema !== schema) {
     throw new Error("contract deployment receipt schema mismatch");
   }
   const network = exactRecord(parsed.network, ["chain_id", "name"], "fresh receipt network");
@@ -2164,9 +2489,19 @@ export function normalizeFreshContractDeploymentReceipt(receipt, {
     expectedReviewerAuthorityGenesisAcceptanceSha256,
     "expected fresh receipt reviewer authority genesis acceptance SHA-256",
   );
+  const tinkerAccountBindingCeremonyReceiptSha256 =
+    includeTinkerAccountBindingCeremonyReceipt
+      ? normalizedSha256(
+        expectedTinkerAccountBindingCeremonyReceiptSha256,
+        "expected fresh receipt Tinker account-binding ceremony receipt SHA-256",
+      )
+      : null;
   if (parsed.deployment_intent_sha256 !== deploymentIntentSha256
     || parsed.reviewer_authority_genesis_acceptance_sha256
-      !== reviewerAuthorityGenesisAcceptanceSha256) {
+      !== reviewerAuthorityGenesisAcceptanceSha256
+    || (includeTinkerAccountBindingCeremonyReceipt
+      && parsed.tinker_account_binding_ceremony_receipt_sha256
+        !== tinkerAccountBindingCeremonyReceiptSha256)) {
     throw new Error("fresh receipt authority commitments do not match the external reviewed pins");
   }
   if (!Array.isArray(parsed.contracts)
@@ -2278,7 +2613,7 @@ export function normalizeFreshContractDeploymentReceipt(receipt, {
   );
   const broadcastTransactions = normalizeFreshBroadcastTransactions(
     parsed.broadcast_transactions,
-    { operatorAddress, contractAddresses },
+    { operatorAddress, contractAddresses, transactionSpec },
   );
   const broadcastTransactionsSha256 = rawSha256(
     Buffer.from(JSON.stringify(sortedObject(broadcastTransactions)), "utf8"),
@@ -2301,8 +2636,8 @@ export function normalizeFreshContractDeploymentReceipt(receipt, {
       throw new Error(`fresh receipt ${contract.name} CREATE evidence mismatch`);
     }
   }
-  return {
-    schema: FRESH_CONTRACT_DEPLOYMENT_RECEIPT_SCHEMA,
+  const normalizedReceipt = {
+    schema,
     network: { chain_id: BASE_SEPOLIA_CHAIN_ID, name: BASE_SEPOLIA_NAME },
     release_sha: normalizedReleaseSha(parsed.release_sha, "fresh receipt release_sha"),
     deployment_intent_sha256: deploymentIntentSha256,
@@ -2316,6 +2651,11 @@ export function normalizeFreshContractDeploymentReceipt(receipt, {
     broadcast_transactions: broadcastTransactions,
     contracts,
   };
+  if (includeTinkerAccountBindingCeremonyReceipt) {
+    normalizedReceipt.tinker_account_binding_ceremony_receipt_sha256 =
+      tinkerAccountBindingCeremonyReceiptSha256;
+  }
+  return normalizedReceipt;
 }
 
 export function freshContractDeploymentReceiptDigest(receipt, authorityPins) {
@@ -2326,9 +2666,37 @@ export function freshContractDeploymentReceiptDigest(receipt, authorityPins) {
     .digest("hex");
 }
 
+export function historicalFreshContractDeploymentReceiptV3Digest(
+  receipt,
+  authorityPins,
+) {
+  const normalized = normalizeHistoricalFreshContractDeploymentReceiptV3(
+    receipt,
+    authorityPins,
+  );
+  return createHash("sha256")
+    .update(Buffer.from(FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_DOMAIN, "utf8"))
+    .update(Buffer.from(JSON.stringify(sortedObject(normalized)), "utf8"))
+    .digest("hex");
+}
+
 export function canonicalFreshContractDeploymentReceiptText(receipt, authorityPins) {
   return `${JSON.stringify(
     sortedObject(normalizeFreshContractDeploymentReceipt(receipt, authorityPins)),
+    null,
+    2,
+  )}\n`;
+}
+
+export function canonicalHistoricalFreshContractDeploymentReceiptV3Text(
+  receipt,
+  authorityPins,
+) {
+  return `${JSON.stringify(
+    sortedObject(normalizeHistoricalFreshContractDeploymentReceiptV3(
+      receipt,
+      authorityPins,
+    )),
     null,
     2,
   )}\n`;

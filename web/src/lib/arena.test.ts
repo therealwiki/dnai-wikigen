@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { keccak256, type Address, type Hex } from "viem";
+import { deployment } from "../config";
 import {
   ARENA_SAFE_IR_STARTER_FILENAME,
+  ARENA_QUEUE_REASONS,
+  ARENA_QUEUE_STATES,
+  appendArenaLeaderboardPageRows,
+  appendArenaQueuePageRows,
   arenaSafeIrStarterCandidateBytes,
   arenaReleaseApprovedChallengeSetSha256,
   arenaChallengeRegistryAuthorizationSha256,
@@ -13,16 +18,22 @@ import {
   arenaIdempotencyKeyHash,
   arenaProtocolIdentity,
   arenaSubmissionManifestHash,
+  cancelArenaOwnerSubmission,
   candidateCommitment,
   encryptArenaCandidateBytes,
+  fetchArenaLeaderboard,
+  fetchArenaQueue,
   parseArenaCatalog,
   parseArenaChallengeRegistryBindings,
   parseArenaLeaderboard,
+  parseArenaCiphertextErasure,
+  parseArenaOwnerCancellation,
   parseArenaOwnerSubmissions,
   parseArenaQueue,
   parseArenaSubmissionResult,
   parseArenaWorkerCapability,
   readBoundedArenaResponseText,
+  retryArenaCiphertextErasure,
   validateArenaSafeIrCandidateBytes,
   runArenaChallengeRegistryBrowserPreflight as verifyArenaChallengeRegistryAuthorization,
   type ArenaCandidateBinding,
@@ -32,6 +43,8 @@ import {
   type ArenaChallengeRegistryState,
   type ArenaChallengeRegistryVersionState,
   type ArenaExecutionCapability,
+  type ArenaQueueReason,
+  type ArenaQueueState,
   type ArenaSubmissionManifest,
 } from "./arena";
 
@@ -113,6 +126,94 @@ const workerReportedExecutionProvenance = {
   exact_score_egress: false,
   exact_timing_egress: false,
 } as const;
+
+const queueReasonForState: Readonly<Record<ArenaQueueState, ArenaQueueReason>> = {
+  submitted: "caller_submitted",
+  policy_screen: "policy_check_started",
+  queued: "policy_passed",
+  provisioning: "worker_claimed",
+  public_tests: "public_tests_started",
+  sealed_eval: "sealed_evaluation_started",
+  review_hold: "human_review_required",
+  completed: "evaluation_completed",
+  failed: "execution_failed",
+  withheld: "policy_withheld",
+  cancelled: "caller_cancelled",
+  expired: "queue_expired",
+  dead_letter: "retry_exhausted",
+};
+
+function publicQueueHistory(
+  states: readonly ArenaQueueState[],
+): Array<{
+  sequence: number;
+  from_state: ArenaQueueState | null;
+  to_state: ArenaQueueState;
+  reason: ArenaQueueReason;
+}> {
+  return states.map((state, index) => ({
+    sequence: index + 1,
+    from_state: index === 0 ? null : states[index - 1],
+    to_state: state,
+    reason: queueReasonForState[state],
+  }));
+}
+
+function publicQueueSubmissionFixture(
+  state: ArenaQueueState = "submitted",
+  queueEvents = publicQueueHistory(["submitted"]),
+): Record<string, unknown> {
+  return {
+    surface: "arena_submission",
+    schema_version: 2,
+    submission_id: `sub_${"a".repeat(24)}`,
+    challenge_id: challenge.challenge_id,
+    challenge_version: challenge.version,
+    identity: {
+      wallet_address_hash: "b".repeat(64),
+      project_id_hash: "c".repeat(64),
+    },
+    candidate_commitment: `sha256:${"d".repeat(64)}`,
+    manifest: {
+      schema_version: 1,
+      challenge_manifest_hash: challenge.manifest_hash,
+      candidate_kind: challenge.candidate.kind,
+      runtime: challenge.candidate.runtime,
+      entrypoint: challenge.candidate.entrypoint,
+      mode: "test",
+      private_size_egress: false,
+    },
+    state,
+    queue_events: queueEvents,
+    ladder_release: null,
+    execution_capability: structuredClone(capability),
+    execution_provenance: structuredClone(unobservedExecutionProvenance),
+    product_status: "modeled",
+    execution_assurance: "projection_only_no_hardened_executor",
+    exact_timing_egress: false,
+    encrypted_reference_public: false,
+    raw_candidate_accepted: false,
+    raw_secret_egress: false,
+  };
+}
+
+function publicQueueFixture(submission: unknown): Record<string, unknown> {
+  return {
+    surface: "arena_public_queue",
+    schema_version: 2,
+    challenge_id: challenge.challenge_id,
+    challenge_version: challenge.version,
+    submission_count: 1,
+    submissions: [submission],
+    has_more: false,
+    next_cursor: null,
+    product_status: "per_row",
+    execution_assurance: "per_submission_execution_provenance",
+    raw_candidate_egress: false,
+    exact_timing_egress: false,
+    execution_capability: structuredClone(capability),
+  };
+}
 
 const registryAddress = `0x${"1".repeat(40)}` as Address;
 const finalizedBlockHash = `0x${"f".repeat(64)}` as Hex;
@@ -310,7 +411,7 @@ describe("Arena browser boundary", () => {
     })).toThrow(/forbidden field wallet_address/);
   });
 
-  it("accepts only timing-free Arena queue and leaderboard projections", () => {
+  it("accepts only timing-free Arena queue and leaderboard projections", async () => {
     const queue = {
       surface: "arena_public_queue",
       schema_version: 2,
@@ -343,11 +444,154 @@ describe("Arena browser boundary", () => {
       execution_capability: capability,
     } as const;
 
-    expect(parseArenaQueue(queue).submissions).toEqual([]);
-    expect(parseArenaLeaderboard(board).rows).toEqual([]);
+    expect(parseArenaQueue(queue)).toMatchObject({
+      submissions: [],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(parseArenaLeaderboard(board)).toMatchObject({
+      rows: [],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(parseArenaQueue({ ...queue, has_more: false, next_cursor: null })).toMatchObject({
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(parseArenaLeaderboard({ ...board, has_more: false, next_cursor: null })).toMatchObject({
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(() => parseArenaQueue({ ...queue, has_more: false })).toThrow(/incomplete pagination boundary/);
+    expect(() => parseArenaLeaderboard({ ...board, next_cursor: null })).toThrow(/incomplete pagination boundary/);
+    expect(() => parseArenaQueue({ ...queue, has_more: true, next_cursor: null })).toThrow(/contradictory pagination boundary/);
+    expect(() => parseArenaLeaderboard({
+      ...board,
+      has_more: true,
+      next_cursor: "arena_page_v1.invalid cursor",
+    })).toThrow(/malformed opaque cursor/);
+    expect(() => parseArenaLeaderboard({
+      ...board,
+      has_more: true,
+      next_cursor: `arena_page_v1.${"a".repeat(512)}`,
+    })).toThrow(/malformed opaque cursor/);
+    await expect(fetchArenaQueue(challenge.challenge_id, challenge.version, {
+      cursor: "arena cursor with spaces",
+    })).rejects.toThrow(/cursor is malformed/);
+    await expect(fetchArenaLeaderboard(challenge.challenge_id, challenge.version, {
+      limit: 101,
+    })).rejects.toThrow(/page limit is invalid/);
     for (const key of ["created_at", "updated_at", "occurred_at", "ladder_released_at"] as const) {
       expect(() => parseArenaQueue({ ...queue, submissions: [{ [key]: 123 }], submission_count: 1 })).toThrow(new RegExp(`forbidden field ${key}`));
       expect(() => parseArenaLeaderboard({ ...board, rows: [{ [key]: 123 }], row_count: 1 })).toThrow(new RegExp(`forbidden field ${key}`));
+    }
+  });
+
+  it("fail-closes the public queue state, event, reason, and transition vocabulary", () => {
+    expect(ARENA_QUEUE_STATES).toEqual([
+      "submitted",
+      "policy_screen",
+      "queued",
+      "provisioning",
+      "public_tests",
+      "sealed_eval",
+      "review_hold",
+      "completed",
+      "failed",
+      "withheld",
+      "cancelled",
+      "expired",
+      "dead_letter",
+    ]);
+    expect(ARENA_QUEUE_REASONS).toEqual([
+      "caller_submitted",
+      "policy_check_started",
+      "policy_passed",
+      "worker_claimed",
+      "public_tests_started",
+      "sealed_evaluation_started",
+      "human_review_required",
+      "evaluation_completed",
+      "execution_failed",
+      "policy_withheld",
+      "caller_cancelled",
+      "queue_expired",
+      "retry_exhausted",
+    ]);
+
+    expect(parseArenaQueue(publicQueueFixture(
+      publicQueueSubmissionFixture(),
+    )).submissions[0].state).toBe("submitted");
+
+    expect(() => parseArenaQueue(publicQueueFixture({
+      ...publicQueueSubmissionFixture(),
+      state: "future_scheduler_state",
+    }))).toThrow(/bounded schema checks/);
+    expect(() => parseArenaQueue(publicQueueFixture({
+      ...publicQueueSubmissionFixture(),
+      queue_events: [{
+        sequence: 1,
+        from_state: null,
+        to_state: "future_scheduler_state",
+        reason: "caller_submitted",
+      }],
+    }))).toThrow(/queue history is malformed/);
+    expect(() => parseArenaQueue(publicQueueFixture({
+      ...publicQueueSubmissionFixture(),
+      queue_events: [{
+        sequence: 1,
+        from_state: null,
+        to_state: "submitted",
+        reason: "submission_received",
+      }],
+    }))).toThrow(/queue history is malformed/);
+    expect(() => parseArenaQueue(publicQueueFixture(
+      publicQueueSubmissionFixture(
+        "queued",
+        publicQueueHistory(["submitted", "policy_screen"]),
+      ),
+    ))).toThrow(/does not end at its current state/);
+    expect(() => parseArenaQueue(publicQueueFixture(
+      publicQueueSubmissionFixture("completed", [
+        ...publicQueueHistory(["submitted"]),
+        {
+          sequence: 2,
+          from_state: "submitted",
+          to_state: "completed",
+          reason: "evaluation_completed",
+        },
+      ]),
+    ))).toThrow(/invalid transition/);
+  });
+
+  it("accepts every backend terminal queue state only through its bounded history", () => {
+    const terminalPaths = {
+      completed: [
+        "submitted",
+        "policy_screen",
+        "queued",
+        "provisioning",
+        "public_tests",
+        "sealed_eval",
+        "completed",
+      ],
+      failed: ["submitted", "failed"],
+      withheld: ["submitted", "policy_screen", "withheld"],
+      cancelled: ["submitted", "cancelled"],
+      expired: ["submitted", "policy_screen", "queued", "expired"],
+      dead_letter: ["submitted", "policy_screen", "queued", "dead_letter"],
+    } as const satisfies Readonly<
+      Record<string, readonly ArenaQueueState[]>
+    >;
+
+    for (const [terminalState, path] of Object.entries(terminalPaths)) {
+      const parsed = parseArenaQueue(publicQueueFixture(
+        publicQueueSubmissionFixture(
+          terminalState as ArenaQueueState,
+          publicQueueHistory(path),
+        ),
+      ));
+      expect(parsed.submissions[0].state).toBe(terminalState);
     }
   });
 
@@ -384,9 +628,40 @@ describe("Arena browser boundary", () => {
       execution_capability: capability,
     } as const;
 
-    const parsed = parseArenaLeaderboard(board);
-    expect(parsed.rows[0].execution_provenance.status).toBe("worker_reported");
-    expect(parsed.rows[0].execution_provenance.independently_verified_by_client).toBe(false);
+    const firstPage = parseArenaLeaderboard({
+      ...board,
+      has_more: true,
+      next_cursor: `arena_page_v1.${"a".repeat(96)}`,
+    });
+    expect(firstPage.rows[0].execution_provenance.status).toBe("worker_reported");
+    expect(firstPage.rows[0].execution_provenance.independently_verified_by_client).toBe(false);
+    const secondRow = {
+      ...row,
+      rank: 2,
+      submission_id: `sub_${"2".repeat(24)}`,
+      identity: { wallet_address_hash: "3".repeat(64), project_id_hash: "4".repeat(64) },
+      candidate_commitment: `sha256:${"5".repeat(64)}`,
+    } as const;
+    const secondPage = parseArenaLeaderboard({
+      ...board,
+      row_count: 1,
+      rows: [secondRow],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(appendArenaLeaderboardPageRows(firstPage.rows, firstPage, secondPage).map((item) => item.rank)).toEqual([1, 2]);
+    expect(() => appendArenaLeaderboardPageRows(firstPage.rows, firstPage, parseArenaLeaderboard({
+      ...secondPage,
+      rows: [row],
+    }))).toThrow(/repeated a previously loaded submission/);
+    expect(() => appendArenaLeaderboardPageRows(firstPage.rows, firstPage, parseArenaLeaderboard({
+      ...secondPage,
+      rows: [{ ...secondRow, rank: 3 }],
+    }))).toThrow(/global rank continuity/);
+    expect(() => appendArenaLeaderboardPageRows(firstPage.rows, firstPage, parseArenaLeaderboard({
+      ...secondPage,
+      challenge_id: "other-challenge",
+    }))).toThrow(/crossed its surface or challenge-version boundary/);
     expect(() => parseArenaLeaderboard({
       ...board,
       rows: [{ ...row, execution_provenance: { ...workerReportedExecutionProvenance, independently_verified_by_client: true } }],
@@ -400,7 +675,7 @@ describe("Arena browser boundary", () => {
   it("accepts only the bounded wallet-owner page and rejects sealed or timing fields", () => {
     const ownerSubmission = {
       surface: "arena_owner_submission",
-      schema_version: 2,
+      schema_version: 3,
       submission_id: `sub_${"1".repeat(24)}`,
       challenge_id: challenge.challenge_id,
       challenge_version: challenge.version,
@@ -421,6 +696,26 @@ describe("Arena browser boundary", () => {
       execution_provenance: unobservedExecutionProvenance,
       product_status: "modeled",
       execution_assurance: "projection_only_no_hardened_executor",
+      ciphertext_lifecycle: {
+        state: "retained",
+        retention_policy: "terminal_immediate_unlink_with_bounded_retry",
+        max_terminal_retention_seconds: 3600,
+        unlink_attempts: 0,
+        current_state_evidence: "none",
+        retryable: false,
+        receipt: {
+          blob_sha256: `sha256:${"5".repeat(64)}`,
+          ciphertext_sha256: `sha256:${"6".repeat(64)}`,
+          key_id: `sha256:${"7".repeat(64)}`,
+        },
+        ciphertext_egress: false,
+        sealed_reference_egress: false,
+        physical_erasure_claimed: false,
+      },
+      owner_actions: {
+        can_cancel: true,
+        can_retry_ciphertext_erasure: false,
+      },
       raw_candidate_egress: false,
       encrypted_reference_egress: false,
       exact_score_egress: false,
@@ -430,7 +725,7 @@ describe("Arena browser boundary", () => {
     } as const;
     const page = {
       surface: "arena_owner_submissions",
-      schema_version: 2,
+      schema_version: 3,
       challenge_id: challenge.challenge_id,
       challenge_version: challenge.version,
       owner_identity: "2".repeat(64),
@@ -467,6 +762,274 @@ describe("Arena browser boundary", () => {
       ...page,
       submissions: [{ ...ownerSubmission, challenge_id: "other" }],
     })).toThrow(/bounded schema/);
+    expect(() => parseArenaOwnerSubmissions({
+      ...page,
+      submissions: [{
+        ...ownerSubmission,
+        ciphertext_lifecycle: {
+          ...ownerSubmission.ciphertext_lifecycle,
+          physical_erasure_claimed: true,
+        },
+      }],
+    })).toThrow(/bounded schema/);
+    expect(() => parseArenaOwnerSubmissions({
+      ...page,
+      submissions: [{
+        ...ownerSubmission,
+        ciphertext_lifecycle: {
+          ...ownerSubmission.ciphertext_lifecycle,
+          state: "erasure_retry_required",
+          unlink_attempts: 1,
+          current_state_evidence: "unlink_failed",
+          retryable: true,
+        },
+      }],
+    })).toThrow(/bounded schema/);
+    expect(() => parseArenaOwnerSubmissions({
+      ...page,
+      submissions: [{
+        ...ownerSubmission,
+        ciphertext_lifecycle: {
+          ...ownerSubmission.ciphertext_lifecycle,
+          sealed_reference: "sealed://arena/private",
+        },
+      }],
+    })).toThrow(/fields do not match the versioned protocol/);
+  });
+
+  it("strictly parses owner cancellation and unlink retry receipts without physical-erasure claims", () => {
+    const submissionId = `sub_${"1".repeat(24)}`;
+    const lifecycle = {
+      state: "unlinked",
+      retention_policy: "terminal_immediate_unlink_with_bounded_retry",
+      max_terminal_retention_seconds: 3600,
+      unlink_attempts: 1,
+      current_state_evidence: "directory_entry_unlinked",
+      retryable: false,
+      receipt: {
+        blob_sha256: `sha256:${"5".repeat(64)}`,
+        ciphertext_sha256: `sha256:${"6".repeat(64)}`,
+        key_id: `sha256:${"7".repeat(64)}`,
+      },
+      ciphertext_egress: false,
+      sealed_reference_egress: false,
+      physical_erasure_claimed: false,
+    } as const;
+    const submission = {
+      surface: "arena_owner_submission",
+      schema_version: 3,
+      submission_id: submissionId,
+      challenge_id: challenge.challenge_id,
+      challenge_version: challenge.version,
+      identity: { wallet_address_hash: "2".repeat(64), project_id_hash: "3".repeat(64) },
+      candidate_commitment: `sha256:${"4".repeat(64)}`,
+      manifest: {
+        schema_version: 1,
+        challenge_manifest_hash: challenge.manifest_hash,
+        candidate_kind: challenge.candidate.kind,
+        runtime: challenge.candidate.runtime,
+        entrypoint: challenge.candidate.entrypoint,
+        mode: "leaderboard",
+        private_size_egress: false,
+      },
+      state: "cancelled",
+      bounded_result: null,
+      execution_capability: capability,
+      execution_provenance: unobservedExecutionProvenance,
+      product_status: "modeled",
+      execution_assurance: "projection_only_no_hardened_executor",
+      ciphertext_lifecycle: lifecycle,
+      owner_actions: {
+        can_cancel: false,
+        can_retry_ciphertext_erasure: false,
+      },
+      raw_candidate_egress: false,
+      encrypted_reference_egress: false,
+      exact_score_egress: false,
+      exact_reward_egress: false,
+      exact_timing_egress: false,
+      internal_error_egress: false,
+    } as const;
+    const cancellation = {
+      surface: "arena_owner_cancellation",
+      schema_version: 1,
+      changed: true,
+      idempotent_replay: false,
+      submission,
+      ciphertext_lifecycle: {
+        ...lifecycle,
+        receipt: lifecycle.receipt ? { ...lifecycle.receipt } : null,
+      },
+      worker_transition_authority: false,
+      raw_candidate_egress: false,
+      encrypted_reference_egress: false,
+      physical_erasure_claimed: false,
+    } as const;
+    const erasure = {
+      surface: "arena_ciphertext_erasure",
+      schema_version: 1,
+      submission_id: submissionId,
+      state: "unlinked",
+      changed: true,
+      idempotent_replay: false,
+      ciphertext_lifecycle: lifecycle,
+      worker_transition_authority: false,
+      ciphertext_egress: false,
+      encrypted_reference_egress: false,
+      physical_erasure_claimed: false,
+    } as const;
+
+    expect(parseArenaOwnerCancellation(cancellation, {
+      challengeId: challenge.challenge_id,
+      version: challenge.version,
+      submissionId,
+    }).submission.state).toBe("cancelled");
+    expect(parseArenaCiphertextErasure(erasure, submissionId).state).toBe("unlinked");
+    expect(() => parseArenaOwnerCancellation({
+      ...cancellation,
+      physical_erasure_claimed: true,
+    }, {
+      challengeId: challenge.challenge_id,
+      version: challenge.version,
+      submissionId,
+    })).toThrow(/bounded schema/);
+    expect(() => parseArenaCiphertextErasure({
+      ...erasure,
+      ciphertext_lifecycle: {
+        ...lifecycle,
+        unlink_attempts: 0,
+      },
+    }, submissionId)).toThrow(/bounded schema/);
+  });
+
+  it("posts wallet-authenticated cancellation and cleanup retries to exact challenge-version routes", async () => {
+    const submissionId = `sub_${"1".repeat(24)}`;
+    const lifecycle = {
+      state: "unlinked",
+      retention_policy: "terminal_immediate_unlink_with_bounded_retry",
+      max_terminal_retention_seconds: 3600,
+      unlink_attempts: 1,
+      current_state_evidence: "directory_entry_absent",
+      retryable: false,
+      receipt: {
+        blob_sha256: `sha256:${"5".repeat(64)}`,
+        ciphertext_sha256: `sha256:${"6".repeat(64)}`,
+        key_id: `sha256:${"7".repeat(64)}`,
+      },
+      ciphertext_egress: false,
+      sealed_reference_egress: false,
+      physical_erasure_claimed: false,
+    } as const;
+    const submission = {
+      surface: "arena_owner_submission",
+      schema_version: 3,
+      submission_id: submissionId,
+      challenge_id: challenge.challenge_id,
+      challenge_version: challenge.version,
+      identity: { wallet_address_hash: "2".repeat(64), project_id_hash: "3".repeat(64) },
+      candidate_commitment: `sha256:${"4".repeat(64)}`,
+      manifest: {
+        schema_version: 1,
+        challenge_manifest_hash: challenge.manifest_hash,
+        candidate_kind: challenge.candidate.kind,
+        runtime: challenge.candidate.runtime,
+        entrypoint: challenge.candidate.entrypoint,
+        mode: "leaderboard",
+        private_size_egress: false,
+      },
+      state: "cancelled",
+      bounded_result: null,
+      execution_capability: capability,
+      execution_provenance: unobservedExecutionProvenance,
+      product_status: "modeled",
+      execution_assurance: "projection_only_no_hardened_executor",
+      ciphertext_lifecycle: lifecycle,
+      owner_actions: { can_cancel: false, can_retry_ciphertext_erasure: false },
+      raw_candidate_egress: false,
+      encrypted_reference_egress: false,
+      exact_score_egress: false,
+      exact_reward_egress: false,
+      exact_timing_egress: false,
+      internal_error_egress: false,
+    } as const;
+    const responses = [
+      {
+        surface: "arena_owner_cancellation",
+        schema_version: 1,
+        changed: true,
+        idempotent_replay: false,
+        submission,
+        ciphertext_lifecycle: lifecycle,
+        worker_transition_authority: false,
+        raw_candidate_egress: false,
+        encrypted_reference_egress: false,
+        physical_erasure_claimed: false,
+      },
+      {
+        surface: "arena_ciphertext_erasure",
+        schema_version: 1,
+        submission_id: submissionId,
+        state: "unlinked",
+        changed: false,
+        idempotent_replay: true,
+        ciphertext_lifecycle: lifecycle,
+        worker_transition_authority: false,
+        ciphertext_egress: false,
+        encrypted_reference_egress: false,
+        physical_erasure_claimed: false,
+      },
+    ];
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const originalDelegateUrl = Object.getOwnPropertyDescriptor(
+      deployment,
+      "delegateUrl",
+    );
+    Object.defineProperty(deployment, "delegateUrl", {
+      value: "https://delegate.test",
+      configurable: true,
+    });
+    try {
+      const token = "header.payload.signature";
+      await expect(cancelArenaOwnerSubmission(
+        challenge.challenge_id,
+        challenge.version,
+        submissionId,
+        token,
+      )).resolves.toMatchObject({ changed: true });
+      await expect(retryArenaCiphertextErasure(
+        challenge.challenge_id,
+        challenge.version,
+        submissionId,
+        token,
+      )).resolves.toMatchObject({ idempotent_replay: true });
+      const firstCall = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      const secondCall = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+      expect(firstCall[0]).toBe(
+        `https://delegate.test/arena/challenges/${challenge.challenge_id}/versions/${challenge.version}/submissions/${submissionId}/cancel`,
+      );
+      expect(secondCall[0]).toBe(
+        `https://delegate.test/arena/challenges/${challenge.challenge_id}/versions/${challenge.version}/submissions/${submissionId}/ciphertext-erasure/retry`,
+      );
+      for (const [, init] of [firstCall, secondCall]) {
+        expect(init.method).toBe("POST");
+        expect(init.cache).toBe("no-store");
+        expect(init.credentials).toBe("omit");
+        expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${token}`);
+      }
+    } finally {
+      if (originalDelegateUrl) {
+        Object.defineProperty(
+          deployment,
+          "delegateUrl",
+          originalDelegateUrl,
+        );
+      }
+      vi.unstubAllGlobals();
+    }
   });
 
   it("accepts the schema-v2 ciphertext receipt without inventing execution evidence", () => {
@@ -488,7 +1051,7 @@ describe("Arena browser boundary", () => {
         private_size_egress: false,
       },
       state: "submitted",
-      queue_events: [{ sequence: 1, from_state: null, to_state: "submitted", reason: "submission_received" }],
+      queue_events: [{ sequence: 1, from_state: null, to_state: "submitted", reason: "caller_submitted" }],
       ladder_release: null,
       execution_capability: capability,
       execution_provenance: { ...unobservedExecutionProvenance, runtime: "dnai-safe-ir-v1" },
@@ -542,7 +1105,58 @@ describe("Arena browser boundary", () => {
       raw_secret_egress: false,
     } as const;
 
-    expect(parseArenaSubmissionResult(response).submission.execution_provenance.status).toBe("not_executed");
+    const parsedResult = parseArenaSubmissionResult(response);
+    expect(parsedResult.submission.execution_provenance.status).toBe("not_executed");
+    const firstQueuePage = parseArenaQueue({
+      surface: "arena_public_queue",
+      schema_version: 2,
+      challenge_id: submission.challenge_id,
+      challenge_version: submission.challenge_version,
+      submission_count: 1,
+      submissions: [parsedResult.submission],
+      has_more: true,
+      next_cursor: `arena_page_v1.${"b".repeat(96)}`,
+      product_status: "per_row",
+      execution_assurance: "per_submission_execution_provenance",
+      raw_candidate_egress: false,
+      exact_timing_egress: false,
+      execution_capability: structuredClone(capability),
+    });
+    const nextSubmission = {
+      ...structuredClone(parsedResult.submission),
+      submission_id: `sub_${"b".repeat(24)}`,
+      identity: { wallet_address_hash: "c".repeat(64), project_id_hash: "d".repeat(64) },
+      candidate_commitment: `sha256:${"f".repeat(64)}`,
+    };
+    const secondQueuePage = parseArenaQueue({
+      ...firstQueuePage,
+      submission_count: 2,
+      submissions: [parsedResult.submission, nextSubmission],
+      has_more: false,
+      next_cursor: null,
+    });
+    expect(appendArenaQueuePageRows(
+      firstQueuePage.submissions,
+      firstQueuePage,
+      secondQueuePage,
+    ).map((item) => item.submission_id)).toEqual([
+      parsedResult.submission.submission_id,
+      nextSubmission.submission_id,
+    ]);
+    const crossChallengePage = parseArenaQueue({
+      ...secondQueuePage,
+      challenge_id: "other-challenge",
+      submission_count: 1,
+      submissions: [{
+        ...nextSubmission,
+        challenge_id: "other-challenge",
+      }],
+    });
+    expect(() => appendArenaQueuePageRows(
+      firstQueuePage.submissions,
+      firstQueuePage,
+      crossChallengePage,
+    )).toThrow(/crossed its surface or challenge-version boundary/);
     expect(parseArenaSubmissionResult(response).registry_ingress_boundary.proxy_registry_authorized).toBe(true);
     expect(() => parseArenaSubmissionResult({
       ...response,

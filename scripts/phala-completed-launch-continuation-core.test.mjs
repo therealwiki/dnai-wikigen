@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -7,8 +8,7 @@ import {
   phalaExecutorStateDigest,
 } from "./phala-executor-state-core.mjs";
 import {
-  assertProvenanceVerifiedCompletedPhalaExecutorState,
-  registerContinuityVerifiedCompletedPhalaExecutorState,
+  validateCompletedLaunchContinuationProvenanceDependencies,
 } from "./phala-production-executor-core.mjs";
 import {
   PHALA_EXECUTION_ORDER,
@@ -27,11 +27,7 @@ import {
   normalizePhalaCompletedLaunchContinuityReceipt,
   phalaCompletedLaunchContinuityReceiptSha256,
 } from "./phala-completed-launch-continuation-core.mjs";
-import {
-  __test as continuationTest,
-  consumeCompletedPhalaSevenCvmLaunchContinuationCapability,
-  readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption,
-} from "./phala-completed-launch-continuation.mjs";
+import * as continuation from "./phala-completed-launch-continuation.mjs";
 import {
   syntheticPhalaSevenCvmLaunchCompletionFixture,
 } from "./phala-seven-cvm-launch-completion.fixture.mjs";
@@ -219,21 +215,25 @@ function fixture() {
     },
     currentDomains,
     historicalEvidenceReconstruction: {
-      schema: "dnai.phala-seven-cvm-historical-evidence-reconstruction.v1",
+      schema: "dnai.phala-seven-cvm-recorded-time-dcap-replay.v1",
       truth_status:
-        "raw14_protocol_and_signatures_replayed_against_authenticated_historical_L_R_roots_without_dcap_collateral_or_freshness_renewal",
+        "signed_a_l_r_b_authority_exact14_protocol_signatures_recorded_time_dcap_and_persisted_intel_collateral_replayed_without_freshness_renewal_or_live_authority",
+      launch_completion_receipt_sha256: sha(1_403),
+      release_verification_authority_sha256:
+        value.receipt.release_verification_authority_sha256,
       seven_cvm_verified_evidence_set_sha256:
         value.receipt.machine_verifier_evidence_set_sha256,
       historical_transcript_file_set_sha256:
         value.receipt.historical_transcript_file_set_sha256,
-      all_seven_historical_evidence_roots_reconstructed: true,
-      raw14_canonical_bytes_recomputed: true,
+      all_seven_recorded_time_dcap_replayed: true,
+      persisted_intel_collateral_revalidated: true,
       workload_eip191_signatures_replayed: true,
-      dcap_reverified: false,
-      intel_collateral_revalidated: false,
       freshness_renewed: false,
-      production_brand_minted: false,
+      production_live_brand_minted: false,
       live_traffic_authorized: false,
+      raw_quote_publicly_disclosed: false,
+      raw_collateral_publicly_disclosed: false,
+      raw_secret_egress: false,
     },
     launchCompletionReceipt: value.receipt,
     launchCompletionReceiptSha256: sha(1_403),
@@ -280,10 +280,9 @@ test("standalone receipt normalization rejects recomputed field and uniqueness t
   }
 });
 
-test("opaque continuation provenance is one-shot, same-process, and consumable only after adoption", async () => {
+test("continuation provenance accepts actual L v5 and rejects v4 or truth drift", () => {
   const input = fixture();
   const receipt = createPhalaCompletedLaunchContinuityReceipt(input);
-  const receiptSha256 = phalaCompletedLaunchContinuityReceiptSha256(receipt);
   const dependencies = {
     executor_final_state: input.completedJournal.state,
     completed_recovery_journal: input.completedJournal,
@@ -300,57 +299,108 @@ test("opaque continuation provenance is one-shot, same-process, and consumable o
     historical_evidence_reconstruction:
       input.historicalEvidenceReconstruction,
     current_continuity_receipt: receipt,
-    current_continuity_receipt_sha256: receiptSha256,
+    current_continuity_receipt_sha256:
+      phalaCompletedLaunchContinuityReceiptSha256(receipt),
     historical_launch_refreshed: false,
     historical_evidence_refreshed: false,
     live_traffic_authorized: false,
   };
-  const capability = continuationTest
-    .createSyntheticCompletedLaunchContinuationCapability({
-      continuityReceipt: receipt,
-      dependencies,
-    });
-  assert.throws(
-    () => readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption(
-      capability,
-    ),
-    /has not passed executor-state provenance registration/,
-  );
-  assert.throws(
-    () => readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption(
-      structuredClone(capability),
-    ),
-    /continuation capability is required/,
-  );
-  const state = await registerContinuityVerifiedCompletedPhalaExecutorState({
-    continuationCapability: capability,
-  });
   assert.equal(
-    assertProvenanceVerifiedCompletedPhalaExecutorState(state),
+    dependencies.persisted_launch_completion_receipt.schema,
+    "dnai.phala-seven-cvm-launch-completion-receipt.v5",
+  );
+  assert.equal(
+    validateCompletedLaunchContinuationProvenanceDependencies(dependencies).state,
     input.completedJournal.state,
   );
-  assert.equal(
-    readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption(capability)
-      .current_continuity_receipt_sha256,
-    receiptSha256,
-  );
-  await assert.rejects(
-    registerContinuityVerifiedCompletedPhalaExecutorState({
-      continuationCapability: capability,
-    }),
-    /runtime adoption was already attempted/,
-  );
-  assert.equal(
-    consumeCompletedPhalaSevenCvmLaunchContinuationCapability(capability)
-      .current_continuity_receipt_sha256,
-    receiptSha256,
+  for (const mutate of [
+    (value) => {
+      value.persisted_launch_completion_receipt.schema =
+        "dnai.phala-seven-cvm-launch-completion-receipt.v4";
+    },
+    (value) => {
+      value.persisted_launch_completion_receipt.truth_status = "drifted";
+    },
+  ]) {
+    const drifted = structuredClone(dependencies);
+    mutate(drifted);
+    assert.throws(
+      () => validateCompletedLaunchContinuationProvenanceDependencies(drifted),
+      /one exact historical executor lineage/,
+    );
+  }
+});
+
+test("ordinary Node cannot spoof a completed-launch continuation capability", () => {
+  const input = fixture();
+  const receipt = createPhalaCompletedLaunchContinuityReceipt(input);
+  const receiptSha256 = phalaCompletedLaunchContinuityReceiptSha256(receipt);
+  const forged = {
+    schema: continuation.PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_SCHEMA,
+    status: continuation.PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_STATUS,
+    truth_status: continuation.PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_TRUTH,
+    release_sha: receipt.release_sha,
+    batch_id: receipt.batch_id,
+    launch_completion_receipt_sha256:
+      receipt.launch_completion_receipt_sha256,
+    continuity_receipt_sha256: receiptSha256,
+    historical_launch_refreshed: false,
+    historical_evidence_refreshed: false,
+    capability_serialized: false,
+    one_shot: true,
+    activation_mutation_authorized: false,
+    live_traffic_authorized: false,
+  };
+  assert.equal(continuation.__test, undefined);
+  assert.throws(
+    () => continuation.assertCompletedPhalaSevenCvmLaunchContinuationCapability(
+      forged,
+    ),
+    /exact unmodified completed-launch continuation capability/,
   );
   assert.throws(
-    () => readCompletedPhalaSevenCvmLaunchContinuationForRuntimeAdoption(
-      capability,
+    () => continuation.claimCompletedPhalaSevenCvmLaunchContinuationForProvenance(
+      forged,
     ),
-    /continuation capability is required/,
+    /exact unmodified completed-launch continuation capability/,
   );
+  assert.throws(
+    () => continuation.consumeCompletedPhalaSevenCvmLaunchContinuationCapability(
+      forged,
+    ),
+    /exact unmodified completed-launch continuation capability/,
+  );
+  const moduleUrl = new URL(
+    "./phala-completed-launch-continuation.mjs",
+    import.meta.url,
+  );
+  const spoofedEntrypoint = new URL(
+    "./phala-completed-launch-continuation-core.test.mjs",
+    import.meta.url,
+  );
+  const child = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    [
+      `process.env.NODE_TEST_CONTEXT = "child-v8";`,
+      `process.argv[1] = ${JSON.stringify(spoofedEntrypoint.pathname)};`,
+      `const module = await import(${JSON.stringify(moduleUrl.href)});`,
+      `if (module.__test !== undefined) process.exit(91);`,
+      `const forged = JSON.parse(process.argv[2]);`,
+      `try {`,
+      `  module.claimCompletedPhalaSevenCvmLaunchContinuationForProvenance(forged);`,
+      `  process.exit(92);`,
+      `} catch { process.stdout.write("rejected"); }`,
+    ].join("\n"),
+    spoofedEntrypoint.pathname,
+    JSON.stringify(forged),
+  ], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, NODE_TEST_CONTEXT: "child-v8" },
+    encoding: "utf8",
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, "rejected");
 });
 
 test("continuity rejects incomplete, ambiguous, or postmeasurement-shaped executor state", () => {

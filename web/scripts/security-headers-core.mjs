@@ -1,3 +1,5 @@
+import { URL as NodeURL } from "node:url";
+
 import {
   exactDistinctPublicHttpsEndpoints,
   exactPublicHttpsEndpoint,
@@ -57,8 +59,8 @@ export function renderProductionHeaders({
   secondaryRpcUrl = "",
 } = {}) {
   const rpc = exactRpcEndpoints({ primaryRpcUrl, secondaryRpcUrl });
-  const connect = ["'self'", new URL(rpc.primary).origin];
-  if (rpc.secondary) connect.push(new URL(rpc.secondary).origin);
+  const connect = ["'self'", new NodeURL(rpc.primary).origin];
+  if (rpc.secondary) connect.push(new NodeURL(rpc.secondary).origin);
   const delegateOrigin = exactDelegateOrigin(delegateUrl);
   if (delegateOrigin && !connect.includes(delegateOrigin)) connect.push(delegateOrigin);
   if (walletConnectEnabled) {
@@ -101,6 +103,8 @@ export function renderProductionHeadersForEnv(env = {}) {
   const requiresDelegate = [
     "VITE_ENABLE_ARTIFACT_UPLOAD",
     "VITE_ENABLE_COMPUTE_CONSOLE",
+    "VITE_ENABLE_TINKER_CUSTOMER",
+    "VITE_ENABLE_COLLABORATION",
     "VITE_ENABLE_ARENA_SUBMISSION",
     "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD",
   ].some((key) => env[key] === "true");

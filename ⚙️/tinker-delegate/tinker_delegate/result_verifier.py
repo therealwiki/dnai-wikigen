@@ -212,6 +212,14 @@ class IndependentAttestationVerdict:
     qvl_authorization_expiry: int = 0
     qvl_authorization_digest: str = ""
     qvl_authorization_signature: str = ""
+    qvl_royalty_verifier_address: str = ""
+    qvl_royalty_policy_commitment: str = ""
+    qvl_royalty_release_policy_commitment: str = ""
+    qvl_royalty_attestation_evidence_hash: str = ""
+    qvl_royalty_anchor_evidence_commitment: str = ""
+    qvl_royalty_authorization_expiry: int = 0
+    qvl_royalty_authorization_digest: str = ""
+    qvl_royalty_authorization_signature: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
         payload = {
@@ -268,6 +276,35 @@ class IndependentAttestationVerdict:
                         self.qvl_authorization_digest
                     ),
                     "qvl_authorization_signature": self.qvl_authorization_signature,
+                }
+            )
+        if self.qvl_royalty_verifier_address:
+            payload.update(
+                {
+                    "qvl_royalty_verifier_address": normalize_address(
+                        self.qvl_royalty_verifier_address
+                    ),
+                    "qvl_royalty_policy_commitment": normalize_bytes32(
+                        self.qvl_royalty_policy_commitment
+                    ),
+                    "qvl_royalty_release_policy_commitment": normalize_bytes32(
+                        self.qvl_royalty_release_policy_commitment
+                    ),
+                    "qvl_royalty_attestation_evidence_hash": normalize_bytes32(
+                        self.qvl_royalty_attestation_evidence_hash
+                    ),
+                    "qvl_royalty_anchor_evidence_commitment": normalize_bytes32(
+                        self.qvl_royalty_anchor_evidence_commitment
+                    ),
+                    "qvl_royalty_authorization_expiry": (
+                        self.qvl_royalty_authorization_expiry
+                    ),
+                    "qvl_royalty_authorization_digest": normalize_bytes32(
+                        self.qvl_royalty_authorization_digest
+                    ),
+                    "qvl_royalty_authorization_signature": (
+                        self.qvl_royalty_authorization_signature
+                    ),
                 }
             )
         return payload
@@ -615,6 +652,35 @@ def independent_attestation_verdict_digest(
                 "qvl_authorization_signature": verdict.qvl_authorization_signature,
             }
         )
+    if verdict.qvl_royalty_verifier_address:
+        payload.update(
+            {
+                "qvl_royalty_verifier_address": normalize_address(
+                    verdict.qvl_royalty_verifier_address
+                ),
+                "qvl_royalty_policy_commitment": normalize_bytes32(
+                    verdict.qvl_royalty_policy_commitment
+                ),
+                "qvl_royalty_release_policy_commitment": normalize_bytes32(
+                    verdict.qvl_royalty_release_policy_commitment
+                ),
+                "qvl_royalty_attestation_evidence_hash": normalize_bytes32(
+                    verdict.qvl_royalty_attestation_evidence_hash
+                ),
+                "qvl_royalty_anchor_evidence_commitment": normalize_bytes32(
+                    verdict.qvl_royalty_anchor_evidence_commitment
+                ),
+                "qvl_royalty_authorization_expiry": (
+                    verdict.qvl_royalty_authorization_expiry
+                ),
+                "qvl_royalty_authorization_digest": normalize_bytes32(
+                    verdict.qvl_royalty_authorization_digest
+                ),
+                "qvl_royalty_authorization_signature": (
+                    verdict.qvl_royalty_authorization_signature
+                ),
+            }
+        )
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -669,6 +735,16 @@ def independent_attestation_verdict_from_public_dict(
         "qvl_authorization_digest",
         "qvl_authorization_signature",
     }
+    royalty_qvl_fields = {
+        "qvl_royalty_verifier_address",
+        "qvl_royalty_policy_commitment",
+        "qvl_royalty_release_policy_commitment",
+        "qvl_royalty_attestation_evidence_hash",
+        "qvl_royalty_anchor_evidence_commitment",
+        "qvl_royalty_authorization_expiry",
+        "qvl_royalty_authorization_digest",
+        "qvl_royalty_authorization_signature",
+    }
     missing = fields.difference(payload)
     if missing:
         raise ResultVerifierError(
@@ -676,13 +752,27 @@ def independent_attestation_verdict_from_public_dict(
             + ", ".join(sorted(missing))
         )
     supplied_qvl_fields = set(payload).intersection(qvl_fields)
+    supplied_royalty_qvl_fields = set(payload).intersection(royalty_qvl_fields)
     if supplied_qvl_fields and supplied_qvl_fields != qvl_fields:
         missing_qvl = qvl_fields.difference(payload)
         raise ResultVerifierError(
             "independent attestation verdict missing QVL result fields: "
             + ", ".join(sorted(missing_qvl))
         )
-    unexpected = set(payload).difference(fields | qvl_fields)
+    if (
+        supplied_royalty_qvl_fields
+        and supplied_royalty_qvl_fields != royalty_qvl_fields
+    ):
+        missing_qvl = royalty_qvl_fields.difference(payload)
+        raise ResultVerifierError(
+            "independent attestation verdict missing QVL royalty fields: "
+            + ", ".join(sorted(missing_qvl))
+        )
+    if supplied_qvl_fields and supplied_royalty_qvl_fields:
+        raise ResultVerifierError(
+            "independent attestation verdict QVL domains are mutually exclusive"
+        )
+    unexpected = set(payload).difference(fields | qvl_fields | royalty_qvl_fields)
     if unexpected:
         raise ResultVerifierError(
             "independent attestation verdict has unexpected fields: "
@@ -698,6 +788,11 @@ def independent_attestation_verdict_from_public_dict(
         "activation_evidence_lease_expires_at",
         "expires_at",
         *(("qvl_deal_id", "qvl_authorization_expiry") if supplied_qvl_fields else ()),
+        *(
+            ("qvl_royalty_authorization_expiry",)
+            if supplied_royalty_qvl_fields
+            else ()
+        ),
     ):
         value = payload[field]
         if isinstance(value, bool) or not isinstance(value, int):
@@ -751,6 +846,30 @@ def independent_attestation_verdict_from_public_dict(
         qvl_authorization_digest=str(payload.get("qvl_authorization_digest", "")),
         qvl_authorization_signature=str(
             payload.get("qvl_authorization_signature", "")
+        ),
+        qvl_royalty_verifier_address=str(
+            payload.get("qvl_royalty_verifier_address", "")
+        ),
+        qvl_royalty_policy_commitment=str(
+            payload.get("qvl_royalty_policy_commitment", "")
+        ),
+        qvl_royalty_release_policy_commitment=str(
+            payload.get("qvl_royalty_release_policy_commitment", "")
+        ),
+        qvl_royalty_attestation_evidence_hash=str(
+            payload.get("qvl_royalty_attestation_evidence_hash", "")
+        ),
+        qvl_royalty_anchor_evidence_commitment=str(
+            payload.get("qvl_royalty_anchor_evidence_commitment", "")
+        ),
+        qvl_royalty_authorization_expiry=int(
+            payload.get("qvl_royalty_authorization_expiry", 0)
+        ),
+        qvl_royalty_authorization_digest=str(
+            payload.get("qvl_royalty_authorization_digest", "")
+        ),
+        qvl_royalty_authorization_signature=str(
+            payload.get("qvl_royalty_authorization_signature", "")
         ),
     )
 

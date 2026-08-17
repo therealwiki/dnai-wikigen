@@ -1,7 +1,16 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  open,
+  realpath,
+  rmdir,
+  unlink,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 export const RELEASE_MANIFEST_SIGSTORE_VERIFICATION_SCHEMA =
@@ -35,6 +44,8 @@ export const MAX_GH_ATTESTATION_OUTPUT_BYTES = 1024 * 1024;
 export const MAX_RELEASE_MANIFEST_BYTES = 2 * 1024 * 1024;
 export const MAX_RELEASE_BUNDLE_BYTES = 8 * 1024 * 1024;
 export const MAX_GH_EXECUTABLE_BYTES = 64 * 1024 * 1024;
+export const PINNED_GH_EXECUTION_POLICY =
+  "dnai.pinned-gh-execution.private-verified-copy.v1";
 
 const RELEASE_SCHEMA = "dnai.tee-image-release.v1";
 const RELEASE_PLATFORM = "linux/amd64";
@@ -54,6 +65,10 @@ const SLSA_STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_HOSTED_RUNNER = "github-hosted";
 const MAX_PATH_BYTES = 4_096;
+const PRIVATE_GH_DIRECTORY_MODE = 0o700n;
+const PRIVATE_GH_EXECUTABLE_MODE = 0o500n;
+const PRIVATE_GH_TEMP_PREFIX = "dnai-pinned-gh-";
+const SHARED_STICKY_TEMP_ROOT_MODE = 0o1777n;
 
 const TOP_LEVEL_MANIFEST_KEYS = Object.freeze([
   "schema",
@@ -407,6 +422,251 @@ async function readStableBoundedFile(
     reject(`${label}_read_failed`);
   } finally {
     await handle.close();
+  }
+}
+
+function permissionBits(identity) {
+  return BigInt(identity.mode) & 0o7777n;
+}
+
+function operatorUid() {
+  if (typeof process.getuid !== "function") {
+    reject("gh_private_copy_platform_unsupported");
+  }
+  const uid = process.getuid();
+  if (!Number.isSafeInteger(uid) || uid < 0) {
+    reject("gh_private_copy_platform_unsupported");
+  }
+  return BigInt(uid);
+}
+
+async function inspectPrivateDirectory(directory, uid) {
+  const resolved = canonicalAbsolutePath(directory, "gh_private_copy_directory");
+  let stats;
+  let canonicalPath;
+  try {
+    [stats, canonicalPath] = await Promise.all([
+      lstat(resolved, { bigint: true }),
+      realpath(resolved),
+    ]);
+  } catch {
+    reject("gh_private_copy_directory_invalid");
+  }
+  if (
+    canonicalPath !== resolved
+    || !stats.isDirectory()
+    || stats.isSymbolicLink()
+    || stats.uid !== uid
+    || (stats.mode & 0o7777n) !== PRIVATE_GH_DIRECTORY_MODE
+  ) {
+    reject("gh_private_copy_directory_invalid");
+  }
+  return Object.freeze({
+    path: resolved,
+    identity: statIdentity(stats),
+  });
+}
+
+async function inspectPrivateTempRoot(tempRoot, uid) {
+  const resolved = canonicalAbsolutePath(tempRoot, "gh_private_copy_temp_root");
+  let stats;
+  let canonicalPath;
+  try {
+    [stats, canonicalPath] = await Promise.all([
+      lstat(resolved, { bigint: true }),
+      realpath(resolved),
+    ]);
+  } catch {
+    reject("gh_private_copy_temp_root_invalid");
+  }
+  const permissions = stats.mode & 0o7777n;
+  const operatorPrivate = stats.uid === uid
+    && permissions === PRIVATE_GH_DIRECTORY_MODE;
+  const rootOwnedStickyShared = stats.uid === 0n
+    && permissions === SHARED_STICKY_TEMP_ROOT_MODE;
+  if (
+    canonicalPath !== resolved
+    || !stats.isDirectory()
+    || stats.isSymbolicLink()
+    || !(operatorPrivate || rootOwnedStickyShared)
+  ) {
+    reject("gh_private_copy_temp_root_invalid");
+  }
+  return Object.freeze({
+    path: resolved,
+    identity: statIdentity(stats),
+    policy: operatorPrivate
+      ? "operator_owned_mode_0700"
+      : "root_owned_sticky_mode_1777",
+  });
+}
+
+async function writeExactHandleBytes(handle, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const result = await handle.write(
+      bytes,
+      offset,
+      bytes.length - offset,
+      offset,
+    );
+    if (result.bytesWritten < 1) {
+      reject("gh_private_copy_write_failed");
+    }
+    offset += result.bytesWritten;
+  }
+}
+
+async function inspectPrivateVerifiedExecutable(executable) {
+  let directory;
+  let file;
+  try {
+    [directory, file] = await Promise.all([
+      inspectPrivateDirectory(executable.directory, executable.uid),
+      readStableBoundedFile(executable.path, {
+        label: "gh_private_copy",
+        maxBytes: MAX_GH_EXECUTABLE_BYTES,
+        executable: true,
+      }),
+    ]);
+  } catch {
+    reject("gh_private_copy_changed");
+  }
+  if (
+    !sameIdentity(directory.identity, executable.directoryIdentity)
+    || !sameIdentity(file.identity, executable.identity)
+    || file.sha256 !== executable.sha256
+    || BigInt(file.identity.uid) !== executable.uid
+    || permissionBits(file.identity) !== PRIVATE_GH_EXECUTABLE_MODE
+  ) {
+    reject("gh_private_copy_changed");
+  }
+  return executable;
+}
+
+async function removeFreshPrivateArtifacts({ directory, executablePath }) {
+  let failed = false;
+  if (executablePath) {
+    try {
+      await unlink(executablePath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") failed = true;
+    }
+  }
+  if (directory) {
+    try {
+      await rmdir(directory);
+    } catch (error) {
+      if (error?.code !== "ENOENT") failed = true;
+    }
+  }
+  if (failed) reject("gh_private_copy_cleanup_failed");
+}
+
+async function createPrivateVerifiedExecutable(sourceFile) {
+  const uid = operatorUid();
+  let directory = "";
+  let executablePath = "";
+  let handle;
+  try {
+    const configuredTempRoot = canonicalAbsolutePath(
+      path.resolve(tmpdir()),
+      "gh_private_copy_temp_root",
+    );
+    const canonicalTempRoot = canonicalAbsolutePath(
+      await realpath(configuredTempRoot),
+      "gh_private_copy_temp_root",
+    );
+    await inspectPrivateTempRoot(canonicalTempRoot, uid);
+    directory = canonicalAbsolutePath(
+      await mkdtemp(path.join(canonicalTempRoot, PRIVATE_GH_TEMP_PREFIX)),
+      "gh_private_copy_directory",
+    );
+    await chmod(directory, Number(PRIVATE_GH_DIRECTORY_MODE));
+    await inspectPrivateDirectory(directory, uid);
+
+    const randomLeaf = `gh-${randomBytes(16).toString("hex")}`;
+    executablePath = canonicalAbsolutePath(
+      path.join(directory, randomLeaf),
+      "gh_private_copy",
+    );
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number"
+      ? fsConstants.O_NOFOLLOW
+      : 0;
+    handle = await open(
+      executablePath,
+      fsConstants.O_CREAT
+        | fsConstants.O_EXCL
+        | fsConstants.O_RDWR
+        | noFollow,
+      0o700,
+    );
+    await writeExactHandleBytes(handle, sourceFile.bytes);
+    await handle.sync();
+    await handle.chmod(Number(PRIVATE_GH_EXECUTABLE_MODE));
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const file = await readStableBoundedFile(executablePath, {
+      label: "gh_private_copy",
+      maxBytes: MAX_GH_EXECUTABLE_BYTES,
+      executable: true,
+    });
+    if (
+      file.sha256 !== sourceFile.sha256
+      || !file.bytes.equals(sourceFile.bytes)
+      || BigInt(file.identity.uid) !== uid
+      || permissionBits(file.identity) !== PRIVATE_GH_EXECUTABLE_MODE
+    ) {
+      reject("gh_private_copy_invalid");
+    }
+    const privateDirectory = await inspectPrivateDirectory(directory, uid);
+    const executable = Object.freeze({
+      directory,
+      directoryIdentity: privateDirectory.identity,
+      identity: file.identity,
+      path: executablePath,
+      sha256: file.sha256,
+      uid,
+    });
+    await inspectPrivateVerifiedExecutable(executable);
+    return executable;
+  } catch (error) {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        // Cleanup below remains authoritative and fail-closed.
+      }
+    }
+    await removeFreshPrivateArtifacts({ directory, executablePath });
+    if (error instanceof ReleaseManifestSigstoreVerificationError) throw error;
+    reject("gh_private_copy_create_failed");
+  }
+}
+
+async function destroyPrivateVerifiedExecutable(executable) {
+  try {
+    await inspectPrivateVerifiedExecutable(executable);
+    await unlink(executable.path);
+    await inspectPrivateDirectory(executable.directory, executable.uid);
+    await rmdir(executable.directory);
+  } catch {
+    reject("gh_private_copy_cleanup_failed");
+  }
+  for (const removedPath of [executable.path, executable.directory]) {
+    try {
+      await lstat(removedPath);
+      reject("gh_private_copy_cleanup_failed");
+    } catch (error) {
+      if (
+        error instanceof ReleaseManifestSigstoreVerificationError
+        || error?.code !== "ENOENT"
+      ) {
+        reject("gh_private_copy_cleanup_failed");
+      }
+    }
   }
 }
 
@@ -817,9 +1077,17 @@ function receipt({
   args,
   verificationOutput,
 }) {
+  // The randomized private pathname is intentionally ephemeral. This stable
+  // commitment instead records the reviewed logical path, the exact bytes
+  // copied from it, the fixed private-copy execution policy, and exact args.
   const commandCommitment = domainSha256(
     "dnai.tee-image-release-manifest-sigstore-command.v1",
-    canonicalCompactJson([tool.path, ...args]),
+    canonicalCompactJson({
+      args,
+      execution_policy: PINNED_GH_EXECUTION_POLICY,
+      logical_executable_path: tool.path,
+      logical_executable_sha256: tool.sha256,
+    }),
   );
   const identityCommitment = expectedVerifiedIdentitySha256(
     manifest.releaseSha,
@@ -870,92 +1138,101 @@ async function verifyInternal(input, { runner, toolAuthority, production }) {
     reject("release_inputs_directory_mismatch");
   }
   const tool = normalizeToolAuthority(toolAuthority);
-  const [manifestFile, bundleFile, toolFile] = await Promise.all([
-    readStableBoundedFile(manifestPath, {
-      label: "release_manifest",
-      maxBytes: MAX_RELEASE_MANIFEST_BYTES,
-      exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.subject_filename,
-    }),
-    readStableBoundedFile(bundlePath, {
-      label: "release_bundle",
-      maxBytes: MAX_RELEASE_BUNDLE_BYTES,
-      exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.bundle_filename,
-    }),
-    readStableBoundedFile(tool.path, {
-      label: "gh_tool",
-      maxBytes: MAX_GH_EXECUTABLE_BYTES,
-      executable: true,
-      exactBasename: "gh",
-    }),
-  ]);
+  // Error precedence is part of the fail-closed operator contract. Inspect the
+  // manifest, then its bundle, then the pinned tool so multiple invalid inputs
+  // cannot race through Promise.all and surface a nondeterministic blocker.
+  const manifestFile = await readStableBoundedFile(manifestPath, {
+    label: "release_manifest",
+    maxBytes: MAX_RELEASE_MANIFEST_BYTES,
+    exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.subject_filename,
+  });
+  const bundleFile = await readStableBoundedFile(bundlePath, {
+    label: "release_bundle",
+    maxBytes: MAX_RELEASE_BUNDLE_BYTES,
+    exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.bundle_filename,
+  });
+  const toolFile = await readStableBoundedFile(tool.path, {
+    label: "gh_tool",
+    maxBytes: MAX_GH_EXECUTABLE_BYTES,
+    executable: true,
+    exactBasename: "gh",
+  });
   if (toolFile.sha256 !== tool.sha256) reject("gh_tool_digest_mismatch");
 
   const manifest = normalizeCanonicalReleaseManifest(manifestFile, releaseSha);
   const bundle = normalizeBundle(bundleFile);
   const cwd = path.dirname(manifestPath);
-  const versionArgs = Object.freeze(["--version"]);
-  const versionOutput = await invokeRunner(
-    runner,
-    tool.path,
-    versionArgs,
-    runnerOptions(
-      cwd,
-      GH_VERSION_TIMEOUT_MS,
-      MAX_GH_VERSION_OUTPUT_BYTES,
-    ),
-    "gh_version",
-  );
-  validateGhVersionOutput(versionOutput, tool.version);
+  const privateTool = await createPrivateVerifiedExecutable(toolFile);
+  try {
+    const versionArgs = Object.freeze(["--version"]);
+    await inspectPrivateVerifiedExecutable(privateTool);
+    const versionOutput = await invokeRunner(
+      runner,
+      privateTool.path,
+      versionArgs,
+      runnerOptions(
+        cwd,
+        GH_VERSION_TIMEOUT_MS,
+        MAX_GH_VERSION_OUTPUT_BYTES,
+      ),
+      "gh_version",
+    );
+    validateGhVersionOutput(versionOutput, tool.version);
+    await inspectPrivateVerifiedExecutable(privateTool);
 
-  const args = releaseManifestSigstoreVerificationArgs({
-    manifestPath,
-    bundlePath,
-    releaseSha,
-  });
-  const verificationOutput = await invokeRunner(
-    runner,
-    tool.path,
-    args,
-    runnerOptions(
-      cwd,
-      GH_ATTESTATION_TIMEOUT_MS,
-      MAX_GH_ATTESTATION_OUTPUT_BYTES,
-    ),
-    "gh_attestation_verification",
-  );
-  validateGhAttestationOutput(verificationOutput, manifest, bundle);
+    const args = releaseManifestSigstoreVerificationArgs({
+      manifestPath,
+      bundlePath,
+      releaseSha,
+    });
+    const verificationOutput = await invokeRunner(
+      runner,
+      privateTool.path,
+      args,
+      runnerOptions(
+        cwd,
+        GH_ATTESTATION_TIMEOUT_MS,
+        MAX_GH_ATTESTATION_OUTPUT_BYTES,
+      ),
+      "gh_attestation_verification",
+    );
+    validateGhAttestationOutput(verificationOutput, manifest, bundle);
+    await inspectPrivateVerifiedExecutable(privateTool);
 
-  await Promise.all([
-    assertSnapshotsUnchanged(manifestFile, "release_manifest", {
-      label: "release_manifest",
-      maxBytes: MAX_RELEASE_MANIFEST_BYTES,
-      exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.subject_filename,
-    }),
-    assertSnapshotsUnchanged(bundleFile, "release_bundle", {
-      label: "release_bundle",
-      maxBytes: MAX_RELEASE_BUNDLE_BYTES,
-      exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.bundle_filename,
-    }),
-    assertSnapshotsUnchanged(toolFile, "gh_tool", {
-      label: "gh_tool",
-      maxBytes: MAX_GH_EXECUTABLE_BYTES,
-      executable: true,
-      exactBasename: "gh",
-    }),
-  ]);
+    await Promise.all([
+      assertSnapshotsUnchanged(manifestFile, "release_manifest", {
+        label: "release_manifest",
+        maxBytes: MAX_RELEASE_MANIFEST_BYTES,
+        exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.subject_filename,
+      }),
+      assertSnapshotsUnchanged(bundleFile, "release_bundle", {
+        label: "release_bundle",
+        maxBytes: MAX_RELEASE_BUNDLE_BYTES,
+        exactBasename: RELEASE_MANIFEST_SIGSTORE_AUTHORITY.bundle_filename,
+      }),
+      assertSnapshotsUnchanged(toolFile, "gh_tool", {
+        label: "gh_tool",
+        maxBytes: MAX_GH_EXECUTABLE_BYTES,
+        executable: true,
+        exactBasename: "gh",
+      }),
+    ]);
 
-  const result = receipt({
-    production,
-    manifest,
-    bundle,
-    tool,
-    versionOutput,
-    args,
-    verificationOutput,
-  });
-  return production
-    ? normalizeReleaseManifestSigstoreVerificationReceipt(result)
-    : result;
+    const result = receipt({
+      production,
+      manifest,
+      bundle,
+      tool,
+      versionOutput,
+      args,
+      verificationOutput,
+    });
+    return production
+      ? normalizeReleaseManifestSigstoreVerificationReceipt(result)
+      : result;
+  } finally {
+    await destroyPrivateVerifiedExecutable(privateTool);
+  }
 }
 
 export async function verifyReleaseManifestSigstoreAttestation(

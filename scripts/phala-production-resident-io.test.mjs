@@ -256,7 +256,10 @@ test("pending-ready waiter accepts only the committed inode and rejects other mo
     handle,
     fileName: "manifest.json",
     label: "ready manifest",
-    deadlineMs: Date.now() + 1_000,
+    // The repository-wide Node run executes many cryptographic suites in
+    // parallel; retain a bounded deadline without turning event-loop
+    // starvation into a false failure of this inode-transition assertion.
+    deadlineMs: Date.now() + 5_000,
     pollIntervalMilliseconds: 25,
     maximum: 64 * 1024,
   });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { URL as NodeURL } from "node:url";
 import {
   encodeAbiParameters,
   encodeFunctionData,
@@ -17,14 +18,22 @@ import {
   COMPUTE_WORKLOAD_BROWSER_ENV_KEYS,
   projectComputeWorkloadBrowserEnvFromHistoricalObservation,
 } from "../../scripts/compute-workload-activation-observation-core.mjs";
+import {
+  normalizeRoyaltyReleaseBrowserEnv,
+  ROYALTY_RELEASE_BROWSER_ENV_KEYS,
+} from "./royalty-release-env-core.mjs";
+import {
+  COLLABORATION_EXECUTION_RELEASE_ENV_KEYS,
+  normalizeCollaborationExecutionReleaseEnv,
+} from "./collaboration-execution-release-env-core.mjs";
 
 export const RELEASE_SCHEMA = "dnai.web-release.v4";
 export const SEMANTIC_VALIDATION_SCHEMA =
-  "dnai.semantic-live-activation-validation.v3";
+  "dnai.semantic-live-activation-validation.v4";
 export const SEMANTIC_VALIDATION_STATUS =
   "live_activation_authority_validated";
 export const SEMANTIC_VALIDATION_TRUTH_STATUS =
-  "verified_signed_post_ceremony_C_revalidated_private_O_exact_env_D_and_dist_manifest_lineage";
+  "verified_signed_post_ceremony_C_revalidated_private_H_O_exact_env_D_and_dist_manifest_lineage";
 export const BASE_SEPOLIA_CHAIN_ID = 84_532;
 export const CANONICAL_PUBLIC_RPC = "https://sepolia.base.org";
 // Circle's canonical Base Sepolia testnet USDC, not an operator-supplied
@@ -38,7 +47,7 @@ export const EXECUTION_POLICY_CANONICALIZATION_VERSION =
 export const EXECUTION_POLICY_APPROVAL_SCHEMA =
   "dnai-wikigen/execution-policy-approval/v3";
 export const EXECUTION_POLICY_API_SCHEMA_VERSION = 3;
-export const EXECUTION_POLICY_STORE_SCHEMA_VERSION = 5;
+export const EXECUTION_POLICY_STORE_SCHEMA_VERSION = 6;
 export const EXECUTION_POLICY_ROLLBACK_ANCHOR_SCHEMA =
   "dnai.execution-policy-rollback-anchor.v1";
 export const EXECUTION_POLICY_ANCHOR_VERIFICATION_MODEL =
@@ -239,6 +248,11 @@ const APP_BOOT_INFO_ABI_PARAMETER = Object.freeze({
 
 const DILIGENCE_ABI = parseAbi([
   "function developer() view returns (address)",
+  "function initialDeveloper() view returns (address)",
+  "function releaseGovernanceController() view returns (address)",
+  "function pendingDeveloper() view returns (address)",
+  "function pendingDeveloperActivatesAt() view returns (uint256)",
+  "function DEVELOPER_TRANSFER_DELAY() view returns (uint256)",
   "function resultVerifier() view returns (address)",
   "function attestationVerifier() view returns (address)",
   "function attestationReleasePolicyHash() view returns (bytes32)",
@@ -470,6 +484,12 @@ const CONTRACT_KEYS = Object.freeze([
   "usdc",
 ]);
 
+const COLLABORATION_EXECUTION_RELEASE_UNIQUE_ENV_KEYS = Object.freeze(
+  COLLABORATION_EXECUTION_RELEASE_ENV_KEYS.filter(
+    (key) => !ROYALTY_RELEASE_BROWSER_ENV_KEYS.includes(key),
+  ),
+);
+
 const ENV_KEYS = Object.freeze([
   "VITE_BASE_SEPOLIA_RPC_URL",
   "VITE_BASE_SEPOLIA_SECONDARY_RPC_URL",
@@ -477,6 +497,8 @@ const ENV_KEYS = Object.freeze([
   "VITE_DILIGENCE_ROOM_ADDRESS",
   "VITE_DILIGENCE_ROOM_CODE_HASH",
   "VITE_DILIGENCE_ROOM_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER",
   "VITE_DILIGENCE_RESULT_VERIFIER",
   "VITE_DILIGENCE_ATTESTATION_VERIFIER",
   "VITE_DILIGENCE_QVL_RELEASE_POLICY_HASH",
@@ -484,6 +506,7 @@ const ENV_KEYS = Object.freeze([
   "VITE_CHALLENGE_REGISTRY_CODE_HASH",
   "VITE_ROYALTY_DISTRIBUTOR_ADDRESS",
   "VITE_ROYALTY_DISTRIBUTOR_CODE_HASH",
+  ...ROYALTY_RELEASE_BROWSER_ENV_KEYS,
   "VITE_TINKER_ENCUMBRANCE_ADDRESS",
   "VITE_TINKER_ENCUMBRANCE_CODE_HASH",
   "VITE_EMAIL_ORACLE_AUTH_ADDRESS",
@@ -496,14 +519,17 @@ const ENV_KEYS = Object.freeze([
   "VITE_COMPUTE_VAULT_METERING_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_QVL_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH",
+  "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
   "VITE_COMPUTE_VAULT_TEE_IDENTITY",
   "VITE_COMPUTE_VAULT_COMPOSE_HASH",
   "VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH",
   "VITE_COMPUTE_VAULT_ERC20_SYMBOL",
   "VITE_COMPUTE_VAULT_ERC20_DECIMALS",
   "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
   "VITE_TEE_IDENTITY",
   "VITE_USDC_ADDRESS",
   "VITE_ENABLE_CONTRACT_WRITES",
@@ -519,6 +545,9 @@ const ENV_KEYS = Object.freeze([
   "VITE_ENABLE_ARTIFACT_UPLOAD",
   "VITE_ARTIFACT_VERIFIED_QUOTE_SHA256",
   "VITE_ENABLE_COMPUTE_CONSOLE",
+  "VITE_ENABLE_TINKER_CUSTOMER",
+  "VITE_ENABLE_COLLABORATION",
+  ...COLLABORATION_EXECUTION_RELEASE_UNIQUE_ENV_KEYS,
   ...COMPUTE_WORKLOAD_BROWSER_ENV_KEYS,
   "VITE_ENABLE_ARENA_SUBMISSION",
   "VITE_ARENA_VERIFIED_QUOTE_SHA256",
@@ -973,7 +1002,7 @@ function httpsUrl(value, label) {
 
 function httpsOrigin(value, label) {
   const normalized = httpsUrl(value, label);
-  const parsed = new URL(normalized);
+  const parsed = new NodeURL(normalized);
   if (parsed.pathname !== "/") {
     throw new Error(`${label} must be an HTTPS origin without a path`);
   }
@@ -983,7 +1012,7 @@ function httpsOrigin(value, label) {
 function boundedServiceEndpoint(value, label, expectedPath) {
   const raw = nonEmptyString(value, label, 512);
   const normalized = httpsUrl(raw, label);
-  const parsed = new URL(normalized);
+  const parsed = new NodeURL(normalized);
   if (normalized !== raw || parsed.pathname !== expectedPath) {
     throw new Error(`${label} must be the canonical bounded HTTPS ${expectedPath} endpoint`);
   }
@@ -2045,6 +2074,7 @@ function normalizeComputeMeteringTrustDomain(value, expectedSha, contracts) {
 function normalizeTrustDomains(
   value,
   expectedSha,
+  operator,
   contracts,
   cvm,
   features,
@@ -2131,6 +2161,7 @@ function normalizeTrustDomains(
   }
 
   const roots = [
+    operator,
     contracts.diligence_room.developer,
     contracts.diligence_room.result_verifier,
     contracts.compute_credit_vault.developer,
@@ -2163,7 +2194,7 @@ function normalizeTrustDomains(
     ["app IDs", [cvm.app_id, ...TRUST_DOMAIN_KEYS.map((key) => normalized[key].app_id)]],
     ["CVM IDs", [cvm.cvm_id, ...TRUST_DOMAIN_KEYS.map((key) => normalized[key].cvm_id)]],
     ["compose hashes", [cvm.compose_hash, ...TRUST_DOMAIN_KEYS.map((key) => normalized[key].compose_hash)]],
-    ["HTTPS origins", [cvm.delegate_url, ...TRUST_DOMAIN_KEYS.map((key) => new URL(normalized[key].endpoint).origin)]],
+    ["HTTPS origins", [cvm.delegate_url, ...TRUST_DOMAIN_KEYS.map((key) => new NodeURL(normalized[key].endpoint).origin)]],
   ]) {
     if (new Set(values).size !== values.length) {
       throw new Error(`all seven main, QVL, and metering CVMs must have distinct ${label}`);
@@ -2556,9 +2587,13 @@ export function normalizeReleaseCandidate(value, { authorityStage = "live" } = {
   const contracts = Object.fromEntries(
     CONTRACT_KEYS.map((key) => [key, normalizeContract(contractRecord[key], key)]),
   );
-  if (contracts.diligence_room.developer !== operator) throw new Error("DiligenceRoom developer must be the release operator");
-  if (contracts.diligence_room.developer === contracts.diligence_room.address) {
-    throw new Error("DiligenceRoom developer cannot be the room contract");
+  if (
+    contracts.diligence_room.developer === operator
+    || contracts.diligence_room.developer === contracts.diligence_room.address
+  ) {
+    throw new Error(
+      "DiligenceRoom permanent developer must be distinct from the release operator and room contract",
+    );
   }
   if (
     contracts.diligence_room.result_verifier === operator
@@ -2695,7 +2730,7 @@ export function normalizeReleaseCandidate(value, { authorityStage = "live" } = {
   if (!Array.isArray(cvm.allowed_browser_origins)) throw new Error("cvm.allowed_browser_origins must be an array");
   const origins = cvm.allowed_browser_origins.map((item, index) => {
     const normalized = httpsUrl(item, `cvm.allowed_browser_origins[${index}]`);
-    const parsed = new URL(normalized);
+    const parsed = new NodeURL(normalized);
     if (parsed.pathname !== "/" && parsed.pathname !== "") {
       throw new Error("browser CORS entries must be origins without paths");
     }
@@ -2788,6 +2823,8 @@ export function normalizeReleaseCandidate(value, { authorityStage = "live" } = {
     "contract_writes",
     "artifact_upload",
     "compute_console",
+    "tinker_customer",
+    "collaboration",
     "compute_vault_funding",
     "compute_vault_authorization",
     "compute_workload_upload",
@@ -2800,6 +2837,7 @@ export function normalizeReleaseCandidate(value, { authorityStage = "live" } = {
   const trustDomains = normalizeTrustDomains(
     candidate.trust_domains,
     sha,
+    operator,
     contracts,
     normalizedCvm,
     features,
@@ -3597,7 +3635,25 @@ export function validateDeploymentLedger(value, candidate, authorityBindingValue
     throw new Error("DiligenceRoom is not the fail-closed fresh suite entry");
   }
   if (challenge.status !== "deployed_empty_active_registry") throw new Error("ChallengeRegistry is not the fresh suite entry");
-  if (royalty.status !== "deployed_ownerless_pull_payment_rail") throw new Error("RoyaltyDistributor is not the fresh suite entry");
+  if (royalty.status !== "deployed_paused_unbound_pending_royalty_release") {
+    throw new Error("RoyaltyDistributor is not the fail-closed fresh suite entry");
+  }
+  sameAddress(royalty.owner, candidate.operator_address, "ledger RoyaltyDistributor owner");
+  if (
+    String(royalty.pendingOwner).toLowerCase() !== ZERO_ADDRESS
+    || royalty.paused !== true
+    || String(royalty.settlementVerifier).toLowerCase() !== ZERO_ADDRESS
+    || String(royalty.qvlVerifier).toLowerCase() !== ZERO_ADDRESS
+    || String(royalty.executionPolicyAnchor).toLowerCase() !== ZERO_ADDRESS
+    || String(royalty.anchorWriterReleaseCommitment).toLowerCase() !== ZERO_BYTES32
+    || String(royalty.releasePolicyCommitment).toLowerCase() !== ZERO_BYTES32
+    || royalty.authorityNonce !== 0
+    || royalty.pendingAuthorityActivatesAt !== 0
+    || royalty.settlementReplayDomain !== "global_settlement_id_and_global_settlement_nonce"
+    || royalty.policyState !== "settlements_fail_closed_pending_dual_signer_anchor_release"
+  ) {
+    throw new Error("ledger RoyaltyDistributor is not paused with exactly empty release authority");
+  }
   if (encumbrance.status !== "deployed_exact_release_policy_frozen_active") {
     throw new Error("encumbrance current entry is not the active frozen release");
   }
@@ -3688,6 +3744,17 @@ export function validateDeploymentLedger(value, candidate, authorityBindingValue
     throw new Error("ledger ExecutionPolicyAnchor does not prove the exact active frozen release writer snapshot");
   }
   sameAddress(diligence.developer, candidate.operator_address, "ledger DiligenceRoom developer");
+  if (
+    String(diligence.pendingDeveloper).toLowerCase() !== ZERO_ADDRESS
+    || diligence.pendingDeveloperActivatesAt !== 0
+    || diligence.developerTransferDelaySeconds !== 172_800
+    || diligence.governanceHandoffStatus
+      !== "pending_final_authority_and_release_ceremony"
+  ) {
+    throw new Error(
+      "ledger DiligenceRoom does not prove the fresh delayed governance handoff posture",
+    );
+  }
   sameAddress(diligence.resultVerifier, candidate.contracts.diligence_room.result_verifier, "ledger DiligenceRoom result verifier");
   if (
     String(diligence.pendingResultVerifier).toLowerCase() !== ZERO_ADDRESS
@@ -5384,6 +5451,11 @@ export async function validateLiveChain(
   const tee = candidate.cvm.tee_identity;
   const [
     developer,
+    initialDeveloper,
+    releaseGovernanceController,
+    pendingDeveloper,
+    pendingDeveloperActivatesAt,
+    developerTransferDelay,
     resultVerifier,
     attestationVerifier,
     attestationReleasePolicyHash,
@@ -5414,6 +5486,32 @@ export async function validateLiveChain(
     identityCompose,
   ] = await Promise.all([
     read(client, diligence.address, DILIGENCE_ABI, "developer", undefined, blockNumber),
+    read(client, diligence.address, DILIGENCE_ABI, "initialDeveloper", undefined, blockNumber),
+    read(
+      client,
+      diligence.address,
+      DILIGENCE_ABI,
+      "releaseGovernanceController",
+      undefined,
+      blockNumber,
+    ),
+    read(client, diligence.address, DILIGENCE_ABI, "pendingDeveloper", undefined, blockNumber),
+    read(
+      client,
+      diligence.address,
+      DILIGENCE_ABI,
+      "pendingDeveloperActivatesAt",
+      undefined,
+      blockNumber,
+    ),
+    read(
+      client,
+      diligence.address,
+      DILIGENCE_ABI,
+      "DEVELOPER_TRANSFER_DELAY",
+      undefined,
+      blockNumber,
+    ),
     read(client, diligence.address, DILIGENCE_ABI, "resultVerifier", undefined, blockNumber),
     read(client, diligence.address, DILIGENCE_ABI, "attestationVerifier", undefined, blockNumber),
     read(client, diligence.address, DILIGENCE_ABI, "attestationReleasePolicyHash", undefined, blockNumber),
@@ -5444,6 +5542,30 @@ export async function validateLiveChain(
     read(client, diligence.address, DILIGENCE_ABI, "teeIdentityComposeHash", [tee], blockNumber),
   ]);
   sameAddress(developer, diligence.developer, "live DiligenceRoom developer");
+  sameAddress(
+    initialDeveloper,
+    candidate.operator_address,
+    "live DiligenceRoom initial developer",
+  );
+  sameAddress(
+    releaseGovernanceController,
+    diligence.developer,
+    "live DiligenceRoom immutable release governance controller",
+  );
+  sameAddress(
+    developer,
+    releaseGovernanceController,
+    "live DiligenceRoom accepted governance controller",
+  );
+  if (
+    String(pendingDeveloper).toLowerCase() !== ZERO_ADDRESS
+    || BigInt(pendingDeveloperActivatesAt) !== 0n
+    || BigInt(developerTransferDelay) !== 172_800n
+  ) {
+    throw new Error(
+      "live DiligenceRoom developer transfer is not complete under the fixed two-day delay",
+    );
+  }
   sameAddress(resultVerifier, diligence.result_verifier, "live DiligenceRoom result verifier");
   sameAddress(
     attestationVerifier,
@@ -5961,6 +6083,8 @@ export async function buildReleaseEnv({
   authorityBinding: authorityBindingValue,
   candidateAuthorityStage = "live",
   historicalComputeWorkloadActivationObservation,
+  royaltyReleaseBrowserEnv = {},
+  collaborationExecutionReleaseEnv = {},
 }) {
   const authorityBinding = normalizeReleaseAuthorityBinding(authorityBindingValue);
   const candidate = normalizeReleaseCandidate(candidateValue, {
@@ -6126,6 +6250,86 @@ export async function buildReleaseEnv({
       );
     }
   }
+  const royaltyReleaseEnvKeys = Object.keys(royaltyReleaseBrowserEnv).sort();
+  const expectedRoyaltyReleaseEnvKeys = [...ROYALTY_RELEASE_BROWSER_ENV_KEYS].sort();
+  if (royaltyReleaseEnvKeys.length > 0
+    && JSON.stringify(royaltyReleaseEnvKeys)
+      !== JSON.stringify(expectedRoyaltyReleaseEnvKeys)) {
+    throw new Error(
+      "Royalty release browser projection must contain only the exact current H-derived fields",
+    );
+  }
+  const normalizedRoyaltyReleaseEnv = Object.fromEntries(
+    ROYALTY_RELEASE_BROWSER_ENV_KEYS.map((key) => [
+      key,
+      typeof royaltyReleaseBrowserEnv[key] === "string"
+        ? royaltyReleaseBrowserEnv[key]
+        : "",
+    ]),
+  );
+  if (royaltyReleaseEnvKeys.length > 0) {
+    normalizeRoyaltyReleaseBrowserEnv({
+      ...normalizedRoyaltyReleaseEnv,
+      VITE_ROYALTY_DISTRIBUTOR_ADDRESS:
+        candidate.contracts.royalty_distributor.address,
+      VITE_ROYALTY_DISTRIBUTOR_CODE_HASH:
+        candidate.contracts.royalty_distributor.runtime_code_hash,
+      VITE_EXECUTION_POLICY_ANCHOR_ADDRESS:
+        candidate.execution_policy.rollback_anchor.contract_address,
+      VITE_EXECUTION_POLICY_ANCHOR_WRITER:
+        candidate.execution_policy.rollback_anchor.writer_address,
+      VITE_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:
+        candidate.execution_policy.rollback_anchor.writer_release_commitment,
+    });
+  }
+  const collaborationReleaseKeys = Object.keys(
+    collaborationExecutionReleaseEnv,
+  ).sort();
+  const expectedCollaborationReleaseKeys = [
+    ...COLLABORATION_EXECUTION_RELEASE_ENV_KEYS,
+  ].sort();
+  if (collaborationReleaseKeys.length > 0
+    && JSON.stringify(collaborationReleaseKeys)
+      !== JSON.stringify(expectedCollaborationReleaseKeys)) {
+    throw new Error(
+      "Collaboration execution release projection must contain only the exact current v4 fields",
+    );
+  }
+  const normalizedCollaborationReleaseEnv = Object.fromEntries(
+    COLLABORATION_EXECUTION_RELEASE_UNIQUE_ENV_KEYS.map((key) => [
+      key,
+      typeof collaborationExecutionReleaseEnv[key] === "string"
+        ? collaborationExecutionReleaseEnv[key]
+        : "",
+    ]),
+  );
+  if (collaborationReleaseKeys.length > 0) {
+    normalizeCollaborationExecutionReleaseEnv(
+      collaborationExecutionReleaseEnv,
+      {
+        VITE_COLLABORATION_EXECUTION_RELEASE_SHA: candidate.release_sha,
+        VITE_COLLABORATION_EXECUTION_MAIN_RUNTIME_CVM_ID: candidate.cvm.cvm_id,
+        VITE_ROYALTY_RELEASE_HISTORY_SHA256:
+          normalizedRoyaltyReleaseEnv.VITE_ROYALTY_RELEASE_HISTORY_SHA256,
+        VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256:
+          normalizedRoyaltyReleaseEnv
+            .VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256,
+      },
+    );
+    if (
+      collaborationExecutionReleaseEnv.VITE_COLLABORATION_EXECUTION_ENABLED
+        === "true"
+      && (
+        !candidate.requested_features.collaboration
+        || !candidate.requested_features.compute_workload_upload
+        || !candidate.requested_features.compute_vault_authorization
+      )
+    ) {
+      throw new Error(
+        "Collaboration execution requires its Collaboration, workload-upload, and vault-authorization release dependencies",
+      );
+    }
+  }
   return {
     VITE_BASE_SEPOLIA_RPC_URL: publicRpcEndpoints.primary,
     VITE_BASE_SEPOLIA_SECONDARY_RPC_URL: publicRpcEndpoints.secondary,
@@ -6133,6 +6337,9 @@ export async function buildReleaseEnv({
     VITE_DILIGENCE_ROOM_ADDRESS: candidate.contracts.diligence_room.address,
     VITE_DILIGENCE_ROOM_CODE_HASH: candidate.contracts.diligence_room.runtime_code_hash,
     VITE_DILIGENCE_ROOM_DEVELOPER: candidate.contracts.diligence_room.developer,
+    VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER: candidate.operator_address,
+    VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER:
+      candidate.contracts.diligence_room.developer,
     VITE_DILIGENCE_RESULT_VERIFIER: candidate.contracts.diligence_room.result_verifier,
     VITE_DILIGENCE_ATTESTATION_VERIFIER:
       candidate.contracts.diligence_room.attestation_verifier,
@@ -6142,6 +6349,7 @@ export async function buildReleaseEnv({
     VITE_CHALLENGE_REGISTRY_CODE_HASH: candidate.contracts.challenge_registry.runtime_code_hash,
     VITE_ROYALTY_DISTRIBUTOR_ADDRESS: candidate.contracts.royalty_distributor.address,
     VITE_ROYALTY_DISTRIBUTOR_CODE_HASH: candidate.contracts.royalty_distributor.runtime_code_hash,
+    ...normalizedRoyaltyReleaseEnv,
     VITE_TINKER_ENCUMBRANCE_ADDRESS: candidate.contracts.tinker_account_encumbrance.address,
     VITE_TINKER_ENCUMBRANCE_CODE_HASH: candidate.contracts.tinker_account_encumbrance.runtime_code_hash,
     VITE_EMAIL_ORACLE_AUTH_ADDRESS: candidate.contracts.email_oracle_auth.address,
@@ -6156,16 +6364,22 @@ export async function buildReleaseEnv({
       candidate.contracts.compute_credit_vault.metering_qvl_verifier,
     VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH:
       candidate.contracts.compute_credit_vault.metering_policy_set_hash,
+    VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS:
+      String(candidate.contracts.compute_credit_vault.developer_fee_bps),
     VITE_COMPUTE_VAULT_TEE_IDENTITY: candidate.contracts.compute_credit_vault.tee_identity,
     VITE_COMPUTE_VAULT_COMPOSE_HASH: `0x${candidate.contracts.compute_credit_vault.compose_hash}`,
     VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT:
       candidate.contracts.compute_credit_vault.native_rate_policy_commitment,
+    VITE_COMPUTE_VAULT_NATIVE_PROVIDER:
+      candidate.contracts.compute_credit_vault.native_provider,
     VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS: candidate.contracts.compute_credit_vault.erc20_asset_address,
     VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH: candidate.contracts.usdc.runtime_code_hash,
     VITE_COMPUTE_VAULT_ERC20_SYMBOL: candidate.contracts.usdc.symbol,
     VITE_COMPUTE_VAULT_ERC20_DECIMALS: String(candidate.contracts.usdc.decimals),
     VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT:
       candidate.contracts.compute_credit_vault.erc20_rate_policy_commitment,
+    VITE_COMPUTE_VAULT_ERC20_PROVIDER:
+      candidate.contracts.compute_credit_vault.erc20_provider,
     VITE_TEE_IDENTITY: candidate.cvm.tee_identity,
     VITE_USDC_ADDRESS: candidate.contracts.usdc.address,
     VITE_ENABLE_CONTRACT_WRITES: String(requested.contract_writes),
@@ -6181,6 +6395,9 @@ export async function buildReleaseEnv({
     VITE_ENABLE_ARTIFACT_UPLOAD: String(requested.artifact_upload),
     VITE_ARTIFACT_VERIFIED_QUOTE_SHA256: candidate.attestations.artifact.quote_sha256,
     VITE_ENABLE_COMPUTE_CONSOLE: String(requested.compute_console),
+    VITE_ENABLE_TINKER_CUSTOMER: String(requested.tinker_customer),
+    VITE_ENABLE_COLLABORATION: String(requested.collaboration),
+    ...normalizedCollaborationReleaseEnv,
     ...computeWorkloadEnv,
     VITE_ENABLE_ARENA_SUBMISSION: String(requested.arena_submission),
     VITE_ARENA_VERIFIED_QUOTE_SHA256: candidate.attestations.arena.quote_sha256,

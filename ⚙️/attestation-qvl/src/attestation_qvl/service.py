@@ -34,6 +34,7 @@ from .errors import (
 )
 from .identity_attestation import DstackIdentityAttestor, IdentityAttestor
 from .models import (
+    CapabilityResponse,
     IdentityAttestationRequest,
     IdentityResponse,
     IndependentVerificationRequest,
@@ -42,7 +43,7 @@ from .models import (
 )
 from .policy import LoadedReleasePolicy, load_release_policy, parse_duplicate_free_json
 from .qvl import DcapQvlBackend, IndependentQuoteVerifier
-from .signing import DstackVerdictSigner
+from .signing import DstackRoyaltySettlementSigner, DstackVerdictSigner
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,29 @@ def _create_app(runtime: Runtime) -> FastAPI:
         )
         return response.model_dump(mode="json", by_alias=True)
 
+    @app.get("/capabilities")
+    async def capabilities() -> dict[str, object]:
+        royalty_signer = runtime.verifier.royalty_signer
+        response = CapabilityResponse(
+            schema="dnai.attestation-qvl-capabilities.v1",
+            royalty_settlement_qvl_enabled=royalty_signer is not None,
+            royalty_authorization_schema=(
+                "dnai.royalty-settlement-qvl-authorization-request.v2"
+                if royalty_signer is not None
+                else None
+            ),
+            royalty_qvl_verifier_address=(
+                royalty_signer.address if royalty_signer is not None else None
+            ),
+            royalty_qvl_policy_commitment=(
+                runtime.verifier.royalty_policy_commitment
+                if royalty_signer is not None
+                else None
+            ),
+            raw_secret_egress=False,
+        )
+        return response.model_dump(mode="json", by_alias=True, exclude_none=True)
+
     @app.post("/challenge")
     async def issue_challenge(
         request: Request,
@@ -313,10 +337,19 @@ def create_production_app() -> FastAPI:
     settings = Settings()  # type: ignore[call-arg]
     release = load_release_policy(settings.release_policy_path)
     signer = DstackVerdictSigner.from_policy_hash(release.policy_hash)
+    royalty_binding = release.policy.royalty_settlement_binding
+    royalty_signer = (
+        DstackRoyaltySettlementSigner.from_key_id(
+            royalty_binding.qvl_signer_key_id
+        )
+        if royalty_binding is not None
+        else None
+    )
     verifier = IndependentQuoteVerifier(
         release=release,
         backend=DcapQvlBackend(settings.pccs_url),
         signer=signer,
+        royalty_signer=royalty_signer,
     )
     attestor = DstackIdentityAttestor()
     challenge_store = OneTimeChallengeStore(

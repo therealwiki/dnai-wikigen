@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import {
+  CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS,
+  CVM_MAIN_LATE_INPUT_FAIL_CLOSED_DEFAULTS,
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
   PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY,
@@ -8,6 +10,9 @@ import {
   PHALA_CVM_RESOURCE_TARGETS,
   PHALA_OS_IMAGE_CATALOG_ENTRY,
 } from "./cvm-launch-intent-core.mjs";
+import {
+  parseCanonicalPublicHttpsUrl,
+} from "./canonical-public-https-url-core.mjs";
 
 export const PHALA_COMPATIBILITY_PROBE_PLAN_SCHEMA =
   "dnai.phala-compatibility-probe-plan.v1";
@@ -57,6 +62,14 @@ export const PHALA_TARGET_FRESHNESS_CHECKPOINTS = Object.freeze([
 const FORBIDDEN_SECRET_KEY = /(?:api[_-]?key|secret|password|private[_-]?key|bearer|credential|token|encrypted[_-]?env|ciphertext)/i;
 const FORBIDDEN_SECRET_VALUE = /(?:phak_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
 
+export const PHALA_COLLABORATION_LAUNCH_GATE_POLICY = Object.freeze({
+  environment_key: "TINKER_COLLABORATION_ENABLED",
+  bootstrap_default: "false",
+  runtime_authority:
+    "current_final_release_authority_v3_requested_features_collaboration",
+  operator_mutable: false,
+});
+
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -67,6 +80,28 @@ function exactRecord(value, keys, label) {
     throw new Error(`${label} must contain exactly the reviewed fields`);
   }
   return value;
+}
+
+export function assertPhalaProductionTargetCollaborationLaunchGatePolicy() {
+  const key = PHALA_COLLABORATION_LAUNCH_GATE_POLICY.environment_key;
+  const mainPolicy = CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm;
+  if (
+    CVM_MAIN_LATE_INPUT_FAIL_CLOSED_DEFAULTS[key]
+      !== PHALA_COLLABORATION_LAUNCH_GATE_POLICY.bootstrap_default
+    || !CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS.includes(key)
+    || !mainPolicy.public_environment_key_classification
+      .post_measurement_deferred_keys.includes(key)
+    || !mainPolicy.exact_allowed_environment_keys.includes(key)
+    || mainPolicy.public_environment_key_classification
+      .descriptor_static_keys.includes(key)
+    || mainPolicy.public_environment_key_classification
+      .descriptor_defaulted_keys.includes(key)
+  ) {
+    throw new Error(
+      "production target Collaboration gate is not the exact fail-closed launch-intent policy",
+    );
+  }
+  return PHALA_COLLABORATION_LAUNCH_GATE_POLICY;
 }
 
 function nonempty(value, label, max = 256) {
@@ -117,16 +152,10 @@ function canonicalTimestamp(value, label) {
 }
 
 function exactHttpsUrl(value, label, { originOnly = false } = {}) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`${label} must be an exact HTTPS URL`);
-  }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password
-    || parsed.search || parsed.hash || parsed.toString() !== value) {
-    throw new Error(`${label} must be an exact credential-free HTTPS URL`);
-  }
+  const parsed = parseCanonicalPublicHttpsUrl(value, {
+    label,
+    requirePath: originOnly,
+  });
   if (originOnly && parsed.pathname !== "/api/v1") {
     throw new Error(`${label} must end at the reviewed /api/v1 root`);
   }
@@ -765,6 +794,7 @@ export function normalizePhalaProductionTargetAuthority(value, {
   compatibilityReceipt,
   sdkWireTransformStagingReceipt,
 } = {}) {
+  assertPhalaProductionTargetCollaborationLaunchGatePolicy();
   const compatibility = normalizePhalaCompatibilityReceipt(compatibilityReceipt);
   const staging = normalizePhalaSdkWireTransformStagingReceipt(
     sdkWireTransformStagingReceipt,

@@ -25,6 +25,9 @@ const ARENA_WORKER_HEARTBEAT_BINDING_SCHEMA = "dnai.arena.safe-worker-presence-b
 const ARENA_WORKER_RELEASE_BINDING_DOMAIN = "dnai-wikigen/arena-worker-release-binding/v1\0";
 const ARENA_WORKER_HEARTBEAT_BINDING_DOMAIN = "dnai-wikigen/arena-worker-presence-binding/v1\0";
 const MAX_ARENA_WORKER_HEARTBEAT_TIME = 4_102_444_800;
+const MAX_ARENA_PUBLIC_PAGE_SIZE = 100;
+const MAX_ARENA_PUBLIC_CURSOR_BYTES = 512;
+const ARENA_PUBLIC_CURSOR = /^[\x21-\x7e]+$/;
 
 export interface ArenaExecutionCapability {
   status: "modeled";
@@ -80,13 +83,56 @@ export interface ArenaCatalog {
   raw_secret_egress: false;
 }
 
+export const ARENA_QUEUE_STATES = [
+  "submitted",
+  "policy_screen",
+  "queued",
+  "provisioning",
+  "public_tests",
+  "sealed_eval",
+  "review_hold",
+  "completed",
+  "failed",
+  "withheld",
+  "cancelled",
+  "expired",
+  "dead_letter",
+] as const;
+
+export type ArenaQueueState = (typeof ARENA_QUEUE_STATES)[number];
+
+export const ARENA_QUEUE_REASONS = [
+  "caller_submitted",
+  "policy_check_started",
+  "policy_passed",
+  "worker_claimed",
+  "public_tests_started",
+  "sealed_evaluation_started",
+  "human_review_required",
+  "evaluation_completed",
+  "execution_failed",
+  "policy_withheld",
+  "caller_cancelled",
+  "queue_expired",
+  "retry_exhausted",
+] as const;
+
+export type ArenaQueueReason = (typeof ARENA_QUEUE_REASONS)[number];
+
+export interface ArenaQueueEvent {
+  sequence: number;
+  from_state: ArenaQueueState | null;
+  to_state: ArenaQueueState;
+  reason: ArenaQueueReason;
+}
+
 export interface ArenaPublicSubmission {
   surface: "arena_submission";
   schema_version: 2;
   submission_id: string;
   challenge_id: string;
   challenge_version: string;
-  state: string;
+  state: ArenaQueueState;
   candidate_commitment: `sha256:${string}`;
   identity: { wallet_address_hash: string; project_id_hash: string };
   manifest: {
@@ -98,12 +144,7 @@ export interface ArenaPublicSubmission {
     mode: "test" | "benchmark" | "leaderboard";
     private_size_egress: false;
   };
-  queue_events: Array<{
-    sequence: number;
-    from_state: string | null;
-    to_state: string;
-    reason: string;
-  }>;
+  queue_events: ArenaQueueEvent[];
   ladder_release: null | {
     submission_index: number;
     accepted: boolean;
@@ -174,6 +215,8 @@ export interface ArenaQueue {
   challenge_version: string;
   submission_count: number;
   submissions: ArenaPublicSubmission[];
+  has_more: boolean;
+  next_cursor: string | null;
   product_status: "per_row";
   execution_assurance: "per_submission_execution_provenance";
   raw_candidate_egress: false;
@@ -200,8 +243,13 @@ export interface ArenaLeaderboard {
   schema_version: 2;
   challenge_id: string;
   challenge_version: string;
+  challenge_manifest_hash: string;
+  release_mechanism: "fixed_eta_ladder_accepted_improvements_only";
+  step_denominator: number;
   row_count: number;
   rows: ArenaLeaderboardRow[];
+  has_more: boolean;
+  next_cursor: string | null;
   product_status: "per_row";
   execution_assurance: "per_submission_execution_provenance";
   raw_candidate_egress: false;
@@ -213,7 +261,7 @@ export interface ArenaLeaderboard {
 
 export interface ArenaOwnerSubmission {
   surface: "arena_owner_submission";
-  schema_version: 2;
+  schema_version: 3;
   submission_id: string;
   challenge_id: string;
   challenge_version: string;
@@ -239,6 +287,11 @@ export interface ArenaOwnerSubmission {
   execution_provenance: ArenaExecutionProvenance;
   product_status: "modeled" | "live";
   execution_assurance: "projection_only_no_hardened_executor" | "worker_reported_qvl_binding_not_independently_verified";
+  ciphertext_lifecycle: ArenaCiphertextLifecycle;
+  owner_actions: {
+    can_cancel: boolean;
+    can_retry_ciphertext_erasure: boolean;
+  };
   raw_candidate_egress: false;
   encrypted_reference_egress: false;
   exact_score_egress: false;
@@ -249,7 +302,7 @@ export interface ArenaOwnerSubmission {
 
 export interface ArenaOwnerSubmissions {
   surface: "arena_owner_submissions";
-  schema_version: 2;
+  schema_version: 3;
   challenge_id: string;
   challenge_version: string;
   owner_identity: string;
@@ -266,6 +319,50 @@ export interface ArenaOwnerSubmissions {
   exact_reward_egress: false;
   exact_timing_egress: false;
   internal_error_egress: false;
+}
+
+export interface ArenaCiphertextLifecycle {
+  state: "retained" | "erasure_pending" | "erasure_retry_required" | "unlinked";
+  retention_policy: "terminal_immediate_unlink_with_bounded_retry";
+  max_terminal_retention_seconds: 3600;
+  unlink_attempts: number;
+  current_state_evidence: "none" | "directory_entry_unlinked" | "directory_entry_absent" | "unlink_failed";
+  retryable: boolean;
+  receipt: null | {
+    blob_sha256: `sha256:${string}`;
+    ciphertext_sha256: `sha256:${string}`;
+    key_id: `sha256:${string}`;
+  };
+  ciphertext_egress: false;
+  sealed_reference_egress: false;
+  physical_erasure_claimed: false;
+}
+
+export interface ArenaOwnerCancellation {
+  surface: "arena_owner_cancellation";
+  schema_version: 1;
+  changed: boolean;
+  idempotent_replay: boolean;
+  submission: ArenaOwnerSubmission;
+  ciphertext_lifecycle: ArenaCiphertextLifecycle;
+  worker_transition_authority: false;
+  raw_candidate_egress: false;
+  encrypted_reference_egress: false;
+  physical_erasure_claimed: false;
+}
+
+export interface ArenaCiphertextErasure {
+  surface: "arena_ciphertext_erasure";
+  schema_version: 1;
+  submission_id: string;
+  state: ArenaCiphertextLifecycle["state"];
+  changed: boolean;
+  idempotent_replay: boolean;
+  ciphertext_lifecycle: ArenaCiphertextLifecycle;
+  worker_transition_authority: false;
+  ciphertext_egress: false;
+  encrypted_reference_egress: false;
+  physical_erasure_claimed: false;
 }
 
 export interface ArenaWorkerReleaseBinding {
@@ -483,6 +580,51 @@ const PUBLIC_SUBMISSION_FIELDS = [
   "exact_timing_egress", "encrypted_reference_public", "raw_candidate_accepted", "raw_secret_egress",
 ] as const;
 
+const ARENA_QUEUE_STATE_SET = new Set<string>(ARENA_QUEUE_STATES);
+const ARENA_QUEUE_REASON_SET = new Set<string>(ARENA_QUEUE_REASONS);
+const ARENA_QUEUE_TRANSITIONS: Readonly<
+  Record<ArenaQueueState, readonly ArenaQueueState[]>
+> = {
+  submitted: ["policy_screen", "cancelled", "failed"],
+  policy_screen: ["queued", "review_hold", "withheld", "cancelled", "failed"],
+  queued: ["provisioning", "cancelled", "expired", "dead_letter", "failed"],
+  provisioning: ["public_tests", "cancelled", "dead_letter", "failed"],
+  public_tests: ["sealed_eval", "review_hold", "withheld", "failed"],
+  sealed_eval: ["review_hold", "completed", "withheld", "failed"],
+  review_hold: ["queued", "sealed_eval", "completed", "withheld", "cancelled", "expired"],
+  completed: [],
+  failed: [],
+  withheld: [],
+  cancelled: [],
+  expired: [],
+  dead_letter: [],
+};
+const ARENA_QUEUE_REASON_FOR_STATE: Readonly<
+  Record<ArenaQueueState, ArenaQueueReason>
+> = {
+  submitted: "caller_submitted",
+  policy_screen: "policy_check_started",
+  queued: "policy_passed",
+  provisioning: "worker_claimed",
+  public_tests: "public_tests_started",
+  sealed_eval: "sealed_evaluation_started",
+  review_hold: "human_review_required",
+  completed: "evaluation_completed",
+  failed: "execution_failed",
+  withheld: "policy_withheld",
+  cancelled: "caller_cancelled",
+  expired: "queue_expired",
+  dead_letter: "retry_exhausted",
+};
+
+function isArenaQueueState(value: unknown): value is ArenaQueueState {
+  return typeof value === "string" && ARENA_QUEUE_STATE_SET.has(value);
+}
+
+function isArenaQueueReason(value: unknown): value is ArenaQueueReason {
+  return typeof value === "string" && ARENA_QUEUE_REASON_SET.has(value);
+}
+
 function parsePublicSubmission(
   value: unknown,
   label: string,
@@ -517,7 +659,7 @@ function parsePublicSubmission(
     ))
     || typeof submission.candidate_commitment !== "string"
     || !SHA256_COMMITMENT.test(submission.candidate_commitment)
-    || typeof submission.state !== "string"
+    || !isArenaQueueState(submission.state)
     || manifest.schema_version !== 1
     || typeof manifest.candidate_kind !== "string"
     || typeof manifest.runtime !== "string"
@@ -532,14 +674,27 @@ function parsePublicSubmission(
     || submission.raw_candidate_accepted !== false
     || submission.raw_secret_egress !== false
   ) throw new Error(`${label} failed its bounded schema checks`);
+  let priorState: ArenaQueueState | null = null;
   for (const [index, rawEvent] of submission.queue_events.entries()) {
     const event = exactRecord(rawEvent, ["sequence", "from_state", "to_state", "reason"], `${label} queue event`);
     if (
       event.sequence !== index + 1
-      || (event.from_state !== null && typeof event.from_state !== "string")
-      || typeof event.to_state !== "string"
-      || typeof event.reason !== "string"
+      || (event.from_state !== null && !isArenaQueueState(event.from_state))
+      || !isArenaQueueState(event.to_state)
+      || !isArenaQueueReason(event.reason)
+      || event.from_state !== priorState
+      || ARENA_QUEUE_REASON_FOR_STATE[event.to_state] !== event.reason
     ) throw new Error(`${label} queue history is malformed`);
+    if (
+      index === 0
+        ? event.from_state !== null || event.to_state !== "submitted"
+        : priorState === null
+          || !ARENA_QUEUE_TRANSITIONS[priorState].includes(event.to_state)
+    ) throw new Error(`${label} queue history contains an invalid transition`);
+    priorState = event.to_state;
+  }
+  if (priorState !== submission.state) {
+    throw new Error(`${label} queue history does not end at its current state`);
   }
   if (submission.ladder_release !== null) {
     const release = exactRecord(
@@ -672,6 +827,158 @@ export function parseArenaCatalog(value: unknown): ArenaCatalog {
   return catalog as unknown as ArenaCatalog;
 }
 
+function isBoundedArenaPublicCursor(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length >= 1
+    && ARENA_PUBLIC_CURSOR.test(value)
+    && encoder.encode(value).byteLength <= MAX_ARENA_PUBLIC_CURSOR_BYTES;
+}
+
+function parseArenaPublicPagination(
+  page: Record<string, unknown>,
+  label: string,
+  itemCount: number,
+): { has_more: boolean; next_cursor: string | null } {
+  const hasMoreField = Object.prototype.hasOwnProperty.call(page, "has_more");
+  const nextCursorField = Object.prototype.hasOwnProperty.call(page, "next_cursor");
+  if (!hasMoreField && !nextCursorField) {
+    // Legacy schema-v2 projections were a single bounded page. Treat the
+    // absence of both fields as terminal; never infer a continuation.
+    return { has_more: false, next_cursor: null };
+  }
+  if (!hasMoreField || !nextCursorField || typeof page.has_more !== "boolean") {
+    throw new Error(`${label} returned an incomplete pagination boundary`);
+  }
+  const cursor = page.next_cursor;
+  if (
+    cursor !== null
+    && !isBoundedArenaPublicCursor(cursor)
+  ) {
+    throw new Error(`${label} returned a malformed opaque cursor`);
+  }
+  if (
+    (page.has_more && cursor === null)
+    || (!page.has_more && cursor !== null)
+    || (page.has_more && itemCount < 1)
+  ) {
+    throw new Error(`${label} returned a contradictory pagination boundary`);
+  }
+  return { has_more: page.has_more, next_cursor: cursor as string | null };
+}
+
+type ArenaPublicProjectionPage = ArenaQueue | ArenaLeaderboard;
+type ArenaPublicProjectionSurface = ArenaPublicProjectionPage["surface"];
+
+export function assertArenaPublicProjectionContext(
+  page: ArenaPublicProjectionPage,
+  expectedSurface: ArenaPublicProjectionSurface,
+  challengeId: string,
+  challengeVersion: string,
+): void {
+  if (
+    page.surface !== expectedSurface
+    || page.challenge_id !== challengeId
+    || page.challenge_version !== challengeVersion
+  ) {
+    throw new Error("Arena public cursor response crossed its surface or challenge-version boundary");
+  }
+}
+
+function sameExecutionCapability(
+  left: ArenaExecutionCapability,
+  right: ArenaExecutionCapability,
+): boolean {
+  return left.status === right.status
+    && left.isolation === right.isolation
+    && left.backend === right.backend
+    && left.warning === right.warning
+    && left.hostile_code_ready === right.hostile_code_ready
+    && left.live_execution === right.live_execution
+    && left.worker_connected === right.worker_connected;
+}
+
+export function appendArenaQueuePageRows(
+  currentRows: readonly ArenaPublicSubmission[],
+  currentPage: ArenaQueue,
+  nextPage: ArenaQueue,
+): ArenaPublicSubmission[] {
+  assertArenaPublicProjectionContext(
+    nextPage,
+    "arena_public_queue",
+    currentPage.challenge_id,
+    currentPage.challenge_version,
+  );
+  if (!sameExecutionCapability(currentPage.execution_capability, nextPage.execution_capability)) {
+    throw new Error("Arena queue continuation changed its execution-capability boundary");
+  }
+  for (const row of currentRows) {
+    if (
+      row.challenge_id !== currentPage.challenge_id
+      || row.challenge_version !== currentPage.challenge_version
+    ) {
+      throw new Error("Arena queue accumulation crossed its challenge-version boundary");
+    }
+  }
+  const seen = new Set(currentRows.map((row) => row.submission_id));
+  const appended = [...currentRows];
+  for (const row of nextPage.submissions) {
+    if (seen.has(row.submission_id)) continue;
+    seen.add(row.submission_id);
+    appended.push(row);
+  }
+  return appended;
+}
+
+export function appendArenaLeaderboardPageRows(
+  currentRows: readonly ArenaLeaderboardRow[],
+  currentPage: ArenaLeaderboard,
+  nextPage: ArenaLeaderboard,
+): ArenaLeaderboardRow[] {
+  assertArenaPublicProjectionContext(
+    nextPage,
+    "arena_public_leaderboard",
+    currentPage.challenge_id,
+    currentPage.challenge_version,
+  );
+  if (
+    nextPage.challenge_manifest_hash !== currentPage.challenge_manifest_hash
+    || nextPage.release_mechanism !== currentPage.release_mechanism
+    || nextPage.step_denominator !== currentPage.step_denominator
+    || !sameExecutionCapability(currentPage.execution_capability, nextPage.execution_capability)
+  ) {
+    throw new Error("Arena leaderboard continuation changed its release boundary");
+  }
+  const seenSubmissions = new Set<string>();
+  const seenRanks = new Set<number>();
+  let lastRank = 0;
+  for (const row of currentRows) {
+    if (
+      seenSubmissions.has(row.submission_id)
+      || seenRanks.has(row.rank)
+      || row.rank !== lastRank + 1
+    ) {
+      throw new Error("Arena leaderboard accumulation is not a stable ordered projection");
+    }
+    seenSubmissions.add(row.submission_id);
+    seenRanks.add(row.rank);
+    lastRank = row.rank;
+  }
+  const appended = [...currentRows];
+  for (const row of nextPage.rows) {
+    if (seenSubmissions.has(row.submission_id)) {
+      throw new Error("Arena leaderboard continuation repeated a previously loaded submission");
+    }
+    if (seenRanks.has(row.rank) || row.rank !== lastRank + 1) {
+      throw new Error("Arena leaderboard continuation broke global rank continuity");
+    }
+    seenSubmissions.add(row.submission_id);
+    seenRanks.add(row.rank);
+    lastRank = row.rank;
+    appended.push(row);
+  }
+  return appended;
+}
+
 export function parseArenaQueue(value: unknown): ArenaQueue {
   assertNoForbiddenArenaFields(value);
   const queue = record(value, "Arena queue");
@@ -689,13 +996,23 @@ export function parseArenaQueue(value: unknown): ArenaQueue {
   ) {
     throw new Error("Arena queue failed its bounded schema checks");
   }
+  const pagination = parseArenaPublicPagination(
+    queue,
+    "Arena queue",
+    queue.submissions.length,
+  );
+  const submissionIds = new Set<string>();
   for (const submission of queue.submissions) {
-    parsePublicSubmission(submission, "Arena queue submission", {
+    const parsed = parsePublicSubmission(submission, "Arena queue submission", {
       id: queue.challenge_id,
       version: queue.challenge_version,
     });
+    if (submissionIds.has(parsed.submission_id)) {
+      throw new Error("Arena queue returned a duplicate submission");
+    }
+    submissionIds.add(parsed.submission_id);
   }
-  return queue as unknown as ArenaQueue;
+  return { ...queue, ...pagination } as unknown as ArenaQueue;
 }
 
 export function parseArenaLeaderboard(value: unknown): ArenaLeaderboard {
@@ -708,6 +1025,9 @@ export function parseArenaLeaderboard(value: unknown): ArenaLeaderboard {
     || typeof board.challenge_id !== "string"
     || typeof board.challenge_version !== "string"
     || typeof board.challenge_manifest_hash !== "string"
+    || board.release_mechanism !== "fixed_eta_ladder_accepted_improvements_only"
+    || !Number.isInteger(board.step_denominator)
+    || Number(board.step_denominator) < 1
     || board.raw_candidate_egress !== false
     || board.exact_reward_egress !== false
     || board.exact_timing_egress !== false
@@ -719,6 +1039,14 @@ export function parseArenaLeaderboard(value: unknown): ArenaLeaderboard {
     throw new Error("Arena leaderboard failed its bounded schema checks");
   }
   assertHex64(board.challenge_manifest_hash, "Arena leaderboard manifest hash");
+  const pagination = parseArenaPublicPagination(
+    board,
+    "Arena leaderboard",
+    board.rows.length,
+  );
+  const submissionIds = new Set<string>();
+  const ranks = new Set<number>();
+  let lastPageRank: number | undefined;
   for (const rawRow of board.rows) {
     const row = exactRecord(rawRow, [
       "rank", "submission_id", "identity", "candidate_commitment", "leaderboard_step_index",
@@ -735,6 +1063,7 @@ export function parseArenaLeaderboard(value: unknown): ArenaLeaderboard {
     if (
       !Number.isInteger(row.rank)
       || Number(row.rank) < 1
+      || (lastPageRank !== undefined && Number(row.rank) !== lastPageRank + 1)
       || typeof row.submission_id !== "string"
       || !/^sub_[0-9a-f]{24}$/.test(row.submission_id)
       || typeof row.candidate_commitment !== "string"
@@ -742,11 +1071,18 @@ export function parseArenaLeaderboard(value: unknown): ArenaLeaderboard {
       || !Number.isInteger(row.leaderboard_step_index)
       || !Number.isInteger(row.step_denominator)
       || Number(row.step_denominator) < 1
+      || row.step_denominator !== board.step_denominator
       || !Number.isInteger(row.improvement_steps_so_far)
       || !Number.isInteger(row.ladder_submission_index)
     ) throw new Error("Arena leaderboard row failed its bounded schema checks");
+    if (submissionIds.has(row.submission_id as string) || ranks.has(row.rank as number)) {
+      throw new Error("Arena leaderboard returned a duplicate submission or rank");
+    }
+    submissionIds.add(row.submission_id as string);
+    ranks.add(row.rank as number);
+    lastPageRank = row.rank as number;
   }
-  return board as unknown as ArenaLeaderboard;
+  return { ...board, ...pagination } as unknown as ArenaLeaderboard;
 }
 
 const OWNER_PAGE_FIELDS = [
@@ -760,8 +1096,121 @@ const OWNER_SUBMISSION_FIELDS = [
   "identity", "candidate_commitment", "manifest", "state", "bounded_result",
   "execution_capability", "execution_provenance", "product_status", "execution_assurance", "raw_candidate_egress",
   "encrypted_reference_egress", "exact_score_egress", "exact_reward_egress",
-  "exact_timing_egress", "internal_error_egress",
+  "exact_timing_egress", "internal_error_egress", "ciphertext_lifecycle", "owner_actions",
 ] as const;
+const CIPHERTEXT_LIFECYCLE_FIELDS = [
+  "state", "retention_policy", "max_terminal_retention_seconds", "unlink_attempts",
+  "current_state_evidence", "retryable", "receipt", "ciphertext_egress",
+  "sealed_reference_egress", "physical_erasure_claimed",
+] as const;
+
+function parseArenaCiphertextLifecycle(value: unknown): ArenaCiphertextLifecycle {
+  const lifecycle = exactRecord(value, CIPHERTEXT_LIFECYCLE_FIELDS, "Arena ciphertext lifecycle");
+  const states = new Set(["retained", "erasure_pending", "erasure_retry_required", "unlinked"]);
+  const evidence = new Set(["none", "directory_entry_unlinked", "directory_entry_absent", "unlink_failed"]);
+  if (
+    !states.has(String(lifecycle.state))
+    || lifecycle.retention_policy !== "terminal_immediate_unlink_with_bounded_retry"
+    || lifecycle.max_terminal_retention_seconds !== 3600
+    || !Number.isInteger(lifecycle.unlink_attempts)
+    || Number(lifecycle.unlink_attempts) < 0
+    || Number(lifecycle.unlink_attempts) > 1_000_000
+    || !evidence.has(String(lifecycle.current_state_evidence))
+    || typeof lifecycle.retryable !== "boolean"
+    || lifecycle.ciphertext_egress !== false
+    || lifecycle.sealed_reference_egress !== false
+    || lifecycle.physical_erasure_claimed !== false
+    || (lifecycle.retryable !== ["erasure_pending", "erasure_retry_required"].includes(String(lifecycle.state)))
+    || (lifecycle.state === "retained" && lifecycle.current_state_evidence !== "none")
+    || (lifecycle.state === "erasure_pending" && lifecycle.current_state_evidence !== "none")
+    || (lifecycle.state === "erasure_retry_required" && lifecycle.current_state_evidence !== "unlink_failed")
+    || (lifecycle.state === "unlinked" && !["directory_entry_unlinked", "directory_entry_absent"].includes(String(lifecycle.current_state_evidence)))
+    || (["retained", "erasure_pending"].includes(String(lifecycle.state)) && lifecycle.unlink_attempts !== 0)
+    || (["erasure_retry_required", "unlinked"].includes(String(lifecycle.state)) && Number(lifecycle.unlink_attempts) < 1)
+  ) throw new Error("Arena ciphertext lifecycle failed its bounded schema checks");
+  if (lifecycle.receipt !== null) {
+    const receipt = exactRecord(
+      lifecycle.receipt,
+      ["blob_sha256", "ciphertext_sha256", "key_id"],
+      "Arena ciphertext receipt",
+    );
+    for (const field of ["blob_sha256", "ciphertext_sha256", "key_id"] as const) {
+      if (typeof receipt[field] !== "string" || !SHA256_COMMITMENT.test(receipt[field] as string)) {
+        throw new Error("Arena ciphertext receipt contains a malformed commitment");
+      }
+    }
+  }
+  return lifecycle as unknown as ArenaCiphertextLifecycle;
+}
+
+function parseArenaOwnerSubmission(
+  value: unknown,
+  expectedChallenge: { id: unknown; version: unknown },
+): ArenaOwnerSubmission {
+  const item = exactRecord(value, OWNER_SUBMISSION_FIELDS, "Arena owner submission");
+  const rowEvidence = assertRowExecutionTruth(item, "Arena owner submission");
+  const identity = exactRecord(item.identity, ["wallet_address_hash", "project_id_hash"], "Arena owner identity projection");
+  const manifest = exactRecord(item.manifest, ["schema_version", "challenge_manifest_hash", "candidate_kind", "runtime", "entrypoint", "mode", "private_size_egress"], "Arena owner manifest");
+  const actions = exactRecord(item.owner_actions, ["can_cancel", "can_retry_ciphertext_erasure"], "Arena owner actions");
+  const lifecycle = parseArenaCiphertextLifecycle(item.ciphertext_lifecycle);
+  const ownerStates = new Set([
+    "submitted", "policy_screen", "queued", "provisioning", "public_tests",
+    "sealed_eval", "review_hold", "completed", "failed", "withheld",
+    "cancelled", "expired", "dead_letter",
+  ]);
+  const terminalStates = new Set([
+    "completed", "failed", "withheld", "cancelled", "expired", "dead_letter",
+  ]);
+  const terminal = terminalStates.has(String(item.state));
+  assertHex64(identity.wallet_address_hash, "Arena wallet identity hash");
+  assertHex64(identity.project_id_hash, "Arena project identity hash");
+  assertHex64(manifest.challenge_manifest_hash, "Arena owner manifest hash");
+  if (
+    rowEvidence.runtime !== manifest.runtime
+    || (rowEvidence.status === "worker_reported" && rowEvidence.challenge_manifest_hash !== manifest.challenge_manifest_hash)
+  ) throw new Error("Arena owner submission execution evidence does not bind its manifest");
+  assertModeledCapability(item.execution_capability);
+  if (
+    item.surface !== "arena_owner_submission"
+    || item.schema_version !== 3
+    || item.challenge_id !== expectedChallenge.id
+    || item.challenge_version !== expectedChallenge.version
+    || typeof item.submission_id !== "string"
+    || !/^sub_[0-9a-f]{24}$/.test(item.submission_id)
+    || typeof item.candidate_commitment !== "string"
+    || !SHA256_COMMITMENT.test(item.candidate_commitment)
+    || typeof item.state !== "string"
+    || !ownerStates.has(item.state)
+    || manifest.schema_version !== 1
+    || manifest.private_size_egress !== false
+    || !["test", "benchmark", "leaderboard"].includes(String(manifest.mode))
+    || typeof actions.can_cancel !== "boolean"
+    || typeof actions.can_retry_ciphertext_erasure !== "boolean"
+    || actions.can_retry_ciphertext_erasure !== lifecycle.retryable
+    || (terminal && lifecycle.state === "retained")
+    || (!terminal && lifecycle.state !== "retained")
+    || (terminal && actions.can_cancel)
+    || (actions.can_cancel && !["submitted", "policy_screen", "queued", "provisioning", "review_hold"].includes(item.state))
+    || (actions.can_cancel && actions.can_retry_ciphertext_erasure)
+    || item.raw_candidate_egress !== false
+    || item.encrypted_reference_egress !== false
+    || item.exact_score_egress !== false
+    || item.exact_reward_egress !== false
+    || item.exact_timing_egress !== false
+    || item.internal_error_egress !== false
+  ) throw new Error("Arena owner submission failed its bounded schema checks");
+  if (item.bounded_result !== null) {
+    const result = exactRecord(item.bounded_result, ["accepted", "leaderboard_step_index", "step_denominator", "improvement_steps_so_far"], "Arena bounded owner result");
+    if (
+      typeof result.accepted !== "boolean"
+      || !Number.isInteger(result.leaderboard_step_index)
+      || !Number.isInteger(result.step_denominator)
+      || !Number.isInteger(result.improvement_steps_so_far)
+      || Number(result.step_denominator) < 1
+    ) throw new Error("Arena bounded owner result is invalid");
+  }
+  return item as unknown as ArenaOwnerSubmission;
+}
 
 export function parseArenaOwnerSubmissions(value: unknown): ArenaOwnerSubmissions {
   assertNoForbiddenArenaFields(value);
@@ -770,7 +1219,7 @@ export function parseArenaOwnerSubmissions(value: unknown): ArenaOwnerSubmission
   assertHex64(page.owner_identity, "Arena owner identity");
   if (
     page.surface !== "arena_owner_submissions"
-    || page.schema_version !== 2
+    || page.schema_version !== 3
     || typeof page.challenge_id !== "string"
     || typeof page.challenge_version !== "string"
     || page.scope !== "authenticated_wallet_challenge_version"
@@ -789,50 +1238,10 @@ export function parseArenaOwnerSubmissions(value: unknown): ArenaOwnerSubmission
     || page.internal_error_egress !== false
   ) throw new Error("Arena owner submissions failed its bounded schema checks");
 
-  for (const value of page.submissions) {
-    const item = exactRecord(value, OWNER_SUBMISSION_FIELDS, "Arena owner submission");
-    const evidence = assertRowExecutionTruth(item, "Arena owner submission");
-    const identity = exactRecord(item.identity, ["wallet_address_hash", "project_id_hash"], "Arena owner identity projection");
-    const manifest = exactRecord(item.manifest, ["schema_version", "challenge_manifest_hash", "candidate_kind", "runtime", "entrypoint", "mode", "private_size_egress"], "Arena owner manifest");
-    assertHex64(identity.wallet_address_hash, "Arena wallet identity hash");
-    assertHex64(identity.project_id_hash, "Arena project identity hash");
-    assertHex64(manifest.challenge_manifest_hash, "Arena owner manifest hash");
-    if (
-      evidence.runtime !== manifest.runtime
-      || (evidence.status === "worker_reported" && evidence.challenge_manifest_hash !== manifest.challenge_manifest_hash)
-    ) throw new Error("Arena owner submission execution evidence does not bind its manifest");
-    assertModeledCapability(item.execution_capability);
-    if (
-      item.surface !== "arena_owner_submission"
-      || item.schema_version !== 2
-      || item.challenge_id !== page.challenge_id
-      || item.challenge_version !== page.challenge_version
-      || typeof item.submission_id !== "string"
-      || !/^sub_[0-9a-f]{24}$/.test(item.submission_id)
-      || typeof item.candidate_commitment !== "string"
-      || !SHA256_COMMITMENT.test(item.candidate_commitment)
-      || typeof item.state !== "string"
-      || manifest.schema_version !== 1
-      || manifest.private_size_egress !== false
-      || !["test", "benchmark", "leaderboard"].includes(String(manifest.mode))
-      || item.raw_candidate_egress !== false
-      || item.encrypted_reference_egress !== false
-      || item.exact_score_egress !== false
-      || item.exact_reward_egress !== false
-      || item.exact_timing_egress !== false
-      || item.internal_error_egress !== false
-    ) throw new Error("Arena owner submission failed its bounded schema checks");
-    if (item.bounded_result !== null) {
-      const result = exactRecord(item.bounded_result, ["accepted", "leaderboard_step_index", "step_denominator", "improvement_steps_so_far"], "Arena bounded owner result");
-      if (
-        typeof result.accepted !== "boolean"
-        || !Number.isInteger(result.leaderboard_step_index)
-        || !Number.isInteger(result.step_denominator)
-        || !Number.isInteger(result.improvement_steps_so_far)
-        || Number(result.step_denominator) < 1
-      ) throw new Error("Arena bounded owner result is invalid");
-    }
-  }
+  for (const item of page.submissions) parseArenaOwnerSubmission(item, {
+    id: page.challenge_id,
+    version: page.challenge_version,
+  });
   return page as unknown as ArenaOwnerSubmissions;
 }
 
@@ -1041,12 +1450,53 @@ export async function fetchArenaCatalog(): Promise<ArenaCatalog> {
   return parseArenaCatalog(await boundedJson("/arena/challenges"));
 }
 
-export async function fetchArenaQueue(challengeId: string, version: string): Promise<ArenaQueue> {
-  return parseArenaQueue(await boundedJson(`/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/queue?limit=100`));
+export interface ArenaPublicPageOptions {
+  limit?: number;
+  cursor?: string | null;
 }
 
-export async function fetchArenaLeaderboard(challengeId: string, version: string): Promise<ArenaLeaderboard> {
-  return parseArenaLeaderboard(await boundedJson(`/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/leaderboard?limit=100`));
+function arenaPublicPageQuery(options: ArenaPublicPageOptions): string {
+  const limit = options.limit ?? MAX_ARENA_PUBLIC_PAGE_SIZE;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_ARENA_PUBLIC_PAGE_SIZE) {
+    throw new Error("Arena public page limit is invalid");
+  }
+  if (options.cursor != null && !isBoundedArenaPublicCursor(options.cursor)) {
+    throw new Error("Arena public cursor is malformed");
+  }
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (options.cursor) query.set("cursor", options.cursor);
+  return query.toString();
+}
+
+export async function fetchArenaQueue(
+  challengeId: string,
+  version: string,
+  options: ArenaPublicPageOptions = {},
+): Promise<ArenaQueue> {
+  const query = arenaPublicPageQuery(options);
+  const page = parseArenaQueue(await boundedJson(
+    `/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/queue?${query}`,
+    { cache: "no-store" },
+  ));
+  assertArenaPublicProjectionContext(page, "arena_public_queue", challengeId, version);
+  return page;
+}
+
+export async function fetchArenaLeaderboard(
+  challengeId: string,
+  version: string,
+  options: ArenaPublicPageOptions = {},
+): Promise<ArenaLeaderboard> {
+  const query = arenaPublicPageQuery(options);
+  const page = parseArenaLeaderboard(await boundedJson(
+    `/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/leaderboard?${query}`,
+    { cache: "no-store" },
+  ));
+  assertArenaPublicProjectionContext(page, "arena_public_leaderboard", challengeId, version);
+  if (!options.cursor && page.rows.length > 0 && page.rows[0].rank !== 1) {
+    throw new Error("Arena leaderboard first page did not begin at global rank 1");
+  }
+  return page;
 }
 
 export async function fetchArenaOwnerSubmissions(
@@ -1068,6 +1518,117 @@ export async function fetchArenaOwnerSubmissions(
     `/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/submissions/mine?${query.toString()}`,
     { headers: { Authorization: `Bearer ${accessToken}` }, cache: "no-store" },
   ));
+}
+
+function assertArenaWalletSessionToken(accessToken: string): void {
+  if (
+    !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(accessToken)
+    || accessToken.length > 4096
+  ) throw new Error("Arena wallet session is invalid");
+}
+
+export function parseArenaOwnerCancellation(
+  value: unknown,
+  expected: { challengeId: string; version: string; submissionId: string },
+): ArenaOwnerCancellation {
+  assertNoForbiddenArenaFields(value);
+  const receipt = exactRecord(value, [
+    "surface", "schema_version", "changed", "idempotent_replay", "submission",
+    "ciphertext_lifecycle", "worker_transition_authority", "raw_candidate_egress",
+    "encrypted_reference_egress", "physical_erasure_claimed",
+  ], "Arena owner cancellation");
+  const submission = parseArenaOwnerSubmission(receipt.submission, {
+    id: expected.challengeId,
+    version: expected.version,
+  });
+  const lifecycle = parseArenaCiphertextLifecycle(receipt.ciphertext_lifecycle);
+  if (
+    receipt.surface !== "arena_owner_cancellation"
+    || receipt.schema_version !== 1
+    || typeof receipt.changed !== "boolean"
+    || receipt.idempotent_replay !== !receipt.changed
+    || submission.submission_id !== expected.submissionId
+    || submission.state !== "cancelled"
+    || lifecycle.state === "retained"
+    || canonicalArenaJson(lifecycle) !== canonicalArenaJson(submission.ciphertext_lifecycle)
+    || receipt.worker_transition_authority !== false
+    || receipt.raw_candidate_egress !== false
+    || receipt.encrypted_reference_egress !== false
+    || receipt.physical_erasure_claimed !== false
+  ) throw new Error("Arena owner cancellation receipt failed its bounded schema checks");
+  return receipt as unknown as ArenaOwnerCancellation;
+}
+
+export function parseArenaCiphertextErasure(
+  value: unknown,
+  expectedSubmissionId: string,
+): ArenaCiphertextErasure {
+  assertNoForbiddenArenaFields(value);
+  const receipt = exactRecord(value, [
+    "surface", "schema_version", "submission_id", "state", "changed",
+    "idempotent_replay", "ciphertext_lifecycle", "worker_transition_authority",
+    "ciphertext_egress", "encrypted_reference_egress", "physical_erasure_claimed",
+  ], "Arena ciphertext erasure");
+  const lifecycle = parseArenaCiphertextLifecycle(receipt.ciphertext_lifecycle);
+  if (
+    receipt.surface !== "arena_ciphertext_erasure"
+    || receipt.schema_version !== 1
+    || receipt.submission_id !== expectedSubmissionId
+    || receipt.state !== lifecycle.state
+    || typeof receipt.changed !== "boolean"
+    || typeof receipt.idempotent_replay !== "boolean"
+    || (receipt.changed && lifecycle.state !== "unlinked")
+    || (receipt.idempotent_replay && lifecycle.state !== "unlinked")
+    || receipt.worker_transition_authority !== false
+    || receipt.ciphertext_egress !== false
+    || receipt.encrypted_reference_egress !== false
+    || receipt.physical_erasure_claimed !== false
+  ) throw new Error("Arena ciphertext erasure receipt failed its bounded schema checks");
+  return receipt as unknown as ArenaCiphertextErasure;
+}
+
+export async function cancelArenaOwnerSubmission(
+  challengeId: string,
+  version: string,
+  submissionId: string,
+  accessToken: string,
+): Promise<ArenaOwnerCancellation> {
+  if (!CHALLENGE_ID.test(challengeId) || !SEMVER.test(version) || !/^sub_[0-9a-f]{24}$/.test(submissionId)) {
+    throw new Error("Arena cancellation identity is malformed");
+  }
+  assertArenaWalletSessionToken(accessToken);
+  const response = await boundedJson(
+    `/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/submissions/${encodeURIComponent(submissionId)}/cancel`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  return parseArenaOwnerCancellation(response, { challengeId, version, submissionId });
+}
+
+export async function retryArenaCiphertextErasure(
+  challengeId: string,
+  version: string,
+  submissionId: string,
+  accessToken: string,
+): Promise<ArenaCiphertextErasure> {
+  if (!CHALLENGE_ID.test(challengeId) || !SEMVER.test(version) || !/^sub_[0-9a-f]{24}$/.test(submissionId)) {
+    throw new Error("Arena ciphertext erasure identity is malformed");
+  }
+  assertArenaWalletSessionToken(accessToken);
+  const response = await boundedJson(
+    `/arena/challenges/${encodeURIComponent(challengeId)}/versions/${encodeURIComponent(version)}/submissions/${encodeURIComponent(submissionId)}/ciphertext-erasure/retry`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  return parseArenaCiphertextErasure(response, submissionId);
 }
 
 export async function fetchArenaWorkerCapability(challengeId: string, version: string): Promise<ArenaWorkerCapability> {

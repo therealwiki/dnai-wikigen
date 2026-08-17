@@ -11,11 +11,11 @@ import {
   phalaComputeWorkloadRecipientActivationVerificationSha256,
   phalaComputeWorkloadRecipientSourceActivationSha256,
   phalaSevenCvmReleaseVerificationAuthoritySha256,
+  normalizePhalaSevenCvmReleaseVerificationAuthority,
 } from "./phala-seven-cvm-verifier-evidence.mjs";
 import {
   PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE,
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-} from "./phala-seven-cvm-release-verification-authority-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   assertProductionPhalaPostMeasurementActivationExecutionReceipt,
   phalaPostMeasurementActivationExecutionReceiptSha256,

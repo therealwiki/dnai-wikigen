@@ -149,7 +149,9 @@ function publicValue(key) {
   if (key === "TINKER_WALLET_AUTH_CHAIN_ID") return "84532";
   if (key === "TINKER_CHAIN_START_BLOCK") return "12345678";
   if (key.endsWith("_RUNTIME_CODE_HASH")) return `0x${bare("a")}`;
-  if (key.endsWith("_SHA256") || key.endsWith("_HASH")) return bare("a");
+  if (key.endsWith("_EPOCH")) return "1";
+  if (key.endsWith("_SHA256")) return sha("a");
+  if (key.endsWith("_HASH")) return bare("a");
   return `reviewed-${key.toLowerCase()}`;
 }
 
@@ -458,6 +460,7 @@ function deploymentIntentFixture(genesisAcceptanceSha256, currentStatus, genesis
     );
   intent.deploymentControl.controllerId = "deployment-operator-01";
   intent.deploymentControl.operatorAddress = address("1");
+  intent.staticContractInputs.diligenceRoom.governanceController = address("4");
   intent.staticContractInputs.computeCreditVault.developer = address("2");
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment =
     `0x${bare("3")}`;
@@ -1014,6 +1017,8 @@ test("fresh contract anchor evidence is stable-read, externally pinned, and doma
       reviewer_authority_genesis_acceptance_sha256:
         reviewerAuthorityGenesisAcceptanceSha256,
     },
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      fixture.authorityPins.expectedTinkerAccountBindingCeremonyReceiptSha256,
   };
   const evidence = readAndValidateFreshContractDeploymentAnchorEvidence(input);
   assert.equal(evidence.freshContractDeploymentReceiptSha256, receiptSha256);

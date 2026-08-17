@@ -7,14 +7,32 @@ import { fileURLToPath } from "node:url";
 import {
   FINAL_RELEASE_AUTHORITY_CORE_DOMAIN,
   FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN,
+  FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  FINAL_RELEASE_AUTHORITY_CORE_V4_DOMAIN,
+  FINAL_RELEASE_AUTHORITY_CORE_V4_SCHEMA,
+  EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY,
+  EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY,
+  EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN,
+  EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
+  EXECUTION_POLICY_STORE_V6_CONTRACT,
   MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES,
   FinalReleaseAuthorityCoreValidationError,
+  canonicalHistoricalFinalReleaseAuthorityCoreV2ArtifactText,
+  canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes,
   canonicalFinalReleaseAuthorityCoreArtifactText,
   canonicalFinalReleaseAuthorityCoreBytes,
   diligenceEvaluatorPolicySetRoot,
   finalReleaseAuthorityCoreDigest,
+  historicalFinalReleaseAuthorityCoreV2Digest,
+  normalizeHistoricalFinalReleaseAuthorityCoreV2,
   normalizeFinalReleaseAuthorityCore,
 } from "./execution-policy-release-core.mjs";
+import {
+  KNOWN_DIGEST,
+  KNOWN_VECTOR_ID,
+  knownVector,
+} from "./execution-policy-release-core.fixture.mjs";
 import {
   assertReleaseCoreMatchesCeremony,
   executionPolicyWriterReleaseCommitment,
@@ -22,23 +40,17 @@ import {
   readCanonicalExecutionPolicyReleaseCoreArtifact,
 } from "./execution-policy-release-core-cli.mjs";
 import {
-  LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
-  finalReleaseAuthorityCoreFromCandidate,
-  validateFinalReleaseAuthorityCoreBinding,
-} from "../web/scripts/execution-policy-release-core-binding.mjs";
-import {
   describeAuthorityReviewSubjectText,
 } from "./operator-policy-packet-core.mjs";
 import {
-  syntheticPreCeremonyRuntimeAuthorityFixture,
-} from "./pre-ceremony-runtime-authority.fixture.mjs";
-import {
-  preCeremonyRuntimeAuthoritySha256,
-} from "./pre-ceremony-runtime-authority.mjs";
+  royaltyReleasePolicyCommitment,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
 
-const KNOWN_VECTOR_ID = "dnai.final-release-authority-core.v2/known-answer-1";
-// Domain-separated KAT for the exact v2 canonical value below.
-const KNOWN_DIGEST = "d1bab06a461597c4b0d12d9bbf50ea37549c2023b8c37b3e8ef7638b8c874fce";
+const HISTORICAL_V2_KNOWN_VECTOR_ID =
+  "dnai.final-release-authority-core.v2/known-answer-1";
+const HISTORICAL_V2_KNOWN_DIGEST =
+  "d1bab06a461597c4b0d12d9bbf50ea37549c2023b8c37b3e8ef7638b8c874fce";
 const RELEASE_SHA = "0123456789abcdef0123456789abcdef01234567";
 const APPROVER_ROOT = "013c34f9ab123ac6d7bb6ed0711bddb94806f04c02885cb9c2eeb7af2ac739d7";
 const USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
@@ -65,7 +77,7 @@ function image(service, repository, digestPair) {
   };
 }
 
-function knownVector() {
+function historicalV2KnownVector() {
   return {
     schema: "dnai.final-release-authority-core.v2",
     release_sha: RELEASE_SHA,
@@ -315,65 +327,53 @@ function clone(value) {
   return structuredClone(value);
 }
 
-function finalCandidate(coreValue, digest = finalReleaseAuthorityCoreDigest(coreValue)) {
-  const core = normalizeFinalReleaseAuthorityCore(coreValue);
-  const anchor = core.execution_policy.rollback_anchor_target;
-  const contracts = structuredClone(core.contracts);
-  delete contracts.diligence_room.release_admission;
-  const ratePolicies = contracts.compute_credit_vault.rate_policies;
-  delete contracts.compute_credit_vault.rate_policies;
-  contracts.compute_credit_vault.native_rate_policy_commitment =
-    ratePolicies.native.commitment;
-  contracts.compute_credit_vault.native_provider = ratePolicies.native.provider;
-  contracts.compute_credit_vault.erc20_asset_address = ratePolicies.erc20.asset;
-  contracts.compute_credit_vault.erc20_rate_policy_commitment =
-    ratePolicies.erc20.commitment;
-  contracts.compute_credit_vault.erc20_provider = ratePolicies.erc20.provider;
-  delete contracts.email_oracle_auth.release.oracle_compose_hash;
-  delete contracts.email_oracle_auth.release.consumer_compose_hash;
-  return {
-    release_sha: core.release_sha,
-    network: core.network,
-    operator_address: core.operator_address,
-    deployment_intent_sha256: core.deployment_intent_sha256,
-    cvm_launch_intent_sha256: core.cvm_launch_intent_sha256,
-    operator_policy: {
-      schema: LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
-      ceremony_authorization_sha256: `sha256:${"b2".repeat(32)}`,
-      live_activation_authority_sha256: `sha256:${"b3".repeat(32)}`,
-      runtime_authority_dependency_sha256: `sha256:${digest}`,
-    },
-    contracts,
-    cvm: core.cvm,
-    arena_registry_bindings: core.arena_registry_bindings,
-    wallet_auth: core.wallet_auth,
-    requested_features: core.requested_features,
-    execution_policy: {
-      canonicalization_version: core.execution_policy.canonicalization_version,
-      approval_schema: core.execution_policy.approval_schema,
-      api_schema_version: core.execution_policy.api_schema_version,
-      store_schema_version: core.execution_policy.store_schema_version,
-      approval_domain: "post-anchor-field-deliberately-not-committed",
-      approval_domain_hash: word("de", false),
-      approver_hashes: core.execution_policy.approver_hashes,
-      approver_root_hash: core.execution_policy.approver_root_hash,
-      rollback_anchor: {
-        ...anchor,
-        status: "verified_active_frozen_release_writer",
-        release_manifest_commitment: digest,
-        evidence_sha256: `sha256:${"ef".repeat(32)}`,
-        writer_release_commitment: anchor.writer_release_commitment,
-      },
-    },
-  };
+function refreshRoyaltyBindings(value) {
+  const authority = value.royalty_release_authority;
+  const releasePolicyCommitment = royaltyReleasePolicyCommitment({
+    chainId: authority.chain_id,
+    distributorAddress: authority.distributor_address,
+    authorityNonce: authority.authority_nonce,
+    settlementVerifier: authority.settlement_verifier,
+    qvlVerifier: authority.qvl_verifier,
+    executionPolicyAnchor: authority.execution_policy_anchor,
+    anchorWriterReleaseCommitment:
+      authority.anchor_writer_release_commitment,
+  });
+  authority.release_policy_commitment = releasePolicyCommitment;
+  Object.assign(value.royalty_release_active_state, {
+    owner: authority.owner,
+    settlement_verifier: authority.settlement_verifier,
+    qvl_verifier: authority.qvl_verifier,
+    execution_policy_anchor: authority.execution_policy_anchor,
+    anchor_writer_release_commitment:
+      authority.anchor_writer_release_commitment,
+    release_policy_commitment: releasePolicyCommitment,
+    authority_nonce: authority.authority_nonce,
+    computed_release_policy_commitment: releasePolicyCommitment,
+  });
+  Object.assign(value.royalty_settlement_release_binding_template, {
+    authority_nonce: authority.authority_nonce,
+    settlement_verifier_address: authority.settlement_verifier,
+    royalty_qvl_verifier_address: authority.qvl_verifier,
+    execution_policy_anchor_address: authority.execution_policy_anchor,
+    anchor_writer_release_commitment:
+      authority.anchor_writer_release_commitment,
+    release_policy_commitment: releasePolicyCommitment,
+  });
+  value.royalty_release_active_state_sha256 = royaltyReleaseStateSha256(
+    value.royalty_release_active_state,
+    { authority, phase: "phase_two_active" },
+  );
 }
 
 test(`${KNOWN_VECTOR_ID} matches the cross-language digest`, () => {
   assert.equal(FINAL_RELEASE_AUTHORITY_CORE_SCHEMA, knownVector().schema);
   assert.equal(
     FINAL_RELEASE_AUTHORITY_CORE_DOMAIN,
-    "dnai-wikigen/final-release-authority-core/v2\0",
+    "dnai-wikigen/final-release-authority-core/v4\0",
   );
+  assert.equal(FINAL_RELEASE_AUTHORITY_CORE_SCHEMA, FINAL_RELEASE_AUTHORITY_CORE_V4_SCHEMA);
+  assert.equal(FINAL_RELEASE_AUTHORITY_CORE_DOMAIN, FINAL_RELEASE_AUTHORITY_CORE_V4_DOMAIN);
   const normalized = normalizeFinalReleaseAuthorityCore(knownVector());
   assert.deepEqual(
     normalized.cvm.images.map(({ service }) => service),
@@ -390,12 +390,29 @@ test(`${KNOWN_VECTOR_ID} matches the cross-language digest`, () => {
   assert.deepEqual(Object.keys(normalized.arena_registry_bindings), [
     "synthetic-bio-assay-qc@1.0.0",
   ]);
+  assert.equal(normalized.execution_policy.store_schema_version, 6);
+  assert.deepEqual(
+    normalized.execution_policy.store_contract,
+    EXECUTION_POLICY_STORE_V6_CONTRACT,
+  );
+  assert.deepEqual(
+    normalized.execution_policy.release_marker_genesis,
+    EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY,
+  );
+  assert.equal(
+    normalized.execution_policy.release_marker_genesis.resource_domain,
+    EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN,
+  );
+  assert.equal(
+    normalized.execution_policy.release_marker_genesis.resource_hash,
+    EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
+  );
   assert.equal(normalized.contracts.challenge_registry.expected_challenge_count, 1);
   const canonical = canonicalFinalReleaseAuthorityCoreBytes(knownVector());
   assert.ok(canonical.length < MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES);
   assert.equal(canonical.at(-1), "}".charCodeAt(0));
   assert.ok(!canonical.includes("\n"));
-  assert.ok(canonical.includes("app_release_core_vector_1_\\ud83e\\uddec"));
+  assert.ok(canonical.includes("abababababababababababababababababababab"));
   assert.equal(finalReleaseAuthorityCoreDigest(knownVector()), KNOWN_DIGEST);
   const reviewSubject = describeAuthorityReviewSubjectText(
     canonicalFinalReleaseAuthorityCoreArtifactText(knownVector()),
@@ -405,146 +422,81 @@ test(`${KNOWN_VECTOR_ID} matches the cross-language digest`, () => {
   assert.equal(reviewSubject.subjectSha256, `sha256:${KNOWN_DIGEST}`);
 });
 
-test("final release candidate is exactly bound to the separate non-cyclic core", () => {
-  const core = knownVector();
-  const runtimeAuthority = syntheticPreCeremonyRuntimeAuthorityFixture({
-    releaseSha: core.release_sha,
-    deploymentIntentSha256: core.deployment_intent_sha256,
-    cvmLaunchIntentSha256: core.cvm_launch_intent_sha256,
-  });
-  const runtimeAuthoritySha256 = preCeremonyRuntimeAuthoritySha256(
-    runtimeAuthority,
-  );
-  const candidate = finalCandidate(
-    core,
-    runtimeAuthoritySha256.slice("sha256:".length),
-  );
-  assert.deepEqual(finalReleaseAuthorityCoreFromCandidate(candidate), normalizeFinalReleaseAuthorityCore(core));
-  const binding = validateFinalReleaseAuthorityCoreBinding(
-    candidate,
-    core,
-    runtimeAuthority,
-  );
-  assert.equal(binding.digest, KNOWN_DIGEST);
-  assert.equal(binding.runtimeAuthoritySha256, runtimeAuthoritySha256);
-  assert.notEqual(binding.runtimeAuthoritySha256, `sha256:${binding.digest}`);
-
-  const upstreamDrift = structuredClone(candidate);
-  upstreamDrift.contracts.royalty_distributor.runtime_code_hash = word("ab");
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      upstreamDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /does not exactly match/,
-  );
-
-  const launchIntentDrift = structuredClone(candidate);
-  launchIntentDrift.cvm_launch_intent_sha256 = `sha256:${"b5".repeat(32)}`;
-  launchIntentDrift.execution_policy.rollback_anchor.writer_release_commitment =
-    word("b5");
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      launchIntentDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /does not exactly match/,
-  );
-
-  const renewedReview = structuredClone(candidate);
-  renewedReview.operator_policy.live_activation_authority_sha256 =
-    `sha256:${"b4".repeat(32)}`;
-  renewedReview.operator_policy.ceremony_authorization_sha256 =
-    `sha256:${"b5".repeat(32)}`;
+test(`${HISTORICAL_V2_KNOWN_VECTOR_ID} remains frozen for explicit historical replay`, () => {
+  const value = historicalV2KnownVector();
+  assert.equal(FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA, value.schema);
   assert.equal(
-    validateFinalReleaseAuthorityCoreBinding(
-      renewedReview,
-      core,
-      runtimeAuthority,
-    ).digest,
-    KNOWN_DIGEST,
+    FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN,
+    "dnai-wikigen/final-release-authority-core/v2\0",
+  );
+  const normalized = normalizeHistoricalFinalReleaseAuthorityCoreV2(value);
+  assert.equal(
+    historicalFinalReleaseAuthorityCoreV2Digest(normalized),
+    HISTORICAL_V2_KNOWN_DIGEST,
+  );
+  assert.equal(
+    Object.hasOwn(normalized.requested_features, "tinker_customer"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(normalized.requested_features, "collaboration"),
+    false,
+  );
+  assert.ok(canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes(normalized).length > 0);
+  assert.equal(
+    canonicalHistoricalFinalReleaseAuthorityCoreV2ArtifactText(normalized)
+      .endsWith("\n"),
+    true,
+  );
+  assert.throws(
+    () => normalizeFinalReleaseAuthorityCore(value),
+    FinalReleaseAuthorityCoreValidationError,
+  );
+  assert.throws(
+    () => normalizeHistoricalFinalReleaseAuthorityCoreV2(knownVector()),
+    FinalReleaseAuthorityCoreValidationError,
+  );
+});
+
+test("v2 archival and v3 activation semantics remain explicitly version-pinned", () => {
+  const historical = historicalV2KnownVector();
+  assert.equal(
+    historical.contracts.diligence_room.developer,
+    historical.operator_address,
+  );
+  const historicalBroadOrigin = clone(historical);
+  historicalBroadOrigin.cvm.delegate_url = "https://127.0.0.1:8443";
+  assert.equal(
+    normalizeHistoricalFinalReleaseAuthorityCoreV2(historicalBroadOrigin)
+      .cvm.delegate_url,
+    "https://127.0.0.1:8443",
+  );
+  const historicalSeparatedDeveloper = clone(historical);
+  historicalSeparatedDeveloper.contracts.diligence_room.developer = address(21);
+  assert.throws(
+    () => normalizeHistoricalFinalReleaseAuthorityCoreV2(
+      historicalSeparatedDeveloper,
+    ),
+    /DiligenceRoom developer must equal operator_address/,
   );
 
-  const emailDelayDrift = structuredClone(candidate);
-  emailDelayDrift.contracts.email_oracle_auth.upgrade_delay_seconds = 172_801;
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      emailDelayDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /does not exactly match/,
+  const current = knownVector();
+  assert.notEqual(
+    current.contracts.diligence_room.developer,
+    current.operator_address,
   );
-
-  const candidateCommitmentDrift = structuredClone(candidate);
-  candidateCommitmentDrift.operator_policy.runtime_authority_dependency_sha256 =
-    `sha256:${"ab".repeat(32)}`;
+  const currentOperatorDeveloper = clone(current);
+  currentOperatorDeveloper.contracts.diligence_room.developer =
+    currentOperatorDeveloper.operator_address;
   assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      candidateCommitmentDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /runtime-authority dependency does not equal/,
+    () => normalizeFinalReleaseAuthorityCore(currentOperatorDeveloper),
+    /permanent developer must differ/,
   );
-
-  const anchorCommitmentDrift = structuredClone(candidate);
-  anchorCommitmentDrift.execution_policy.rollback_anchor.release_manifest_commitment =
-    "ab".repeat(32);
+  const currentBroadOrigin = clone(current);
+  currentBroadOrigin.cvm.delegate_url = "https://127.0.0.1:8443";
   assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      anchorCommitmentDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /release-manifest commitment does not equal/,
-  );
-
-  const writerCommitmentDrift = structuredClone(candidate);
-  writerCommitmentDrift.execution_policy.rollback_anchor.writer_release_commitment =
-    `0x${"ab".repeat(32)}`;
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      writerCommitmentDrift,
-      core,
-      runtimeAuthority,
-    ),
-    /launch-intent digest/,
-  );
-
-  const obsoleteFinalDigestWriter = structuredClone(candidate);
-  obsoleteFinalDigestWriter.execution_policy.rollback_anchor.writer_release_commitment =
-    `0x${KNOWN_DIGEST}`;
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      obsoleteFinalDigestWriter,
-      core,
-      runtimeAuthority,
-    ),
-    /launch-intent digest/,
-  );
-
-  const malformedReview = structuredClone(candidate);
-  malformedReview.operator_policy.ceremony_authorization_sha256 = "b2".repeat(32);
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      malformedReview,
-      core,
-      runtimeAuthority,
-    ),
-    /ceremony-authorization SHA-256/,
-  );
-
-  const coreSubstitutedForRuntime = finalCandidate(core, KNOWN_DIGEST);
-  assert.throws(
-    () => validateFinalReleaseAuthorityCoreBinding(
-      coreSubstitutedForRuntime,
-      core,
-      runtimeAuthority,
-    ),
-    /runtime-authority dependency does not equal/,
+    () => normalizeFinalReleaseAuthorityCore(currentBroadOrigin),
+    /canonical HTTPS origin/,
   );
 });
 
@@ -556,14 +508,16 @@ test("valid upstream mutations change the final-authority digest", () => {
   for (const entry of sourceMutation.cvm.images) {
     entry.source_digest = sourceMutation.release_sha;
   }
+  sourceMutation.shared_release_lineage.release_sha = sourceMutation.release_sha;
+  sourceMutation.collaboration_execution.release_sha = sourceMutation.release_sha;
   assert.notEqual(finalReleaseAuthorityCoreDigest(sourceMutation), baseline);
 
   const contractMutation = clone(knownVector());
-  contractMutation.contracts.royalty_distributor.runtime_code_hash = word("ab");
+  contractMutation.contracts.challenge_registry.runtime_code_hash = word("ab");
   assert.notEqual(finalReleaseAuthorityCoreDigest(contractMutation), baseline);
 
   const anchorMutation = clone(knownVector());
-  anchorMutation.execution_policy.rollback_anchor_target.contract_address = address(21);
+  anchorMutation.execution_policy.rollback_anchor_target.runtime_code_hash = word("98");
   assert.notEqual(finalReleaseAuthorityCoreDigest(anchorMutation), baseline);
 
   const meteringPolicyMutation = clone(knownVector());
@@ -579,13 +533,15 @@ test("valid upstream mutations change the final-authority digest", () => {
 
   const deploymentIntentMutation = clone(knownVector());
   deploymentIntentMutation.deployment_intent_sha256 = `sha256:${"b4".repeat(32)}`;
+  deploymentIntentMutation.shared_release_lineage.deployment_intent_sha256 =
+    deploymentIntentMutation.deployment_intent_sha256;
+  deploymentIntentMutation.royalty_settlement_release_binding_template
+    .deployment_intent_sha256 = deploymentIntentMutation.deployment_intent_sha256;
   assert.notEqual(finalReleaseAuthorityCoreDigest(deploymentIntentMutation), baseline);
 
-  const launchIntentMutation = clone(knownVector());
-  launchIntentMutation.cvm_launch_intent_sha256 = `sha256:${"b5".repeat(32)}`;
-  launchIntentMutation.execution_policy.rollback_anchor_target.writer_release_commitment =
-    word("b5");
-  assert.notEqual(finalReleaseAuthorityCoreDigest(launchIntentMutation), baseline);
+  const localComposeMutation = clone(knownVector());
+  localComposeMutation.cvm.local_compose_hash = word("b5", false);
+  assert.notEqual(finalReleaseAuthorityCoreDigest(localComposeMutation), baseline);
 
   const emailDelayMutation = clone(knownVector());
   emailDelayMutation.contracts.email_oracle_auth.upgrade_delay_seconds = 172_801;
@@ -608,6 +564,125 @@ test("valid upstream mutations change the final-authority digest", () => {
   assert.notEqual(
     finalReleaseAuthorityCoreDigest(workloadRevocationMutation),
     baseline,
+  );
+
+  for (const key of ["tinker_customer", "collaboration"]) {
+    const featureMutation = clone(knownVector());
+    featureMutation.requested_features[key] = true;
+    assert.notEqual(finalReleaseAuthorityCoreDigest(featureMutation), baseline);
+  }
+
+  const sevenCvmMutation = clone(knownVector());
+  sevenCvmMutation.seven_cvm_release_verification_authority_sha256 =
+    `sha256:${"68".repeat(32)}`;
+  sevenCvmMutation.shared_release_lineage
+    .seven_cvm_release_verification_authority_sha256 =
+      sevenCvmMutation.seven_cvm_release_verification_authority_sha256;
+  sevenCvmMutation.collaboration_execution.release_verification_sha256 =
+    sevenCvmMutation.seven_cvm_release_verification_authority_sha256;
+  assert.notEqual(finalReleaseAuthorityCoreDigest(sevenCvmMutation), baseline);
+
+  const collaborationExecutionMutation = clone(knownVector());
+  collaborationExecutionMutation.requested_features.collaboration = true;
+  collaborationExecutionMutation.requested_features.collaboration_execution = true;
+  collaborationExecutionMutation.collaboration_execution.enabled = true;
+  assert.notEqual(
+    finalReleaseAuthorityCoreDigest(collaborationExecutionMutation),
+    baseline,
+  );
+
+  const walletAdoptionMutation = clone(knownVector());
+  walletAdoptionMutation.requested_features.compute_workload_wallet_adoption = true;
+  walletAdoptionMutation.compute_workload_wallet_adoption.enabled = true;
+  assert.notEqual(finalReleaseAuthorityCoreDigest(walletAdoptionMutation), baseline);
+});
+
+test("v4 requested features are exact, distinct, dependency-checked signed decisions", () => {
+  const baseline = normalizeFinalReleaseAuthorityCore(knownVector());
+  assert.equal(baseline.requested_features.compute_console, true);
+  assert.equal(baseline.requested_features.tinker_customer, false);
+  assert.equal(baseline.requested_features.collaboration, false);
+  assert.equal(baseline.requested_features.collaboration_execution, false);
+  assert.equal(baseline.requested_features.royalty_settlement, false);
+  assert.equal(
+    baseline.requested_features.compute_workload_wallet_adoption,
+    false,
+  );
+
+  for (const key of ["tinker_customer", "collaboration"]) {
+    const enabled = clone(knownVector());
+    enabled.requested_features[key] = true;
+    const normalized = normalizeFinalReleaseAuthorityCore(enabled);
+    assert.equal(normalized.requested_features[key], true);
+    assert.equal(
+      normalized.requested_features[
+        key === "tinker_customer" ? "collaboration" : "tinker_customer"
+      ],
+      false,
+    );
+
+    for (const invalid of [undefined, null, 0, 1, "false", "true"]) {
+      const malformed = clone(knownVector());
+      if (invalid === undefined) {
+        delete malformed.requested_features[key];
+      } else {
+        malformed.requested_features[key] = invalid;
+      }
+      assert.throws(
+        () => normalizeFinalReleaseAuthorityCore(malformed),
+        FinalReleaseAuthorityCoreValidationError,
+      );
+    }
+  }
+
+  const collaborationExecution = clone(knownVector());
+  collaborationExecution.requested_features.collaboration = true;
+  collaborationExecution.requested_features.collaboration_execution = true;
+  collaborationExecution.collaboration_execution.enabled = true;
+  assert.equal(
+    normalizeFinalReleaseAuthorityCore(collaborationExecution)
+      .requested_features.collaboration_execution,
+    true,
+  );
+
+  const royaltySettlement = clone(collaborationExecution);
+  royaltySettlement.requested_features.royalty_settlement = true;
+  assert.equal(
+    normalizeFinalReleaseAuthorityCore(royaltySettlement)
+      .requested_features.royalty_settlement,
+    true,
+  );
+
+  const walletAdoption = clone(knownVector());
+  walletAdoption.requested_features.compute_workload_wallet_adoption = true;
+  walletAdoption.compute_workload_wallet_adoption.enabled = true;
+  assert.equal(
+    normalizeFinalReleaseAuthorityCore(walletAdoption)
+      .requested_features.compute_workload_wallet_adoption,
+    true,
+  );
+
+  for (const [key, configure] of [
+    ["collaboration_execution", () => {}],
+    ["royalty_settlement", (value) => {
+      value.requested_features.collaboration = true;
+    }],
+    ["compute_workload_wallet_adoption", () => {}],
+  ]) {
+    const missingDependency = clone(knownVector());
+    missingDependency.requested_features[key] = true;
+    configure(missingDependency);
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(missingDependency),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+
+  const unknown = clone(knownVector());
+  unknown.requested_features.compute_customer_alias = false;
+  assert.throws(
+    () => normalizeFinalReleaseAuthorityCore(unknown),
+    FinalReleaseAuthorityCoreValidationError,
   );
 });
 
@@ -714,6 +789,212 @@ test("extra fields are rejected at every commitment boundary", () => {
     mutate(candidate);
     assert.throws(
       () => finalReleaseAuthorityCoreDigest(candidate),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+});
+
+test("v4 authority fields reject aliases, omissions, extras, and cross-binding mutation", () => {
+  const requiredTopLevelFields = [
+    "seven_cvm_release_verification_authority_sha256",
+    "shared_release_lineage",
+    "royalty_release_authority",
+    "royalty_release_active_state",
+    "royalty_release_active_state_sha256",
+    "royalty_release_history_sha256",
+    "royalty_release_history_receipt_sha256",
+    "royalty_settlement_release_binding_template",
+    "collaboration_execution",
+    "compute_workload_wallet_adoption",
+  ];
+  for (const field of requiredTopLevelFields) {
+    const missing = clone(knownVector());
+    delete missing[field];
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(missing),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+
+  const alias = clone(knownVector());
+  alias.release_verification_authority_sha256 =
+    alias.seven_cvm_release_verification_authority_sha256;
+  delete alias.seven_cvm_release_verification_authority_sha256;
+  assert.throws(
+    () => normalizeFinalReleaseAuthorityCore(alias),
+    FinalReleaseAuthorityCoreValidationError,
+  );
+
+  for (const forbiddenTemplateField of [
+    "release_authority_sha256",
+    "royalty_qvl_policy_commitment",
+  ]) {
+    const selfReferential = clone(knownVector());
+    selfReferential.royalty_settlement_release_binding_template[
+      forbiddenTemplateField
+    ] = `sha256:${"fe".repeat(32)}`;
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(selfReferential),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+
+  const mutations = [
+    (value) => {
+      value.shared_release_lineage.main_runtime_cvm_id = "cvm_different_main";
+    },
+    (value) => {
+      value.royalty_release_active_state_sha256 = `sha256:${"fe".repeat(32)}`;
+    },
+    (value) => {
+      value.royalty_release_history_sha256 =
+        value.royalty_release_active_state_sha256;
+    },
+    (value) => {
+      value.royalty_settlement_release_binding_template
+        .royalty_qvl_signer_key_path += "-alias";
+    },
+    (value) => {
+      value.collaboration_execution.heartbeat_claim_semantics =
+        "intel_tdx_attestation";
+    },
+    (value) => {
+      value.collaboration_execution.tdx_attestation_claimed = true;
+    },
+    (value) => {
+      value.compute_workload_wallet_adoption.device_spend_authority = true;
+    },
+    (value) => {
+      value.compute_workload_wallet_adoption
+        .credential_uploader_attribution_preserved = false;
+    },
+    (value) => {
+      value.royalty_settlement_release_binding_template.extra = false;
+    },
+    (value) => {
+      value.collaboration_execution.heartbeat = true;
+    },
+    (value) => {
+      value.compute_workload_wallet_adoption.device_can_spend = false;
+    },
+  ];
+  for (const mutate of mutations) {
+    const candidate = clone(knownVector());
+    mutate(candidate);
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(candidate),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+
+  for (const role of ["result_verifier", "attestation_verifier"]) {
+    const inferredSigner = clone(knownVector());
+    inferredSigner.royalty_release_authority.settlement_verifier =
+      inferredSigner.contracts.diligence_room[role];
+    refreshRoyaltyBindings(inferredSigner);
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(inferredSigner),
+      /Royalty settlement and QVL signers must be independent/,
+    );
+  }
+});
+
+test("v4 Royalty template is deliberately incomplete until its own digest exists", () => {
+  const normalized = normalizeFinalReleaseAuthorityCore(knownVector());
+  const template = normalized.royalty_settlement_release_binding_template;
+  assert.equal(Object.hasOwn(template, "release_authority_sha256"), false);
+  assert.equal(Object.hasOwn(template, "royalty_qvl_policy_commitment"), false);
+  assert.equal(
+    template.settlement_verifier_key_path,
+    "tinker/collaboration_royalty_settlement_signer",
+  );
+  assert.equal(
+    template.royalty_qvl_signer_key_path,
+    `dnai-wikigen/attestation-qvl/royalty-settlement-signer/v1/${template.royalty_qvl_signer_key_id.slice(2)}`,
+  );
+  assert.notEqual(
+    finalReleaseAuthorityCoreDigest(normalized),
+    template.royalty_qvl_policy_template_sha256.slice("sha256:".length),
+  );
+});
+
+test("v4 binds mandatory marker genesis and chain-sequence Royalty semantics", () => {
+  const normalized = normalizeFinalReleaseAuthorityCore(knownVector());
+  const store = normalized.execution_policy.store_contract;
+  const marker = normalized.execution_policy.release_marker_genesis;
+  assert.equal(store.surface, "execution_policy_store");
+  assert.equal(store.schema_version, 6);
+  assert.deepEqual(store.payload_fields, [
+    "sequence",
+    "records",
+    "royalty_confirmations",
+  ]);
+  assert.equal(store.policy_record_kind, "execution_policy_decision_v2");
+  assert.equal(store.royalty_record_kind, "royalty_settlement_anchor_v1");
+  assert.equal(store.previous_record_digest_field, "previous_record_digest");
+  assert.equal(store.royalty_chain_sequence_field, "chain_sequence");
+  assert.equal(marker.required, true);
+  assert.equal(marker.decision_environment_key, "TINKER_RELEASE_AUTHORITY_SHA256");
+  assert.equal(marker.marker_chain_sequence, 1);
+  assert.equal(marker.local_store_first_sequence, 1);
+  assert.equal(marker.chain_sequence_offset, 1);
+  assert.equal(marker.first_local_record_chain_sequence, 2);
+  assert.equal(
+    marker.royalty_anchor_sequence_semantics,
+    "onchain_global_sequence_including_release_marker",
+  );
+  assert.equal(Object.hasOwn(marker, "decision_hash"), false);
+  assert.equal(Object.hasOwn(marker, "release_authority_sha256"), false);
+
+  for (const mutate of [
+    (value) => { value.execution_policy.store_schema_version = 5; },
+    (value) => { delete value.execution_policy.store_contract; },
+    (value) => { value.execution_policy.store_contract.schema_version = 5; },
+    (value) => { value.execution_policy.store_contract.payload_fields.reverse(); },
+    (value) => { value.execution_policy.store_contract.royalty_chain_sequence_field = "sequence"; },
+    (value) => { delete value.execution_policy.release_marker_genesis; },
+    (value) => { value.execution_policy.release_marker_genesis.required = false; },
+    (value) => { value.execution_policy.release_marker_genesis.resource_domain += "-alias"; },
+    (value) => { value.execution_policy.release_marker_genesis.resource_hash = word("fe"); },
+    (value) => { value.execution_policy.release_marker_genesis.marker_chain_sequence = 0; },
+    (value) => { value.execution_policy.release_marker_genesis.chain_sequence_offset = 0; },
+    (value) => { value.execution_policy.release_marker_genesis.first_local_record_chain_sequence = 1; },
+    (value) => { value.execution_policy.release_marker_genesis.decision_hash = word("fe"); },
+  ]) {
+    const candidate = clone(knownVector());
+    mutate(candidate);
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(candidate),
+      FinalReleaseAuthorityCoreValidationError,
+    );
+  }
+});
+
+test("v4 binds a computed anchor-writer reserve for the marker and 32 anchors", () => {
+  const normalized = normalizeFinalReleaseAuthorityCore(knownVector());
+  const anchor = normalized.execution_policy.rollback_anchor_target;
+  const reserve = anchor.writer_gas_reserve_policy;
+  assert.equal(anchor.schema, "dnai.execution-policy-rollback-anchor.v2");
+  assert.deepEqual(reserve, EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY);
+  assert.equal(
+    BigInt(reserve.minimum_reserve_wei),
+    BigInt(reserve.release_marker_transaction_count
+      + reserve.expected_subsequent_anchor_count)
+      * BigInt(reserve.maximum_gas_per_transaction)
+      * BigInt(reserve.reviewed_max_fee_per_gas_wei),
+  );
+
+  for (const mutate of [
+    (value) => { delete value.execution_policy.rollback_anchor_target.writer_gas_reserve_policy; },
+    (value) => { value.execution_policy.rollback_anchor_target.schema = "dnai.execution-policy-rollback-anchor.v1"; },
+    (value) => { value.execution_policy.rollback_anchor_target.writer_gas_reserve_policy.expected_subsequent_anchor_count = 31; },
+    (value) => { value.execution_policy.rollback_anchor_target.writer_gas_reserve_policy.reviewed_max_fee_per_gas_wei = "02000000000"; },
+    (value) => { value.execution_policy.rollback_anchor_target.writer_gas_reserve_policy.minimum_reserve_wei = "32999999999999999"; },
+  ]) {
+    const candidate = clone(knownVector());
+    mutate(candidate);
+    assert.throws(
+      () => normalizeFinalReleaseAuthorityCore(candidate),
       FinalReleaseAuthorityCoreValidationError,
     );
   }
@@ -883,15 +1164,32 @@ test("frozen production roots, Deal posture, and control-plane role separation a
 });
 
 test("ensure-ASCII canonicalization escapes non-ASCII text", () => {
-  const candidate = clone(knownVector());
+  const candidate = historicalV2KnownVector();
   candidate.cvm.app_id = "app-é";
-  const canonical = canonicalFinalReleaseAuthorityCoreBytes(candidate).toString("ascii");
+  const canonical = canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes(
+    candidate,
+  ).toString("ascii");
   assert.ok(canonical.includes("app-\\u00e9"));
   assert.ok(!canonical.includes("é"));
 
-  const astral = canonicalFinalReleaseAuthorityCoreBytes(knownVector()).toString("ascii");
+  const astral = canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes(
+    historicalV2KnownVector(),
+  ).toString("ascii");
   assert.ok(astral.includes("app_release_core_vector_1_\\ud83e\\uddec"));
   assert.ok(!astral.includes("🧬"));
+
+  const current = clone(knownVector());
+  current.cvm.app_id = "app-é";
+  current.shared_release_lineage.main_runtime_app_id = current.cvm.app_id;
+  current.royalty_settlement_release_binding_template.app_id = current.cvm.app_id;
+  assert.throws(
+    () => canonicalFinalReleaseAuthorityCoreBytes(current),
+    /Phala app ID/,
+  );
+  assert.ok(
+    [...canonicalFinalReleaseAuthorityCoreBytes(knownVector())]
+      .every((byte) => byte < 0x80),
+  );
 });
 
 test("canonical artifact reader rejects aliases and noncanonical bytes", async () => {
@@ -907,7 +1205,20 @@ test("canonical artifact reader rejects aliases and noncanonical bytes", async (
     );
     const artifact = await readCanonicalExecutionPolicyReleaseCoreArtifact(artifactPath);
     assert.equal(artifact.digest, KNOWN_DIGEST);
-    assert.equal(artifact.core.cvm.app_id, "app_release_core_vector_1_🧬");
+    assert.equal(artifact.core.cvm.app_id, "ab".repeat(20));
+
+    const historicalPath = path.join(directory, "historical-v2-release-core.json");
+    await writeFile(
+      historicalPath,
+      canonicalHistoricalFinalReleaseAuthorityCoreV2ArtifactText(
+        historicalV2KnownVector(),
+      ),
+      "utf8",
+    );
+    await assert.rejects(
+      readCanonicalExecutionPolicyReleaseCoreArtifact(historicalPath),
+      /invalid keys|schema must equal dnai\.final-release-authority-core\.v4/,
+    );
 
     const aliasPath = path.join(directory, "release-core-alias.json");
     await symlink(artifactPath, aliasPath);

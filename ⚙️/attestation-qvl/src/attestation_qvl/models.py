@@ -20,6 +20,9 @@ MAX_BODY_BYTES = 96 * 1024
 MIN_QUOTE_BYTES = 1024
 MAX_QUOTE_BYTES = 16 * 1024
 MAX_POLICY_BYTES = 64 * 1024
+SECP256K1_HALF_ORDER = (
+    0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+)
 
 Address = Annotated[str, StringConstraints(pattern=r"^0x[0-9a-f]{40}$")]
 Bytes32 = Annotated[str, StringConstraints(pattern=r"^0x[0-9a-f]{64}$")]
@@ -51,6 +54,7 @@ DecimalUint256 = Annotated[
 ]
 QvlProfile = Literal[
     "diligence",
+    "royalty_settlement",
     "arena",
     "execution_policy_anchor_writer",
     "compute_workload",
@@ -183,6 +187,61 @@ class ComputeMeteringAuthorizationRequest(StrictModel):
         return self
 
 
+class RoyaltySettlementAuthorizationRequest(StrictModel):
+    """Every field in RoyaltyDistributor v3's reserved QVL authorization."""
+
+    schema_id: Literal[
+        "dnai.royalty-settlement-qvl-authorization-request.v2"
+    ] = Field(alias="schema", serialization_alias="schema")
+    settlement_id: NonzeroBytes32
+    settlement_nonce: DecimalUint256
+    funding_reservation_id: NonzeroBytes32
+    release_policy_commitment: NonzeroBytes32
+    room_commitment: NonzeroBytes32
+    room_state_commitment: NonzeroBytes32
+    query_commitment: NonzeroBytes32
+    grant_set_commitment: NonzeroBytes32
+    allocation_commitment: NonzeroBytes32
+    owners_amounts_hash: NonzeroBytes32
+    asset: Address
+    total: DecimalUint256
+    execution_commitment: NonzeroBytes32
+    result_commitment: NonzeroBytes32
+    usage_commitment: NonzeroBytes32
+    attestation_evidence_hash: NonzeroBytes32
+    anchor_resource_hash: NonzeroBytes32
+    anchor_decision_hash: NonzeroBytes32
+    anchor_sequence: DecimalUint256
+    expiry: int = Field(ge=1, le=4_102_444_800)
+    settlement_authorization_digest: NonzeroBytes32
+    settlement_authorization_signature: Signature65
+
+    @model_validator(mode="after")
+    def require_nonzero_contract_quantities(
+        self,
+    ) -> "RoyaltySettlementAuthorizationRequest":
+        if any(
+            int(value) == 0
+            for value in (
+                self.settlement_nonce,
+                self.total,
+                self.anchor_sequence,
+            )
+        ):
+            raise ValueError("royalty settlement quantities must be nonzero")
+        encoded = bytes.fromhex(self.settlement_authorization_signature[2:])
+        r = int.from_bytes(encoded[:32], "big")
+        s = int.from_bytes(encoded[32:64], "big")
+        if (
+            r == 0
+            or s == 0
+            or s > SECP256K1_HALF_ORDER
+            or encoded[64] not in (27, 28)
+        ):
+            raise ValueError("royalty settlement signature is not canonical")
+        return self
+
+
 class ComputeWorkloadRecipientAttestation(StrictModel):
     """Dynamic main-CVM recipient identity bound into one fresh TDX quote.
 
@@ -238,6 +297,7 @@ class IndependentVerificationRequest(StrictModel):
     expectation: SignerAttestationExpectation
     result_authorization: DiligenceResultAuthorizationRequest | None = None
     compute_authorization: ComputeMeteringAuthorizationRequest | None = None
+    royalty_authorization: RoyaltySettlementAuthorizationRequest | None = None
     compute_workload_recipient: ComputeWorkloadRecipientAttestation | None = None
 
     @model_validator(mode="after")
@@ -245,6 +305,7 @@ class IndependentVerificationRequest(StrictModel):
         domains = (
             self.result_authorization,
             self.compute_authorization,
+            self.royalty_authorization,
             self.compute_workload_recipient,
         )
         if sum(value is not None for value in domains) > 1:
@@ -320,6 +381,38 @@ class TdxMeasurements(StrictModel):
 
 class DiligenceResultSignerBinding(StrictModel):
     kind: Literal["diligence_result_signer_v1"]
+
+
+class RoyaltySettlementQvlBinding(StrictModel):
+    """Purpose policy for the Diligence QVL's RoyaltyDistributor appraisal."""
+
+    kind: Literal["royalty_settlement_qvl_v2"]
+    owner: Address
+    distributor_address: Address
+    distributor_runtime_code_hash: NonzeroBytes32
+    settlement_verifier: Address
+    settlement_verifier_key_path: Literal[
+        "tinker/collaboration_royalty_settlement_signer"
+    ]
+    settlement_verifier_custody: Literal[
+        "dstack_derived_main_runtime_royalty_settlement_signer"
+    ]
+    execution_policy_anchor: Address
+    anchor_writer_release_commitment: NonzeroBytes32
+    release_policy_commitment: NonzeroBytes32
+    authority_nonce: DecimalUint256
+    qvl_signer_key_id: NonzeroBytes32
+    main_runtime_cvm_id: CvmId
+    deployment_intent_sha256: Sha256Digest
+    release_authority_sha256: Sha256Digest
+    measurement_policy_sha256: Sha256Digest
+    max_authorization_lifetime_seconds: Literal[600]
+
+    @model_validator(mode="after")
+    def require_nonzero_authority_nonce(self) -> "RoyaltySettlementQvlBinding":
+        if int(self.authority_nonce) == 0:
+            raise ValueError("royalty settlement authority nonce must be nonzero")
+        return self
 
 
 class ArenaCandidateIngressBinding(StrictModel):
@@ -404,6 +497,7 @@ class ReleasePolicy(StrictModel):
     os_image_hash: BareSha256
     allowed_signer_addresses: tuple[Address, ...] = Field(max_length=64)
     report_data_binding: ReportDataBinding
+    royalty_settlement_binding: RoyaltySettlementQvlBinding | None = None
     email_oracle_kms_restart_binding: EmailOracleKmsRestartBinding | None = None
     measurements: TdxMeasurements
     allowed_tcb_statuses: tuple[Literal["OK"], ...] = Field(default=("OK",), min_length=1, max_length=1)
@@ -449,6 +543,31 @@ class ReleasePolicy(StrictModel):
                 raise ValueError("compute metering vault must be nonzero")
             if len(self.allowed_signer_addresses) != 1:
                 raise ValueError("compute metering release must pin exactly one signer")
+        if self.royalty_settlement_binding is not None:
+            if not isinstance(self.report_data_binding, DiligenceResultSignerBinding):
+                raise ValueError(
+                    "royalty settlement binding is restricted to the Diligence QVL"
+                )
+            if self.chain_id != 84_532 or len(self.allowed_signer_addresses) != 1:
+                raise ValueError(
+                    "royalty settlement release must pin Base Sepolia and one main-runtime signer"
+                )
+            binding = self.royalty_settlement_binding
+            if binding.settlement_verifier != self.allowed_signer_addresses[0]:
+                raise ValueError(
+                    "royalty settlement verifier must be the pinned main-runtime signer"
+                )
+            roles = (
+                self.contract_address,
+                binding.owner,
+                binding.distributor_address,
+                binding.settlement_verifier,
+                binding.execution_policy_anchor,
+            )
+            if any(int(address[2:], 16) == 0 for address in roles) or len(
+                set(roles)
+            ) != len(roles):
+                raise ValueError("royalty settlement release roles must be nonzero and distinct")
         if self.email_oracle_kms_restart_binding is not None:
             if not isinstance(self.report_data_binding, DiligenceResultSignerBinding):
                 raise ValueError("email/KMS restart binding is restricted to the Diligence QVL")
@@ -509,6 +628,16 @@ class IndependentTdxVerdict(StrictModel):
     )
     qvl_compute_authorization_digest: NonzeroBytes32 | None = None
     qvl_compute_authorization_signature: Signature65 | None = None
+    qvl_royalty_verifier_address: Address | None = None
+    qvl_royalty_policy_commitment: NonzeroBytes32 | None = None
+    qvl_royalty_release_policy_commitment: NonzeroBytes32 | None = None
+    qvl_royalty_attestation_evidence_hash: NonzeroBytes32 | None = None
+    qvl_royalty_anchor_evidence_commitment: NonzeroBytes32 | None = None
+    qvl_royalty_authorization_expiry: int | None = Field(
+        default=None, ge=1, le=4_102_444_800
+    )
+    qvl_royalty_authorization_digest: NonzeroBytes32 | None = None
+    qvl_royalty_authorization_signature: Signature65 | None = None
 
     @model_validator(mode="after")
     def require_complete_qvl_result_authorization(self) -> "IndependentTdxVerdict":
@@ -545,9 +674,25 @@ class IndependentTdxVerdict(StrictModel):
             value is None for value in compute_values
         ):
             raise ValueError("QVL compute authorization fields must be supplied together")
-        if any(value is not None for value in values) and any(
-            value is not None for value in compute_values
+        royalty_values = (
+            self.qvl_royalty_verifier_address,
+            self.qvl_royalty_policy_commitment,
+            self.qvl_royalty_release_policy_commitment,
+            self.qvl_royalty_attestation_evidence_hash,
+            self.qvl_royalty_anchor_evidence_commitment,
+            self.qvl_royalty_authorization_expiry,
+            self.qvl_royalty_authorization_digest,
+            self.qvl_royalty_authorization_signature,
+        )
+        if any(value is not None for value in royalty_values) and any(
+            value is None for value in royalty_values
         ):
+            raise ValueError("QVL royalty authorization fields must be supplied together")
+        populated_domains = sum(
+            any(value is not None for value in domain)
+            for domain in (values, compute_values, royalty_values)
+        )
+        if populated_domains > 1:
             raise ValueError("QVL authorization domains are mutually exclusive")
         return self
 
@@ -558,6 +703,30 @@ class IdentityResponse(StrictModel):
     release_policy_hash: NonzeroBytes32
     signer_custody: Literal["dstack_derived_separate_cvm"]
     raw_secret_egress: Literal[False]
+
+
+class CapabilityResponse(StrictModel):
+    schema_id: Literal["dnai.attestation-qvl-capabilities.v1"] = Field(
+        alias="schema", serialization_alias="schema"
+    )
+    royalty_settlement_qvl_enabled: bool
+    royalty_authorization_schema: Literal[
+        "dnai.royalty-settlement-qvl-authorization-request.v2"
+    ] | None = None
+    royalty_qvl_verifier_address: Address | None = None
+    royalty_qvl_policy_commitment: NonzeroBytes32 | None = None
+    raw_secret_egress: Literal[False]
+
+    @model_validator(mode="after")
+    def require_truthful_royalty_capability(self) -> "CapabilityResponse":
+        configured = (
+            self.royalty_authorization_schema is not None
+            and self.royalty_qvl_verifier_address is not None
+            and self.royalty_qvl_policy_commitment is not None
+        )
+        if self.royalty_settlement_qvl_enabled != configured:
+            raise ValueError("royalty settlement capability is incomplete")
+        return self
 
 
 class IdentityAttestationRequest(StrictModel):

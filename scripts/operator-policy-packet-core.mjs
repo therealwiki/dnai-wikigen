@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA as CURRENT_FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
   canonicalFinalReleaseAuthorityCoreArtifactText,
   finalReleaseAuthorityCoreDigest,
   normalizeFinalReleaseAuthorityCore,
@@ -13,10 +14,21 @@ import {
   normalizeFreshContractDeploymentReceipt,
   normalizeCvmLaunchIntentCore,
 } from "./cvm-launch-intent-core.mjs";
+import {
+  TINKER_ACCOUNT_BINDING_SCHEMA,
+  TINKER_ACCOUNT_BINDING_TYPEHASH,
+  TINKER_PROVIDER_NAMESPACE,
+} from "./tinker-account-binding-core.mjs";
+import {
+  executionPolicyReviewerHash,
+  executionPolicyReviewerRootHash,
+  PINNED_EIP191_SIGNATURE_SCHEME,
+  reviewerSetSha256,
+} from "./release-authority-signature-verifier-core.mjs";
 
 export const DEPLOYMENT_INTENT_CORE_SCHEMA = "dnai.deployment-intent-core.v6";
 export const FINAL_RELEASE_AUTHORITY_CORE_SCHEMA =
-  "dnai.final-release-authority-core.v2";
+  CURRENT_FINAL_RELEASE_AUTHORITY_CORE_SCHEMA;
 export const AUTHORITY_REVIEW_ENVELOPE_SCHEMA =
   "dnai.authority-review-envelope.v1";
 export const FINAL_RELEASE_AUTHORITY_EVIDENCE_SCHEMA =
@@ -346,6 +358,9 @@ export function createDraftDeploymentIntentCore() {
       operatorAddress: null,
     },
     staticContractInputs: {
+      diligenceRoom: {
+        governanceController: null,
+      },
       computeCreditVault: {
         developer: null,
       },
@@ -484,9 +499,19 @@ function validateScope(errors, scope, path) {
 
 function validateStaticContractInputs(errors, inputs, path) {
   if (!exactKeys(errors, inputs, path, [
+    "diligenceRoom",
     "computeCreditVault",
     "tinkerAccountEncumbrance",
   ])) return;
+  if (exactKeys(errors, inputs.diligenceRoom, `${path}.diligenceRoom`, [
+    "governanceController",
+  ])) {
+    requireAddress(
+      errors,
+      inputs.diligenceRoom.governanceController,
+      `${path}.diligenceRoom.governanceController`,
+    );
+  }
   if (exactKeys(errors, inputs.computeCreditVault, `${path}.computeCreditVault`, [
     "developer",
   ])) {
@@ -549,7 +574,7 @@ function validateNumericPolicy(errors, numericPolicy, path) {
     "tinkerMaxAddBalanceWei",
     "tinkerMaxSpendWei",
   ])) {
-    requireInteger(errors, contract.computeDeveloperFeeBps, `${path}.contract.computeDeveloperFeeBps`, 0, 2_000);
+    requireInteger(errors, contract.computeDeveloperFeeBps, `${path}.contract.computeDeveloperFeeBps`, 0, 100);
     requireInteger(errors, contract.emailOracleUpgradeDelaySeconds, `${path}.contract.emailOracleUpgradeDelaySeconds`, 172_800, 31_536_000);
     requireUint256String(errors, contract.tinkerMaxAddBalanceWei, `${path}.contract.tinkerMaxAddBalanceWei`, { positive: true });
     requireUint256String(errors, contract.tinkerMaxSpendWei, `${path}.contract.tinkerMaxSpendWei`, { positive: true });
@@ -628,6 +653,33 @@ export function validateDeploymentIntentCore(intent) {
       addError(errors, "$.deploymentControl.foundryAccount", "must name the supported encrypted Foundry account dev");
     }
   }
+  const operatorAddress = intent.deploymentControl?.operatorAddress;
+  const diligenceGovernanceController =
+    intent.staticContractInputs?.diligenceRoom?.governanceController;
+  const computeDeveloper =
+    intent.staticContractInputs?.computeCreditVault?.developer;
+  if (
+    typeof operatorAddress === "string"
+    && typeof diligenceGovernanceController === "string"
+    && operatorAddress === diligenceGovernanceController
+  ) {
+    addError(
+      errors,
+      "$.staticContractInputs.diligenceRoom.governanceController",
+      "must be distinct from the deployment operator",
+    );
+  }
+  if (
+    typeof computeDeveloper === "string"
+    && typeof diligenceGovernanceController === "string"
+    && computeDeveloper === diligenceGovernanceController
+  ) {
+    addError(
+      errors,
+      "$.staticContractInputs.diligenceRoom.governanceController",
+      "must be distinct from the ComputeCreditVault developer",
+    );
+  }
   validateNumericPolicy(errors, intent.numericPolicy, "$.numericPolicy");
   if (exactKeys(errors, intent.dynamicRuntimeAuthorities, "$.dynamicRuntimeAuthorities", [
     "contractAddresses",
@@ -668,7 +720,7 @@ export function validateDeploymentIntentCore(intent) {
       canonicalCvmCount: CANONICAL_CVMS.length,
       dynamicRuntimeAuthorityCount: 0,
       qvlNumericPolicyCount: QVL_POLICY_KEYS.length,
-      staticContractInputCount: 2,
+      staticContractInputCount: 3,
     },
   };
 }
@@ -719,6 +771,7 @@ export function parseDeploymentIntentCoreText(text) {
 export function parseFreshContractDeploymentReceiptText(text, {
   expectedDeploymentIntentSha256,
   expectedReviewerAuthorityGenesisAcceptanceSha256,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
 } = {}) {
   const parsed = parseCanonicalArtifactText(text, {
     label: "fresh-contract deployment receipt",
@@ -729,6 +782,7 @@ export function parseFreshContractDeploymentReceiptText(text, {
     receipt = normalizeFreshContractDeploymentReceipt(parsed.artifact, {
       expectedDeploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256,
     });
   } catch (error) {
     return {
@@ -754,6 +808,7 @@ export function parseFreshContractDeploymentReceiptText(text, {
     receiptSha256: `sha256:${freshContractDeploymentReceiptDigest(receipt, {
       expectedDeploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256,
     })}`,
   };
 }
@@ -863,6 +918,142 @@ function collectOccupiedIdentities(subject) {
   return { addresses, controllerIds };
 }
 
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_FIELDS = Object.freeze([
+  "account_commitment",
+  "attested_provider_binding_required",
+  "binding_chain_id",
+  "binding_commitment_typehash",
+  "binding_scheme",
+  "ceremony_sha256",
+  "deployment_intent_matched",
+  "deployment_intent_sha256",
+  "environment_commitment_matched",
+  "historical_replay",
+  "intent_sha256",
+  "network_request_performed",
+  "provider_identifier_committed",
+  "provider_namespace",
+  "raw_binding_root_egress",
+  "raw_share_egress",
+  "remote_state_mutated",
+  "reviewer_authority_current_status_sha256",
+  "reviewer_authority_genesis_acceptance_sha256",
+  "reviewer_root_hash",
+  "reviewer_set_sha256",
+  "schema",
+  "share_or_root_digest_published",
+  "signature_scheme",
+  "signature_verification_subprocess_invoked",
+  "signers",
+  "status",
+  "tinker_account_binding_ceremony_receipt_sha256",
+  "truth_status",
+  "verified_signature_count",
+]);
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_DOMAIN =
+  "dnai-wikigen/tinker-account-binding-ceremony-receipt/v1\0";
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_TRUTH_STATUS =
+  "opaque_attested_account_binding_handle_not_provider_identifier_proof_requires_later_measured_provider_binding";
+
+function normalizeAuthenticatedTinkerAccountBindingCeremonyReceiptForReview(
+  value,
+) {
+  if (!isPlainObject(value)
+    || JSON.stringify(Object.keys(value).sort())
+      !== JSON.stringify([...TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_FIELDS].sort())) {
+    throw new TypeError("ceremony receipt fields are not exact");
+  }
+  const digestFields = [
+    "ceremony_sha256",
+    "deployment_intent_sha256",
+    "intent_sha256",
+    "reviewer_authority_current_status_sha256",
+    "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_set_sha256",
+    "tinker_account_binding_ceremony_receipt_sha256",
+  ];
+  if (digestFields.some((field) => (
+    typeof value[field] !== "string"
+    || !HASH_PATTERN.test(value[field])
+    || value[field] === `sha256:${"0".repeat(64)}`
+  ))) {
+    throw new TypeError("ceremony receipt digest is invalid");
+  }
+  if (value.schema !== "dnai.tinker-account-binding-ceremony-receipt.v1"
+    || value.truth_status
+      !== TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_TRUTH_STATUS
+    || value.status
+      !== "tinker_account_binding_two_reviewer_ceremony_verified"
+    || value.historical_replay !== false
+    || value.environment_commitment_matched !== true
+    || value.deployment_intent_matched !== true
+    || value.attested_provider_binding_required !== true
+    || value.network_request_performed !== false
+    || value.provider_identifier_committed !== false
+    || value.raw_binding_root_egress !== false
+    || value.raw_share_egress !== false
+    || value.remote_state_mutated !== false
+    || value.share_or_root_digest_published !== false
+    || value.signature_verification_subprocess_invoked !== true
+    || value.verified_signature_count !== 2
+    || value.binding_chain_id !== 84_532
+    || value.binding_commitment_typehash !== TINKER_ACCOUNT_BINDING_TYPEHASH
+    || value.binding_scheme !== TINKER_ACCOUNT_BINDING_SCHEMA
+    || value.provider_namespace !== TINKER_PROVIDER_NAMESPACE
+    || value.signature_scheme !== PINNED_EIP191_SIGNATURE_SCHEME
+    || !BYTES32_PATTERN.test(value.account_commitment)
+    || value.account_commitment === ZERO_BYTES32
+    || typeof value.reviewer_root_hash !== "string"
+    || !/^(?!0{64}$)[0-9a-f]{64}$/.test(value.reviewer_root_hash)) {
+    throw new TypeError("ceremony receipt semantics are invalid");
+  }
+  if (!Array.isArray(value.signers) || value.signers.length !== 2) {
+    throw new TypeError("ceremony receipt requires exactly two signers");
+  }
+  const signers = value.signers.map((signer) => {
+    if (!isPlainObject(signer)
+      || JSON.stringify(Object.keys(signer).sort())
+        !== JSON.stringify(["address", "controller_id", "signature_sha256"])) {
+      throw new TypeError("ceremony receipt signer fields are not exact");
+    }
+    if (!validAddress(signer.address)
+      || !CONTROLLER_ID_PATTERN.test(signer.controller_id)
+      || !HASH_PATTERN.test(signer.signature_sha256)
+      || signer.signature_sha256 === `sha256:${"0".repeat(64)}`) {
+      throw new TypeError("ceremony receipt signer is invalid");
+    }
+    return { ...signer };
+  });
+  if (signers[0].address >= signers[1].address
+    || signers[0].controller_id === signers[1].controller_id
+    || executionPolicyReviewerRootHash(
+      signers.map(({ address }) => executionPolicyReviewerHash(address)).sort(),
+    ) !== value.reviewer_root_hash
+    || reviewerSetSha256(
+      signers.map(({ address, controller_id }) => ({
+        address,
+        controller_id,
+      })),
+    ) !== value.reviewer_set_sha256) {
+    throw new TypeError("ceremony receipt signer authority is invalid");
+  }
+  const body = Object.fromEntries(
+    Object.entries(value).filter(
+      ([field]) => field
+        !== "tinker_account_binding_ceremony_receipt_sha256",
+    ),
+  );
+  const expectedDigest = `sha256:${createHash("sha256")
+    .update(TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_DOMAIN, "utf8")
+    .update(canonicalArtifactText(body), "utf8")
+    .digest("hex")}`;
+  if (value.tinker_account_binding_ceremony_receipt_sha256
+      !== expectedDigest) {
+    throw new TypeError("ceremony receipt self-digest is invalid");
+  }
+  return sortedObject({ ...value, signers });
+}
+
 function validateAuthorityDependencies(subjectDescriptor, authorityDependencies, errors) {
   const kind = subjectDescriptor?.subjectKind;
   if (kind === "deployment_intent") {
@@ -878,7 +1069,11 @@ function validateAuthorityDependencies(subjectDescriptor, authorityDependencies,
     return [];
   }
   const requiredKeys = kind === "cvm_launch_intent"
-    ? ["deploymentIntent", "freshContractDeploymentReceipt"]
+    ? [
+      "deploymentIntent",
+      "freshContractDeploymentReceipt",
+      "tinkerAccountBindingCeremonyReceipt",
+    ]
     : kind === "final_release_authority"
       ? ["deploymentIntent", "cvmLaunchIntent"]
       : [];
@@ -923,10 +1118,53 @@ function validateAuthorityDependencies(subjectDescriptor, authorityDependencies,
   }
 
   if (kind === "cvm_launch_intent") {
+    let tinkerAccountBindingCeremonyReceipt;
+    try {
+      tinkerAccountBindingCeremonyReceipt =
+        normalizeAuthenticatedTinkerAccountBindingCeremonyReceiptForReview(
+          authorityDependencies.tinkerAccountBindingCeremonyReceipt,
+        );
+    } catch {
+      addError(
+        errors,
+        "$options.authorityDependencies.tinkerAccountBindingCeremonyReceipt",
+        "must be the exact authenticated Tinker account-binding ceremony receipt",
+      );
+      return [deploymentIntent];
+    }
+    const bindingCeremonyReceiptSha256 =
+      tinkerAccountBindingCeremonyReceipt
+        .tinker_account_binding_ceremony_receipt_sha256;
+    if (tinkerAccountBindingCeremonyReceipt.historical_replay !== false
+      || tinkerAccountBindingCeremonyReceipt.binding_chain_id
+        !== deploymentIntent.network.chainId
+      || tinkerAccountBindingCeremonyReceipt.deployment_intent_sha256
+        !== deploymentIntentSha256
+      || tinkerAccountBindingCeremonyReceipt
+        .reviewer_authority_genesis_acceptance_sha256
+          !== deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256
+      || tinkerAccountBindingCeremonyReceipt
+        .reviewer_authority_current_status_sha256
+          !== deploymentIntent.release.reviewerAuthorityCurrentStatusSha256
+      || tinkerAccountBindingCeremonyReceipt.account_commitment
+        !== deploymentIntent.staticContractInputs.tinkerAccountEncumbrance
+          .accountCommitment) {
+      addError(
+        errors,
+        "$options.authorityDependencies.tinkerAccountBindingCeremonyReceipt",
+        "freshness, network, intent, reviewer authority, and account commitment must match the deployment intent",
+      );
+      return [deploymentIntent, tinkerAccountBindingCeremonyReceipt];
+    }
     const freshReceiptAuthorityPins = {
       expectedDeploymentIntentSha256: deploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      // The two-reviewer ceremony is authenticated before projection. At this
+      // review boundary its self-digest is carried inside the exact receipt
+      // whose whole domain-separated digest is the signed review subject.
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        bindingCeremonyReceiptSha256,
     };
     let receipt;
     try {
@@ -956,7 +1194,7 @@ function validateAuthorityDependencies(subjectDescriptor, authorityDependencies,
         "digest, release, intent, and deployment operator must match the reviewed launch subject",
       );
     }
-    return [deploymentIntent, receipt];
+    return [deploymentIntent, tinkerAccountBindingCeremonyReceipt, receipt];
   }
 
   let launchIntent;

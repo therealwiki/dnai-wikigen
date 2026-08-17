@@ -77,6 +77,7 @@ contract DiligenceRoom {
     uint256 public constant FEE_TIMELOCK_DELAY = 2 days;
     uint256 public constant ADMISSION_TIMELOCK_DELAY = 2 days;
     uint256 public constant ATTESTATION_BINDING_TIMELOCK_DELAY = 2 days;
+    uint256 public constant DEVELOPER_TRANSFER_DELAY = 2 days;
     uint256 public constant MAX_RESULT_AUTHORIZATION_LIFETIME = 10 minutes;
     // EIP-2 lower-half-order bound. Rejecting high-s signatures makes each
     // authorization canonical and avoids accepting malleated verifier proofs.
@@ -99,7 +100,22 @@ contract DiligenceRoom {
     uint256 public constant REQUIRED_EVALUATOR_POLICY_COUNT = 3;
 
     // ── State ──────────────────────────────────────────────────────────
-    address public immutable developer;
+    /// @notice Current governance controller and protocol-fee recipient.
+    ///         Fresh releases begin with the deployment operator, then move to
+    ///         the separately reviewed permanent controller through the delayed
+    ///         two-step ceremony below.
+    address public developer;
+    /// @notice Immutable deployment operator. Production deal activity remains
+    ///         fail-closed while this address is still the developer, even if a
+    ///         pending handoff was cancelled or phase-3 calls were mined
+    ///         separately. It can never be restored as production developer.
+    address public immutable initialDeveloper;
+    /// @notice Constructor-bound production controller from the reviewed
+    ///         deployment intent. Production deal activity is live only while
+    ///         this exact address is the current developer.
+    address public immutable releaseGovernanceController;
+    address public pendingDeveloper;
+    uint256 public pendingDeveloperActivatesAt;
     /// @notice Constructor-bound release posture. Production rooms are
     /// fail-closed from the deployment transaction itself and cannot admit,
     /// fund, or evaluate a deal until every reviewed attestation and
@@ -258,6 +274,11 @@ contract DiligenceRoom {
     event EvaluatorPolicyProposalCancelled(bytes32 indexed evaluatorPolicyCommitment);
     event EvaluatorPolicyRemoved(bytes32 indexed evaluatorPolicyCommitment);
     event EvaluatorPolicySetFrozen(bytes32 indexed evaluatorPolicySetRoot);
+    event DeveloperTransferProposed(
+        address indexed currentDeveloper, address indexed pendingDeveloper, uint256 activatesAt
+    );
+    event DeveloperTransferProposalCancelled(address indexed currentDeveloper, address indexed pendingDeveloper);
+    event DeveloperTransferred(address indexed previousDeveloper, address indexed newDeveloper);
 
     // ── Errors ─────────────────────────────────────────────────────────
     error InvalidState(State expected, State actual);
@@ -291,6 +312,17 @@ contract DiligenceRoom {
     error InvalidResultAuthorization();
     error InvalidAttestationAuthorization();
     error NotDeveloper();
+    error ZeroDeveloper();
+    error DeveloperUnchanged();
+    error DeveloperTransferProposalExists();
+    error DeveloperTransferProposalMissing();
+    error NotPendingDeveloper();
+    error DeveloperTransferActivationTooEarly(uint256 activatesAt);
+    error InitialDeveloperCannotBeRestored();
+    error ZeroReleaseGovernanceController();
+    error InvalidReleaseGovernanceController();
+    error UnreviewedInitialGovernanceHandoff();
+    error FinalReleaseGovernanceControllerCannotTransfer();
     error ComposeHashNotApproved();
     error TeeIdentityNotApproved();
     error ComposeHashIdentityMismatch();
@@ -344,9 +376,78 @@ contract DiligenceRoom {
     }
 
     // ── Constructor ────────────────────────────────────────────────────
-    constructor(bool initialProductionRelease) {
+    constructor(bool initialProductionRelease, address initialReleaseGovernanceController) {
+        if (initialProductionRelease) {
+            if (initialReleaseGovernanceController == address(0)) {
+                revert ZeroReleaseGovernanceController();
+            }
+            if (initialReleaseGovernanceController == msg.sender || initialReleaseGovernanceController == address(this))
+            {
+                revert InvalidReleaseGovernanceController();
+            }
+        } else if (initialReleaseGovernanceController != address(0)) {
+            revert InvalidReleaseGovernanceController();
+        }
         developer = msg.sender;
+        initialDeveloper = msg.sender;
+        releaseGovernanceController = initialReleaseGovernanceController;
         productionRelease = initialProductionRelease;
+        emit DeveloperTransferred(address(0), msg.sender);
+    }
+
+    /// @notice Stage the exact permanent governance controller. The current
+    ///         developer may cancel during the review window, but only the
+    ///         proposed controller can accept after the fixed delay.
+    function proposeDeveloper(address newDeveloper) external {
+        if (msg.sender != developer) revert NotDeveloper();
+        if (productionRelease && developer == releaseGovernanceController) {
+            revert FinalReleaseGovernanceControllerCannotTransfer();
+        }
+        if (newDeveloper == address(0)) revert ZeroDeveloper();
+        if (newDeveloper == developer) revert DeveloperUnchanged();
+        if (productionRelease && newDeveloper == initialDeveloper) {
+            revert InitialDeveloperCannotBeRestored();
+        }
+        if (productionRelease && developer == initialDeveloper && newDeveloper != releaseGovernanceController) {
+            revert UnreviewedInitialGovernanceHandoff();
+        }
+        if (pendingDeveloperActivatesAt != 0) revert DeveloperTransferProposalExists();
+        if (_developerRoleConflict(newDeveloper)) revert RoleConflict();
+
+        pendingDeveloper = newDeveloper;
+        pendingDeveloperActivatesAt = block.timestamp + DEVELOPER_TRANSFER_DELAY;
+        emit DeveloperTransferProposed(developer, newDeveloper, pendingDeveloperActivatesAt);
+    }
+
+    /// @notice Cancel a staged governance handoff before acceptance.
+    function cancelDeveloperProposal() external {
+        if (msg.sender != developer) revert NotDeveloper();
+        if (pendingDeveloperActivatesAt == 0) revert DeveloperTransferProposalMissing();
+
+        address proposedDeveloper = pendingDeveloper;
+        pendingDeveloper = address(0);
+        pendingDeveloperActivatesAt = 0;
+        emit DeveloperTransferProposalCancelled(developer, proposedDeveloper);
+    }
+
+    /// @notice Accept governance after the full review delay. Acceptance
+    ///         rechecks role separation so no verifier or admitted TEE identity
+    ///         can become the room's governance controller.
+    function acceptDeveloper() external {
+        if (msg.sender != pendingDeveloper) revert NotPendingDeveloper();
+        uint256 activatesAt = pendingDeveloperActivatesAt;
+        if (activatesAt == 0) revert DeveloperTransferProposalMissing();
+        if (block.timestamp < activatesAt) revert DeveloperTransferActivationTooEarly(activatesAt);
+        if (productionRelease && msg.sender == initialDeveloper) {
+            revert InitialDeveloperCannotBeRestored();
+        }
+        if (_developerRoleConflict(msg.sender)) revert RoleConflict();
+
+        address previousDeveloper = developer;
+        developer = msg.sender;
+        pendingDeveloper = address(0);
+        pendingDeveloperActivatesAt = 0;
+        emit DeveloperTransferred(previousDeveloper, msg.sender);
     }
 
     /// @notice Stage the result signer derived from the final main runtime.
@@ -355,9 +456,9 @@ contract DiligenceRoom {
         if (resultVerifierFrozen) revert ResultVerifierBindingFrozenError();
         if (verifier == address(0)) revert ZeroResultVerifier();
         if (
-            verifier == developer || verifier == address(this) || verifier == attestationVerifier
-                || verifier == pendingAttestationVerifier || teeIdentityComposeHash[verifier] != bytes32(0)
-                || pendingTeeIdentityActivations[verifier] != 0
+            verifier == developer || verifier == pendingDeveloper || verifier == address(this)
+                || verifier == attestationVerifier || verifier == pendingAttestationVerifier
+                || teeIdentityComposeHash[verifier] != bytes32(0) || pendingTeeIdentityActivations[verifier] != 0
         ) revert RoleConflict();
         if (pendingResultVerifierActivatesAt != 0) revert ResultVerifierProposalExists();
         pendingResultVerifier = verifier;
@@ -371,6 +472,7 @@ contract DiligenceRoom {
         uint256 activatesAt = pendingResultVerifierActivatesAt;
         if (activatesAt == 0) revert ResultVerifierProposalMissing();
         if (block.timestamp < activatesAt) revert ResultVerifierActivationTooEarly(activatesAt);
+        if (pendingResultVerifier == pendingDeveloper) revert RoleConflict();
         resultVerifier = pendingResultVerifier;
         pendingResultVerifier = address(0);
         pendingResultVerifierActivatesAt = 0;
@@ -404,9 +506,9 @@ contract DiligenceRoom {
         if (verifier == address(0)) revert ZeroAttestationVerifier();
         if (releasePolicyHash == bytes32(0)) revert ZeroAttestationReleasePolicyHash();
         if (
-            verifier == developer || verifier == resultVerifier || verifier == pendingResultVerifier
-                || verifier == address(this) || teeIdentityComposeHash[verifier] != bytes32(0)
-                || pendingTeeIdentityActivations[verifier] != 0
+            verifier == developer || verifier == pendingDeveloper || verifier == resultVerifier
+                || verifier == pendingResultVerifier || verifier == address(this)
+                || teeIdentityComposeHash[verifier] != bytes32(0) || pendingTeeIdentityActivations[verifier] != 0
         ) revert RoleConflict();
         if (pendingAttestationBindingActivatesAt != 0) revert AttestationBindingProposalExists();
 
@@ -425,6 +527,7 @@ contract DiligenceRoom {
         if (block.timestamp < activatesAt) revert AttestationBindingActivationTooEarly(activatesAt);
 
         address verifier = pendingAttestationVerifier;
+        if (verifier == pendingDeveloper) revert RoleConflict();
         bytes32 releasePolicyHash = pendingAttestationReleasePolicyHash;
         attestationVerifier = verifier;
         attestationReleasePolicyHash = releasePolicyHash;
@@ -694,9 +797,9 @@ contract DiligenceRoom {
         if (teeIdentityAdditionsFrozen) revert AdmissionAdditionsFrozen();
         if (teeIdentity == address(0)) revert ZeroTEEIdentity();
         if (
-            teeIdentity == developer || teeIdentity == resultVerifier || teeIdentity == pendingResultVerifier
-                || teeIdentity == address(this) || teeIdentity == attestationVerifier
-                || teeIdentity == pendingAttestationVerifier
+            teeIdentity == developer || teeIdentity == pendingDeveloper || teeIdentity == resultVerifier
+                || teeIdentity == pendingResultVerifier || teeIdentity == address(this)
+                || teeIdentity == attestationVerifier || teeIdentity == pendingAttestationVerifier
         ) {
             revert RoleConflict();
         }
@@ -719,6 +822,7 @@ contract DiligenceRoom {
         uint256 activatesAt = pendingTeeIdentityActivations[teeIdentity];
         if (activatesAt == 0) revert AdmissionProposalMissing();
         if (block.timestamp < activatesAt) revert AdmissionActivationTooEarly(activatesAt);
+        if (teeIdentity == pendingDeveloper) revert RoleConflict();
         bytes32 composeHash = pendingTeeIdentityComposeHash[teeIdentity];
         if (!approvedComposeHashes[composeHash]) revert ComposeHashNotApproved();
         delete pendingTeeIdentityComposeHash[teeIdentity];
@@ -1162,7 +1266,7 @@ contract DiligenceRoom {
         uint256 buyerRefund = d.budgetCap - totalOut;
         address token = d.paymentToken;
         _accruePayout(dealId, token, d.seller, dealPayment);
-        _accruePayout(dealId, token, developer, devPayment);
+        _accruePayout(dealId, token, protocolFeeRecipient(), devPayment);
         _accruePayout(dealId, token, d.buyer, buyerRefund);
 
         emit DealAccepted(dealId, dealPayment, devPayment, buyerRefund);
@@ -1181,7 +1285,7 @@ contract DiligenceRoom {
         uint256 devPayment = d.computeCost + d.fee;
         uint256 buyerRefund = d.budgetCap - devPayment;
         address token = d.paymentToken;
-        _accruePayout(dealId, token, developer, devPayment);
+        _accruePayout(dealId, token, protocolFeeRecipient(), devPayment);
         _accruePayout(dealId, token, d.buyer, buyerRefund);
 
         emit DealRejected(dealId, devPayment, buyerRefund);
@@ -1209,7 +1313,7 @@ contract DiligenceRoom {
         uint256 devPayment = d.computeCost + d.fee;
         uint256 refund = d.budgetCap - devPayment;
         address token = d.paymentToken;
-        _accruePayout(dealId, token, developer, devPayment);
+        _accruePayout(dealId, token, protocolFeeRecipient(), devPayment);
         _accruePayout(dealId, token, d.buyer, refund);
 
         emit DealExpired(dealId, refund);
@@ -1255,7 +1359,26 @@ contract DiligenceRoom {
         return nextDealId;
     }
 
+    /// @notice Exact recipient for public compute charges and protocol fees.
+    ///         Production settlement is never redirected by a governance
+    ///         transfer; local rooms retain the historical developer behavior.
+    function protocolFeeRecipient() public view returns (address) {
+        return productionRelease ? releaseGovernanceController : developer;
+    }
+
     function _requireProductionAttestationBinding() internal view {
+        // Every room, including an explicit local/legacy room, stops accepting
+        // new deal activity while governance authority is ambiguous.
+        if (pendingDeveloper != address(0) || pendingDeveloperActivatesAt != 0) {
+            revert AttestationBindingNotReady();
+        }
+        // A production release is never live under the ephemeral deployment
+        // operator, including the one-transaction gap after every release set
+        // is frozen but before proposeDeveloper(), or after that proposal is
+        // cancelled. Only a distinct controller's delayed acceptance opens it.
+        if (productionRelease && developer != releaseGovernanceController) {
+            revert AttestationBindingNotReady();
+        }
         // Production posture is an immutable constructor input, not a mutable
         // post-deployment marker. This closes the deployment-to-configuration
         // transaction window in which a third party could otherwise create or
@@ -1308,6 +1431,12 @@ contract DiligenceRoom {
         if (authorizationExpiry > block.timestamp + MAX_RESULT_AUTHORIZATION_LIFETIME) {
             revert AuthorizationLifetimeTooLong();
         }
+    }
+
+    function _developerRoleConflict(address candidate) internal view returns (bool) {
+        return candidate == address(this) || candidate == resultVerifier || candidate == pendingResultVerifier
+            || candidate == attestationVerifier || candidate == pendingAttestationVerifier
+            || teeIdentityComposeHash[candidate] != bytes32(0) || pendingTeeIdentityActivations[candidate] != 0;
     }
 
     function _getExistingDeal(uint256 dealId) internal view returns (Deal storage deal) {

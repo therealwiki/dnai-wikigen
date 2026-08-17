@@ -57,6 +57,11 @@ import {
   RELEASE_CEREMONY_MUTATION_WRITERS,
   RELEASE_CEREMONY_TRANSACTION_PLAN_SCHEMA,
   RELEASE_CONTRACT_STATE_KEYS,
+  ROYALTY_AUTHORITY_TIMELOCK_SECONDS,
+  ROYALTY_RELEASE_AUTHORITY_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_V2_SCHEMA,
+  ROYALTY_RELEASE_STATE_SCHEMA,
   canonicalCeremonyAuthorizationCoreArtifactText,
   canonicalLiveActivationAuthorityArtifactText,
   ceremonyReceiptRpcObservationSha256,
@@ -69,10 +74,17 @@ import {
   liveActivationFrontendBindingSha256,
   liveActivationReviewSigningPayload,
   liveContractConfigurationSetSha256,
+  normalizedRoyaltyReleaseHistorySha256,
+  royaltyReleaseMutationCalldataSha256,
+  royaltyReleaseMutationEvent,
+  royaltyReleasePolicyCommitment,
+  royaltyReleaseStateSha256,
   normalizeCeremonyAuthorizationCore,
   normalizeLiveActivationAuthority,
   normalizeLiveActivationFrontendBinding,
+  projectRoyaltyReleaseHistoryReceipt,
   projectLiveActivationFrontendBinding,
+  royaltyReleaseHistoryReceiptSha256,
   frontendBuildCandidateAuthorityBindingFromLiveActivation,
   frontendBuildCandidateAuthorityBindingFromCeremonyAuthorization,
   assertLiveActivationFrontendBuildSha256,
@@ -160,7 +172,7 @@ function transactionObservation(planEntry, index, block) {
   };
 }
 
-function receiptObservation(transaction) {
+function receiptObservation(transaction, logs = [], status = 1) {
   return {
     schema: CEREMONY_RECEIPT_RPC_OBSERVATION_SCHEMA,
     chain_id: 84_532,
@@ -171,13 +183,139 @@ function receiptObservation(transaction) {
     from: transaction.from,
     to: transaction.to,
     contract_address: address(0),
-    status: 1,
+    status,
     transaction_type: transaction.transaction_type,
     cumulative_gas_used: "500000",
     gas_used: "500000",
     effective_gas_price_wei: "1000000000",
     logs_bloom: `0x${"00".repeat(256)}`,
-    logs: [],
+    logs,
+  };
+}
+
+function royaltyState({ phase, block, authority, pendingActivatesAt = 0 }) {
+  const zeroAddress = address(0);
+  const zeroWord = word("00");
+  const freshOrPending = phase !== "phase_two_active";
+  const pending = phase === "phase_one_pending";
+  return {
+    schema: ROYALTY_RELEASE_STATE_SCHEMA,
+    chain_id: 84_532,
+    contract_address: authority.distributor_address,
+    block_number: block.block_number,
+    block_hash: block.block_hash,
+    block_timestamp: block.block_timestamp,
+    owner: authority.owner,
+    pending_owner: zeroAddress,
+    paused: phase !== "phase_two_active",
+    settlement_verifier: freshOrPending
+      ? zeroAddress
+      : authority.settlement_verifier,
+    qvl_verifier: freshOrPending ? zeroAddress : authority.qvl_verifier,
+    execution_policy_anchor: freshOrPending
+      ? zeroAddress
+      : authority.execution_policy_anchor,
+    anchor_writer_release_commitment: freshOrPending
+      ? zeroWord
+      : authority.anchor_writer_release_commitment,
+    release_policy_commitment: freshOrPending
+      ? zeroWord
+      : authority.release_policy_commitment,
+    authority_nonce: freshOrPending ? 0 : authority.authority_nonce,
+    pending_settlement_verifier: pending
+      ? authority.settlement_verifier
+      : zeroAddress,
+    pending_qvl_verifier: pending ? authority.qvl_verifier : zeroAddress,
+    pending_execution_policy_anchor: pending
+      ? authority.execution_policy_anchor
+      : zeroAddress,
+    pending_anchor_writer_release_commitment: pending
+      ? authority.anchor_writer_release_commitment
+      : zeroWord,
+    pending_release_policy_commitment: pending
+      ? authority.release_policy_commitment
+      : zeroWord,
+    pending_authority_nonce: pending ? authority.authority_nonce : 0,
+    pending_authority_activates_at: pending ? pendingActivatesAt : 0,
+    pending_authority_revocation: false,
+    settlement_verifier_ever_configured: phase === "phase_two_active",
+    qvl_verifier_ever_configured: phase === "phase_two_active",
+    anchor_writer_ever_configured: phase === "phase_two_active",
+    computed_release_policy_commitment: authority.release_policy_commitment,
+  };
+}
+
+function royaltyStateEvidence({ phase, block, authority, pendingActivatesAt = 0 }) {
+  const state = royaltyState({ phase, block, authority, pendingActivatesAt });
+  const blockSha = commonFinalizedBlockRpcObservationSha256(block);
+  const stateSha = royaltyReleaseStateSha256(state, { authority, phase });
+  return {
+    phase,
+    primary_rpc_id_sha256: pin("52"),
+    secondary_rpc_id_sha256: pin("53"),
+    primary_rpc_block: block,
+    primary_rpc_block_sha256: blockSha,
+    secondary_rpc_block: structuredClone(block),
+    secondary_rpc_block_sha256: blockSha,
+    primary_rpc_state: state,
+    primary_rpc_state_sha256: stateSha,
+    secondary_rpc_state: structuredClone(state),
+    secondary_rpc_state_sha256: stateSha,
+  };
+}
+
+function royaltyMutationEvidence({
+  operation,
+  authority,
+  block,
+  nonce,
+  observationIndex,
+  pendingActivatesAt = 0,
+  receiptStatus = 1,
+}) {
+  const planned = {
+    signer_address: authority.owner,
+    to: authority.distributor_address,
+    nonce: String(nonce),
+    value_wei: "0",
+    calldata_sha256: royaltyReleaseMutationCalldataSha256(operation, authority),
+  };
+  const transaction = transactionObservation(planned, observationIndex, block);
+  const logs = [];
+  if (receiptStatus === 1) {
+    const event = royaltyReleaseMutationEvent(operation, authority, {
+      pendingAuthorityActivatesAt: pendingActivatesAt,
+    });
+    logs.push({
+      address: event.address,
+      topics: [...event.topics],
+      data: event.data,
+      log_index: 0,
+      removed: false,
+    });
+  }
+  const receipt = receiptObservation(transaction, logs, receiptStatus);
+  const transactionSha = ceremonyTransactionRpcObservationSha256(transaction);
+  const receiptSha = ceremonyReceiptRpcObservationSha256(receipt, {
+    expectedStatus: receiptStatus,
+  });
+  const blockSha = commonFinalizedBlockRpcObservationSha256(block);
+  return {
+    operation,
+    primary_rpc_id_sha256: pin("52"),
+    secondary_rpc_id_sha256: pin("53"),
+    primary_rpc_transaction: transaction,
+    primary_rpc_transaction_sha256: transactionSha,
+    secondary_rpc_transaction: structuredClone(transaction),
+    secondary_rpc_transaction_sha256: transactionSha,
+    primary_rpc_receipt: receipt,
+    primary_rpc_receipt_sha256: receiptSha,
+    secondary_rpc_receipt: structuredClone(receipt),
+    secondary_rpc_receipt_sha256: receiptSha,
+    primary_rpc_block: block,
+    primary_rpc_block_sha256: blockSha,
+    secondary_rpc_block: structuredClone(block),
+    secondary_rpc_block_sha256: blockSha,
   };
 }
 
@@ -265,6 +403,7 @@ function validIntent(genesis, currentStatus, genesisAcceptance) {
     );
   intent.deploymentControl.controllerId = "deployment-operator-01";
   intent.deploymentControl.operatorAddress = address(1);
+  intent.staticContractInputs.diligenceRoom.governanceController = address(19);
   intent.staticContractInputs.computeCreditVault.developer = address(20);
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment = word("03");
   intent.numericPolicy.contract = {
@@ -544,7 +683,13 @@ async function signReview(payload, reviewers, accounts) {
   };
 }
 
-export async function syntheticReleaseAuthorityStagesFixture() {
+export async function syntheticReleaseAuthorityStagesFixture({
+  royaltyExecutionMode = "legacy_v1",
+} = {}) {
+  if (!["legacy_v1", "activate_and_unpause", "recover_reverted_unpause"]
+    .includes(royaltyExecutionMode)) {
+    throw new TypeError("synthetic royalty execution mode is unsupported");
+  }
   const reviewers = reviewerFixture();
   const currentStatus = await signCurrentStatus(
     reviewers.genesis,
@@ -665,17 +810,31 @@ export async function syntheticReleaseAuthorityStagesFixture() {
     runtime_code_hash: word((40 + index).toString(16).padStart(2, "0")),
     control_role: key === "diligence_room"
       ? "developer"
-      : key === "royalty_distributor" ? "immutable_no_owner" : "owner",
-    control_address: key === "royalty_distributor" ? address(0) : address(1),
+      : "owner",
+    control_address: address(1),
     configuration_sha256: `sha256:${(80 + index).toString(16).padStart(64, "0")}`,
   }));
   const challengeGenesisSha = pin("41");
   const commonBlock = blockObservation({
     blockNumber: 11_000,
     blockHash: word("79"),
-    blockTimestamp: 1_753_100_000,
+    blockTimestamp: Math.floor(CHECKED_AT / 1_000) + 11,
     seed: 180,
   });
+  const commonStatePin = pin("51");
+  const commonFinalizedState = {
+    independent_rpc_count: 2,
+    primary_rpc_id_sha256: pin("52"),
+    secondary_rpc_id_sha256: pin("53"),
+    primary_rpc_block: commonBlock,
+    primary_rpc_block_sha256: commonFinalizedBlockRpcObservationSha256(commonBlock),
+    secondary_rpc_block: structuredClone(commonBlock),
+    secondary_rpc_block_sha256: commonFinalizedBlockRpcObservationSha256(commonBlock),
+    primary_state_sha256: commonStatePin,
+    secondary_state_sha256: commonStatePin,
+    canonical_state_sha256: commonStatePin,
+    latest_state_recheck_sha256: pin("54"),
+  };
   const anchorRead = {
     schema: EXECUTION_POLICY_ANCHOR_RPC_READ_SCHEMA,
     chain_id: 84_532,
@@ -694,21 +853,163 @@ export async function syntheticReleaseAuthorityStagesFixture() {
     secondary_rpc_read: structuredClone(anchorRead),
     secondary_rpc_read_sha256: anchorReadSha,
   };
+  const royaltyDistributor = contracts.find((entry) =>
+    entry.contract_key === "royalty_distributor");
+  const executionPolicyAnchor = contracts.find((entry) =>
+    entry.contract_key === "execution_policy_anchor");
+  const royaltyAuthorityBase = {
+    schema: ROYALTY_RELEASE_AUTHORITY_SCHEMA,
+    chain_id: 84_532,
+    distributor_address: royaltyDistributor.address,
+    owner: address(1),
+    settlement_verifier: address(410),
+    qvl_verifier: address(411),
+    execution_policy_anchor: executionPolicyAnchor.address,
+    anchor_writer: address(412),
+    anchor_writer_release_commitment: word("e2"),
+    authority_nonce: 1,
+    authority_timelock_seconds: ROYALTY_AUTHORITY_TIMELOCK_SECONDS,
+  };
+  const royaltyAuthority = {
+    ...royaltyAuthorityBase,
+    release_policy_commitment: royaltyReleasePolicyCommitment({
+      chainId: royaltyAuthorityBase.chain_id,
+      distributorAddress: royaltyAuthorityBase.distributor_address,
+      authorityNonce: royaltyAuthorityBase.authority_nonce,
+      settlementVerifier: royaltyAuthorityBase.settlement_verifier,
+      qvlVerifier: royaltyAuthorityBase.qvl_verifier,
+      executionPolicyAnchor: royaltyAuthorityBase.execution_policy_anchor,
+      anchorWriterReleaseCommitment:
+        royaltyAuthorityBase.anchor_writer_release_commitment,
+    }),
+  };
+  const proposalTimestamp = Math.floor(CHECKED_AT / 1_000)
+    - ROYALTY_AUTHORITY_TIMELOCK_SECONDS + 8;
+  const pendingActivatesAt = proposalTimestamp
+    + ROYALTY_AUTHORITY_TIMELOCK_SECONDS;
+  const freshRoyaltyBlock = blockObservation({
+    blockNumber: 9_000,
+    blockHash: word("75"),
+    blockTimestamp: proposalTimestamp - 1,
+    seed: 160,
+  });
+  const proposalBlock = blockObservation({
+    blockNumber: 9_001,
+    blockHash: word("76"),
+    blockTimestamp: proposalTimestamp,
+    seed: 164,
+  });
+  const activationBlock = blockObservation({
+    blockNumber: 10_006,
+    blockHash: word("77"),
+    blockTimestamp: pendingActivatesAt,
+    seed: 168,
+  });
+  const unpauseBlock = blockObservation({
+    blockNumber: 10_007,
+    blockHash: word("78"),
+    blockTimestamp: pendingActivatesAt + 1,
+    seed: 172,
+  });
+  const recoveryUnpauseBlock = blockObservation({
+    blockNumber: 10_008,
+    blockHash: word("7a"),
+    blockTimestamp: pendingActivatesAt + 2,
+    seed: 176,
+  });
+  const recovery = royaltyExecutionMode === "recover_reverted_unpause";
+  const phaseTwo = {
+    activation_transaction: royaltyMutationEvidence({
+      operation: "activate_authority_proposal",
+      authority: royaltyAuthority,
+      block: activationBlock,
+      nonce: 21,
+      observationIndex: 21,
+    }),
+    unpause_transaction: royaltyMutationEvidence({
+      operation: "unpause",
+      authority: royaltyAuthority,
+      block: recovery ? recoveryUnpauseBlock : unpauseBlock,
+      nonce: recovery ? 23 : 22,
+      observationIndex: recovery ? 23 : 22,
+    }),
+    poststate: royaltyStateEvidence({
+      phase: "phase_two_active",
+      block: commonBlock,
+      authority: royaltyAuthority,
+    }),
+  };
+  if (recovery) {
+    phaseTwo.reverted_unpause_transaction = royaltyMutationEvidence({
+      operation: "unpause",
+      authority: royaltyAuthority,
+      block: unpauseBlock,
+      nonce: 22,
+      observationIndex: 22,
+      receiptStatus: 0,
+    });
+  }
+  const royaltyReleaseHistory = {
+    schema: royaltyExecutionMode === "legacy_v1"
+      ? ROYALTY_RELEASE_HISTORY_SCHEMA
+      : ROYALTY_RELEASE_HISTORY_V2_SCHEMA,
+    authority: royaltyAuthority,
+    fresh_state: royaltyStateEvidence({
+      phase: "fresh",
+      block: freshRoyaltyBlock,
+      authority: royaltyAuthority,
+    }),
+    phase_one: {
+      proposal_transaction: royaltyMutationEvidence({
+        operation: "propose_authority_binding",
+        authority: royaltyAuthority,
+        block: proposalBlock,
+        nonce: 20,
+        observationIndex: 20,
+        pendingActivatesAt,
+      }),
+      poststate: royaltyStateEvidence({
+        phase: "phase_one_pending",
+        block: proposalBlock,
+        authority: royaltyAuthority,
+        pendingActivatesAt,
+      }),
+    },
+    phase_two: phaseTwo,
+  };
+  if (royaltyExecutionMode !== "legacy_v1") {
+    royaltyReleaseHistory.execution_mode = royaltyExecutionMode;
+  }
+  const royaltyReleaseHistoryDigest = normalizedRoyaltyReleaseHistorySha256(
+    royaltyReleaseHistory,
+    { contracts, commonFinalizedState },
+  );
+  const royaltyReleaseHistoryReceiptDigest =
+    royaltyReleaseHistoryReceiptSha256(projectRoyaltyReleaseHistoryReceipt({
+      contracts,
+      commonFinalizedState,
+      royaltyReleaseHistory,
+    }));
   const contractState = {
     contracts,
     challenge_genesis_sha256: challengeGenesisSha,
     deployment_intent_sha256: deploymentIntentSha,
     reviewer_authority_genesis_acceptance_sha256: reviewerGenesisAcceptanceSha,
     execution_policy_anchor_commitment: executionPolicyAnchorCommitment,
+    royalty_release_history: royaltyReleaseHistory,
+    royalty_release_history_sha256: royaltyReleaseHistoryDigest,
+    royalty_release_history_receipt_sha256:
+      royaltyReleaseHistoryReceiptDigest,
     configuration_set_sha256: liveContractConfigurationSetSha256({
       contracts,
       challengeGenesisSha256: challengeGenesisSha,
       deploymentIntentSha256: deploymentIntentSha,
       reviewerGenesisAcceptanceSha256: reviewerGenesisAcceptanceSha,
       executionPolicyAnchorCommitment,
+      royaltyReleaseHistory,
+      commonFinalizedState,
     }),
   };
-  const commonStatePin = pin("51");
   const activationPlan = runtimeAuthority.post_measurement_activation_plan;
   const activationExecutionReceipt = activationExecutionReceiptFixture({
     runtimeAuthority,
@@ -785,19 +1086,7 @@ export async function syntheticReleaseAuthorityStagesFixture() {
         secondary_rpc_block_sha256: blockSha,
       };
     }),
-    common_finalized_state: {
-      independent_rpc_count: 2,
-      primary_rpc_id_sha256: pin("52"),
-      secondary_rpc_id_sha256: pin("53"),
-      primary_rpc_block: commonBlock,
-      primary_rpc_block_sha256: commonFinalizedBlockRpcObservationSha256(commonBlock),
-      secondary_rpc_block: structuredClone(commonBlock),
-      secondary_rpc_block_sha256: commonFinalizedBlockRpcObservationSha256(commonBlock),
-      primary_state_sha256: commonStatePin,
-      secondary_state_sha256: commonStatePin,
-      canonical_state_sha256: commonStatePin,
-      latest_state_recheck_sha256: pin("54"),
-    },
+    common_finalized_state: commonFinalizedState,
     contract_state: contractState,
     post_ceremony_evidence: {
       final_cvms: finalCvms,

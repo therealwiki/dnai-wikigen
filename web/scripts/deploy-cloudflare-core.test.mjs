@@ -23,6 +23,9 @@ import {
   FRONTEND_BUILD_CANDIDATE_STATUS,
   FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS,
 } from "./frontend-build-candidate-core.mjs";
+import {
+  royaltyReleasePolicyCommitment,
+} from "../../scripts/royalty-release-authority-core.mjs";
 
 const SHA = "1".repeat(40);
 const AUTHORITY_BINDING = Object.freeze({
@@ -55,6 +58,67 @@ const ARENA_BINDINGS = Object.freeze({
   }),
 });
 const ARENA_BINDINGS_JSON = JSON.stringify(ARENA_BINDINGS);
+const ROYALTY = "0x3333333333333333333333333333333333333333";
+const ROYALTY_OWNER = "0x4444444444444444444444444444444444444444";
+const ROYALTY_SETTLEMENT_VERIFIER = "0x5555555555555555555555555555555555555555";
+const ROYALTY_QVL_VERIFIER = "0x6666666666666666666666666666666666666666";
+const EXECUTION_POLICY_ANCHOR = "0x8888888888888888888888888888888888888888";
+const EXECUTION_POLICY_WRITER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const EXECUTION_POLICY_WRITER_RELEASE = `0x${"ab".repeat(32)}`;
+const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
+const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
+const ROYALTY_RELEASE_POLICY = royaltyReleasePolicyCommitment({
+  chainId: 84532,
+  distributorAddress: ROYALTY,
+  authorityNonce: 1,
+  settlementVerifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvlVerifier: ROYALTY_QVL_VERIFIER,
+  executionPolicyAnchor: EXECUTION_POLICY_ANCHOR,
+  anchorWriterReleaseCommitment: EXECUTION_POLICY_WRITER_RELEASE,
+});
+const ROYALTY_AUTHORITY = Object.freeze({
+  schema: "dnai.royalty-release-authority.v1",
+  chain_id: 84532,
+  distributor_address: ROYALTY,
+  owner: ROYALTY_OWNER,
+  settlement_verifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvl_verifier: ROYALTY_QVL_VERIFIER,
+  execution_policy_anchor: EXECUTION_POLICY_ANCHOR,
+  anchor_writer: EXECUTION_POLICY_WRITER,
+  anchor_writer_release_commitment: EXECUTION_POLICY_WRITER_RELEASE,
+  authority_nonce: 1,
+  authority_timelock_seconds: 172800,
+  release_policy_commitment: ROYALTY_RELEASE_POLICY,
+});
+const ROYALTY_ACTIVE_STATE = Object.freeze({
+  schema: "dnai.royalty-release-state.v1",
+  chain_id: 84532,
+  contract_address: ROYALTY,
+  block_number: 123456,
+  block_hash: `0x${"bc".repeat(32)}`,
+  block_timestamp: 1_800_000_000,
+  owner: ROYALTY_OWNER,
+  pending_owner: ZERO_ADDRESS,
+  paused: false,
+  settlement_verifier: ROYALTY_SETTLEMENT_VERIFIER,
+  qvl_verifier: ROYALTY_QVL_VERIFIER,
+  execution_policy_anchor: EXECUTION_POLICY_ANCHOR,
+  anchor_writer_release_commitment: EXECUTION_POLICY_WRITER_RELEASE,
+  release_policy_commitment: ROYALTY_RELEASE_POLICY,
+  authority_nonce: 1,
+  pending_settlement_verifier: ZERO_ADDRESS,
+  pending_qvl_verifier: ZERO_ADDRESS,
+  pending_execution_policy_anchor: ZERO_ADDRESS,
+  pending_anchor_writer_release_commitment: ZERO_BYTES32,
+  pending_release_policy_commitment: ZERO_BYTES32,
+  pending_authority_nonce: 0,
+  pending_authority_activates_at: 0,
+  pending_authority_revocation: false,
+  settlement_verifier_ever_configured: true,
+  qvl_verifier_ever_configured: true,
+  anchor_writer_ever_configured: true,
+  computed_release_policy_commitment: ROYALTY_RELEASE_POLICY,
+});
 const LIVE_ENV = {
   ...Object.fromEntries(releaseEnvTest.ENV_KEYS.map((key) => [key, ""])),
   ...Object.fromEntries(__test.REQUIRED_LIVE_BINDINGS.map((key) => [key, "release-pinned"])),
@@ -62,6 +126,26 @@ const LIVE_ENV = {
   VITE_BASE_SEPOLIA_SECONDARY_RPC_URL: "https://base-sepolia-rpc.publicnode.com",
   VITE_RELEASE_SHA: SHA,
   VITE_DILIGENCE_ROOM_ADDRESS: "0x1111111111111111111111111111111111111111",
+  VITE_ROYALTY_DISTRIBUTOR_ADDRESS: ROYALTY,
+  VITE_ROYALTY_DISTRIBUTOR_CODE_HASH: `0x${"77".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_AUTHORITY_JSON: JSON.stringify(ROYALTY_AUTHORITY),
+  VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON: JSON.stringify(ROYALTY_ACTIVE_STATE),
+  VITE_ROYALTY_RELEASE_HISTORY_SHA256: `sha256:${"78".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256: `sha256:${"79".repeat(32)}`,
+  VITE_ROYALTY_RELEASE_ACTIVE_STATE_SHA256: `sha256:${"7a".repeat(32)}`,
+  VITE_FINAL_RELEASE_AUTHORITY_SHA256: `sha256:${"7b".repeat(32)}`,
+  VITE_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256:
+    `sha256:${"7c".repeat(32)}`,
+  VITE_COLLABORATION_EXECUTION_SERVICE: "collaboration-execution-worker",
+  VITE_COLLABORATION_EXECUTION_PROFILE: "collaboration-execution",
+  VITE_COLLABORATION_EXECUTION_RELEASE_SHA: SHA,
+  VITE_COLLABORATION_EXECUTION_MAIN_RUNTIME_CVM_ID: "release-pinned",
+  VITE_COLLABORATION_EXECUTION_ENABLED: "true",
+  VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED: "false",
+  VITE_EXECUTION_POLICY_ANCHOR_ADDRESS: EXECUTION_POLICY_ANCHOR,
+  VITE_EXECUTION_POLICY_ANCHOR_WRITER: EXECUTION_POLICY_WRITER,
+  VITE_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT:
+    EXECUTION_POLICY_WRITER_RELEASE,
   VITE_COMPUTE_CREDIT_VAULT_ADDRESS: "0x7777777777777777777777777777777777777777",
   VITE_COMPUTE_CREDIT_VAULT_CODE_HASH: `0x${"88".repeat(32)}`,
   VITE_ENABLE_CONTRACT_WRITES: "true",
@@ -145,6 +229,55 @@ test("live release requires exact clean HEAD and targets only the production bra
     "--commit-dirty=false",
   ]);
   assert.equal(policy.args.includes(CLOUDFLARE_MODELED_PREVIEW_BRANCH), false);
+});
+
+test("live Cloudflare rejects paused, pending, drifted, or C-unbound Royalty authority", () => {
+  const mutations = [
+    (env) => {
+      const state = JSON.parse(env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON);
+      state.paused = true;
+      env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON = JSON.stringify(state);
+    },
+    (env) => {
+      const state = JSON.parse(env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON);
+      state.pending_owner = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON = JSON.stringify(state);
+    },
+    (env) => {
+      const state = JSON.parse(env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON);
+      state.pending_authority_nonce = 2;
+      env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON = JSON.stringify(state);
+    },
+    (env) => {
+      const state = JSON.parse(env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON);
+      state.qvl_verifier = "0xcccccccccccccccccccccccccccccccccccccccc";
+      env.VITE_ROYALTY_RELEASE_ACTIVE_STATE_JSON = JSON.stringify(state);
+    },
+    (env) => {
+      const authority = JSON.parse(env.VITE_ROYALTY_RELEASE_AUTHORITY_JSON);
+      authority.release_policy_commitment = `0x${"dd".repeat(32)}`;
+      env.VITE_ROYALTY_RELEASE_AUTHORITY_JSON = JSON.stringify(authority);
+    },
+  ];
+  for (const mutate of mutations) {
+    const env = structuredClone(LIVE_ENV);
+    mutate(env);
+    assert.throws(() => cloudflareDeploymentPolicy({
+      env,
+      headSha: SHA,
+      dirty: "",
+      semanticValidationReceipt: receiptFor(env),
+    }), /Royalty|royalty/);
+  }
+  assert.throws(() => cloudflareDeploymentPolicy({
+    env: LIVE_ENV,
+    headSha: SHA,
+    dirty: "",
+    semanticValidationReceipt: {
+      ...receiptFor(),
+      royalty_release_history_receipt_sha256: `sha256:${"ee".repeat(32)}`,
+    },
+  }), /does not bind the exact Royalty release H projection/);
 });
 
 test("Cloudflare control environment cannot redirect credentials or change the reviewed account", () => {
@@ -578,6 +711,16 @@ test("live release requires the complete generated feature set", () => {
   }
 });
 
+test("dedicated Tinker customer and collaboration gates are live but independently optional", () => {
+  for (const key of [
+    "VITE_ENABLE_TINKER_CUSTOMER",
+    "VITE_ENABLE_COLLABORATION",
+  ]) {
+    assert.ok(__test.LIVE_FEATURE_FLAGS.includes(key));
+    assert.equal(__test.REQUIRED_LIVE_FEATURE_FLAGS.includes(key), false);
+  }
+});
+
 test("all-features release requires the exact O-derived workload gate and nineteen pins", () => {
   const [gate, ...pins] = COMPUTE_WORKLOAD_BROWSER_ENV_KEYS;
   assert.equal(gate, "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD");
@@ -587,12 +730,29 @@ test("all-features release requires the exact O-derived workload gate and ninete
   assert.equal(__test.REQUIRED_LIVE_BINDINGS.includes(gate), false);
   assert.equal(__test.RELEASE_BINDINGS.includes(gate), false);
   assert.deepEqual(
-    __test.REQUIRED_LIVE_BINDINGS.filter((key) => key.startsWith("VITE_COMPUTE_WORKLOAD_")),
+    __test.REQUIRED_LIVE_BINDINGS.filter((key) => (
+      key.startsWith("VITE_COMPUTE_WORKLOAD_")
+      && key !== "VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED"
+    )),
     pins,
   );
   assert.deepEqual(
-    __test.RELEASE_BINDINGS.filter((key) => key.startsWith("VITE_COMPUTE_WORKLOAD_")),
+    __test.RELEASE_BINDINGS.filter((key) => (
+      key.startsWith("VITE_COMPUTE_WORKLOAD_")
+      && key !== "VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED"
+    )),
     pins,
+  );
+  assert.ok(
+    __test.REQUIRED_LIVE_BINDINGS.includes(
+      "VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+    ),
+  );
+  assert.equal(
+    __test.REQUIRED_LIVE_FEATURE_FLAGS.includes(
+      "VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+    ),
+    false,
   );
   for (const key of pins) {
     assert.ok(__test.REQUIRED_LIVE_BINDINGS.includes(key), `${key} is not required`);
@@ -690,6 +850,8 @@ test("workload release pins cannot drift from Base Sepolia or the exact fresh va
 test("live release refuses any missing baseline trust-chain binding", () => {
   for (const key of [
     "VITE_DILIGENCE_ROOM_CODE_HASH",
+    "VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER",
+    "VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER",
     "VITE_ROYALTY_DISTRIBUTOR_CODE_HASH",
     "VITE_TINKER_ENCUMBRANCE_CODE_HASH",
     "VITE_EMAIL_ORACLE_AUTH_CODE_HASH",
@@ -705,8 +867,11 @@ test("live release refuses any missing baseline trust-chain binding", () => {
     "VITE_COMPUTE_CREDIT_VAULT_CODE_HASH",
     "VITE_COMPUTE_VAULT_METERING_VERIFIER",
     "VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH",
+    "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
+    "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
     "VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS",
     "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
+    "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
   ]) {
     assert.throws(
       () => cloudflareDeploymentPolicy({
@@ -729,6 +894,19 @@ test("Cloudflare treats every application contract runtime hash as a live bindin
     "VITE_COMPUTE_CREDIT_VAULT_CODE_HASH",
     "VITE_EXECUTION_POLICY_ANCHOR_CODE_HASH",
   ]) {
+    assert.ok(__test.RELEASE_BINDINGS.includes(key), `${key} is not release-bound`);
+  }
+});
+
+test("Cloudflare requires the complete Diligence handoff and Compute rate-policy pins", () => {
+  for (const key of [
+    "VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER",
+    "VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER",
+    "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
+    "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
+    "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
+  ]) {
+    assert.ok(__test.REQUIRED_LIVE_BINDINGS.includes(key), `${key} is not required`);
     assert.ok(__test.RELEASE_BINDINGS.includes(key), `${key} is not release-bound`);
   }
 });

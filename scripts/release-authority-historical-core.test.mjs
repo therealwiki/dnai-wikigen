@@ -22,14 +22,20 @@ import {
   projectHistoricalLiveActivationExpectedContext,
 } from "./release-authority-historical-core.mjs";
 import {
-  preCeremonyRuntimeAuthoritySha256,
-} from "./pre-ceremony-runtime-authority.mjs";
-import {
   assertExact37GenesisReviewerStatusCurrentForLiveActivation,
 } from "./release-authority-current-reviewer-facade.mjs";
 import {
-  syntheticReleaseAuthorityStagesFixture,
-} from "./release-authority-stages.fixture.mjs";
+  syntheticHistoricalReleaseAuthorityFixture,
+} from "./release-authority-historical-core.fixture.mjs";
+
+const syntheticReleaseAuthorityStagesFixture =
+  syntheticHistoricalReleaseAuthorityFixture;
+const HISTORICAL_B_KAT =
+  "sha256:6b94f9373fa6583497621bf4b6cdc41fbdc65d6f254bcad62b4d284366c02fd6";
+const HISTORICAL_C_KAT =
+  "sha256:d25504835882baeddb43592c94bb9138c5805e6fd3d6e5dc3463afd746ab3228";
+const HISTORICAL_FRONTEND_KAT =
+  "sha256:a222e8e444063534a979cf1c83a281ca09b559c1d1148e2322e678c861d3abea";
 
 function clone(value) {
   return structuredClone(value);
@@ -76,7 +82,7 @@ function ceremonyOptions(value) {
   const expectedContext = projectHistoricalCeremonyExpectedContext({
     runtimeAuthority: value.runtimeAuthority,
     runtimeAuthoritySha256:
-      preCeremonyRuntimeAuthoritySha256(value.runtimeAuthority),
+      value.stageOne.pre_ceremony_runtime_authority_sha256,
     freshContractDeploymentReceiptSha256:
       value.stageOne.deployment_authority.fresh_contract_deployment_receipt_sha256,
     signedABootstrapAuthorizationReceiptSha256:
@@ -188,7 +194,7 @@ async function liveFixture({
   const expectedContext = projectHistoricalLiveActivationExpectedContext({
     runtimeAuthority: value.runtimeAuthority,
     runtimeAuthoritySha256:
-      preCeremonyRuntimeAuthoritySha256(value.runtimeAuthority),
+      value.stageOne.pre_ceremony_runtime_authority_sha256,
     launchCompletionReceipt: launch,
     launchCompletionReceiptSha256:
       plan.seven_cvm_launch_completion_receipt_sha256,
@@ -315,6 +321,10 @@ test("historical B exact-binds the independently reconstructed signed-A receipt"
     options,
   );
   assert.equal(
+    historicalCeremonyAuthorizationCoreSha256(value.stageOne, options),
+    HISTORICAL_B_KAT,
+  );
+  assert.equal(
     normalized.cvm_bootstrap_authorization_receipt_sha256,
     options.expectedContext.signed_a_bootstrap_authorization_receipt_sha256,
   );
@@ -370,6 +380,14 @@ test("historical C binds its full receipt and all seven CVMs to L, R, plan, and 
   assert.match(
     historicalLiveActivationFrontendBindingSha256(frontendBinding),
     /^sha256:[0-9a-f]{64}$/,
+  );
+  assert.equal(
+    historicalLiveActivationAuthoritySha256(fixture.stageTwo, fixture.options),
+    HISTORICAL_C_KAT,
+  );
+  assert.equal(
+    historicalLiveActivationFrontendBindingSha256(frontendBinding),
+    HISTORICAL_FRONTEND_KAT,
   );
 
   const receiptDrift = clone(fixture.stageTwo);
@@ -534,4 +552,25 @@ test("historical authority core has an acyclic, side-effect-free local import cl
     assert.doesNotMatch(source, /\bimport\s*\(/, file);
     assert.doesNotMatch(source, /production-(?:executor|environment|sdk|replay)/, file);
   }
+});
+
+test("frozen historical fixture imports no current C-v6 builder", async () => {
+  const scripts = path.dirname(fileURLToPath(import.meta.url));
+  const fixturePath = path.join(
+    scripts,
+    "release-authority-historical-core.fixture.mjs",
+  );
+  const source = fs.readFileSync(fixturePath, "utf8");
+  assert.doesNotMatch(source, /release-authority-stages\.fixture/);
+  assert.doesNotMatch(source, /syntheticReleaseAuthorityStagesFixture/);
+  assert.doesNotMatch(source, /live-activation-authority\.v6/);
+  const value = await syntheticHistoricalReleaseAuthorityFixture();
+  assert.equal(value.stageTwo.schema, "dnai.live-activation-authority.v5");
+  const royalty = value.stageTwo.contract_state.contracts.find(
+    (entry) => entry.contract_key === "royalty_distributor",
+  );
+  assert.deepEqual(
+    { role: royalty.control_role, address: royalty.control_address },
+    { role: "immutable_no_owner", address: `0x${"0".repeat(40)}` },
+  );
 });

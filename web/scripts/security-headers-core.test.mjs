@@ -10,7 +10,11 @@ import {
   renderProductionHeadersForEnv,
 } from "./security-headers-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./security-headers-core.test.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 
 test("modeled build permits only self and canonical Base Sepolia connections", () => {
   const headers = renderProductionHeaders();
@@ -187,6 +191,8 @@ test("delegate-backed feature flags cannot build without a CSP-bound endpoint", 
   for (const key of [
     "VITE_ENABLE_ARTIFACT_UPLOAD",
     "VITE_ENABLE_COMPUTE_CONSOLE",
+    "VITE_ENABLE_TINKER_CUSTOMER",
+    "VITE_ENABLE_COLLABORATION",
     "VITE_ENABLE_ARENA_SUBMISSION",
     "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD",
   ]) {

@@ -112,16 +112,47 @@ Status: `[real source; fresh contract deployment pending]`
 Decision:
 
 The browser may inspect a connected wallet's native ETH and canonical Base
-Sepolia USDC pull balances, inspect the exact replay slot for one
-`(distributor, queryRef)` pair, and withdraw only the connected wallet's own
-nonzero balance after the configured `RoyaltyDistributor` runtime code hash
-matches at a pinned block.
+Sepolia USDC pull balances, inspect one exact global settlement-ID replay fact,
+and withdraw only the connected wallet's own nonzero balance after the
+configured `RoyaltyDistributor` runtime code hash matches at a pinned block.
 
-The browser does not expose `distributeNative` or `distributeERC20`. The
-contract enforces conservation and replay protection for a caller-supplied
-split, but it cannot determine ownership, validate a query, set a royalty
-price, or justify an allocation. Distribution stays unavailable until a
-separate independently justified allocation source and review flow exist.
+The browser does not invent allocations and does not expose
+`distributeNative` or `distributeERC20`. Those entry points remain contract
+compatibility paths. The separate release-gated Collaboration execution service
+is the only source of the production-shaped reservation and settlement plan;
+the connected sponsor wallet remains the transaction signer.
+
+## 2026-07-24: Collaboration Execution Requires Intent-Keyed Prefunding
+
+Status: `[real source and local proof; fresh release deployment pending]`
+
+Decision:
+
+The authoritative Collaboration sequence is fixed:
+
+1. The complete fresh owner-grant set and non-circular execution Basis fix the
+   exact allocation, settlement ID/nonce, Compute tuple, and deterministic
+   `RoyaltyDistributor` funding-reservation request.
+2. The sponsor deposits the exact native/ERC-20 reservation. Aggregate contract
+   balance, ERC-20 allowance, a DTO, or a service heartbeat is not authority.
+3. The worker admits the one-shot job only when one RPC-reported finalized,
+   EIP-1898-pinned block shows that exact reservation active and the exact
+   Compute job admitted.
+4. Bounded Compute runs without rereading Collaboration authority or inventing
+   an allocation.
+5. Only after the bounded result exists does the service derive and anchor the
+   exact settlement decision, obtain purpose-separated main-runtime and
+   independent-QVL authorizations, and persist the exact wallet plan.
+6. The sponsor wallet broadcasts the zero-value `settleReserved` call; the
+   worker reconciles its finalized receipt against the contract's permanent
+   reservation-settlement state.
+
+Direct `distributeNative` / `distributeERC20` calls remain compatibility-only.
+The server never receives the sponsor's private key. An unused reservation is
+refundable only to its sponsor after its committed deadline. This decision is
+implemented and tested in source; it does not assert a Base Sepolia deployment,
+Phala CVM run, Intel TDX quote, independent QVL verdict, real sponsor deposit,
+settlement, or Cloudflare activation.
 
 ## 2026-07-21: V1 Compute Funding Uses Exact-Asset Pay-As-You-Go
 
@@ -388,11 +419,26 @@ approved quote and deployment-policy pins; a service-produced quote envelope is
 never treated as Intel TDX verification.
 
 The initial product had nine canonical hash routes. The current source product
-has eleven: Overview, Arena, Diligence Rooms, Release Review, Data Vaults,
-Compute, Delegated Tinker Account, Safeguards, Capabilities, Verify, and
-Collaborate. Release Review is deliberately source-modeled until an
-authenticated reviewer backend and pinned threshold authority exist. The
-Tinker route documents the full customer lifecycle but leaves account,
+has twelve: Overview, Health Guide, Arena, Diligence Rooms, Release Review, Data
+Vaults, Compute, Delegated Tinker Account, Safeguards, Capabilities, Verify, and
+Collaborate. Health Guide is deliberately modeled, reload-cleared, and accepts
+no health data in this release.
+
+Release Review now has a source-implemented, release-gated API and browser UI:
+a strict hash-only queue, private M-of-N reviewer authority, one-time
+reviewer-wallet challenges, signed release/deny decisions, and a
+browser-rechecked Base Sepolia rollback witness. Collaboration likewise has a
+source-implemented, release-gated schema-v2 API/UI for persistent rooms,
+invitations, membership/roles, exact-query owner grants, bounded pagination,
+joint-consent snapshots, and archive. Its separate execution service implements
+deterministic reservation through finalized `settleReserved` reconciliation as
+recorded above. Neither source surface is evidence of production activation.
+Fresh reviewer/owner key custody, notification and scheduled operations, live
+rollback-witness activation, the project-owned Base Sepolia suite, seven Phala
+CVMs, independent QVL roots, real sponsor funding/settlement, and the matching
+Cloudflare release remain open.
+
+The Tinker route documents the full customer lifecycle but leaves account,
 funding, delegation, and dispatch mutations release-gated until the fresh
 contract/CVM release is active. EIP-6963 discovery plus a compatible injected
 EIP-1193 fallback covers browser wallets such as MetaMask, Rabby, and Coinbase

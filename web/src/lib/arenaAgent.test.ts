@@ -581,7 +581,10 @@ describe("Arena agent credential protocol", () => {
   it("keeps private keys in memory and domains purpose-separated", () => {
     expect(`${librarySource}\n${componentSource}`).not.toMatch(/localStorage|sessionStorage|indexedDB/);
     expect(ARENA_AGENT_SCOPES.join(" ")).not.toContain("challenge:agents:manage");
-    expect(componentSource).toContain("MODELED AUTH");
+    expect(componentSource).toContain("LIVE-CAPABLE AUTH · RELEASE GATED");
+    expect(componentSource).toContain("LIVE-CAPABLE AGENT AUTH · RELEASE GATED · NO TDX CLAIM");
+    expect(componentSource).not.toContain("MODELED AUTH");
+    expect(componentSource).not.toContain("MODELED AGENT ACCESS");
     expect(componentSource).toContain("not rollback protection");
     expect(componentSource).toContain("it cannot use Compute, Deal, Tinker, contract, or payment routes");
     expect(componentSource).toContain("protects this one delivery only");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,15 +19,20 @@ import {
 import {
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_LOCK_BASENAME,
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MANIFEST_BASENAME,
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA,
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_SCHEMA,
-  __test,
   assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt,
+  assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence,
   loadPhalaSevenCvmHistoricalTranscriptPersistenceReceipt,
+  normalizePhalaSevenCvmHistoricalTranscriptPersistencePreflight,
   normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt,
   persistProductionPhalaSevenCvmHistoricalTranscriptFiles,
+  persistUnbrandedPhalaSevenCvmHistoricalTranscriptFilesForHarness,
   phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256,
   readDurablyPersistedPhalaSevenCvmHistoricalTranscriptTextEntries,
 } from "./phala-seven-cvm-historical-transcript-persistence.mjs";
+import * as persistenceModule from
+  "./phala-seven-cvm-historical-transcript-persistence.mjs";
 import {
   syntheticPhalaSevenCvmVerifierEvidenceFixture,
 } from "./phala-seven-cvm-verifier-evidence.fixture.mjs";
@@ -70,17 +76,23 @@ function persistenceFixture(t) {
 }
 
 function persistFixture(fixture, controls = null) {
-  if (controls === null) {
-    return __test.persistSyntheticPhalaSevenCvmHistoricalTranscriptFiles(
-      fixture.persistenceOptions,
-    );
-  }
-  return __test.persistSyntheticPhalaSevenCvmHistoricalTranscriptFilesWithControls({
+  const callbacks = controls ?? {};
+  const unbranded =
+    persistUnbrandedPhalaSevenCvmHistoricalTranscriptFilesForHarness({
     persistenceOptions: fixture.persistenceOptions,
-    afterLock: controls.afterLock ?? null,
-    afterEnvelope: controls.afterEnvelope ?? null,
-    afterManifest: controls.afterManifest ?? null,
+    afterLock: callbacks.afterLock ?? null,
+    afterEnvelope: callbacks.afterEnvelope ?? null,
+    afterManifest: callbacks.afterManifest ?? null,
   });
+  assert.throws(
+    () => assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt(
+      unbranded,
+    ),
+    /durably persisted exact-14 transcript receipt/,
+  );
+  const loaded = loadFixture(fixture);
+  assert.deepEqual(loaded, unbranded);
+  return loaded;
 }
 
 function loadFixture(fixture) {
@@ -137,13 +149,16 @@ function receiptFixture() {
     write_once: true,
     descriptor_relative_io: true,
     stable_reread_verified: true,
-    raw_quote_public_egress: false,
+    private_historical_transcript_persisted: true,
+    private_historical_transcript_contains_raw_quote_and_collateral: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
     live_traffic_authorized: false,
   };
 }
 
-test("transcript persistence receipt KAT binds exact14 names, hashes, and sizes", () => {
+test("transcript persistence receipt KAT binds exact14 private quote/collateral retention", () => {
   const receipt = receiptFixture();
   assert.deepEqual(
     normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt(receipt),
@@ -151,7 +166,7 @@ test("transcript persistence receipt KAT binds exact14 names, hashes, and sizes"
   );
   assert.equal(
     phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(receipt),
-    "sha256:9f709508d51013a8cd602eba838711c0495092aef717a907bd53c71932a899a8",
+    "sha256:23e66beac4624eb273e5e67b91f16905a8387c527ea69ba7229d099bca3c982a",
   );
   for (const mutate of [
     (value) => { value.transcript_file_set.files.pop(); },
@@ -159,7 +174,12 @@ test("transcript persistence receipt KAT binds exact14 names, hashes, and sizes"
     (value) => { value.file_mode = "0644"; },
     (value) => { value.write_once = false; },
     (value) => { value.stable_reread_verified = false; },
-    (value) => { value.raw_quote_public_egress = true; },
+    (value) => { value.private_historical_transcript_persisted = false; },
+    (value) => {
+      value.private_historical_transcript_contains_raw_quote_and_collateral = false;
+    },
+    (value) => { value.raw_quote_publicly_disclosed = true; },
+    (value) => { value.raw_collateral_publicly_disclosed = true; },
     (value) => { value.live_traffic_authorized = true; },
   ]) {
     const drifted = structuredClone(receipt);
@@ -168,6 +188,82 @@ test("transcript persistence receipt KAT binds exact14 names, hashes, and sizes"
       () => normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt(drifted),
     );
   }
+});
+
+test("canonical exact14 preflight is non-durable and cannot mint a live capability", (t) => {
+  const fixture = persistenceFixture(t);
+  const anticipatedReceipt = normalizePhalaSevenCvmHistoricalTranscriptPersistenceReceipt({
+    ...receiptFixture(),
+    phala_recovery_directory_identity_anchor_sha256: fixture.anchor,
+    seven_cvm_verified_evidence_set_sha256: fixture.evidenceSetSha256,
+    historical_transcript_file_set_sha256: fixture.fileSetSha256,
+    transcript_file_set: fixture.fileSet,
+  });
+  const preflight = normalizePhalaSevenCvmHistoricalTranscriptPersistencePreflight({
+    schema: PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA,
+    status: "exact_14_verified_envelopes_prepared_not_persisted",
+    truth_status:
+      "live_branded_verifier_envelopes_validated_in_memory_before_first_descriptor_relative_write",
+    phala_recovery_directory_identity_anchor_sha256: fixture.anchor,
+    seven_cvm_verified_evidence_set_sha256: fixture.evidenceSetSha256,
+    historical_transcript_file_set_sha256: fixture.fileSetSha256,
+    transcript_file_set: fixture.fileSet,
+    anticipated_persistence_receipt_sha256:
+      phalaSevenCvmHistoricalTranscriptPersistenceReceiptSha256(
+        anticipatedReceipt,
+      ),
+    private_historical_transcript_required: true,
+    durable_persistence_completed: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+    live_traffic_authorized: false,
+  });
+  assert.equal(
+    preflight.schema,
+    PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_PERSISTENCE_PREFLIGHT_SCHEMA,
+  );
+  assert.equal(preflight.private_historical_transcript_required, true);
+  assert.equal(preflight.durable_persistence_completed, false);
+  assert.equal(Object.hasOwn(preflight, "private_historical_transcript_persisted"), false);
+  assert.equal(preflight.raw_quote_publicly_disclosed, false);
+  assert.equal(preflight.raw_collateral_publicly_disclosed, false);
+  assert.deepEqual(fs.readdirSync(fixture.directory), []);
+  assert.throws(
+    () => assertPreparedProductionPhalaSevenCvmHistoricalTranscriptPersistence(
+      preflight,
+    ),
+    /live one-shot exact-14 transcript persistence preflight/,
+  );
+});
+
+test("ordinary Node has no synthetic authority-mint seam", () => {
+  assert.equal(persistenceModule.__test, undefined);
+  const moduleUrl = new URL(
+    "./phala-seven-cvm-historical-transcript-persistence.mjs",
+    import.meta.url,
+  );
+  const spoofedEntrypoint = new URL(
+    "./phala-seven-cvm-historical-transcript-persistence.test.mjs",
+    import.meta.url,
+  );
+  const child = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    [
+      `process.env.NODE_TEST_CONTEXT = "child-v8";`,
+      `process.argv[1] = ${JSON.stringify(spoofedEntrypoint.pathname)};`,
+      `const module = await import(${JSON.stringify(moduleUrl.href)});`,
+      `if (module.__test !== undefined) process.exit(91);`,
+      `process.stdout.write("no-authority-seam");`,
+    ].join("\n"),
+    spoofedEntrypoint.pathname,
+  ], {
+    env: { ...process.env, NODE_TEST_CONTEXT: "child-v8" },
+    encoding: "utf8",
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, "no-authority-seam");
 });
 
 test("exact14 envelopes persist create-only and reload through one anchored FD boundary", (t) => {

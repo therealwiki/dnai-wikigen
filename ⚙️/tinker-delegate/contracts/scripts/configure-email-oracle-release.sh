@@ -8,7 +8,6 @@ ACCOUNT=dev
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 ZERO_BYTES32=0x0000000000000000000000000000000000000000000000000000000000000000
 EIP1967_IMPLEMENTATION_SLOT=0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
-MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$ROOT_DIR/deployments/base-sepolia.json}"
 MANIFEST_FILTER="$CONTRACTS_DIR/scripts/update-email-oracle-release-manifest.jq"
 RUN_PATH="$CONTRACTS_DIR/broadcast/ConfigureEmailOracleRelease.s.sol/$CHAIN_ID/run-latest.json"
 LEDGER_TEMP_PATH=""
@@ -22,6 +21,12 @@ if [ -f "$ROOT_DIR/.env" ]; then
   . "$ROOT_DIR/.env"
   set +a
 fi
+
+# DEPLOYMENT_MANIFEST_PATH and RELEASE_CEREMONY_LEDGER_PATH are resolved only
+# after .env; repository history is never a ceremony fallback.
+# shellcheck disable=SC1091
+. "$CONTRACTS_DIR/scripts/release-ceremony-paths.sh"
+operator_policy_resolve_release_ceremony_paths
 
 # shellcheck disable=SC1091
 . "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"

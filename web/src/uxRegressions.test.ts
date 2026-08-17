@@ -82,3 +82,27 @@ describe("Arena modeled-state and documentation regressions", () => {
     expect(webReadme).not.toContain("CVM/verdict inspection");
   });
 });
+
+describe("same-route tab history focus regressions", () => {
+  it("moves focus from a stale Arena or Compute tab to the route-selected tab without scrolling", () => {
+    expect(arenaSource).toContain('active.id.startsWith("arena-tab-")');
+    expect(arenaSource).toContain("if (previousTab !== requested.tab) restoreRoutedArenaTabFocus(requested.tab)");
+    expect(arenaSource).toContain("focus({ preventScroll: true })");
+
+    expect(computeSource).toContain('active.id.startsWith("compute-tab-")');
+    expect(computeSource).toContain("if (previous !== next) restoreRoutedComputeTabFocus(next)");
+    expect(computeSource).toContain("focus({ preventScroll: true })");
+  });
+});
+
+describe("Safeguards documentation regressions", () => {
+  it("keeps the release operator, transport bearer, wallet approval, and local simulator separate", () => {
+    expect(webReadme).toContain("Safeguards operator and simulator boundary");
+    expect(webReadme).toContain("runtime bearer authenticates transport only");
+    expect(webReadme).toContain("release-authorized recoverable\nEOA");
+    expect(webReadme).toContain("single-RPC observation, not RPC quorum");
+    expect(webReadme).toContain("separate deterministic browser-local teaching tool");
+    expect(webReadme).toContain("illustrative-only:not-a-tdx-quote");
+    expect(webReadme).toContain("never a live\nexecution-policy approval, an Intel TDX quote");
+  });
+});

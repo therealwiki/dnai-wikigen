@@ -24,6 +24,11 @@ export const EDGE_ROUTE_DEFINITIONS = Object.freeze({
     aliases: Object.freeze(["", "/", "/overview"]),
     title: "Wikigen · Private intelligence, verifiable outcomes",
   }),
+  health: Object.freeze({
+    canonicalPath: "/health",
+    aliases: Object.freeze(["/health", "/health-guide", "/explore-health"]),
+    title: "Health Guide · Wikigen",
+  }),
   arena: Object.freeze({
     canonicalPath: "/arena",
     aliases: Object.freeze(["/arena", "/challenges", "/challenge-arena"]),

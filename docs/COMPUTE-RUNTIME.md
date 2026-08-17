@@ -79,18 +79,25 @@ service, and tests must use byte-for-byte identical rules.
    examples, datasets, payment data, upstream credentials, and arbitrary
    executable programs never enter the dispatch metadata API or chain.
 2. The browser verifies the vault runtime hash and all release roots from one
-   pinned Base Sepolia block, derives the canonical dispatch-intent commitment
-   from the exact workload metadata plus the proposed asset/nonce/cap/expiry,
-   and asks the user to sign EIP-712 v2 `ComputeJobAuthorization`. The signed
-   authorization includes the non-zero workload, manifest, and dispatch-intent
+   pinned Base Sepolia block. It derives the standalone authorization-context
+   commitment from chain `84532`, canonical project/job IDs, wallet, exact
+   asset, nonce, cap, expiry, rate policy, workload, and manifest. It then
+   derives the canonical dispatch-intent v3 commitment, which additionally
+   binds the immutable upload source, execution-binding commitment, stable
+   recipient-release commitment, and `authorization_kind: standalone`, and
+   asks the user to sign EIP-712 v2 `ComputeJobAuthorization`. The signed
+   authorization includes the non-zero workload, manifest, and v3 intent
    commitments. `authorizeJob` moves the maximum debit from available to
    reserved.
 3. After confirming the job's complete 21-field `Authorized` tuple at one new
    pinned block, the browser passes a commitment-protected in-memory handoff to
    the dispatch panel. The authenticated Compute API creates the metadata-only
-   dispatch intent and independently derives its workload, manifest, and intent
-   commitments from the sealed workload record. Any difference from the
-   on-chain authorization fails closed.
+   dispatch intent and independently derives its workload, manifest, source,
+   execution binding, recipient release, standalone authorization context, and
+   v3 intent commitment from authenticated custody plus the wallet/vault
+   fields. The request model rejects caller-supplied authorization kind or
+   context, so this public route cannot mint a collaboration one-shot. Any
+   difference from the on-chain authorization fails closed.
 4. Before every actionable worker cycle, the execution CVM refreshes the shared
    HMAC policy journal, verifies it against the release-pinned read-only
    `ExecutionPolicyAnchor`, and requires a current `compute_dispatch` PASS for
@@ -231,11 +238,39 @@ half of this protocol:
   are rejected as extra fields. Project membership is checked in the console
   directory, but the route never invokes its legacy service-credit job or
   ledger mutation methods.
+- Dispatch intent schema v3 preserves whether the ciphertext was uploaded by
+  the funding wallet or by a scoped credential. A credential-originated upload
+  may be adopted only by a current owner, admin, or developer in the same
+  project and only when the measured release enables wallet adoption. The
+  credential never spends funds. Wallet-originated ciphertext remains locked
+  to its uploader wallet because no signed transfer protocol exists.
+- The public route creates only `authorization_kind: standalone` and derives
+  `dnai.compute.standalone-authorization-context.v1` server-side. The runtime
+  also recognizes `collaboration_one_shot`, but that non-zero context must come
+  from the separate collaboration execution service and cannot be supplied to
+  this route by a browser caller.
 - Project and job references use the canonical identifier rules in this
   document. The response returns both references and derived `bytes32` IDs.
 - The separate HMAC-authenticated `ComputeExecutionJournal` is mode `0600`,
   atomically replaced, fsynced, and checkpointed before signed transaction
   broadcast, provider dispatch, metering handoff, and settlement broadcast.
+- Exact-asset enqueue is journal-first and initially non-actionable. The
+  ingress store then commits one `dnai.compute.workload-dispatch-claim.v1`, and
+  the journal confirms that exact claim before a worker may select the intent.
+  Recovery completes the same claim after a crash either before or after the
+  ingress mutation, while tuple substitution and a second adoption fail
+  closed.
+- `ComputeDispatchAdmissionService` is the only in-process admission seam. The
+  public API calls `enqueue_standalone`, which rejects any non-standalone kind.
+  The Collaboration coordinator may call
+  `enqueue_collaboration_one_shot` only after it has validated its non-circular
+  Basis, complete fresh owner-grant set, current authority, and one
+  RPC-reported finalized EIP-1898 observation of both the exact active
+  `RoyaltyDistributor` reservation and exact Compute job under its own claim
+  lock. Compute does not re-read Collaboration state, and Collaboration never
+  calls the provider; the shared admission seam performs only the journal-first
+  ciphertext claim above.
+
 - The Base Sepolia adapter checks chain ID and runtime bytecode, then reads
   bytecode, compose admission, TEE admission, rate policy, verifier, and the
   complete job using one EIP-1898 canonical block-hash pin. A transaction is
@@ -245,8 +280,10 @@ half of this protocol:
   dstack-derived Ethereum identity. The exact raw transaction is persisted
   before broadcast and identical bytes are reused after an ambiguous response.
 - Provider work cannot begin until `startJob` is confirmed. The compiled
-  provider adapter must guarantee idempotent replay of the stable `dispatchId`;
-  an adapter without that property is rejected before `startJob`.
+  provider adapter durably records one at-most-once attempt checkpoint before
+  its first provider request. The deterministic request key is a commitment,
+  not a provider replay claim. A restart or inconclusive post-boundary failure
+  becomes a terminal ambiguity hold and is never automatically redispatched.
 - After provider work, the worker pins a fresh started-job block and persists
   the exact independent-metering request before egress. Retries reuse that
   byte-for-byte semantic envelope and never rerun provider work.
@@ -263,9 +300,41 @@ half of this protocol:
   immutable projection of its authoritative job plus reservation record. A
   missing, stale, drifted, context-mismatched, HOLD, or DENY decision produces a
   bounded non-mutating result.
-- Public cycle status separates definitive `provider_dispatched` (durable usage
-  exists) from `provider_dispatch_may_have_occurred` (the stable dispatch ID was
-  checkpointed but a crash may have preceded usage persistence).
+- Public status distinguishes `prepared`, `attempt_checkpointed`,
+  `outcome_ambiguous`, and `usage_finalized`. It separately reports whether the
+  provider boundary may have been crossed, whether a bounded result exists,
+  whether ciphertext was released, and whether ciphertext is retained for
+  reconciliation. It also projects the authorization kind/context and original
+  workload source without granting the device spending authority. It always
+  states that provider replay is not claimed and automatic redispatch is
+  disabled.
+- An authenticated creator can cancel only at the exact `intent_created`
+  boundary. The journal terminal checkpoint and ciphertext erasure are
+  serialized against the worker's execution lease. This does not release
+  on-chain capacity: the wallet must still submit `cancelJob` to the vault.
+- A wallet-authenticated project member can fetch the settled-only exact-asset
+  usage receipt. It revalidates the release, bounded provider counters/result,
+  signed usage, two independent metering signatures, and confirmed settlement
+  binding without returning raw provider output or raw transaction bytes.
+
+The outer Collaboration path is source-implemented and release-gated. After the
+fresh grants fix the exact allocation, it derives the deterministic royalty
+reservation, waits for the sponsor to escrow that exact native/ERC-20 amount,
+and performs the finalized admission above before releasing the bounded
+one-shot job. After Compute returns a bounded result and metered usage, the
+Collaboration service derives and anchors the exact settlement decision on
+demand, obtains purpose-separated main-runtime and independent Royalty-QVL
+authorizations, persists the exact wallet plan, and hands the sponsor wallet a
+zero-value `settleReserved` call. Its worker then reconciles a finalized receipt
+against the permanent reservation-settlement getter. Aggregate balance or
+allowance is not admission authority; Compute never invents the owner split;
+and direct distribute calls are compatibility-only.
+
+This is source/test behavior, not a live release claim. No fresh project-owned
+Base Sepolia suite, Phala execution/metering/QVL CVMs, sponsor reservation,
+provider run, royalty settlement, or matching Cloudflare candidate has been
+activated for this working tree. An RPC-reported finalized read is neither RPC
+quorum nor consensus, Intel TDX, or independent QVL evidence.
 
 The independent metering wire contract is exactly:
 
@@ -350,30 +419,27 @@ from the same branded observation; missing, extra, or drifted lineage keeps
 browser upload fail-closed. These are bounded public release pins, never a
 serialized capability or deployment claim.
 
-## Explicit release blocker
+## Explicit activation boundary
 
 The rollback-resistant execution-policy gate is implemented and tested,
-including release/root drift and adversarial revocation races. There is still
-not yet a proven Thinking Machines/Tinker provider idempotency contract for
-replaying the same external dispatch identifier after a process crash. The
-locked Tinker 0.22.7 SDK does contain a low-level `X-Idempotency-Key` transport
-hook, but its supported public model/training workflow does not accept the
-worker's durable dispatch ID at each paid step. Official documentation also
-does not state the key retention, scope, payload-conflict, concurrent-replay,
-or post-restart result-recovery guarantees required to safely build on the
-private transport surface. The exact audit and required fault-injection proof
+including release/root drift and adversarial revocation races. The compiled
+Tinker 0.22.7 adapter is implemented and frozen by provider release
+`sha256:4264a2226ac9c850d8f053c98ac90d0f6dcbc58702919899384a9b2442b35631`.
+It deliberately does not claim that Thinking Machines replays a stable
+external dispatch identifier after a process crash. The exact upstream audit
+and the stronger proof that would be required before any automatic redispatch
 are recorded in
 [`TINKER-PROVIDER-IDEMPOTENCY.md`](../⚙️/tinker-delegate/docs/TINKER-PROVIDER-IDEMPOTENCY.md).
 
-Consequently the installed CLI currently reports
-`idempotent_tinker_provider_adapter_unavailable` and performs no chain or
-provider mutation. Test fakes are explicitly test-only. This is deliberate:
-marking a provider checkpoint without upstream replay semantics could either
-double-dispatch paid work or lose a completed usage receipt after a crash.
+The release avoids that unsupported inference by checkpointing one attempt and
+placing any inconclusive post-boundary outcome in a permanent ambiguity hold.
+The encrypted workload is retained for reconciliation, and neither the worker
+nor API can retry the provider call. Test fakes remain explicitly test-only.
 
 Do not enable the `compute-execution` compose profile or browser job
-authorization until the compiled adapter exists and a fresh reproducible
-execution image, compose hash,
-runtime code hash, metering policy-set hash, dstack identity admission, and
-end-to-end synthetic proof have all been generated and frozen. The vault is
-reviewed and extensively tested but is not represented as formally audited.
+authorization until a fresh reproducible execution image, provider heartbeat,
+compose hash, runtime code hash, metering policy-set hash, dstack identity
+admission, workload-recipient activation, and end-to-end synthetic proof have
+all been generated and frozen for the same release. Source availability is not
+deployment evidence. The vault is reviewed and extensively tested but is not
+represented as formally audited.

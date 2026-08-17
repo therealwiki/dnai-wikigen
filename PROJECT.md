@@ -1,18 +1,19 @@
 # PROJECT: dnai-wikigen
 
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 Branch context: active working tree; no production release SHA has been cut
 
-## Status (2026-07-21): complete source product; fresh release ceremony pending
+## Status (2026-07-24): complete source product; fresh release ceremony pending
 
 The current repository contains the full SolidJS product, a fresh seven-contract
 Base Sepolia suite, hardened delegate and Arena runtimes, an execution-policy
 anchor, reproducible release tooling, and fail-closed browser verification. The
 implemented product surfaces cover diligence rooms, sealed Bio/DNA challenges,
-a source-modeled human release desk, wallet-owned compute capacity, scoped proxy
-credentials, a release-gated delegated Tinker account lifecycle, service-credit
-previews, safeguards, collaboration with a runtime-pinned royalty pull-payment
-panel, capabilities, and layered verification.
+a release-gated human-review API and browser desk, wallet-owned compute
+capacity, scoped proxy credentials, a release-gated delegated Tinker account
+lifecycle, service-credit previews, safeguards, a release-gated schema-v2
+collaboration control plane plus a runtime-pinned royalty pull-payment panel,
+capabilities, and layered verification.
 
 That is a source-and-local-verification statement, not a production deployment
 claim. This working tree has not yet produced a clean release SHA, no fresh
@@ -30,14 +31,16 @@ production state for the new release.
 
 ### Canonical product and release shape
 
-The public client is one SolidJS application with eleven canonical hash routes:
-Overview, Arena, Diligence Rooms, Release Review, Data Vaults, Compute,
-Delegated Tinker Account, Safeguards, Capabilities, Verify, and Collaborate.
-Wallet connection uses EIP-6963 and a compatible injected EIP-1193 fallback;
-WalletConnect is conditional on a public deployment configuration value. A
-connected wallet identifies the selected address and network but is not
-automatically authenticated to the delegate: service mutations use their own
-one-time, Base-Sepolia-bound signature challenges and scoped tokens.
+The public client is one SolidJS application with twelve canonical hash routes:
+Overview, Health Guide, Arena, Diligence Rooms, Release Review, Data Vaults,
+Compute, Delegated Tinker Account, Safeguards, Capabilities, Verify, and
+Collaborate. Health Guide is an explicitly modeled, reload-cleared demo and
+accepts no health data in this release. Wallet connection uses EIP-6963 and a
+compatible injected EIP-1193 fallback; WalletConnect is conditional on a public
+deployment configuration value. A connected wallet identifies the selected
+address and network but is not automatically authenticated to the delegate:
+service mutations use their own one-time, Base-Sepolia-bound signature
+challenges and scoped tokens.
 
 The fresh chain release is exactly seven contracts: `DiligenceRoom`,
 `TinkerAccountEncumbrance`, `RoyaltyDistributor`, `ChallengeRegistry`,
@@ -103,10 +106,50 @@ path.
 Royalty settlement is deliberately asymmetric in the browser. A connected
 owner can inspect and pull its own native ETH or canonical Base Sepolia USDC
 balance from a runtime-hash-matched `RoyaltyDistributor`, and anyone can inspect
-the exact replay slot for a `(distributor, queryRef)` pair. The browser does not
-submit distributions or infer ownership: the contract only conserves the split
-supplied by a caller and cannot establish that the underlying query, owners,
-price, or allocation are correct.
+one exact global settlement-ID replay fact. The browser never invents an
+allocation. For Collaboration execution, the v3 source path derives an exact,
+deterministic native/ERC-20 funding reservation only after the complete fresh
+owner-grant set, and the sponsor deposits that reservation before provider
+handoff. The worker admits the run only when a single RPC-reported finalized,
+EIP-1898-pinned read sees both that exact active reservation and the exact
+Compute job. After bounded Compute, the service anchors the exact settlement
+decision on demand, obtains purpose-separated main-runtime and independent-QVL
+EIP-712 authorizations, persists the exact wallet plan, and asks the sponsor
+wallet to broadcast the zero-value `settleReserved` call. The worker then
+reconciles the finalized receipt and permanent reservation-settlement state.
+Direct `distributeNative` / `distributeERC20` calls are compatibility paths.
+This authority rail and its CVM/QVL adapters are source-implemented and tested;
+they are not a newly activated Base Sepolia royalty release or live TDX/QVL
+evidence.
+
+Human Review is source-implemented but release-gated. The backend exposes a
+strict hash-only queue, internal enqueue/expiry operations, one-time
+release-bound reviewer-wallet challenges, signed release/deny decisions, and
+private M-of-N resolution with self-review and duplicate-vote rejection. The
+browser verifies the immutable release context and a finalized Base Sepolia
+rollback witness before enabling the matching reviewer UI. This is not a
+production reviewer deployment: fresh reviewer roster/key custody, operator
+notification and scheduled expiry operations still require the new release.
+
+Collaboration is also source-implemented but release-gated. Its authenticated
+schema-v2 store, API, and browser UI cover durable rooms, invitations,
+membership decisions, owner-role activation/revocation, exact-query proposals
+and owner grants, bounded pagination, idempotent recovery, joint-consent
+snapshots, and quiescent archive. The separate execution service implements the
+production-shaped continuation from the fresh grant set through deterministic
+royalty reservation, finalized worker admission, bounded Compute, exact
+decision anchoring and dual authorization, sponsor-wallet `settleReserved`, and
+finalized reconciliation. The public Collaboration API cannot synthesize the
+one-shot Compute context and never handles a sponsor's private key.
+
+That authority is not yet production activated. Local HMAC mode is explicitly
+non-monotonic; live dstack mode requires every exact schema-v2 state to match a
+release/project/domain-bound Base Sepolia `ExecutionPolicyAnchor` witness under
+the explicit single-RPC reported-finalized model and fails closed before auth,
+reads, or mutations when that witness is unavailable, regressed, or mismatched.
+This is not RPC quorum or a consensus proof. No fresh release has produced
+current live witness, Base Sepolia contract, Phala CVM, QVL, sponsor-funding,
+settlement, or Cloudflare activation evidence.
 
 ## Historical 2026-07-13 custody and delegation evidence
 
@@ -1109,27 +1152,33 @@ The current repo does not yet guarantee:
 - candidate sandboxing for generated computational-bio code
 - differential privacy for individual-level bio data
 - real DLP/egress controls
-- production human reviewer workflow; the source-modeled reducer and bounded
-  review queue can create, persist, expire, release/deny, and audit hold
-  tickets without raw review reasons or reviewer identities, but notification,
-  UI, M-of-N approval, and production reviewer custody are not production
-- production multi-party coordination engine; the source now has a deterministic
-  pure ConSECA-style `policy_kernel` for per-corpus AccessRequest/CorpusPolicy
-  enforcement, a bounded `policy-gate` CLI proof path, and a pure local reducer
-  for fail-closed fan-out, unanimous or M-of-N consent, owner consent
-  grant/deny effects, revocation, joint attestations, and royalty meters.
-  `consent-decision` now gives those owner consent effects a bounded CLI receipt
-  path plus a runtime-authenticated bounded API endpoint. Optional signed owner
-  confirmation can bind a hash-only consent payload to an expected
-  owner-controlled signer while receipts expose only signature-binding hashes
-  and verification status. LLM policy authoring, policy migration/diff review,
-  owner/reviewer notification wiring, production owner-key custody,
-  tee-email-oracle/DiligenceRoom effect wiring, and production governance
+- production human-review activation; the strict queue API, release-gated
+  browser UI, wallet-signed release/deny path, private M-of-N resolution,
+  self-review protection, expiry, audit trail, and rollback-witness checks are
+  implemented in source, but fresh reviewer roster/key custody, notifications,
+  scheduled expiry, and a deployed release remain open
+- production activation of multi-party coordination and joint execution; the
+  source has a deterministic ConSECA-style `policy_kernel`, bounded coordination
+  and consent
+  APIs, and a persistent wallet-authenticated schema-v2 Collaboration API/UI
+  for rooms, invitations, membership/roles, exact-query grants, pagination,
+  joint-consent snapshots, and archive. The separate release-gated execution
+  service implements deterministic reservation, finalized admission, bounded
+  Compute, on-demand anchoring and main/QVL authorization, sponsor-wallet
+  `settleReserved`, and finalized reconciliation. It still lacks production
+  owner-key custody, a freshly activated release-bound Collaboration witness,
+  deployed CVM/QVL execution evidence, and live payment/settlement effects. Its
+  local HMAC mode remains deliberately
+  non-monotonic; live dstack mode requires the release-bound Base Sepolia
+  `ExecutionPolicyAnchor` witness under the explicit single-RPC
+  reported-finalized model, but has no current production activation evidence.
+  LLM policy authoring, policy
+  migration/diff review, owner notification, and production governance also
   remain open
 - production frontend wired to real APIs
 - Proof-of-Cloud or equivalent platform provenance
 
-These are roadmap items, not solved facts.
+These are activation and remaining roadmap items, not solved production facts.
 
 ## Product Modes
 

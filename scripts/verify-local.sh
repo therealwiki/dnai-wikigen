@@ -24,7 +24,15 @@ run_foundry() {
   ./scripts/test-diligence-release-safety.sh
   ./scripts/test-email-oracle-release-safety.sh
   ./scripts/test-execution-policy-anchor-release-safety.sh
+  ./scripts/test-release-ceremony-storage-safety.sh
+  ./scripts/test-royalty-release-safety.sh
   ./scripts/test-tinker-release-safety.sh
+  node --test \
+    scripts/royalty-release-phase-plan.test.mjs \
+    scripts/royalty-release-manifest-filter.test.mjs \
+    scripts/royalty-release-runtime-binding-adapter.test.mjs \
+    scripts/royalty-release-ledger-binding.test.mjs \
+    scripts/royalty-release-finality.test.mjs
   popd >/dev/null
 }
 

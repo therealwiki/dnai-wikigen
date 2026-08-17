@@ -18,6 +18,10 @@ import {
   parseFreshContractDeploymentReceiptText,
   validationErrorDocument,
 } from "./operator-policy-packet-core.mjs";
+import {
+  normalizeTinkerAccountBindingCeremonyReceipt,
+  tinkerAccountBindingCeremonyReceiptSha256,
+} from "./tinker-account-binding-ceremony.mjs";
 
 const USAGE = `Usage:
   node scripts/operator-policy-packet.mjs init-intent --out FILE
@@ -30,6 +34,7 @@ const USAGE = `Usage:
 Review dependencies by subject kind:
   deployment_intent       no dependency flags
   cvm_launch_intent       --deployment-intent FILE --contract-receipt FILE
+                          --tinker-account-binding-ceremony-receipt FILE
   final_release_authority --deployment-intent FILE --cvm-launch-intent FILE
 
 Commands:
@@ -63,6 +68,7 @@ function parseArgs(argv) {
     subject: "",
     deploymentIntent: "",
     contractReceipt: "",
+    tinkerAccountBindingCeremonyReceipt: "",
     cvmLaunchIntent: "",
   };
   const seen = new Set();
@@ -75,6 +81,7 @@ function parseArgs(argv) {
       "--subject",
       "--deployment-intent",
       "--contract-receipt",
+      "--tinker-account-binding-ceremony-receipt",
       "--cvm-launch-intent",
       "--help",
       "-h",
@@ -96,7 +103,9 @@ function parseArgs(argv) {
     else if (argument === "--subject") values.subject = next;
     else if (argument === "--deployment-intent") values.deploymentIntent = next;
     else if (argument === "--contract-receipt") values.contractReceipt = next;
-    else values.cvmLaunchIntent = next;
+    else if (argument === "--tinker-account-binding-ceremony-receipt") {
+      values.tinkerAccountBindingCeremonyReceipt = next;
+    } else values.cvmLaunchIntent = next;
     index += 1;
   }
   return values;
@@ -139,7 +148,10 @@ async function writeNewRegularFile(filePath, text) {
   return resolved;
 }
 
-async function readBoundedRegularFile(filePath) {
+async function readBoundedRegularFile(filePath, {
+  exactMode = null,
+  requireSingleLink = false,
+} = {}) {
   if (!filePath || filePath.includes("\0")) throw new Error("input path is required");
   const resolved = path.resolve(filePath);
   const resolvedBefore = await realpath(resolved);
@@ -148,22 +160,69 @@ async function readBoundedRegularFile(filePath) {
   }
   const handle = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const before = await handle.stat();
+    const before = await handle.stat({ bigint: true });
     if (!before.isFile()) throw new Error("input must be a regular non-symlink file");
-    if (before.size < 1 || before.size > MAX_PACKET_BYTES) {
+    if (before.size < 1n || before.size > BigInt(MAX_PACKET_BYTES)) {
       throw new Error(`input must be between 1 and ${MAX_PACKET_BYTES} bytes`);
     }
+    if (exactMode !== null
+      && Number(before.mode & 0o777n) !== exactMode) {
+      throw new Error(
+        `input must use exact mode-${exactMode.toString(8).padStart(4, "0")}`,
+      );
+    }
+    if (requireSingleLink && before.nlink !== 1n) {
+      throw new Error("input must be a single-link regular file");
+    }
+    if (requireSingleLink
+      && typeof process.getuid === "function"
+      && before.uid !== BigInt(process.getuid())) {
+      throw new Error("input must be owned by the current operator");
+    }
     const text = await handle.readFile("utf8");
-    const after = await handle.stat();
+    const after = await handle.stat({ bigint: true });
     const resolvedAfter = await realpath(resolved);
-    if (Buffer.byteLength(text, "utf8") !== before.size
+    if (BigInt(Buffer.byteLength(text, "utf8")) !== before.size
       || before.size !== after.size
-      || before.mtimeMs !== after.mtimeMs
+      || before.dev !== after.dev
       || before.ino !== after.ino
+      || before.mode !== after.mode
+      || before.nlink !== after.nlink
+      || before.uid !== after.uid
+      || before.mtimeNs !== after.mtimeNs
+      || before.ctimeNs !== after.ctimeNs
       || resolvedAfter !== resolvedBefore) {
       throw new Error("input changed while being read");
     }
-    return { resolved, text };
+    return {
+      resolved,
+      text,
+      async assertUnchanged() {
+        if (await realpath(resolved) !== resolvedBefore) {
+          throw new Error("input changed after being read");
+        }
+        const recheck = await open(
+          resolved,
+          constants.O_RDONLY | constants.O_NOFOLLOW,
+        );
+        try {
+          const current = await recheck.stat({ bigint: true });
+          if (!current.isFile()
+            || before.dev !== current.dev
+            || before.ino !== current.ino
+            || before.size !== current.size
+            || before.mode !== current.mode
+            || before.nlink !== current.nlink
+            || before.uid !== current.uid
+            || before.mtimeNs !== current.mtimeNs
+            || before.ctimeNs !== current.ctimeNs) {
+            throw new Error("input changed after being read");
+          }
+        } finally {
+          await recheck.close();
+        }
+      },
+    };
   } finally {
     await handle.close();
   }
@@ -203,69 +262,150 @@ function dependencyFlagError(message) {
 async function readReviewAuthorityDependencies(args, descriptor) {
   const hasDeploymentIntent = Boolean(args.deploymentIntent);
   const hasContractReceipt = Boolean(args.contractReceipt);
+  const hasTinkerAccountBindingCeremonyReceipt =
+    Boolean(args.tinkerAccountBindingCeremonyReceipt);
   const hasCvmLaunchIntent = Boolean(args.cvmLaunchIntent);
   if (descriptor.subjectKind === "deployment_intent") {
-    if (hasDeploymentIntent || hasContractReceipt || hasCvmLaunchIntent) {
+    if (hasDeploymentIntent
+      || hasContractReceipt
+      || hasTinkerAccountBindingCeremonyReceipt
+      || hasCvmLaunchIntent) {
       return dependencyFlagError("deployment-intent review must not accept dependency flags");
     }
     return { ok: true, authorityDependencies: undefined };
   }
   if (descriptor.subjectKind === "cvm_launch_intent") {
-    if (!hasDeploymentIntent || !hasContractReceipt || hasCvmLaunchIntent) {
+    if (!hasDeploymentIntent
+      || !hasContractReceipt
+      || !hasTinkerAccountBindingCeremonyReceipt
+      || hasCvmLaunchIntent) {
       return dependencyFlagError(
-        "CVM-launch review requires exactly --deployment-intent and --contract-receipt",
+        "CVM-launch review requires exactly --deployment-intent, --contract-receipt, and --tinker-account-binding-ceremony-receipt",
       );
     }
   } else if (descriptor.subjectKind === "final_release_authority") {
-    if (!hasDeploymentIntent || hasContractReceipt || !hasCvmLaunchIntent) {
+    if (!hasDeploymentIntent
+      || hasContractReceipt
+      || hasTinkerAccountBindingCeremonyReceipt
+      || !hasCvmLaunchIntent) {
       return dependencyFlagError(
         "final-authority review requires exactly --deployment-intent and --cvm-launch-intent",
       );
     }
   }
 
-  let deploymentIntentText;
+  let deploymentIntentFile;
   try {
-    deploymentIntentText = (await readBoundedRegularFile(args.deploymentIntent)).text;
+    deploymentIntentFile = await readBoundedRegularFile(args.deploymentIntent);
   } catch (error) {
     return dependencyFlagError(`deployment-intent dependency could not be read: ${error.message}`);
   }
+  const deploymentIntentText = deploymentIntentFile.text;
   const deploymentIntent = parseDeploymentIntentCoreText(deploymentIntentText);
   if (!deploymentIntent.ok) return deploymentIntent;
 
   if (descriptor.subjectKind === "cvm_launch_intent") {
-    let receiptText;
+    let ceremonyReceiptFile;
     try {
-      receiptText = (await readBoundedRegularFile(args.contractReceipt)).text;
+      ceremonyReceiptFile = await readBoundedRegularFile(
+        args.tinkerAccountBindingCeremonyReceipt,
+        { exactMode: 0o600, requireSingleLink: true },
+      );
+    } catch (error) {
+      return dependencyFlagError(
+        `Tinker account-binding ceremony receipt dependency could not be read: ${error.message}`,
+      );
+    }
+    const ceremonyReceiptText = ceremonyReceiptFile.text;
+    let tinkerAccountBindingCeremonyReceipt;
+    try {
+      tinkerAccountBindingCeremonyReceipt =
+        normalizeTinkerAccountBindingCeremonyReceipt(
+          JSON.parse(ceremonyReceiptText),
+        );
+    } catch (error) {
+      return dependencyFlagError(
+        `Tinker account-binding ceremony receipt dependency is invalid: ${error.message}`,
+      );
+    }
+    if (ceremonyReceiptText
+        !== canonicalArtifactText(tinkerAccountBindingCeremonyReceipt)) {
+      return dependencyFlagError(
+        "Tinker account-binding ceremony receipt dependency is not canonical",
+      );
+    }
+    const ceremonyReceiptSha256 =
+      tinkerAccountBindingCeremonyReceiptSha256(
+        tinkerAccountBindingCeremonyReceipt,
+      );
+    if (tinkerAccountBindingCeremonyReceipt.historical_replay
+        || tinkerAccountBindingCeremonyReceipt.deployment_intent_sha256
+          !== deploymentIntent.receipt.deploymentIntentSha256
+      || tinkerAccountBindingCeremonyReceipt
+        .reviewer_authority_genesis_acceptance_sha256
+          !== deploymentIntent.intent.release
+            .reviewerAuthorityGenesisAcceptanceSha256
+      || tinkerAccountBindingCeremonyReceipt.account_commitment
+          !== deploymentIntent.intent.staticContractInputs
+            .tinkerAccountEncumbrance.accountCommitment) {
+      return dependencyFlagError(
+        "Tinker account-binding ceremony receipt does not match the exact live deployment-intent authority",
+      );
+    }
+    let receiptFile;
+    try {
+      receiptFile = await readBoundedRegularFile(args.contractReceipt);
     } catch (error) {
       return dependencyFlagError(`fresh-contract receipt dependency could not be read: ${error.message}`);
     }
+    const receiptText = receiptFile.text;
     const receipt = parseFreshContractDeploymentReceiptText(receiptText, {
       expectedDeploymentIntentSha256:
         deploymentIntent.receipt.deploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         deploymentIntent.intent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        ceremonyReceiptSha256,
     });
     if (!receipt.ok) return receipt;
+    try {
+      await deploymentIntentFile.assertUnchanged();
+      await ceremonyReceiptFile.assertUnchanged();
+      await receiptFile.assertUnchanged();
+    } catch (error) {
+      return dependencyFlagError(
+        `CVM-launch review dependency changed after read: ${error.message}`,
+      );
+    }
     return {
       ok: true,
       authorityDependencies: {
         deploymentIntent: deploymentIntent.intent,
         freshContractDeploymentReceipt: receipt.receipt,
+        tinkerAccountBindingCeremonyReceipt,
       },
     };
   }
 
-  let launchText;
+  let launchFile;
   try {
-    launchText = (await readBoundedRegularFile(args.cvmLaunchIntent)).text;
+    launchFile = await readBoundedRegularFile(args.cvmLaunchIntent);
   } catch (error) {
     return dependencyFlagError(`CVM-launch dependency could not be read: ${error.message}`);
   }
+  const launchText = launchFile.text;
   const launch = describeAuthorityReviewSubjectText(launchText);
   if (!launch.ok) return launch;
   if (launch.subjectKind !== "cvm_launch_intent") {
     return dependencyFlagError("--cvm-launch-intent must contain a canonical CVM launch intent");
+  }
+  try {
+    await deploymentIntentFile.assertUnchanged();
+    await launchFile.assertUnchanged();
+  } catch (error) {
+    return dependencyFlagError(
+      `final-authority review dependency changed after read: ${error.message}`,
+    );
   }
   return {
     ok: true,
@@ -292,7 +432,10 @@ export async function runOperatorPolicyPacketCli(argv, io = {}) {
   }
   if (args.command === "init-intent") {
     if (!args.output || args.input || args.receiptOutput || args.subject
-      || args.deploymentIntent || args.contractReceipt || args.cvmLaunchIntent) {
+      || args.deploymentIntent
+      || args.contractReceipt
+      || args.tinkerAccountBindingCeremonyReceipt
+      || args.cvmLaunchIntent) {
       stderr(`init-intent requires only --out FILE\n${USAGE}\n`);
       return 2;
     }
@@ -359,7 +502,11 @@ export async function runOperatorPolicyPacketCli(argv, io = {}) {
   if (!args.input || args.output
     || (!checking && args.receiptOutput)
     || (intentCommands.has(args.command) && (
-      args.subject || args.deploymentIntent || args.contractReceipt || args.cvmLaunchIntent
+      args.subject
+      || args.deploymentIntent
+      || args.contractReceipt
+      || args.tinkerAccountBindingCeremonyReceipt
+      || args.cvmLaunchIntent
     ))
     || (reviewCommands.has(args.command) && !args.subject)) {
     stderr(`${args.command} received the wrong flags; use --help\n${USAGE}\n`);

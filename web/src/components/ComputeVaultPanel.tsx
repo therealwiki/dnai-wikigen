@@ -123,6 +123,9 @@ function workloadAuthorizationFingerprint(
     workload.maxPrefillTokens,
     workload.maxSampleTokens,
     workload.maxTrainTokens,
+    workload.sourceKind,
+    workload.executionBindingCommitment,
+    workload.recipientReleaseCommitment,
   ] : null;
 }
 
@@ -669,6 +672,7 @@ export function ComputeVaultPanel(props: {
         jobReference: authorizedReference,
         state: pinned.state,
         jobRead: pinned.jobRead,
+        workloadAuthority: workload,
         authorizationTransactionHash: result.hash,
       });
       setState(pinned.state);
@@ -765,6 +769,12 @@ export function ComputeVaultPanel(props: {
     setError("");
     setNotice("");
     try {
+      const workload = props.workloadAuthorization;
+      if (!workload) {
+        throw new Error(
+          "Restore the exact sealed-workload binding before preparing this dispatch; the chain stores its intent commitment, not the device source or recipient-release preimage",
+        );
+      }
       const pinned = await readPinnedJob(reference, handoffContextIsCurrent);
       if (!pinned || !handoffContextIsCurrent()) return;
       const receipt = computeAuthorizationHandoffFromPinnedRead({
@@ -773,6 +783,7 @@ export function ComputeVaultPanel(props: {
         jobReference: reference,
         state: pinned.state,
         jobRead: pinned.jobRead,
+        workloadAuthority: workload,
       });
       setState(pinned.state);
       setTrackedReference(reference);
@@ -924,9 +935,9 @@ export function ComputeVaultPanel(props: {
           <div><small>ASSET MODEL</small><strong>No exchange rate</strong><span>Deposit unit = settlement unit</span></div>
         </div>
 
-        <div class="vault-asset-tabs" role="tablist" aria-label="Capacity asset">
-          <button type="button" role="tab" aria-selected={assetKind() === "native"} onClick={() => setAssetKind("native")}><Zap size={15} /> ETH</button>
-          <button type="button" role="tab" aria-selected={assetKind() === "erc20"} onClick={() => setAssetKind("erc20")} disabled={!safetyState()?.config.token}><Gauge size={15} /> {exitTokenTabLabel()}</button>
+        <div class="vault-asset-tabs" role="group" aria-label="Capacity asset">
+          <button type="button" aria-pressed={assetKind() === "native"} onClick={() => setAssetKind("native")}><Zap size={15} /> ETH</button>
+          <button type="button" aria-pressed={assetKind() === "erc20"} onClick={() => setAssetKind("erc20")} disabled={!safetyState()?.config.token}><Gauge size={15} /> {exitTokenTabLabel()}</button>
         </div>
 
         <div class="vault-balance-grid">
@@ -966,6 +977,9 @@ export function ComputeVaultPanel(props: {
           </div>
           <Show when={!props.workloadAuthorization}>
             <p class="vault-lifecycle-note"><LockKeyhole size={13} /> Prepare and seal the exact workload first. The wallet signature must bind its workload, manifest, and canonical dispatch intent; blank or placeholder commitments are rejected.</p>
+          </Show>
+          <Show when={props.workloadAuthorization}>
+            {(workload) => <p class="vault-lifecycle-note"><Fingerprint size={13} /> Source: <strong>{workload().sourceKind === "credential" ? "device credential upload" : "wallet upload"}</strong>. The source identity, execution binding, and recipient release are included in dispatch intent v3. Only this connected wallet can reserve exact-asset capacity; the device has no spending authority.</p>}
           </Show>
           <Show when={!authorizationReady() && actionReasons().length > 0}>
             <ul class="vault-block-reasons"><For each={actionReasons()}>{(reason) => <li>{reason}</li>}</For></ul>

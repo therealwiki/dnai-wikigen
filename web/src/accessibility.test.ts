@@ -9,6 +9,8 @@ import { Arena } from "./views/Arena";
 import capabilitySource from "./views/Capabilities.tsx?raw";
 import { CollaboratePage } from "./views/CollaboratePage";
 import { DataVaults } from "./views/DataVaults";
+import { HealthExplorer } from "./views/HealthExplorer";
+import computeSource from "./views/Compute.tsx?raw";
 import vaultSource from "./views/DataVaults.tsx?raw";
 import { Overview } from "./views/Overview";
 import { SafeguardsLab } from "./views/SafeguardsLab";
@@ -29,6 +31,21 @@ describe("route-level accessibility contract", () => {
     expect(html).toContain('id="page-content"');
     expect(html).toContain('tabindex="-1"');
     expect(appShellSource).toContain('class="wallet-options" role="group"');
+  });
+
+  it("keeps all twelve product routes usable at medium desktop widths without page overflow", () => {
+    const html = renderToString(() => createComponent(AppShell, {
+      route: "overview",
+      navigate: noNavigation,
+      children: "Page content",
+    }));
+    for (const label of [
+      "Overview", "Health guide", "Challenge arena", "Deal room", "Review", "Data vaults",
+      "Compute", "Tinker", "Safeguards", "Catalog", "Verify", "Collaborate",
+    ]) expect(html).toContain(`>${label}</button>`);
+    expect(appShellSource.match(/<For each=\{NAV_ITEMS\}>/g)).toHaveLength(2);
+    expect(appShellSource).toContain('class="desktop-nav" aria-label="Primary navigation"');
+    expect(appShellSource).toContain('id="mobile-navigation-dialog"');
   });
 
   it("names visual diagrams without exposing their positioned decoration as loose text", () => {
@@ -56,8 +73,19 @@ describe("route-level accessibility contract", () => {
     expect(arena).toContain("<caption");
     expect(vaultSource).toContain('aria-label="Illustrative scientific feed routes" tabindex="0"');
     expect(capabilitySource).toContain('aria-label="Roadmap Python SDK pseudocode"');
+    expect(computeSource).toContain('aria-label="Project credentials table" tabindex="0"');
     expect(collaborate).toContain('aria-label="Generated collaboration brief"');
     expect(verify).toContain('aria-label="Source-to-receipt reproducibility chain" tabindex="0"');
+  });
+
+  it("gives the modeled Health Guide grouped questions and named visual semantics", () => {
+    const health = renderToString(() => createComponent(HealthExplorer, { navigate: noNavigation }));
+    expect(health.match(/<fieldset/g)).toHaveLength(5);
+    expect(health.match(/<legend/g)).toHaveLength(5);
+    expect(health).toContain('class="health-signal-map" role="img"');
+    expect(health).toContain('aria-label="Modeled discovery network with public evidence and access-controlled private signals"');
+    expect(health).toContain('aria-label="Result ranking lens"');
+    expect(health).toContain('aria-pressed="true"');
   });
 
   it("announces asynchronous evidence state without promoting it beyond observation", () => {

@@ -9,13 +9,50 @@ for what is built, partial, modeled, planned, deployed, blocked, and validated.
 
 ## Current release boundary
 
-The repository has moved beyond the mockup: `web/` is an eleven-route SolidJS
-product with Diligence Rooms, a sealed Bio/DNA Arena, a source-modeled human
-release desk, Data Vaults, a Compute control plane, a release-gated delegated
-Tinker account console, safeguards, capabilities, verification, and
-collaboration. It discovers EIP-6963 and compatible injected wallets (including
-MetaMask, Rabby, and Coinbase Wallet) through EIP-1193; WalletConnect is
-available only when the public connector ID is configured for that deployment.
+The repository has moved beyond the mockup: `web/` is a twelve-route SolidJS
+product with a health-guide demo, Diligence Rooms, a sealed Bio/DNA Arena, a
+release-gated human-review control plane, Data Vaults, a Compute control plane,
+a release-gated delegated Tinker account console, safeguards, capabilities,
+verification, and a release-gated multi-owner collaboration control plane. It
+discovers EIP-6963 and compatible injected wallets (including MetaMask, Rabby,
+and Coinbase Wallet) through EIP-1193; WalletConnect is available only when the
+public connector ID is configured for that deployment. The health guide is an
+explicitly modeled, reload-cleared surface and accepts no health data in this
+release.
+
+The Review API and browser UI are implemented in source: they enforce a strict
+hash-only queue, release-bound reviewer-wallet challenges, private M-of-N
+resolution, fail-closed denial, and a browser-rechecked Base Sepolia rollback
+witness. The Collaboration API and UI likewise implement persistent schema-v2
+rooms, wallet-owned invitations and membership, owner roles, exact-query
+grants, bounded pagination, joint-consent snapshots, and explicit archive.
+Both surfaces remain release-gated. Collaboration now has an explicit evidence
+split: local HMAC current-state mode is tamper-evident but non-monotonic, while
+live dstack mode refuses wallet authentication, reads, and mutations unless
+the exact schema-v2 state matches its release/domain-bound Base Sepolia
+`ExecutionPolicyAnchor` witness under the explicit single-RPC
+reported-finalized model. That is not RPC quorum or a consensus proof. The
+control-plane source exists, but this working tree has not activated a fresh
+production Collaboration authority or current live witness. The separate
+Collaboration execution service is also implemented and tested in source. Its
+release-gated path is deterministic royalty prefunding after the complete fresh
+owner-grant set; worker admission only after one RPC-reported finalized,
+EIP-1898-pinned observation of that exact reservation and the exact Compute
+job; bounded Compute execution; an on-demand exact settlement-decision anchor
+plus purpose-separated main-runtime and independent-QVL authorizations; a
+sponsor-wallet, zero-value `settleReserved` transaction; and finalized
+reconciliation against the reservation's permanent settlement state. The
+sponsor's wallet funds the exact native/ERC-20 reservation before provider
+handoff; an allowance or aggregate contract balance is not execution
+authority. Direct `distributeNative` / `distributeERC20` calls remain
+compatibility paths, not the authoritative Collaboration path.
+
+That sequence is source/test proof, not a deployment claim. Fresh owner and
+reviewer key custody, notifications, operator activation, a new project-owned
+Base Sepolia suite, the seven Phala CVMs and their QVL roots, and the matching
+Cloudflare release remain open. A DTO, local signer, heartbeat, simulated
+receipt, or RPC-reported finalized read is not Intel TDX evidence, independent
+QVL evidence, RPC quorum, or a consensus proof.
 
 The fresh release is still **source and local-verification work, not a live
 Base Sepolia or Phala release**. No new project-owned contract suite or CVM set
@@ -98,7 +135,7 @@ dnai-wikigen/
 ├── quickstart.sh            # One-shot dependency bootstrap
 ├── example.env              # Environment template
 ├── .gitignore
-├── web/                     # Eleven-route SolidJS product + release generator
+├── web/                     # Twelve-route SolidJS product + release generator
 ├── deployments/             # Append-only Base Sepolia deployment ledger
 ├── docs/                    # Decisions, runtime specs, and operator contracts
 ├── scripts/                 # Activation, image, and release-core verification
@@ -195,8 +232,13 @@ Seller                          TEE Boundary                         Buyer
   │                                  │                                 │
   ├─- Receive payment ◄──────────────┤────────► Receive output ────────┤
   │                                  │                                 │
-  │              (or: session expires, artifact destroyed)             │
+  │     (or: access expires; service unlinks ciphertext per policy)     │
 ```
+
+“Unlinks” describes the service-custody boundary: the ciphertext is no longer
+retrievable through the service path after the declared terminal-retention
+action. It is not a claim that underlying physical media was sanitized or
+destroyed.
 
 ### Paper → Product Map
 

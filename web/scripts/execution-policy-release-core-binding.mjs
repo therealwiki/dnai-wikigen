@@ -1,5 +1,7 @@
 import {
   FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY,
+  EXECUTION_POLICY_STORE_V6_CONTRACT,
   canonicalFinalReleaseAuthorityCoreBytes,
   finalReleaseAuthorityCoreDigest,
   normalizeFinalReleaseAuthorityCore,
@@ -192,6 +194,13 @@ function projectExecutionPolicy(policyValue) {
     approval_schema: policy.approval_schema,
     api_schema_version: policy.api_schema_version,
     store_schema_version: policy.store_schema_version,
+    store_contract: {
+      ...EXECUTION_POLICY_STORE_V6_CONTRACT,
+      payload_fields: [...EXECUTION_POLICY_STORE_V6_CONTRACT.payload_fields],
+    },
+    release_marker_genesis: {
+      ...EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY,
+    },
     approver_hashes: policy.approver_hashes,
     approver_root_hash: policy.approver_root_hash,
     rollback_anchor_target: {

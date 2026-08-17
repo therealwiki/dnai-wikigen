@@ -47,7 +47,7 @@ The service contains no quote logging or persistence path. Uvicorn access logs, 
 
 ## Report-data profiles
 
-One release policy selects exactly one primary discriminated `report_data_binding`. That primary binding enables exactly one workload profile. A Diligence policy may additionally include the exact optional `email_oracle_kms_restart_binding`; only then may the same Diligence QVL signer, policy hash, challenge store, and CVM issue challenges for the secondary `email_oracle_kms_restart` profile. Request input can select only a profile already enabled by the reviewed policy.
+One release policy selects exactly one primary discriminated `report_data_binding`. That primary binding enables exactly one workload profile. A Diligence policy may additionally include the exact optional `royalty_settlement_binding` and `email_oracle_kms_restart_binding`. Only then may that same measured Diligence QVL CVM and challenge store issue the corresponding secondary `royalty_settlement` or `email_oracle_kms_restart` profile. Royalty uses its own dstack key and EIP-712 domain; it does not reuse the Diligence verdict/result signer. Request input can select only a profile already enabled by the reviewed policy.
 
 ### Diligence result signer
 
@@ -58,6 +58,95 @@ One release policy selects exactly one primary discriminated `report_data_bindin
 ```
 
 The signer and contract addresses are lowercase policy values. This is byte-for-byte compatible with `tinker_delegate.chain_submitter.signer_attestation_report_data`.
+
+### Royalty settlement on the existing Diligence QVL
+
+`royalty_settlement_qvl_v2` is an optional secondary policy on the existing
+Diligence QVL CVM. It does **not** add an eighth CVM. The Diligence QVL is the
+independent party that appraises a fresh main-runtime Collaboration/Compute
+release quote; a separate purpose-derived QVL key then co-signs one exact
+reserved `RoyaltyDistributor` v3 settlement.
+
+The binding is Base-Sepolia-only and pins:
+
+- the `RoyaltyDistributor` governance owner, contract address, and runtime-code hash;
+- the sole main-runtime settlement verifier, literal key path, and dstack custody label;
+- the `ExecutionPolicyAnchor` address and frozen writer-release commitment;
+- the active Royalty release-policy commitment and nonzero authority nonce;
+- a nonzero Royalty-QVL key ID;
+- the exact main-runtime CVM ID, deployment-intent digest, release-authority digest, and measurement-policy digest; and
+- the literal maximum authorization lifetime of 600 seconds.
+
+The policy is accepted only on a Diligence primary binding with exactly one
+main-runtime signer. The Diligence contract, distributor, main-runtime signer,
+and anchor must all be nonzero and pairwise distinct. At QVL construction the
+service derives the Royalty signer and byte-for-byte recomputes the contract's
+`RoyaltyReleasePolicy` commitment from chain ID, distributor, authority nonce,
+main settlement verifier, derived QVL verifier, anchor, and anchor-writer
+release. A mismatch prevents startup.
+
+The owner, Diligence contract, distributor, main settlement signer, independent
+QVL signer, and execution-policy anchor are required to remain distinct. The
+main runtime's static quote digest uses domain
+`dnai-wikigen/royalty-settlement-signer-attestation/v1\0`. It commits the exact
+main-CVM lineage and measurements, distributor/runtime pin, main settlement
+signer path/custody, active release commitment, derived Royalty verifier, and
+canonical Royalty policy commitment. The challenge digest remains in quote
+`report_data` bytes 32–63, so an old quote cannot be reused for a new request.
+
+The exact nested request schema is
+`dnai.royalty-settlement-qvl-authorization-request.v2`. It covers every field
+of the contract's `RoyaltySettlementQvlAuthorization` type:
+
+```text
+settlement_id, settlement_nonce, funding_reservation_id,
+release_policy_commitment,
+room_commitment, room_state_commitment, query_commitment,
+grant_set_commitment, allocation_commitment, owners_amounts_hash,
+asset, total, execution_commitment, result_commitment, usage_commitment,
+attestation_evidence_hash, anchor_resource_hash, anchor_decision_hash,
+anchor_sequence, expiry
+```
+
+`funding_reservation_id` is required and nonzero, so this production QVL path
+authorizes only a contract-backed funding reservation; omitted, zero, aliased,
+extra-field, and legacy-v1 packets fail schema validation. The v2 Royalty QVL
+policy commitment explicitly pins this request-schema version. The object also
+carries the main runtime's raw `RoyaltySettlementAuthorization` digest
+and signature. After independent DCAP appraisal, the QVL recomputes the fresh
+quote-evidence hash, active release commitment, collaboration resource hash,
+settlement decision hash, and main-runtime EIP-712 digest. It requires a
+canonical low-s signature from the policy-pinned main-runtime settlement
+verifier. Therefore changing any settlement, evidence, anchor, or policy field
+without a new measured-main-runtime signature fails. The contract remains the
+final live-head authority: at broadcast it independently requires the resource
+head, decision head, and both sequences to match its configured anchor, so an
+anchor change after QVL appraisal cannot settle.
+
+Only then does the QVL reproduce the contract's exact EIP-712 domain
+(`DNAI Royalty Distributor`, version `3`, Base Sepolia chain ID, exact
+distributor) and `RoyaltySettlementQvlAuthorization` type hash. It raw-signs
+that digest using:
+
+```text
+dnai-wikigen/attestation-qvl/royalty-settlement-signer/v1/<qvl-signer-key-id>
+```
+
+The 65-byte signature has no EIP-191 prefix. The distinct dstack path,
+`RoyaltySettlementQvlAuthorization` type, and the contract's EIP-712 version-3 domain
+prevent replay as a Diligence result signature, generic verdict signature,
+main-runtime settlement signature, or Compute metering receipt. The reservation
+ID is bound in the settlement-decision hash, main-runtime authorization digest,
+QVL authorization digest, and bounded anchor-evidence commitment. Expiry must be
+strictly future, no more than 600 seconds after appraisal, and no later than
+the one-time challenge or verdict-evidence lease.
+
+The v4 verdict returns no settlement fields, main-runtime signature, or raw
+quote. Its optional Royalty group is limited to the derived QVL address,
+canonical Royalty policy commitment, active contract release commitment,
+quote-evidence hash, anchor-evidence commitment, expiry, exact EIP-712 digest,
+and raw signature. The ordinary verdict signer separately EIP-191-signs that
+bounded envelope.
 
 ### Email oracle / KMS restart evidence on the Diligence root
 
@@ -178,15 +267,17 @@ requires this raw QVL signature together with the distinct meter's raw
 
 Deploy separate policy/service instances for Diligence, Arena, the anchor
 writer, Compute workload, and compute metering. Their different policy hashes
-produce different dstack key paths and therefore distinct verifier roots even
-if every other release field is identical. The optional email/KMS restart
-profile is the sole exception: it intentionally shares the Diligence policy,
-verifier root, challenge store, and CVM.
+produce different verdict-signing key paths and therefore distinct verifier
+roots even if every other release field is identical. The optional Royalty and
+email/KMS restart profiles intentionally share the Diligence policy, challenge
+store, and CVM. Royalty alone derives an additional purpose-specific raw signer
+inside that existing Diligence CVM.
 
 ## HTTP surface
 
 - `GET /health` returns liveness only: `{"status":"ok"}`.
 - `GET /identity` returns the bounded verifier address, canonical release-policy hash, dstack custody label, and `raw_secret_egress:false`.
+- `GET /capabilities` returns `dnai.attestation-qvl-capabilities.v1`. It always says whether the optional Royalty protocol is configured and includes the accepted v2 authorization schema, secondary verifier address, and canonical Royalty policy commitment only when it is. This is discovery data, not independent attestation evidence.
 - `POST /challenge` is authenticated and issues one signed, short-lived, policy/profile-scoped challenge from the bounded one-time store.
 - `POST /verify` is authenticated, reserves exactly the supplied QVL-issued challenge, performs strict independent quote verification, requires appraisal to finish strictly before the at-most-120-second challenge expires, consumes the challenge on every terminal path, and returns only the bounded `dnai.independent-tdx-verdict.v4` verdict with its policy-bounded activation-evidence lease. It never returns a raw quote.
 - `POST /attestation` is authenticated and mandatory in the production runtime. It accepts an externally generated activation-verifier challenge; the QVL does not self-issue this challenge. It returns the QVL CVM's own fresh raw quote with the static QVL identity digest in bytes 0–31 and the external challenge digest in bytes 32–63.
@@ -216,7 +307,7 @@ deterministic `challenge_digest`, `issued_at`, `expires_at`,
 signature and match every lineage, profile, policy, lifetime, and verifier
 field against external release authority before requesting a quote.
 
-The exact verification request accepted from the Diligence, Arena, anchor-writer, and compute-metering clients is:
+The exact verification envelope accepted from Diligence, Royalty, Arena, anchor-writer, and compute-metering clients is:
 
 ```json
 {
@@ -259,6 +350,13 @@ The exact verification request accepted from the Diligence, Arena, anchor-writer
 
 Missing or additional keys, wrong JSON types, uppercase or noncanonical hex, duplicate object keys, mismatched labels, odd hex, and malformed quotes fail closed.
 
+For Royalty, that envelope uses profile `royalty_settlement`, the policy-pinned
+main-runtime CVM lineage, the distributor as `expectation.contract_address`,
+and adds exactly one `royalty_authorization` object with schema
+`dnai.royalty-settlement-qvl-authorization-request.v2`. Authorization domains
+are mutually exclusive: a request cannot combine Royalty with Diligence result,
+Compute metering, or Compute workload-recipient authority.
+
 The activation request to `POST /attestation` is exactly
 `dnai.qvl-identity-attestation-request.v3`. It binds the QVL CVM's own
 `chain_id`, QVL `domain`, `profile`, canonical `cvm_id`, deployment intent,
@@ -273,7 +371,8 @@ or an unverified raw quote do not.
 
 ## External release policy
 
-Use `release-policy.example.json` for Diligence and its optional same-root email/KMS restart profile,
+Use `release-policy.example.json` for Diligence and its optional same-root
+Royalty and email/KMS restart profiles,
 `release-policy.arena.example.json` for Arena, or
 `release-policy.anchor-writer.example.json` for the purpose-separated anchor
 writer. Use `release-policy.compute-metering.example.json` for the
@@ -281,7 +380,7 @@ purpose-separated metering signer and
 `release-policy.compute-workload.example.json` for the dynamic Compute
 recipient. These are shapes only. Even syntactically valid repeated-hex app and
 OS values are placeholders. Every address, label, validity window, measurement,
-release commitment, policy-set hash, and key must be replaced by independently
+release commitment, policy-set hash, key ID, and key must be replaced by independently
 reviewed evidence.
 Placeholder measurements must never authorize production.
 
@@ -317,22 +416,36 @@ The canonical policy hash is SHA-256 over the validated policy serialized with s
 dnai-wikigen/attestation-qvl/verdict-signer/v1/<canonical-policy-sha256>
 ```
 
+When the Diligence policy enables Royalty, the service also derives:
+
+```text
+dnai-wikigen/attestation-qvl/royalty-settlement-signer/v1/<qvl-signer-key-id>
+```
+
+The reviewed active `release_policy_commitment` must be generated with that
+derived address as the contract's QVL verifier. The example repeated-hex value
+is only a schema placeholder; production startup deliberately fails if the
+commitment does not recompute exactly.
+
 Changing any policy field rotates the dstack-derived verifier address. Production has no raw-private-key environment variable, key file, mnemonic, fallback signer, or switch that disables QVL identity attestation. Test-only in-memory signers exist only behind the internal test dependency boundary.
 
 ## Verifier-root rollout
 
-The `/identity` response is discovery data, not a trust root by itself. Before trusting a deployment:
+The `/identity` and `/capabilities` responses are discovery data, not trust roots by themselves. Before trusting a deployment:
 
 1. Verify the reviewed policy and its canonical hash locally.
 2. Verify the QVL CVM's platform/release evidence through Phala's attestation flow.
 3. Generate a fresh external activation challenge, call authenticated `POST /attestation`, independently verify its raw TDX quote and DCAP collateral, and require both the static verifier/policy digest and the exact external challenge digest in the two report-data halves.
-4. Add the resulting verifier address to the delegate's externally reviewed trusted-verifier allowlist.
-5. Only then route evaluated-CVM quote requests to that deployment.
+4. If Royalty is enabled, require the externally reviewed policy to contain the exact secondary binding, match the `/capabilities` address and policy commitment, and require the active Royalty release commitment to recompute with that secondary address.
+5. Add the resulting primary verifier address to the delegate's externally reviewed trusted-verifier allowlist and configure the Royalty contract only with the separately verified secondary address.
+6. Only then route evaluated-CVM quote requests to that deployment.
 
 A policy update is a verifier-root rotation. Deploy a new isolated instance,
 verify and approve the new root, update consumers, drain the old instance, and
 then revoke the old root. Do not mutate one live service between Diligence,
-Arena, anchor-writer, and compute-metering policies.
+Arena, anchor-writer, and compute-metering policies. A Royalty key-ID change is
+also an explicit Royalty verifier rotation and requires a new active contract
+release commitment.
 
 ## Production CVM and HTTPS boundary
 
@@ -368,8 +481,8 @@ each QVL consumer's 30-second end-to-end request timeout.
 - publishes `8443:8443`, which Phala's gateway exposes as an HTTPS endpoint such as `https://<app-id>-8443.<gateway-domain>`;
 - runs one Uvicorn worker so the process-global concurrency cap and token bucket remain global.
 
-Configure the Diligence delegate, Arena worker, one-shot anchor-writer
-bootstrap, or metering evidence collector with that context's exact HTTPS
+Configure the Diligence delegate, Royalty settlement producer, Arena worker,
+one-shot anchor-writer bootstrap, or metering evidence collector with that context's exact HTTPS
 `/verify` URL. The metering collector maps the authenticated
 `dnai.compute-metering-identity-attestation.v2` packet to the generic request:
 `metering_verifier` becomes `signer_address`, and `vault_address` becomes
@@ -397,7 +510,7 @@ IMAGE_TAG=dnai-attestation-qvl:test ./scripts/build-reproducible.sh
 
 The build wrapper always passes `SOURCE_DATE_EPOCH=1735689600` explicitly. BuildKit's reproducible-image exporter requires an explicitly supplied nonzero epoch; relying only on a Dockerfile `ARG` default leaves the image-config creation time variable. The builder also removes uv's volatile local cache record, reconstructs the installed virtual environment in deterministic path order with normalized ownership/timestamps, and copies it to the runtime image at `/.venv`. Two independent `--no-cache` builds with that argument must produce the same image ID before publishing.
 
-Tests use a fake quote backend and never download collateral or claim synthetic data is Intel evidence. Adapter tests pin the installed `dcap-qvl` version and its actual Python surface, including `VerifiedReport.status`, `Quote.is_tdx()`, `Quote.quote_type()`, TDX 1.0 fields, and optional TDX 1.5 fields. Cross-project tests import the real delegate and compute-metering code, round-trip the HTTPS clients and metering quote packet through the FastAPI service, compare every purpose-specific report-data algorithm, compare the exact verdict digest, recover the EIP-191 signature, and authenticate the returned verdict using the delegate consumer.
+Tests use a fake quote backend and never download collateral or claim synthetic data is Intel evidence. Adapter tests pin the installed `dcap-qvl` version and its actual Python surface, including `VerifiedReport.status`, `Quote.is_tdx()`, `Quote.quote_type()`, TDX 1.0 fields, and optional TDX 1.5 fields. Royalty tests compare the request-v2/EIP-712-domain-v3 digest against the checked-in Solidity type strings, the real Tinker calldata encoder, an independent `eth-account` typed-data encoder, and a fixed KAT; mutate every signed contract field; reject legacy type hashes, substituted reservations, cross-profile authority, and EIP-191 replay; exercise policy/release/anchor/evidence/expiry drift; and enforce the authenticated body cap. Cross-project tests import the real delegate and compute-metering code, round-trip the HTTPS clients and metering quote packet through the FastAPI service, compare every purpose-specific report-data algorithm, compare the exact verdict digest, recover the EIP-191 signature, and authenticate the returned verdict using the delegate consumer.
 
 ## Deliberate remaining boundaries
 

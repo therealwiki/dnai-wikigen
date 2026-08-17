@@ -18,9 +18,10 @@ This boundary does not yet have an authenticated atomic store for a monotonic
 finalized-block checkpoint across separate requests.  Each request therefore
 revalidates the RPC's current finalized head independently, but cannot prove
 that the same RPC did not roll back below a previously accepted finalized head.
-The existing Arena state file is neither an authenticated anti-rollback
-primitive nor part of the same transaction as both later ingress writes, so it
-is deliberately not repurposed as false durability authority here.
+The Arena state file has a purpose-separated HMAC integrity envelope, but that
+does not make it an anti-rollback primitive and it is not part of the same
+transaction as both later ingress writes. It is therefore deliberately not
+repurposed as false monotonic durability authority here.
 """
 
 from __future__ import annotations

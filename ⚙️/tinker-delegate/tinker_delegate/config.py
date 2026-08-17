@@ -1,11 +1,13 @@
 """Configuration for tinker-delegate automation."""
+import json
 import re
 import os
 import stat
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -67,10 +69,11 @@ class Settings(BaseSettings):
     wallet_auth_token_ttl_seconds: int = 300
     wallet_auth_max_pending_challenges: int = 1024
     # One process-wide sliding-window admission gate is shared by Deal, Arena,
-    # and Compute challenge issuance.  The 600-second window covers every
-    # challenge TTL and the global limit must remain below all three 1024-entry
-    # nonce stores. Forwarded client IPs are ignored unless both an approved
-    # single-IP header and exact direct-proxy CIDRs are configured.
+    # Compute, Collaboration, and Review challenge issuance. The 600-second
+    # window covers every challenge TTL and the global limit must remain below
+    # every configured nonce-store capacity. Forwarded client IPs are ignored
+    # unless both an approved single-IP header and exact direct-proxy CIDRs are
+    # configured.
     wallet_auth_challenge_limit_window_seconds: int = 600
     wallet_auth_challenge_global_limit: int = 768
     wallet_auth_challenge_address_limit: int = 64
@@ -129,8 +132,16 @@ class Settings(BaseSettings):
 
     # Durable bounded Arena catalog/submission/queue/leaderboard state. This
     # state contains commitments and encrypted-object references, never raw
-    # candidate code. Empty disables submission writes fail-closed.
+    # candidate code. Its canonical schema-v4 envelope is HMAC authenticated
+    # with a purpose-separated key. That integrity check is not an
+    # anti-rollback primitive. Empty path or unavailable key disables the
+    # persistent surface fail-closed. The legacy HTTP worker routes are local
+    # development compatibility only and remain disabled in every dstack
+    # process even if the false-by-default switch is set.
     arena_store_path: str = ""
+    arena_store_integrity_key: str = ""
+    arena_store_integrity_key_path: str = "tinker/arena_store_integrity"
+    arena_legacy_internal_api_enabled: bool = False
 
     # Dedicated safe-IR worker bootstrap. The release manifest and sealed
     # synthetic evaluator are regular 0600 files. The manifest's exact bytes
@@ -183,6 +194,106 @@ class Settings(BaseSettings):
     compute_max_operator_grant_credits: int = 100000
     compute_max_project_balance_credits: int = 1000000
 
+    # Multi-owner Collaboration Console authentication and current-state
+    # authority. Wallet tokens, consent signatures, and the authenticated store
+    # are purpose-separated from Deal, Arena, Compute, Review, proxy, and
+    # runtime domains. Explicit keys are local-development only; CVMs derive
+    # each purpose from its independent dstack path. The local HMAC store
+    # detects corruption/tampering but remains explicitly non-monotonic. A live
+    # dstack surface is constructed only with the release-bound Base Sepolia
+    # ExecutionPolicyAnchor witness and fails closed when it is unavailable.
+    collaboration_enabled: bool = False
+    collaboration_wallet_auth_signing_key: str = ""
+    collaboration_wallet_auth_key_path: str = (
+        "tinker/collaboration_wallet_auth"
+    )
+    collaboration_wallet_auth_challenge_ttl_seconds: int = 300
+    collaboration_wallet_auth_token_ttl_seconds: int = 600
+    collaboration_wallet_auth_max_pending_challenges: int = 1024
+    collaboration_wallet_auth_issuer: str = (
+        "dnai-wikigen:collaboration-wallet-auth"
+    )
+    collaboration_wallet_auth_audience: str = (
+        "dnai-wikigen:collaboration-console"
+    )
+    collaboration_consent_challenge_ttl_seconds: int = 300
+    collaboration_store_path: str = ""
+    collaboration_store_integrity_key: str = ""
+    collaboration_store_integrity_key_path: str = (
+        "tinker/collaboration_store_integrity"
+    )
+
+    # One-shot Collaboration execution is a separately authorized runtime
+    # surface. Coordination may remain enabled while this worker stays off.
+    # The production journal uses its own dstack-derived HMAC key and the
+    # worker poll is intentionally bounded so a malformed environment value
+    # cannot create a busy loop or an unbounded reconciliation delay.
+    collaboration_execution_enabled: bool = False
+    collaboration_execution_journal_path: str = ""
+    collaboration_execution_journal_integrity_key: str = ""
+    collaboration_execution_journal_integrity_key_path: str = (
+        "tinker/collaboration_execution_journal_integrity"
+    )
+    collaboration_execution_release_git_sha: str = ""
+    collaboration_execution_release_verification_sha256: str = ""
+    collaboration_execution_grant_ttl_seconds: int = Field(
+        300,
+        ge=60,
+        le=900,
+    )
+    collaboration_execution_royalty_reservation_safety_seconds: int = Field(
+        900,
+        ge=60,
+        le=3600,
+    )
+    collaboration_execution_poll_interval_seconds: float = Field(
+        1.0,
+        ge=0.1,
+        le=60.0,
+    )
+    collaboration_execution_worker_heartbeat_path: str = ""
+    collaboration_execution_worker_heartbeat_ttl_seconds: int = Field(
+        30,
+        ge=5,
+        le=300,
+    )
+    collaboration_execution_worker_heartbeat_key_path: str = (
+        "tinker/collaboration_execution_worker_heartbeat"
+    )
+    collaboration_execution_worker_heartbeat_integrity_key: str = ""
+    collaboration_royalty_settlement_store_path: str = ""
+    collaboration_royalty_settlement_store_integrity_key_path: str = (
+        "tinker/collaboration_royalty_settlement_store"
+    )
+    collaboration_royalty_settlement_store_integrity_key: str = ""
+
+    # Complete server-derived RoyaltySettlementReleaseBinding for the
+    # profile-gated Collaboration worker.  Contract-active values and the
+    # independent Royalty-QVL policy are separate signed late inputs.  Main
+    # runtime identity is projected from the canonical prepare observation;
+    # the browser/client supplies none of these fields and no funding
+    # commitment is accepted through environment configuration.
+    royalty_distributor_address: str = ""
+    royalty_distributor_runtime_code_hash: str = ""
+    royalty_owner_address: str = ""
+    royalty_authority_nonce: int = Field(0, ge=0, le=2**63 - 1)
+    royalty_settlement_verifier: str = ""
+    royalty_qvl_verifier: str = ""
+    royalty_execution_policy_anchor: str = ""
+    royalty_anchor_writer_release_commitment: str = ""
+    royalty_release_policy_commitment: str = ""
+    royalty_qvl_policy_commitment: str = ""
+    royalty_qvl_signer_key_id: str = ""
+    royalty_qvl_release_policy_hash: str = ""
+    royalty_measurement_policy_sha256: str = ""
+    royalty_main_runtime_compose_hash: str = ""
+    royalty_main_runtime_app_id: str = ""
+    royalty_main_runtime_os_image_hash: str = ""
+    royalty_settlement_qvl_url: str = ""
+    royalty_qvl_verdict_verifier_address: str = ""
+    royalty_qvl_max_verdict_age_seconds: int = Field(120, ge=1, le=300)
+    royalty_qvl_revoked_quote_hashes_json: str = "[]"
+
     # Exact-asset ComputeCreditVault dispatch is intentionally separate from
     # the modeled off-chain service-credit ledger above. The API journal holds
     # metadata and irreversible-boundary checkpoints only; the worker settles
@@ -204,6 +315,108 @@ class Settings(BaseSettings):
     compute_execution_max_block_age_seconds: int = 300
     compute_execution_max_future_block_skew_seconds: int = 30
 
+    # Release-pinned provider execution remains disabled unless every exact
+    # adapter/SDK/source/request/base/tokenizer/runtime binding agrees and a
+    # fresh authenticated worker-presence heartbeat is available. The adapter
+    # intentionally makes no upstream idempotent-replay claim: it checkpoints
+    # one at-most-once attempt and terminally holds ambiguous outcomes.
+    compute_provider_execution_enabled: bool = False
+    compute_provider_adapter_id: str = ""
+    compute_provider_sdk_version: str = ""
+    compute_provider_sdk_source_sha256: str = ""
+    compute_provider_request_contract_sha256: str = ""
+    compute_provider_base_url_sha256: str = ""
+    compute_provider_tokenizer_path: str = ""
+    compute_provider_tokenizer_release_sha256: str = ""
+    compute_provider_result_key_path: str = "tinker/compute_provider_result"
+    compute_provider_status_path: str = ""
+    compute_provider_status_key_path: str = "tinker/compute_provider_status"
+    compute_provider_status_integrity_key: str = ""
+    compute_provider_status_ttl_seconds: int = 30
+    compute_provider_request_timeout_seconds: float = 120.0
+
+    # Wallet-owned Tinker customer lifecycle. The browser supplies only the
+    # existing short-lived Compute wallet bearer plus bounded lifecycle input.
+    # Every release/policy/evidence pin comes from one exact private authority
+    # document whose bytes are SHA-256 pinned by the signed deployment.
+    # These fields intentionally include ``tinker_customer`` in their Python
+    # names, so the model-wide ``TINKER_`` prefix would otherwise make the
+    # operational names ``TINKER_TINKER_CUSTOMER_*``.  Explicit validation
+    # aliases preserve ergonomic Python construction while making the reviewed
+    # one-prefix ``TINKER_CUSTOMER_*`` environment contract authoritative.
+    tinker_customer_enabled: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "tinker_customer_enabled",
+            "TINKER_CUSTOMER_ENABLED",
+        ),
+    )
+    tinker_customer_authority_path: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_authority_path",
+            "TINKER_CUSTOMER_AUTHORITY_PATH",
+        ),
+    )
+    tinker_customer_authority_sha256: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_authority_sha256",
+            "TINKER_CUSTOMER_AUTHORITY_SHA256",
+        ),
+    )
+    tinker_customer_store_path: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_store_path",
+            "TINKER_CUSTOMER_STORE_PATH",
+        ),
+    )
+    # Explicit values are local-test-only. A real dstack deployment derives
+    # purpose-separated keys at the two immutable paths below.
+    tinker_customer_store_integrity_key: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_store_integrity_key",
+            "TINKER_CUSTOMER_STORE_INTEGRITY_KEY",
+        ),
+    )
+    tinker_customer_store_integrity_key_path: str = Field(
+        "tinker/customer_store_integrity",
+        validation_alias=AliasChoices(
+            "tinker_customer_store_integrity_key_path",
+            "TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH",
+        ),
+    )
+    tinker_customer_credential_signing_key: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_credential_signing_key",
+            "TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY",
+        ),
+    )
+    tinker_customer_credential_key_path: str = Field(
+        "tinker/customer_credentials",
+        validation_alias=AliasChoices(
+            "tinker_customer_credential_key_path",
+            "TINKER_CUSTOMER_CREDENTIAL_KEY_PATH",
+        ),
+    )
+    tinker_customer_settlement_signing_key: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "tinker_customer_settlement_signing_key",
+            "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+        ),
+    )
+    tinker_customer_settlement_key_path: str = Field(
+        "tinker/customer_settlement_evidence",
+        validation_alias=AliasChoices(
+            "tinker_customer_settlement_key_path",
+            "TINKER_CUSTOMER_SETTLEMENT_KEY_PATH",
+        ),
+    )
+
     # Ciphertext-only private workload ingress. The recipient and integrity
     # keys use distinct dstack derivation paths. Local key material exists only
     # for deterministic development/tests; real uploads additionally require a
@@ -218,6 +431,7 @@ class Settings(BaseSettings):
     compute_workload_ingress_local_key_file: str = ""
     compute_workload_ingress_private_key_hex: str = ""
     compute_workload_ingress_max_envelopes: int = 10_000
+    compute_workload_wallet_adoption_enabled: bool = False
     # Fresh recipient activation is issued only by the fifth, dedicated QVL
     # CVM. The bearer remains a direct environment read and is never retained
     # in Settings/repr. Dynamic recipient/signing identity is dstack-derived;
@@ -315,6 +529,200 @@ class Settings(BaseSettings):
     diligence_chain_id: int = 84532
     diligence_room_address: str = ""
 
+    @field_validator("collaboration_enabled", mode="before")
+    @classmethod
+    def validate_exact_collaboration_enabled(cls, value):
+        """Accept only booleans or exact lowercase env literals."""
+
+        if isinstance(value, bool):
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(
+            "collaboration_enabled must be exactly true or false"
+        )
+
+    @field_validator("collaboration_execution_enabled", mode="before")
+    @classmethod
+    def validate_exact_collaboration_execution_enabled(cls, value):
+        """Accept only booleans or exact lowercase signed env literals."""
+
+        if isinstance(value, bool):
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(
+            "collaboration_execution_enabled must be exactly true or false"
+        )
+
+    @field_validator("compute_workload_wallet_adoption_enabled", mode="before")
+    @classmethod
+    def validate_exact_compute_workload_wallet_adoption_enabled(cls, value):
+        """Reject loose truthy spellings at the signed release boundary."""
+
+        if isinstance(value, bool):
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError(
+            "compute_workload_wallet_adoption_enabled must be exactly true or false"
+        )
+
+    @field_validator("collaboration_execution_release_git_sha")
+    @classmethod
+    def validate_collaboration_execution_release_git_sha(cls, value):
+        if value and not re.fullmatch(r"[0-9a-f]{40}", value):
+            raise ValueError(
+                "collaboration_execution_release_git_sha must be empty or 40 lowercase hex"
+            )
+        return value
+
+    @field_validator("collaboration_execution_release_verification_sha256")
+    @classmethod
+    def validate_collaboration_execution_release_verification_sha256(cls, value):
+        if value and not _NONZERO_SHA256.fullmatch(value):
+            raise ValueError(
+                "collaboration_execution_release_verification_sha256 must be empty or a nonzero sha256 digest"
+            )
+        return value
+
+    @field_validator(
+        "royalty_distributor_address",
+        "royalty_owner_address",
+        "royalty_settlement_verifier",
+        "royalty_qvl_verifier",
+        "royalty_execution_policy_anchor",
+        "royalty_qvl_verdict_verifier_address",
+    )
+    @classmethod
+    def validate_royalty_release_address(cls, value):
+        if value and not _NONZERO_ADDRESS.fullmatch(value):
+            raise ValueError(
+                "royalty release addresses must be empty or canonical nonzero lowercase addresses"
+            )
+        return value
+
+    @field_validator("royalty_settlement_qvl_url")
+    @classmethod
+    def validate_royalty_settlement_qvl_url(cls, value):
+        if not value:
+            return value
+        if value != value.strip() or len(value) > 2048:
+            raise ValueError("royalty settlement QVL URL is invalid")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != "/verify"
+            or parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+        ):
+            raise ValueError(
+                "royalty settlement QVL URL must be an exact public HTTPS /verify endpoint"
+            )
+        return value
+
+    @field_validator("royalty_qvl_revoked_quote_hashes_json")
+    @classmethod
+    def validate_royalty_qvl_revoked_quote_hashes_json(cls, value):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            raise ValueError(
+                "royalty QVL revoked quote hashes must be canonical JSON"
+            ) from None
+        if (
+            not isinstance(parsed, list)
+            or len(parsed) > 1024
+            or any(
+                not isinstance(item, str) or not _NONZERO_BYTES32.fullmatch(item)
+                for item in parsed
+            )
+            or parsed != sorted(set(parsed))
+            or json.dumps(parsed, separators=(",", ":"), ensure_ascii=True) != value
+        ):
+            raise ValueError(
+                "royalty QVL revoked quote hashes must be a sorted unique bytes32 array"
+            )
+        return value
+
+    @field_validator(
+        "royalty_distributor_runtime_code_hash",
+        "royalty_anchor_writer_release_commitment",
+        "royalty_release_policy_commitment",
+        "royalty_qvl_policy_commitment",
+        "royalty_qvl_signer_key_id",
+        "royalty_qvl_release_policy_hash",
+    )
+    @classmethod
+    def validate_royalty_release_bytes32(cls, value):
+        if value and not _NONZERO_BYTES32.fullmatch(value):
+            raise ValueError(
+                "royalty release commitments must be empty or canonical nonzero bytes32"
+            )
+        return value
+
+    @field_validator("royalty_measurement_policy_sha256")
+    @classmethod
+    def validate_royalty_measurement_policy_sha256(cls, value):
+        if value and not _NONZERO_SHA256.fullmatch(value):
+            raise ValueError(
+                "royalty measurement policy must be empty or a nonzero sha256 digest"
+            )
+        return value
+
+    @field_validator("royalty_main_runtime_compose_hash")
+    @classmethod
+    def validate_royalty_main_runtime_compose_hash(cls, value):
+        if value and not re.fullmatch(r"(?!0{64}$)[0-9a-f]{64}", value):
+            raise ValueError(
+                "royalty main runtime compose hash must be empty or 64 nonzero lowercase hex"
+            )
+        return value
+
+    @field_validator("royalty_main_runtime_app_id")
+    @classmethod
+    def validate_royalty_main_runtime_app_id(cls, value):
+        if value and not re.fullmatch(r"(?!0{40}$)[0-9a-f]{40}", value):
+            raise ValueError(
+                "royalty main runtime app ID must be empty or 40 nonzero lowercase hex"
+            )
+        return value
+
+    @field_validator("royalty_main_runtime_os_image_hash")
+    @classmethod
+    def validate_royalty_main_runtime_os_image_hash(cls, value):
+        if value and not re.fullmatch(r"(?!0{64}$)[0-9a-f]{64}", value):
+            raise ValueError(
+                "royalty main runtime OS image hash must be empty or 64 nonzero lowercase hex"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_production_wallet_auth_identity(self) -> "Settings":
+        """Pin production personal-sign prompts to the deployed HTTPS origin."""
+
+        if os.getenv("DSTACK_ENABLED", "").strip().lower() != "true":
+            return self
+        if self.wallet_auth_domain != "www.wikigen.me":
+            raise ValueError("production wallet-auth domain must be www.wikigen.me")
+        if self.wallet_auth_uri != "https://www.wikigen.me":
+            raise ValueError(
+                "production wallet-auth URI must be https://www.wikigen.me"
+            )
+        if self.wallet_auth_chain_id != 84_532:
+            raise ValueError("production wallet-auth chain must be Base Sepolia")
+        return self
+
     @model_validator(mode="after")
     def validate_deterministic_diligence_release(self) -> "Settings":
         """Fail closed before serving a partially bound production evaluator."""
@@ -408,9 +816,35 @@ class Settings(BaseSettings):
     # Source-controller grants (JSON) gating TEE-held source-account use. Empty =
     # no gate (source access ungated). Set to a sealed-volume path to enforce.
     source_grants_path: str = ""
-    # Bounded human-review queue (JSON) for held bio/dual-use items. Empty =
-    # no persisted queue (the review API endpoints report empty / are inert).
+    # Release-bound human-review queue. The private canonical policy maps each
+    # role to at least two distinct wallet identities; only its exact SHA-256 is
+    # public. Reviewer challenges share the global wallet admission limiter and
+    # must remain below every configured nonce-store capacity. The queue holds
+    # hashes only and is authenticated with a purpose-separated dstack key.
     review_queue_path: str = ""
+    review_queue_store_integrity_key: str = ""
+    review_queue_store_integrity_key_path: str = "tinker/review_queue_integrity"
+    review_authority_policy_json: str = ""
+    review_authority_policy_sha256: str = ""
+    # Private canonical projection of the current release-reviewer roster.
+    # Its public digest is descriptor-bound; every role assignment must map
+    # address <-> reviewer_ref exactly to address <-> controller_id here.
+    release_reviewer_authority_active_reviewers_json: str = ""
+    release_reviewer_authority_active_reviewers_sha256: str = ""
+    # Immutable public release provenance for the encrypted product-review
+    # roster above. These values are descriptor-bound; the short-lived release
+    # ceremony status is provenance, not a per-decision liveness clock.
+    release_reviewer_authority_genesis_acceptance_sha256: str = ""
+    release_reviewer_authority_current_status_epoch: int = 0
+    release_reviewer_authority_current_status_sha256: str = ""
+    review_authority_challenge_ttl_seconds: int = 300
+    review_authority_max_pending_challenges: int = 1024
+    review_ticket_ttl_seconds: int = 86_400
+    # The public, hash-only queue is separately peer-limited and paginated; it
+    # never consumes the reviewer challenge-admission budget.
+    review_queue_read_limit_window_seconds: int = 60
+    review_queue_read_peer_limit: int = 120
+    review_queue_read_max_peers: int = 4096
     run_metadata_key_path: str = "tinker/run_metadata"
     chain_rpc_url: str = ""
     chain_contract_address: str = ""

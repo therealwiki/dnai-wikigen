@@ -1665,7 +1665,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "tinker", marker = "extra == 'agent'", specifier = ">=0.22" },
+    { name = "tinker", marker = "extra == 'agent'", specifier = "==0.22.7" },
     { name = "uvicorn", specifier = ">=0.34" },
 ]
 provides-extras = ["agent"]

@@ -15,6 +15,13 @@ from typing import Awaitable, Callable, Iterable, Pattern
 
 ARTIFACT_UPLOAD_REQUEST_MAX_BYTES = 2_101_248
 COMPUTE_WORKLOAD_REQUEST_MAX_BYTES = 1_425_408
+REVIEW_CHALLENGE_REQUEST_MAX_BYTES = 2_048
+REVIEW_DECISION_REQUEST_MAX_BYTES = 10_240
+REVIEW_ENQUEUE_REQUEST_MAX_BYTES = 65_536
+TINKER_CUSTOMER_REQUEST_MAX_BYTES = 4_096
+TINKER_CUSTOMER_CREDENTIAL_LIST_REQUEST_MAX_BYTES = 0
+COLLABORATION_AUTH_REQUEST_MAX_BYTES = 8_192
+COLLABORATION_REQUEST_MAX_BYTES = 32_768
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,64 @@ DEFAULT_ROUTE_BODY_LIMITS = (
         method="POST",
         path=re.compile(r"^/compute/projects/[^/]+/workloads$"),
         max_bytes=COMPUTE_WORKLOAD_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/auth/review/challenge$"),
+        max_bytes=REVIEW_CHALLENGE_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/review/decide$"),
+        max_bytes=REVIEW_DECISION_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/review/internal/enqueue$"),
+        max_bytes=REVIEW_ENQUEUE_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(
+            r"^/tinker/(?:customer|internal/customer)/(?:accounts|reservations)(?:/[^/]+){0,4}$"
+        ),
+        max_bytes=TINKER_CUSTOMER_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/tinker/customer/train$"),
+        max_bytes=TINKER_CUSTOMER_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="GET",
+        path=re.compile(
+            r"^/tinker/customer/accounts/[^/]+/credentials$"
+        ),
+        max_bytes=TINKER_CUSTOMER_CREDENTIAL_LIST_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/auth/collaboration/(?:challenge|token)$"),
+        max_bytes=COLLABORATION_AUTH_REQUEST_MAX_BYTES,
+    ),
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(
+            r"^/collaboration/rooms"
+            r"(?:/[^/]+"
+            r"(?:/(?:"
+            r"invitations/(?:accept|decline|cancel)"
+            r"|archive"
+            r"|consent-challenges"
+            r"|consents"
+            r"|query-proposals"
+            r"|query-grant-challenges"
+            r"|query-grants"
+            r"|runs"
+            r"))?"
+            r")?$"
+        ),
+        max_bytes=COLLABORATION_REQUEST_MAX_BYTES,
     ),
 )
 

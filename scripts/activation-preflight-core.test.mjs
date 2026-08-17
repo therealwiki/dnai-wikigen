@@ -7,17 +7,18 @@ import {
   BROADCAST_TRANSACTION_PROVENANCE_BOOLEAN_FIELDS,
   CONTRACT_CHAIN_PROVENANCE_BOOLEAN_FIELDS,
   CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE,
-  CONTRACT_STATELESS_POSTSTATE_EXCEPTION,
   CVM_TOPOLOGY_DOMAINS,
   CVM_TOPOLOGY_SCHEMA,
   LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
   PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS,
+  PREFLIGHT_EXACT_CHECK_COUNT,
   PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
   PREFLIGHT_SCHEMA,
   PRE_LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA,
   SEMANTIC_VALIDATION_SCHEMA,
   SEMANTIC_VALIDATION_STATUS,
   SEMANTIC_VALIDATION_TRUTH_STATUS,
+  activationReadinessAnchorWriterGasObservationDigest,
   activationReadinessRpcEndpointDigest,
   activationReadinessRpcOriginDigest,
   activationReadinessSnapshotDigest,
@@ -38,7 +39,15 @@ import {
   projectFreshContractDeploymentReceipt,
   rawSha256,
 } from "./cvm-launch-intent-core.mjs";
-import { FINAL_RELEASE_AUTHORITY_CORE_SCHEMA } from "./execution-policy-release-core.mjs";
+import {
+  EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY,
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+} from "./execution-policy-release-core.mjs";
+import {
+  DILIGENCE_RELEASE_ACTIVATION_GATE_SCHEMA,
+  DILIGENCE_RELEASE_ACTIVATION_GATE_STATUS,
+  DILIGENCE_RELEASE_ACTIVATION_GATE_TRUTH_STATUS,
+} from "./diligence-release-activation-gate.mjs";
 import {
   PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES,
 } from "./phala-production-execution-policy.mjs";
@@ -46,7 +55,16 @@ import {
 const RELEASE_SHA = "1".repeat(40);
 const INTENT_SHA256 = `sha256:${"2".repeat(64)}`;
 const REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256 = `sha256:${"6".repeat(64)}`;
+const REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256 = `sha256:${"61".repeat(32)}`;
+const TINKER_ACCOUNT_BINDING_COMMITMENT = `0x${"62".repeat(32)}`;
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256 =
+  `sha256:${"63".repeat(32)}`;
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_FILE_SHA256 =
+  "65".repeat(32);
+const TINKER_ACCOUNT_BINDING_HISTORICAL_REPLAY_SHA256 =
+  `sha256:${"64".repeat(32)}`;
 const FINAL_AUTHORITY_SHA256 = `sha256:${"3".repeat(64)}`;
+const ANCHOR_WRITER_ADDRESS = "0x000000000000000000000000000000000000000e";
 const CEREMONY_AUTHORIZATION_SHA256 = `sha256:${"a".repeat(64)}`;
 const LIVE_ACTIVATION_AUTHORITY_SHA256 = `sha256:${"b".repeat(64)}`;
 const RELEASE_INPUTS_SHA256 = `sha256:${"c".repeat(64)}`;
@@ -56,6 +74,8 @@ const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_SHA256 =
   `sha256:${"f1".repeat(32)}`;
 const COMPUTE_WORKLOAD_BROWSER_BINDING_SHA256 = `sha256:${"f2".repeat(32)}`;
 const FRONTEND_BUILD_CANDIDATE_RECEIPT_SHA256 = `sha256:${"f3".repeat(32)}`;
+const ROYALTY_RELEASE_HISTORY_SHA256 = `sha256:${"f4".repeat(32)}`;
+const ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256 = `sha256:${"f5".repeat(32)}`;
 const REVIEW_ENVELOPE_SHA256 = `sha256:${"4".repeat(64)}`;
 const REVIEW_EVIDENCE_SHA256 = `sha256:${"5".repeat(64)}`;
 const CVM_LAUNCH_INTENT_SHA256 = `sha256:${"7".repeat(64)}`;
@@ -78,6 +98,31 @@ const RPC_ORIGIN_SHA256 = activationReadinessRpcOriginDigest(
 const SECONDARY_RPC_ORIGIN_SHA256 = activationReadinessRpcOriginDigest(
   "https://secondary-base-sepolia.invalid",
 );
+
+function diligenceReleaseCeremonyFixture() {
+  return {
+    schema: DILIGENCE_RELEASE_ACTIVATION_GATE_SCHEMA,
+    status: DILIGENCE_RELEASE_ACTIVATION_GATE_STATUS,
+    truthStatus: DILIGENCE_RELEASE_ACTIVATION_GATE_TRUTH_STATUS,
+    valid: true,
+    releaseSha: RELEASE_SHA,
+    chainId: 84_532,
+    diligenceRoomAddress: `0x${"71".repeat(20)}`,
+    governanceController: `0x${"72".repeat(20)}`,
+    currentLedgerSha256: `sha256:${"73".repeat(32)}`,
+    revisionChainSha256: `sha256:${"74".repeat(32)}`,
+    finalizationReceiptSha256: `sha256:${"75".repeat(32)}`,
+    phaseCount: 4,
+    reviewEnvelopeCount: 4,
+    distinctReviewEnvelopeCount: 4,
+    operatorTransactionCount: 13,
+    governanceAcceptanceMode: "eoa_direct_call",
+    governanceAcceptanceClaim:
+      "finalized_direct_eoa_call_event_and_state",
+    governanceAcceptanceTransactionHash: `0x${"76".repeat(32)}`,
+    finalizedThroughBlock: 2_000,
+  };
+}
 
 const DESCRIPTOR_SHA256_BY_DOMAIN = Object.freeze(Object.fromEntries(
   CVM_TOPOLOGY_DOMAINS.map((domain, index) => [
@@ -201,6 +246,8 @@ function contractLedgerFixture() {
         deploymentIntentSha256: INTENT_SHA256,
         reviewerAuthorityGenesisAcceptanceSha256:
           REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+        tinkerAccountBindingCeremonyReceiptSha256:
+          TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
         keystoreAccount: "dev",
         runtimeCodeProof: "exact_creation_reexecution_match_all_contracts",
         exactCreationInputProof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -216,6 +263,8 @@ function contractLedgerFixture() {
       deploymentIntentSha256: INTENT_SHA256,
       reviewerAuthorityGenesisAcceptanceSha256:
         REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+      tinkerAccountBindingCeremonyReceiptSha256:
+        TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
       broadcastTransactionsSha256,
     }],
     contracts,
@@ -227,6 +276,8 @@ function contractDeploymentReceiptSha256(ledger) {
     expectedDeploymentIntentSha256: INTENT_SHA256,
     expectedReviewerAuthorityGenesisAcceptanceSha256:
       REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   };
   const receipt = projectFreshContractDeploymentReceipt(ledger, {
     releaseSha: RELEASE_SHA,
@@ -235,7 +286,46 @@ function contractDeploymentReceiptSha256(ledger) {
   return `sha256:${freshContractDeploymentReceiptDigest(receipt, authorityPins)}`;
 }
 
-function contractDeploymentChainEvidence({ poststateMode = "final_active_frozen" } = {}) {
+function anchorWriterGasReadiness({
+  blockNumber = 2_000,
+  blockHash = `0x${"ab".repeat(32)}`,
+  balanceWei = EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY.minimum_reserve_wei,
+} = {}) {
+  const observationSha256 = activationReadinessAnchorWriterGasObservationDigest({
+    rpc_method: "eth_getBalance",
+    writer_address: ANCHOR_WRITER_ADDRESS,
+    balance_wei: balanceWei,
+    block_number: blockNumber,
+    block_hash: blockHash,
+  });
+  return {
+    schema: "dnai.activation-readiness-anchor-writer-gas.v1",
+    rpc_method: "eth_getBalance",
+    writer_address: ANCHOR_WRITER_ADDRESS,
+    primary_balance_wei: balanceWei,
+    secondary_balance_wei: balanceWei,
+    canonical_balance_wei: balanceWei,
+    minimum_reserve_wei:
+      EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY.minimum_reserve_wei,
+    release_marker_transaction_count: 1,
+    expected_subsequent_anchor_count: 32,
+    maximum_gas_per_transaction: 500_000,
+    reviewed_max_fee_per_gas_wei: "2000000000",
+    balance_block_number: blockNumber,
+    balance_block_hash: blockHash,
+    primary_observation_sha256: observationSha256,
+    secondary_observation_sha256: observationSha256,
+    dual_rpc_agreement: true,
+    reserve_satisfied: true,
+    readiness_claim:
+      "bounded_reserve_for_one_release_marker_and_32_subsequent_anchors_not_indefinite_funding",
+  };
+}
+
+function contractDeploymentChainEvidence({
+  poststateMode = "final_active_frozen",
+  includeAnchorWriterGas = true,
+} = {}) {
   const contractCount = CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS.length;
   const immutableProvenance = CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS.map(({ name }) => ({
     name,
@@ -251,6 +341,8 @@ function contractDeploymentChainEvidence({ poststateMode = "final_active_frozen"
     expectedDeploymentIntentSha256: INTENT_SHA256,
     expectedReviewerAuthorityGenesisAcceptanceSha256:
       REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   });
   const broadcastTransactionProvenance = FRESH_DEPLOYMENT_TRANSACTION_SPEC.map(
     (entry, sequence) => ({
@@ -285,6 +377,9 @@ function contractDeploymentChainEvidence({ poststateMode = "final_active_frozen"
     finalizedRecheckBlockHash: `0x${"ab".repeat(32)}`,
     snapshotBlockHashVerified: true,
     commonSnapshotBlock: true,
+    anchorWriterGasReadiness: includeAnchorWriterGas
+      ? anchorWriterGasReadiness()
+      : null,
     contractCount,
     transactionCount: contractCount,
     deployerMatchCount: contractCount,
@@ -311,15 +406,14 @@ function contractDeploymentChainEvidence({ poststateMode = "final_active_frozen"
     independentReconstructionRpcAgreement: true,
     secondaryRuntimeCodeMatchCount: contractCount,
     poststateMode,
-    poststateContractCount: 6,
+    poststateContractCount: 7,
     poststateValid: true,
     poststates,
     primaryPoststateObservationsSha256: `sha256:${"f".repeat(64)}`,
-    secondaryPoststateContractCount: 6,
+    secondaryPoststateContractCount: 7,
     secondaryPoststateValid: true,
     secondaryPoststateObservationsSha256: `sha256:${"f".repeat(64)}`,
     poststateRpcAgreement: true,
-    statelessPoststateException: CONTRACT_STATELESS_POSTSTATE_EXCEPTION,
   };
 }
 
@@ -369,7 +463,12 @@ function liveSnapshot() {
   );
   return attachActivationReadinessSnapshot({
     authorityStage: "live_activation",
-    env: { RELEASE_SHA },
+    diligenceReleaseCeremony: diligenceReleaseCeremonyFixture(),
+    env: {
+      RELEASE_SHA,
+      TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT:
+        TINKER_ACCOUNT_BINDING_COMMITMENT,
+    },
     git: { head: RELEASE_SHA, dirty: false },
     files: {
       releaseCandidate: {
@@ -393,6 +492,13 @@ function liveSnapshot() {
           schema: FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
           deployment_intent_sha256: INTENT_SHA256,
           cvm_launch_intent_sha256: CVM_LAUNCH_INTENT_SHA256,
+          execution_policy: {
+            rollback_anchor_target: {
+              writer_address: ANCHOR_WRITER_ADDRESS,
+              writer_gas_reserve_policy:
+                EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY,
+            },
+          },
         },
       },
       ledger: {
@@ -411,6 +517,10 @@ function liveSnapshot() {
         valid: true,
         sha256: TOPOLOGY_FILE_SHA256,
       },
+      tinkerAccountBindingCeremonyReceipt: {
+        valid: true,
+        sha256: TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_FILE_SHA256,
+      },
     },
     releaseAuthority: {
       deploymentIntentValid: true,
@@ -419,6 +529,26 @@ function liveSnapshot() {
       deploymentIntentSha256: INTENT_SHA256,
       reviewerAuthorityGenesisAcceptanceSha256:
         REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+      reviewerAuthorityCurrentStatusEpoch: 1,
+      reviewerAuthorityCurrentStatusSha256:
+        REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256,
+      tinkerAccountBindingCeremony: {
+        accountCommitment: TINKER_ACCOUNT_BINDING_COMMITMENT,
+        deploymentIntentSha256: INTENT_SHA256,
+        historicalReplay: true,
+        persistedCeremonyReceiptSha256:
+          TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
+        replayCeremonyReceiptSha256:
+          TINKER_ACCOUNT_BINDING_HISTORICAL_REPLAY_SHA256,
+        reviewerAuthorityCurrentStatusSha256:
+          REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256,
+        reviewerAuthorityGenesisAcceptanceSha256:
+          REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+        truthStatus:
+          "historical_signature_replay_proves_the_signed_declared_ceremony_timestamp_was_inside_the_authenticated_status_window_not_that_the_status_is_current_now_or_that_wall_clock_signing_time_was_independently_observed",
+        valid: true,
+        verificationMode: "authenticated_historical_two_reviewer_replay",
+      },
       releaseSha: RELEASE_SHA,
       gitObjectIsCommit: true,
       commitTime: Math.floor(Date.parse("2026-07-20T00:00:00Z") / 1_000),
@@ -432,6 +562,8 @@ function liveSnapshot() {
       finalAuthoritySha256: FINAL_AUTHORITY_SHA256,
       finalAuthorityDeploymentIntentSha256: INTENT_SHA256,
       finalAuthorityCvmLaunchIntentSha256: CVM_LAUNCH_INTENT_SHA256,
+      finalAuthorityCollaborationRequested: false,
+      finalAuthorityCollaborationEnvironmentValue: "false",
       reviewEnvelopeValid: true,
       reviewEnvelopeFileHashBound: true,
       reviewEnvelopeSha256: REVIEW_ENVELOPE_SHA256,
@@ -475,6 +607,8 @@ function liveSnapshot() {
       descriptorCount: 7,
       descriptorHashesDistinct: true,
       productionPostureValid: true,
+      collaborationGatePolicyValid: true,
+      collaborationGateBootstrapDefault: "false",
     },
     imageRelease: {
       valid: true,
@@ -482,6 +616,15 @@ function liveSnapshot() {
     },
     topology: {
       valid: true,
+      tinkerAccountBindingCeremonyReceipt: {
+        file: "tinker-account-binding-ceremony.receipt.json",
+        sha256: TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_FILE_SHA256,
+        schema: "dnai.tinker-account-binding-ceremony-receipt.v1",
+        tinkerAccountBindingCeremonyReceiptSha256:
+          TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
+        validation:
+          "python_structural_and_domain_digest_binding_requires_node_ceremony_check_replay",
+      },
       domains: topologyDomains,
     },
     contractDeploymentChainEvidence: contractDeploymentChainEvidence(),
@@ -505,6 +648,9 @@ function liveSnapshot() {
         COMPUTE_WORKLOAD_BROWSER_BINDING_SHA256,
       frontend_build_candidate_receipt_sha256:
         FRONTEND_BUILD_CANDIDATE_RECEIPT_SHA256,
+      royalty_release_history_sha256: ROYALTY_RELEASE_HISTORY_SHA256,
+      royalty_release_history_receipt_sha256:
+        ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256,
       release_inputs_sha256: RELEASE_INPUTS_SHA256,
       release_env_sha256: RELEASE_ENV_SHA256,
       frontend_build_sha256: FRONTEND_BUILD_SHA256,
@@ -523,8 +669,19 @@ function freshSnapshot() {
     finalAuthoritySha256: "",
     finalAuthorityDeploymentIntentSha256: "",
     finalAuthorityCvmLaunchIntentSha256: "",
+    finalAuthorityCollaborationRequested: null,
+    finalAuthorityCollaborationEnvironmentValue: null,
     reviewSubjectKind: "deployment_intent",
     reviewSubjectSha256: INTENT_SHA256,
+    tinkerAccountBindingCeremony: {
+      ...snapshot.releaseAuthority.tinkerAccountBindingCeremony,
+      historicalReplay: false,
+      replayCeremonyReceiptSha256:
+        TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
+      truthStatus:
+        "opaque_attested_account_binding_handle_not_provider_identifier_proof_requires_later_measured_provider_binding",
+      verificationMode: "fresh_current_two_reviewer_ceremony",
+    },
   });
   snapshot.cvmLaunchAuthority = {};
   snapshot.imageRelease = undefined;
@@ -547,11 +704,14 @@ function cvmLaunchSnapshot() {
     finalAuthoritySha256: "",
     finalAuthorityDeploymentIntentSha256: "",
     finalAuthorityCvmLaunchIntentSha256: "",
+    finalAuthorityCollaborationRequested: null,
+    finalAuthorityCollaborationEnvironmentValue: null,
   });
   snapshot.semanticEvidenceValidated = false;
   snapshot.semanticValidationReceipt = null;
   snapshot.contractDeploymentChainEvidence = contractDeploymentChainEvidence({
     poststateMode: "fresh_fail_closed",
+    includeAnchorWriterGas: false,
   });
   return attachActivationReadinessSnapshot(snapshot);
 }
@@ -585,8 +745,9 @@ test("live activation requires one exact staged authority chain and signed-live 
       "authority.cvm_launch_intent",
       "authority.cvm_execution_boundary_availability",
       "authority.final_release_authority",
-      "authority.current_review_envelope",
-      "authority.review_evidence",
+      "authority.diligence_release_ceremony",
+      "authority.current_stage_signature",
+      "authority.current_stage_evidence",
       "authority.contract_deployment_chain_evidence",
       "authority.release_artifact_binding",
     ],
@@ -601,7 +762,7 @@ test("live activation requires one exact staged authority chain and signed-live 
     "pass",
   );
   const rawCheckCount = Object.values(report.summary).reduce((total, count) => total + count, 0);
-  assert.equal(rawCheckCount, 103);
+  assert.equal(rawCheckCount, PREFLIGHT_EXACT_CHECK_COUNT);
   assert.equal(report.checks.length, rawCheckCount);
   assert.equal(report.checks.at(-1)?.id, "image.provenance_sbom");
 });
@@ -615,7 +776,7 @@ test("fresh deployment proves reviewed intent only and does not require final au
     checks["authority.final_release_authority"].message,
     /not accepted or required at the fresh-deployment stage/,
   );
-  assert.equal(checks["authority.current_review_envelope"].status, "pass");
+  assert.equal(checks["authority.current_stage_signature"].status, "pass");
   assert.equal(
     checks["authority.cvm_execution_boundary_availability"].status,
     "pass",
@@ -629,6 +790,41 @@ test("fresh deployment proves reviewed intent only and does not require final au
     report.checks.find((item) => item.id === "evidence.semantic_release_authority")?.message,
     /not accepted or required before measured CVM state/,
   );
+});
+
+test("live activation requires the completed Diligence ceremony while earlier stages do not", () => {
+  const missing = liveSnapshot();
+  delete missing.diligenceReleaseCeremony;
+  let report = buildPreflightReport(missing);
+  let ceremony = report.checks.find(
+    ({ id }) => id === "authority.diligence_release_ceremony",
+  );
+  assert.equal(ceremony?.status, "fail");
+  assert.match(ceremony?.message || "", /four-phase DiligenceRoom ledger/);
+
+  const verificationOnly = liveSnapshot();
+  verificationOnly.diligenceReleaseCeremony.governanceAcceptanceMode =
+    "not_applicable";
+  verificationOnly.diligenceReleaseCeremony.governanceAcceptanceClaim =
+    "operator_forge_broadcast_receipt";
+  report = buildPreflightReport(verificationOnly);
+  ceremony = report.checks.find(
+    ({ id }) => id === "authority.diligence_release_ceremony",
+  );
+  assert.equal(ceremony?.status, "fail");
+
+  for (const snapshot of [
+    freshSnapshot(),
+    cvmLaunchSnapshot(),
+    releaseCeremonySnapshot(),
+  ]) {
+    delete snapshot.diligenceReleaseCeremony;
+    ceremony = buildPreflightReport(snapshot).checks.find(
+      ({ id }) => id === "authority.diligence_release_ceremony",
+    );
+    assert.equal(ceremony?.status, "pass", snapshot.authorityStage);
+    assert.match(ceremony?.message || "", /not accepted before live activation/);
+  }
 });
 
 test("fresh deployment intent must project the exact empty ChallengeRegistry state", () => {
@@ -767,8 +963,8 @@ test("release ceremony and live activation require all five roles to be distinct
   }
 });
 
-test("all four stage reports stay bounded to the exact 103-check contract", () => {
-  assert.equal(PREFLIGHT_SCHEMA, "dnai.activation-preflight.v3");
+test("all four stage reports stay bounded to the exact 110-check contract", () => {
+  assert.equal(PREFLIGHT_SCHEMA, "dnai.activation-preflight.v4");
   assert.equal(
     PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
     "dnai.activation-preflight-root-causes.v1",
@@ -782,8 +978,16 @@ test("all four stage reports stay bounded to the exact 103-check contract", () =
     const report = buildPreflightReport(snapshot);
     const rawCheckCount = Object.values(report.summary)
       .reduce((total, count) => total + count, 0);
-    assert.equal(rawCheckCount, 103, snapshot.authorityStage);
-    assert.equal(report.checks.length, 103, snapshot.authorityStage);
+    assert.equal(
+      rawCheckCount,
+      PREFLIGHT_EXACT_CHECK_COUNT,
+      snapshot.authorityStage,
+    );
+    assert.equal(
+      report.checks.length,
+      PREFLIGHT_EXACT_CHECK_COUNT,
+      snapshot.authorityStage,
+    );
     assert.equal(report.checks.at(-1)?.id, "image.provenance_sbom");
     const failedIds = report.checks
       .filter((item) => item.status === "fail")
@@ -806,7 +1010,10 @@ test("all four stage reports stay bounded to the exact 103-check contract", () =
     );
     assert.equal(report.root_cause_projection.stage, snapshot.authorityStage);
     assert.equal(report.root_cause_projection.stage_valid, true);
-    assert.equal(report.root_cause_projection.source_check_count, 103);
+    assert.equal(
+      report.root_cause_projection.source_check_count,
+      PREFLIGHT_EXACT_CHECK_COUNT,
+    );
     assert.equal(report.root_cause_projection.source_fail_count, report.summary.fail);
     assert.equal(report.root_cause_projection.mapping_complete, true);
     assert.deepEqual(
@@ -819,8 +1026,8 @@ test("all four stage reports stay bounded to the exact 103-check contract", () =
 });
 
 test("root-cause diagnosis coalesces only the exact clean-CI release family", () => {
-  assert.equal(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.length, 28);
-  assert.equal(new Set(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS).size, 28);
+  assert.equal(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.length, 31);
+  assert.equal(new Set(PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS).size, 31);
   const secretSentinel = "must-not-enter-root-cause-projection";
   const checks = [
     ...PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS.map((id) => ({
@@ -849,7 +1056,7 @@ test("root-cause diagnosis coalesces only the exact clean-CI release family", ()
       stage: "fresh_deployment",
       stage_valid: true,
       source_check_count: checks.length,
-      source_fail_count: 29,
+      source_fail_count: failedIds.length,
       mapping_complete: true,
     },
   );
@@ -857,7 +1064,10 @@ test("root-cause diagnosis coalesces only the exact clean-CI release family", ()
     diagnosis.blocked_by.map((entry) => entry.check_id),
     failedIds,
   );
-  assert.equal(new Set(diagnosis.blocked_by.map((entry) => entry.check_id)).size, 29);
+  assert.equal(
+    new Set(diagnosis.blocked_by.map((entry) => entry.check_id)).size,
+    failedIds.length,
+  );
   const ciRoot = diagnosis.root_causes.find(
     (root) => root.id === "clean_ci_five_image_seven_cvm_bundle",
   );
@@ -881,9 +1091,11 @@ test("root-cause diagnosis coalesces only the exact clean-CI release family", ()
     failed_check_ids: ["contract_policy.verify"],
   });
   assert.equal(JSON.stringify(diagnosis).includes(secretSentinel), false);
-  assert.ok(diagnosis.root_causes.length <= 103);
-  assert.ok(diagnosis.blocked_by.length <= 103);
-  assert.ok(diagnosis.root_causes.every((root) => root.failed_check_ids.length <= 103));
+  assert.ok(diagnosis.root_causes.length <= PREFLIGHT_EXACT_CHECK_COUNT);
+  assert.ok(diagnosis.blocked_by.length <= PREFLIGHT_EXACT_CHECK_COUNT);
+  assert.ok(diagnosis.root_causes.every(
+    (root) => root.failed_check_ids.length <= PREFLIGHT_EXACT_CHECK_COUNT,
+  ));
 });
 
 test("root-cause diagnosis preserves partial CI drift and unknown failures", () => {
@@ -990,7 +1202,7 @@ test("report diagnosis uses the same normalized default and trimmed stage", () =
       schema: PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
       stage: "live_activation",
       stage_valid: true,
-      source_check_count: 103,
+      source_check_count: PREFLIGHT_EXACT_CHECK_COUNT,
       source_fail_count: defaultedReport.summary.fail,
       mapping_complete: true,
     },
@@ -1017,13 +1229,13 @@ test("root-cause diagnosis rejects duplicate or unbounded check sets", () => {
   );
   assert.throws(
     () => projectPreflightRootCauses(
-      Array.from({ length: 104 }, (_, index) => ({
+      Array.from({ length: PREFLIGHT_EXACT_CHECK_COUNT + 1 }, (_, index) => ({
         id: `check-${index}`,
         status: "fail",
       })),
       "fresh_deployment",
     ),
-    /at most 103 checks/,
+    /at most 110 checks/,
   );
 });
 
@@ -1116,7 +1328,7 @@ test("root-cause diagnosis rejects accessors, proxies, and control IDs before pr
   );
 });
 
-test("a missing clean-CI bundle maps the exact 28 raw failures without hiding them", () => {
+test("a missing clean-CI bundle maps the exact 31 raw failures without hiding them", () => {
   const report = buildPreflightReport(freshSnapshot());
   const ciRoot = report.root_causes.find(
     (root) => root.id === "clean_ci_five_image_seven_cvm_bundle",
@@ -1129,36 +1341,41 @@ test("a missing clean-CI bundle maps the exact 28 raw failures without hiding th
   assert.ok(Buffer.byteLength(JSON.stringify(report), "utf8") <= 131_072);
 });
 
-test("stage review subject cannot cross intent, CVM launch, or final authority", () => {
+test("legacy review-envelope fields cannot substitute for current stage authority", () => {
   const fresh = freshSnapshot();
+  fresh.releaseAuthority.deploymentIntentFileHashBound = false;
   fresh.releaseAuthority.reviewSubjectKind = "final_release_authority";
   fresh.releaseAuthority.reviewSubjectSha256 = FINAL_AUTHORITY_SHA256;
   assert.equal(
-    authorityChecks(buildPreflightReport(fresh))["authority.current_review_envelope"].status,
+    authorityChecks(buildPreflightReport(fresh))["authority.current_stage_signature"].status,
     "fail",
   );
 
   const launch = cvmLaunchSnapshot();
+  launch.cvmLaunchAuthority.artifactBindingsValid = false;
   launch.cvmLaunchAuthority.reviewSubjectKind = "deployment_intent";
   launch.cvmLaunchAuthority.reviewSubjectSha256 = INTENT_SHA256;
   assert.equal(
-    authorityChecks(buildPreflightReport(launch))["authority.current_review_envelope"].status,
+    authorityChecks(buildPreflightReport(launch))["authority.current_stage_signature"].status,
     "fail",
   );
 
   const live = liveSnapshot();
+  live.semanticValidationReceipt.live_activation_authority_sha256 =
+    `sha256:${"f".repeat(64)}`;
   live.releaseAuthority.reviewSubjectKind = "deployment_intent";
   live.releaseAuthority.reviewSubjectSha256 = INTENT_SHA256;
   assert.equal(
-    authorityChecks(buildPreflightReport(live))["authority.current_review_envelope"].status,
+    authorityChecks(buildPreflightReport(live))["authority.current_stage_signature"].status,
     "fail",
   );
 
   const ceremony = releaseCeremonySnapshot();
+  ceremony.canonicalSevenCvmAuthorityValidation = null;
   ceremony.releaseAuthority.reviewSubjectKind = "cvm_launch_intent";
   ceremony.releaseAuthority.reviewSubjectSha256 = CVM_LAUNCH_INTENT_SHA256;
   assert.equal(
-    authorityChecks(buildPreflightReport(ceremony))["authority.current_review_envelope"].status,
+    authorityChecks(buildPreflightReport(ceremony))["authority.current_stage_signature"].status,
     "fail",
   );
 });
@@ -1195,6 +1412,11 @@ test("CVM launch fails closed on every retained artifact or production-posture d
     (value) => { value.cvmLaunchAuthority.descriptorCount = 5; },
     (value) => { value.cvmLaunchAuthority.descriptorHashesDistinct = false; },
     (value) => { value.cvmLaunchAuthority.productionPostureValid = false; },
+    (value) => { value.cvmLaunchAuthority.collaborationGatePolicyValid = false; },
+    (value) => { value.cvmLaunchAuthority.collaborationGateBootstrapDefault = ""; },
+    (value) => { value.cvmLaunchAuthority.collaborationGateBootstrapDefault = "False"; },
+    (value) => { value.cvmLaunchAuthority.collaborationGateBootstrapDefault = "true"; },
+    (value) => { value.cvmLaunchAuthority.collaborationGateBootstrapDefault = "0"; },
     (value) => { value.cvmLaunchAuthority.artifactBindingsValid = false; },
     (value) => {
       value.cvmLaunchAuthority.descriptorSha256ByDomain.main_runtime_cvm =
@@ -1275,7 +1497,6 @@ test("online chain evidence rejects omissions, substitutions, offline mode, and 
     (value) => { value.poststates[0].name = "RoyaltyDistributor"; },
     (value) => { value.poststates[0].assertions.pop(); },
     (value) => { value.poststates[0].assertions[2] = "registry_paused"; },
-    (value) => { value.statelessPoststateException = "ChallengeRegistry"; },
     (value) => { value.rpcError = "private provider failure"; },
   ];
   for (const mutate of cases) {
@@ -1289,7 +1510,7 @@ test("online chain evidence rejects omissions, substitutions, offline mode, and 
   }
 });
 
-test("each online stage requires its exact six-contract poststate mode", () => {
+test("each online stage requires its exact seven-contract poststate mode", () => {
   const launch = cvmLaunchSnapshot();
   launch.contractDeploymentChainEvidence = contractDeploymentChainEvidence({
     poststateMode: "final_active_frozen",
@@ -1329,7 +1550,7 @@ test("readiness snapshots are domain-separated, short lived, and bind the pinned
   const readiness = normalizeActivationReadinessSnapshot(
     snapshot.activationReadinessSnapshot,
   );
-  assert.equal(readiness.schema, "dnai.activation-readiness-snapshot.v3");
+  assert.equal(readiness.schema, "dnai.activation-readiness-snapshot.v5");
   assert.equal(ACTIVATION_READINESS_SNAPSHOT_DOMAIN.endsWith("\0"), true);
   assert.equal(
     activationReadinessSnapshotDigest(
@@ -1408,6 +1629,65 @@ test("readiness snapshots are domain-separated, short lived, and bind the pinned
   assert.throws(
     () => normalizeActivationReadinessSnapshot(cliPrepare),
     /execution boundary/,
+  );
+});
+
+test("measured readiness fails closed on missing, divergent, or underfunded writer gas", () => {
+  const baseline = liveSnapshot();
+  const gasCheck = (snapshot) =>
+    buildPreflightReport(snapshot).checks.find(
+      ({ id }) => id === "chain.anchor_writer_gas_reserve",
+    );
+  let checks = authorityChecks(buildPreflightReport(baseline));
+  assert.equal(gasCheck(baseline)?.status, "pass");
+
+  const missing = liveSnapshot();
+  missing.contractDeploymentChainEvidence.anchorWriterGasReadiness = null;
+  checks = authorityChecks(buildPreflightReport(missing));
+  assert.equal(gasCheck(missing)?.status, "fail");
+  assert.equal(checks["authority.contract_deployment_chain_evidence"].status, "fail");
+
+  const underfunded = liveSnapshot();
+  const underfundedGas = underfunded.contractDeploymentChainEvidence
+    .anchorWriterGasReadiness;
+  const lowBalance = (
+    BigInt(EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY.minimum_reserve_wei)
+    - 1n
+  ).toString(10);
+  const lowObservation = activationReadinessAnchorWriterGasObservationDigest({
+    rpc_method: "eth_getBalance",
+    writer_address: ANCHOR_WRITER_ADDRESS,
+    balance_wei: lowBalance,
+    block_number: underfundedGas.balance_block_number,
+    block_hash: underfundedGas.balance_block_hash,
+  });
+  Object.assign(underfundedGas, {
+    primary_balance_wei: lowBalance,
+    secondary_balance_wei: lowBalance,
+    canonical_balance_wei: lowBalance,
+    primary_observation_sha256: lowObservation,
+    secondary_observation_sha256: lowObservation,
+    reserve_satisfied: false,
+  });
+  assert.equal(gasCheck(underfunded)?.status, "fail");
+
+  const divergent = liveSnapshot();
+  divergent.contractDeploymentChainEvidence
+    .anchorWriterGasReadiness.secondary_balance_wei =
+      "33000000000000001";
+  divergent.contractDeploymentChainEvidence
+    .anchorWriterGasReadiness.dual_rpc_agreement = false;
+  divergent.contractDeploymentChainEvidence
+    .anchorWriterGasReadiness.reserve_satisfied = false;
+  assert.equal(gasCheck(divergent)?.status, "fail");
+
+  const weakenedSnapshot = structuredClone(
+    baseline.activationReadinessSnapshot,
+  );
+  weakenedSnapshot.anchor_writer_gas_readiness.reserve_satisfied = false;
+  assert.throws(
+    () => normalizeActivationReadinessSnapshot(weakenedSnapshot),
+    /gas readiness/,
   );
 });
 
@@ -1508,7 +1788,37 @@ test("live final authority transitively binds the retained CVM-launch intent", (
   assert.equal(checks["authority.release_artifact_binding"].status, "fail");
 });
 
-test("renewable review may change without mutating immutable final authority", () => {
+test("measured authority rejects every Collaboration feature projection mismatch", () => {
+  for (const mutate of [
+    (value) => {
+      value.releaseAuthority.finalAuthorityCollaborationRequested = true;
+      value.releaseAuthority.finalAuthorityCollaborationEnvironmentValue = "false";
+    },
+    (value) => {
+      value.releaseAuthority.finalAuthorityCollaborationRequested = false;
+      value.releaseAuthority.finalAuthorityCollaborationEnvironmentValue = "true";
+    },
+    (value) => {
+      value.releaseAuthority.finalAuthorityCollaborationEnvironmentValue = "";
+    },
+    (value) => {
+      value.releaseAuthority.finalAuthorityCollaborationEnvironmentValue = "TRUE";
+    },
+    (value) => {
+      value.releaseAuthority.finalAuthorityCollaborationEnvironmentValue = "0";
+    },
+  ]) {
+    const snapshot = liveSnapshot();
+    mutate(snapshot);
+    const report = buildPreflightReport(snapshot);
+    const checks = authorityChecks(report);
+    assert.equal(report.checks.length, PREFLIGHT_EXACT_CHECK_COUNT);
+    assert.equal(checks["authority.final_release_authority"].status, "fail");
+    assert.equal(checks["authority.release_artifact_binding"].status, "fail");
+  }
+});
+
+test("retired renewable-review fields cannot mutate immutable live authority", () => {
   const snapshot = liveSnapshot();
   const renewedEnvelope = `sha256:${"8".repeat(64)}`;
   const renewedEvidence = `sha256:${"9".repeat(64)}`;
@@ -1516,7 +1826,8 @@ test("renewable review may change without mutating immutable final authority", (
   snapshot.releaseAuthority.reviewEvidenceSha256 = renewedEvidence;
   const checks = authorityChecks(buildPreflightReport(snapshot));
   assert.equal(checks["authority.final_release_authority"].status, "pass");
-  assert.equal(checks["authority.current_review_envelope"].status, "pass");
+  assert.equal(checks["authority.current_stage_signature"].status, "pass");
+  assert.equal(checks["authority.current_stage_evidence"].status, "pass");
   assert.equal(checks["authority.release_artifact_binding"].status, "pass");
   assert.equal(snapshot.releaseAuthority.finalAuthoritySha256, FINAL_AUTHORITY_SHA256);
 });

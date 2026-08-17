@@ -113,7 +113,9 @@ function publicValue(key) {
   if (key === "TINKER_WALLET_AUTH_CHAIN_ID") return "84532";
   if (key === "TINKER_CHAIN_START_BLOCK") return "12345678";
   if (key.endsWith("_RUNTIME_CODE_HASH")) return `0x${bare("a")}`;
-  if (key.endsWith("_SHA256") || key.endsWith("_HASH")) return bare("a");
+  if (key.endsWith("_EPOCH")) return "1";
+  if (key.endsWith("_SHA256")) return sha("a");
+  if (key.endsWith("_HASH")) return bare("a");
   return `reviewed-${key.toLowerCase()}`;
 }
 
@@ -259,6 +261,7 @@ function deploymentIntentFixture(genesis, genesisAcceptance) {
     genesisAcceptance.reviewer_authority_current_status_sha256;
   intent.deploymentControl.controllerId = "deployment-operator-01";
   intent.deploymentControl.operatorAddress = address("1");
+  intent.staticContractInputs.diligenceRoom.governanceController = address("4");
   intent.staticContractInputs.computeCreditVault.developer = address("2");
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment =
     `0x${bare("3")}`;

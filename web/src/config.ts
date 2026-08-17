@@ -3,8 +3,12 @@ import { parseComputeVaultConfig } from "./lib/computeVaultConfig";
 import { parseComputeWorkloadConfig } from "./lib/computeWorkloadConfig";
 import { parseDiligenceEvaluatorConfig } from "./lib/diligencePolicies";
 import { parseFrontendReleaseIdentity } from "./lib/releaseIdentity";
+import { parseRoyaltyReleaseConfiguration } from "./lib/royaltyReleaseAuthority";
+import { parseCollaborationExecutionReleaseConfig } from "./lib/collaborationExecutionReleaseConfig";
 
 const env = import.meta.env;
+const PRODUCTION_WALLET_AUTH_DOMAIN = "www.wikigen.me";
+const PRODUCTION_WALLET_AUTH_URI = "https://www.wikigen.me";
 
 function clean(value: string | undefined): string {
   const trimmed = value?.trim() ?? "";
@@ -50,6 +54,42 @@ function sha256ListJson(value: string | undefined): readonly string[] | undefine
   } catch {
     return undefined;
   }
+}
+
+function walletAuthConfiguration(): Readonly<{ domain: string; uri: string }> {
+  const configuredDomain = clean(env.VITE_WALLET_AUTH_DOMAIN);
+  const configuredUri = clean(env.VITE_WALLET_AUTH_URI);
+  if (env.PROD) {
+    if ((configuredDomain && configuredDomain !== PRODUCTION_WALLET_AUTH_DOMAIN)
+      || (configuredUri && configuredUri !== PRODUCTION_WALLET_AUTH_URI)) {
+      throw new Error("Production wallet auth must remain pinned to www.wikigen.me");
+    }
+    return Object.freeze({
+      domain: PRODUCTION_WALLET_AUTH_DOMAIN,
+      uri: PRODUCTION_WALLET_AUTH_URI,
+    });
+  }
+  if (Boolean(configuredDomain) !== Boolean(configuredUri)) {
+    throw new Error("Local wallet auth domain and URI must be configured together");
+  }
+  if (configuredDomain && configuredUri) {
+    return Object.freeze({ domain: configuredDomain, uri: configuredUri });
+  }
+  const location = globalThis.location;
+  if (location
+    && ["http:", "https:"].includes(location.protocol)
+    && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+      location.hostname.toLowerCase(),
+    )) {
+    return Object.freeze({
+      domain: location.host.toLowerCase(),
+      uri: location.origin,
+    });
+  }
+  return Object.freeze({
+    domain: "localhost:5175",
+    uri: "http://localhost:5175",
+  });
 }
 
 function boundedInteger(value: string | undefined, minimum: number, maximum: number): number | undefined {
@@ -121,6 +161,16 @@ const executionPolicyAnchorRelease = executionPolicyAnchorAddress
     })
   : undefined;
 const frontendReleaseIdentity = parseFrontendReleaseIdentity(env.VITE_RELEASE_SHA);
+const royaltyRelease = parseRoyaltyReleaseConfiguration(env);
+const collaborationFeatureEnabled = clean(env.VITE_ENABLE_COLLABORATION) === "true";
+export const collaborationExecutionReleaseConfig =
+  parseCollaborationExecutionReleaseConfig(env, {
+    releaseSha: frontendReleaseIdentity.releaseSha,
+    mainRuntimeCvmId: clean(env.VITE_PHALA_CVM_ID) || undefined,
+    collaborationEnabled: collaborationFeatureEnabled,
+    royaltyRelease,
+  });
+const walletAuth = walletAuthConfiguration();
 
 export const deployment = {
   release: frontendReleaseIdentity.display,
@@ -130,6 +180,10 @@ export const deployment = {
   contractAddress: address(env.VITE_DILIGENCE_ROOM_ADDRESS),
   contractCodeHash: bytes32(env.VITE_DILIGENCE_ROOM_CODE_HASH),
   contractDeveloper: address(env.VITE_DILIGENCE_ROOM_DEVELOPER),
+  contractInitialDeveloper: address(env.VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER),
+  contractReleaseGovernanceController: address(
+    env.VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER,
+  ),
   resultVerifierAddress: address(env.VITE_DILIGENCE_RESULT_VERIFIER),
   attestationVerifierAddress: address(env.VITE_DILIGENCE_ATTESTATION_VERIFIER),
   attestationReleasePolicyHash: bytes32(env.VITE_DILIGENCE_QVL_RELEASE_POLICY_HASH),
@@ -141,6 +195,8 @@ export const deployment = {
   challengeRegistryCodeHash: bytes32(env.VITE_CHALLENGE_REGISTRY_CODE_HASH),
   royaltyDistributorAddress: address(env.VITE_ROYALTY_DISTRIBUTOR_ADDRESS),
   royaltyDistributorCodeHash: bytes32(env.VITE_ROYALTY_DISTRIBUTOR_CODE_HASH),
+  royaltyRelease,
+  collaborationExecutionRelease: collaborationExecutionReleaseConfig,
   teeIdentity: address(env.VITE_TEE_IDENTITY),
   emailOracleAuthAddress: address(env.VITE_EMAIL_ORACLE_AUTH_ADDRESS),
   emailOracleAuthCodeHash: bytes32(env.VITE_EMAIL_ORACLE_AUTH_CODE_HASH),
@@ -153,8 +209,8 @@ export const deployment = {
   osImageHash: clean(env.VITE_PHALA_OS_IMAGE_HASH),
   imageDigest: clean(env.VITE_DELEGATE_IMAGE_DIGEST),
   walletConnectProjectId: clean(env.VITE_WALLETCONNECT_PROJECT_ID),
-  walletAuthDomain: clean(env.VITE_WALLET_AUTH_DOMAIN) || "www.wikigen.me",
-  walletAuthUri: clean(env.VITE_WALLET_AUTH_URI) || "https://www.wikigen.me",
+  walletAuthDomain: walletAuth.domain,
+  walletAuthUri: walletAuth.uri,
   executionPolicyAnchorAddress,
   executionPolicyAnchorCodeHash,
   executionPolicyAnchorRelease,
@@ -166,6 +222,8 @@ export const deployment = {
   artifactUploadEnabled: clean(env.VITE_ENABLE_ARTIFACT_UPLOAD) === "true",
   artifactVerifiedQuoteSha256: clean(env.VITE_ARTIFACT_VERIFIED_QUOTE_SHA256),
   computeConsoleEnabled: clean(env.VITE_ENABLE_COMPUTE_CONSOLE) === "true",
+  tinkerCustomerEnabled: clean(env.VITE_ENABLE_TINKER_CUSTOMER) === "true",
+  collaborationEnabled: collaborationFeatureEnabled,
   arenaSubmissionEnabled: clean(env.VITE_ENABLE_ARENA_SUBMISSION) === "true",
   arenaVerifiedQuoteSha256: clean(env.VITE_ARENA_VERIFIED_QUOTE_SHA256),
   computeMeteringVerifiedQuoteSha256: clean(

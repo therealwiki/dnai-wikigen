@@ -8,6 +8,9 @@ import {
 } from "viem";
 import type { ComputeDispatchIntentInput, ComputeDispatchIntentStatus } from "./compute";
 import {
+  computeStandaloneAuthorizationContextCommitment,
+} from "./computeDispatchCommitment";
+import {
   computeVaultJobId,
   computeVaultProjectId,
   loadComputeVaultState,
@@ -17,11 +20,12 @@ import {
 } from "./computeVault";
 
 export const COMPUTE_AUTHORIZATION_HANDOFF_SURFACE = "compute_vault_authorization_handoff" as const;
-export const COMPUTE_AUTHORIZATION_HANDOFF_SCHEMA_VERSION = 2 as const;
+export const COMPUTE_AUTHORIZATION_HANDOFF_SCHEMA_VERSION = 3 as const;
 
-const HANDOFF_COMMITMENT_DOMAIN = "dnai.wikigen.compute-vault-authorization-handoff.v2\0";
+const HANDOFF_COMMITMENT_DOMAIN = "dnai.wikigen.compute-vault-authorization-handoff.v3\0";
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const SHA256_COMMITMENT = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
 const BOUNDED_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_UINT256 = (1n << 256n) - 1n;
@@ -51,6 +55,11 @@ export interface ComputeAuthorizationHandoff {
   readonly workloadCommitment: Hex;
   readonly manifestCommitment: Hex;
   readonly dispatchIntentCommitment: Hex;
+  readonly sourceKind: "wallet" | "credential";
+  readonly executionBindingCommitment: `sha256:${string}`;
+  readonly recipientReleaseCommitment: `sha256:${string}`;
+  readonly authorizationKind: "standalone";
+  readonly authorizationContextCommitment: `sha256:${string}`;
   readonly composeHash: Hex;
   readonly vaultAddress: Address;
   readonly vaultRuntimeCodeHash: Hex;
@@ -75,6 +84,12 @@ export type ComputeAuthorizationDispatchFields = Pick<
   | "ratePolicyCommitment"
   | "composeHash"
 >;
+
+export interface ComputeAuthorizationWorkloadAuthority {
+  sourceKind: "wallet" | "credential";
+  executionBindingCommitment: `sha256:${string}`;
+  recipientReleaseCommitment: `sha256:${string}`;
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is malformed`);
@@ -138,6 +153,20 @@ function source(value: unknown): ComputeAuthorizationHandoffSource {
   return value;
 }
 
+function workloadSourceKind(value: unknown): "wallet" | "credential" {
+  if (value !== "wallet" && value !== "credential") {
+    throw new Error("Authorization workload source is malformed");
+  }
+  return value;
+}
+
+function sha256Commitment(value: unknown, label: string): `sha256:${string}` {
+  if (typeof value !== "string" || !SHA256_COMMITMENT.test(value)) {
+    throw new Error(`${label} is malformed`);
+  }
+  return value as `sha256:${string}`;
+}
+
 function commitmentFields(value: Omit<ComputeAuthorizationHandoff, "receiptCommitment">): Record<string, unknown> {
   return {
     asset: value.asset,
@@ -156,6 +185,11 @@ function commitmentFields(value: Omit<ComputeAuthorizationHandoff, "receiptCommi
     workload_commitment: value.workloadCommitment,
     manifest_commitment: value.manifestCommitment,
     dispatch_intent_commitment: value.dispatchIntentCommitment,
+    source_kind: value.sourceKind,
+    execution_binding_commitment: value.executionBindingCommitment,
+    recipient_release_commitment: value.recipientReleaseCommitment,
+    authorization_kind: value.authorizationKind,
+    authorization_context_commitment: value.authorizationContextCommitment,
     schema_version: value.schemaVersion,
     source: value.source,
     surface: value.surface,
@@ -196,6 +230,45 @@ function normalizedWithoutCommitment(value: Record<string, unknown>): Omit<Compu
     throw new Error("Authorization handoff was not open at its pinned block");
   }
 
+  if (value.authorizationKind !== "standalone") {
+    throw new Error("Authorization handoff kind is not the standalone vault flow");
+  }
+  const user = address(value.user, "Authorization owner", false);
+  const asset = address(value.asset, "Authorization asset", true);
+  const authorizationNonce = uintString(value.authorizationNonce, "Authorization nonce");
+  const maxAssetDebit = uintString(value.maxAssetDebit, "Authorization maximum debit", false);
+  const ratePolicyCommitment = bytes32(
+    value.ratePolicyCommitment,
+    "Authorization rate-policy commitment",
+  );
+  const workloadCommitment = bytes32(
+    value.workloadCommitment,
+    "Authorization workload commitment",
+  );
+  const manifestCommitment = bytes32(
+    value.manifestCommitment,
+    "Authorization manifest commitment",
+  );
+  const authorizationContextCommitment = sha256Commitment(
+    value.authorizationContextCommitment,
+    "Authorization context commitment",
+  );
+  const expectedAuthorizationContext = computeStandaloneAuthorizationContextCommitment({
+    projectId,
+    jobId,
+    user,
+    asset,
+    authorizationNonce: BigInt(authorizationNonce),
+    maxAssetDebit: BigInt(maxAssetDebit),
+    authorizationExpiry,
+    ratePolicyCommitment,
+    workloadCommitment,
+    manifestCommitment,
+  });
+  if (authorizationContextCommitment !== expectedAuthorizationContext) {
+    throw new Error("Authorization context commitment is not derived from the exact vault tuple");
+  }
+
   return {
     surface: COMPUTE_AUTHORIZATION_HANDOFF_SURFACE,
     schemaVersion: COMPUTE_AUTHORIZATION_HANDOFF_SCHEMA_VERSION,
@@ -204,15 +277,26 @@ function normalizedWithoutCommitment(value: Record<string, unknown>): Omit<Compu
     projectId,
     jobReference,
     jobId,
-    user: address(value.user, "Authorization owner", false),
-    asset: address(value.asset, "Authorization asset", true),
-    authorizationNonce: uintString(value.authorizationNonce, "Authorization nonce"),
-    maxAssetDebit: uintString(value.maxAssetDebit, "Authorization maximum debit", false),
+    user,
+    asset,
+    authorizationNonce,
+    maxAssetDebit,
     authorizationExpiry,
-    ratePolicyCommitment: bytes32(value.ratePolicyCommitment, "Authorization rate-policy commitment"),
-    workloadCommitment: bytes32(value.workloadCommitment, "Authorization workload commitment"),
-    manifestCommitment: bytes32(value.manifestCommitment, "Authorization manifest commitment"),
+    ratePolicyCommitment,
+    workloadCommitment,
+    manifestCommitment,
     dispatchIntentCommitment: bytes32(value.dispatchIntentCommitment, "Authorization dispatch-intent commitment"),
+    sourceKind: workloadSourceKind(value.sourceKind),
+    executionBindingCommitment: sha256Commitment(
+      value.executionBindingCommitment,
+      "Authorization execution-binding commitment",
+    ),
+    recipientReleaseCommitment: sha256Commitment(
+      value.recipientReleaseCommitment,
+      "Authorization recipient-release commitment",
+    ),
+    authorizationKind: "standalone",
+    authorizationContextCommitment,
     composeHash: bytes32(value.composeHash, "Authorization compose hash"),
     vaultAddress: address(value.vaultAddress, "Authorization vault", false),
     vaultRuntimeCodeHash: bytes32(value.vaultRuntimeCodeHash, "Authorization vault runtime hash"),
@@ -240,6 +324,8 @@ export function parseComputeAuthorizationHandoff(
     "surface", "schemaVersion", "source", "projectReference", "projectId", "jobReference", "jobId",
     "user", "asset", "authorizationNonce", "maxAssetDebit", "authorizationExpiry", "ratePolicyCommitment",
     "workloadCommitment", "manifestCommitment", "dispatchIntentCommitment",
+    "sourceKind", "executionBindingCommitment", "recipientReleaseCommitment",
+    "authorizationKind", "authorizationContextCommitment",
     "composeHash", "vaultAddress", "vaultRuntimeCodeHash", "pinnedBlockNumber", "pinnedBlockTimestamp",
     "authorizationTransactionHash", "receiptCommitment",
   ]);
@@ -267,6 +353,7 @@ export function computeAuthorizationHandoffFromPinnedRead(input: {
   jobReference: string;
   state: ComputeVaultState;
   jobRead: VaultJobRead;
+  workloadAuthority: ComputeAuthorizationWorkloadAuthority;
   authorizationTransactionHash?: Hex;
 }): ComputeAuthorizationHandoff {
   const { state, jobRead } = input;
@@ -324,6 +411,18 @@ export function computeAuthorizationHandoffFromPinnedRead(input: {
   if (!Number.isSafeInteger(expiry) || !Number.isSafeInteger(timestamp)) {
     throw new Error("Vault authorization clock is outside the dispatch schema range");
   }
+  const authorizationContextCommitment = computeStandaloneAuthorizationContextCommitment({
+    projectId: jobRead.job.projectId.toLowerCase() as Hex,
+    jobId: jobRead.jobId.toLowerCase() as Hex,
+    user: jobRead.job.user.toLowerCase() as Address,
+    asset: jobRead.job.asset.toLowerCase() as Address,
+    authorizationNonce: jobRead.job.authorizationNonce,
+    maxAssetDebit: jobRead.job.maxAssetDebit,
+    authorizationExpiry: expiry,
+    ratePolicyCommitment: jobRead.job.ratePolicyCommitment.toLowerCase() as Hex,
+    workloadCommitment: jobRead.job.workloadCommitment.toLowerCase() as Hex,
+    manifestCommitment: jobRead.job.manifestCommitment.toLowerCase() as Hex,
+  });
   return createComputeAuthorizationHandoff({
     source: input.source,
     projectReference: input.projectReference,
@@ -339,6 +438,11 @@ export function computeAuthorizationHandoffFromPinnedRead(input: {
     workloadCommitment: jobRead.job.workloadCommitment,
     manifestCommitment: jobRead.job.manifestCommitment,
     dispatchIntentCommitment: jobRead.job.dispatchIntentCommitment,
+    sourceKind: input.workloadAuthority.sourceKind,
+    executionBindingCommitment: input.workloadAuthority.executionBindingCommitment,
+    recipientReleaseCommitment: input.workloadAuthority.recipientReleaseCommitment,
+    authorizationKind: "standalone",
+    authorizationContextCommitment,
     composeHash: config.composeHash,
     vaultAddress: config.address,
     vaultRuntimeCodeHash: config.codeHash,
@@ -354,6 +458,8 @@ const CORE_FIELDS = [
   "projectReference", "projectId", "jobReference", "jobId", "user", "asset", "authorizationNonce",
   "maxAssetDebit", "authorizationExpiry", "ratePolicyCommitment", "composeHash", "vaultAddress",
   "workloadCommitment", "manifestCommitment", "dispatchIntentCommitment",
+  "sourceKind", "executionBindingCommitment", "recipientReleaseCommitment",
+  "authorizationKind", "authorizationContextCommitment",
   "vaultRuntimeCodeHash",
 ] as const satisfies readonly (keyof ComputeAuthorizationHandoff)[];
 
@@ -402,6 +508,14 @@ export function assertComputeAuthorizationHandoffMatchesIntent(
     || intent.workload_commitment !== handoff.workloadCommitment
     || intent.manifest_commitment !== handoff.manifestCommitment
     || intent.intent_commitment !== handoff.dispatchIntentCommitment
+    || intent.authorization.kind !== handoff.authorizationKind
+    || intent.authorization.context_commitment !== handoff.authorizationContextCommitment
+    || intent.authorization.server_derived !== true
+    || intent.workload_authority.source_kind !== handoff.sourceKind
+    || intent.workload_authority.execution_binding_commitment !== handoff.executionBindingCommitment
+    || intent.workload_authority.recipient_release_commitment !== handoff.recipientReleaseCommitment
+    || intent.workload_authority.funding_authority !== "onchain_wallet_job"
+    || intent.workload_authority.device_spending_authority !== false
     || intent.compose_hash !== handoff.composeHash
   ) throw new Error("Dispatch journal record does not match the revalidated vault authorization");
 }
@@ -419,6 +533,11 @@ export async function revalidateComputeAuthorizationHandoff(
     jobReference: original.jobReference,
     state,
     jobRead,
+    workloadAuthority: {
+      sourceKind: original.sourceKind,
+      executionBindingCommitment: original.executionBindingCommitment,
+      recipientReleaseCommitment: original.recipientReleaseCommitment,
+    },
   });
   assertComputeAuthorizationHandoffCoreUnchanged(original, refreshed);
   return refreshed;

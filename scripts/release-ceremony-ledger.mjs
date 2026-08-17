@@ -12,6 +12,7 @@ import {
 import {
   RELEASE_CEREMONY_LOCK_PROTOCOL,
   RELEASE_CEREMONY_LOCK_RECOVERY_RECEIPT_SCHEMA,
+  CURRENT_RELEASE_CEREMONY_WRITERS,
   RELEASE_CEREMONY_WRITERS,
   inspectReleaseCeremonyLock,
 } from "./release-ceremony-lock.mjs";
@@ -64,6 +65,15 @@ export const RELEASE_CEREMONY_LEDGER_FAULT_POINTS = Object.freeze([
 ]);
 export const RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS = Object.freeze(
   RELEASE_CEREMONY_WRITERS.filter((writerId) => ![
+    "ceremony_ledger_initialization",
+    "ceremony_ledger_finalization",
+    "ceremony_ledger_recovery",
+  ].includes(writerId)),
+);
+// Preserve the legacy export above exactly. New release writers are accepted
+// through this explicitly current projection only.
+export const CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS = Object.freeze(
+  CURRENT_RELEASE_CEREMONY_WRITERS.filter((writerId) => ![
     "ceremony_ledger_initialization",
     "ceremony_ledger_finalization",
     "ceremony_ledger_recovery",
@@ -419,7 +429,7 @@ export function normalizeReleaseCeremonyLedgerRevisionReceipt(value) {
   if (receipt.schema !== RELEASE_CEREMONY_LEDGER_REVISION_RECEIPT_SCHEMA
     || receipt.protocol !== RELEASE_CEREMONY_LEDGER_PROTOCOL
     || receipt.status !== "cas_revision_committed"
-    || !RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(receipt.writer_id)) {
+    || !CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(receipt.writer_id)) {
     fail("ledger revision receipt identity is invalid");
   }
   assertReleaseSha(receipt.release_sha);
@@ -605,7 +615,7 @@ function normalizeRevisionPendingJournal(receipt) {
     "status",
     "writer_id",
   ], "revision pending journal");
-  if (!RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(receipt.writer_id)) {
+  if (!CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(receipt.writer_id)) {
     fail("revision pending journal writer is not a mutation writer");
   }
   const lock = normalizePendingCommon(receipt);
@@ -1319,6 +1329,10 @@ function freshReceiptAuthorityPins(options) {
       options.reviewerAuthorityGenesisAcceptanceSha256,
       "externally reviewed reviewer-genesis acceptance digest",
     ),
+    expectedTinkerAccountBindingCeremonyReceiptSha256: assertNonzeroSha256(
+      options.tinkerAccountBindingCeremonyReceiptSha256,
+      "independently verified Tinker account-binding ceremony receipt digest",
+    ),
   };
 }
 
@@ -1366,7 +1380,7 @@ function assertHeldLock({
   writerId,
   ownerToken,
 }, expectedOwnerSha256 = null) {
-  if (!RELEASE_CEREMONY_WRITERS.includes(writerId)) {
+  if (!CURRENT_RELEASE_CEREMONY_WRITERS.includes(writerId)) {
     fail("writer ID is not a supported shared-lock writer");
   }
   const inspected = inspectReleaseCeremonyLock({ lockRoot, repositoryRoot, releaseSha });
@@ -1832,7 +1846,7 @@ function publishPending(context, pending, stagePath) {
 export function commitReleaseCeremonyLedgerRevision(options) {
   assertReleaseSha(options.releaseSha);
   assertFaultPoint(options.faultPoint ?? null);
-  if (!RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(options.writerId)) {
+  if (!CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS.includes(options.writerId)) {
     fail("ledger revisions require a release component mutation writer");
   }
   const state = loadCeremonyState(options);

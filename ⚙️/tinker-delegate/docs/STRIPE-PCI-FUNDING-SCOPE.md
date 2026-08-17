@@ -2,13 +2,14 @@
 
 Status: current technical stance, not legal advice.
 
-Product boundary: the eleven-route frontend does not collect card data. Its card
-surface is roadmap-only and describes provider-hosted checkout followed by a
-verified signed webhook that may issue closed-loop, non-transferable service
-credits. Those credits are not `ComputeCreditVault` deposits or tokens. The
-encrypted raw-card path documented below is retained only as a historical,
-capped operator-validation mechanism; it is not an enabled customer flow and
-is not part of the fresh release.
+Product boundary: the twelve-route frontend—including the modeled,
+no-health-data-intake Health Guide—does not collect card data. Its card surface
+is roadmap-only and describes provider-hosted checkout followed by a verified
+signed webhook that may issue closed-loop, non-transferable service credits.
+Those credits are not `ComputeCreditVault` deposits or tokens. The encrypted
+raw-card path documented below is retained only as a historical, capped
+operator-validation mechanism; it is not an enabled customer flow and is not
+part of the fresh release.
 
 This note records the project stance for Tinker account funding before any real
 card funding attempt. It is based on the official Stripe documentation linked

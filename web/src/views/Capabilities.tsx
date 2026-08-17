@@ -36,10 +36,10 @@ const RUNTIMES = [
   {
     icon: Binary,
     title: "Private reward environment",
-    tag: "INGRESS + BROWSER MODEL",
+    tag: "RELEASE-GATED INGRESS + SAFE-IR",
     level: "modeled",
-    copy: "Ciphertext ingress and a public modeled queue exist; no evaluator dispatch, hidden holdout execution, or charge is claimed.",
-    facts: ["Ciphertext ingress", "Modeled queue", "No execution charge"],
+    copy: "Source implements ciphertext ingress, durable queue and owner projections, cancellation, and a release-gated Safe-IR worker. A row remains modeled unless it carries bounded worker provenance; no hidden holdout run or charge is inferred.",
+    facts: ["Ciphertext ingress", "Per-row provenance", "Independent execution gate"],
   },
   {
     icon: Cpu,
@@ -51,11 +51,11 @@ const RUNTIMES = [
   },
   {
     icon: Network,
-    title: "Multi-owner fanout",
-    tag: "ROADMAP",
-    level: "roadmap",
-    copy: "Coordinate independently governed corpora and release a joint result only when every owner policy clears.",
-    facts: ["All required grants", "No partial output", "Pull-payment plan"],
+    title: "Multi-owner execution",
+    tag: "PRODUCT RAILS IMPLEMENTED",
+    level: "implemented",
+    copy: "Source implements coordination, fresh one-run authority, Compute and Royalty wallet rails, bounded results, refunds, settlement, and withdrawals. The unsigned/dev release keeps mutation gates closed; the failure lab is modeled and no UI state substitutes for TDX or QVL evidence.",
+    facts: ["Fresh owner grants", "Purpose-bound funding", "Per-job evidence gates"],
   },
 ];
 

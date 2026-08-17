@@ -43,6 +43,7 @@ import { ComputeDispatchPanel } from "../components/ComputeDispatchPanel";
 import { ComputeVaultPanel } from "../components/ComputeVaultPanel";
 import {
   ComputeWorkloadPanel,
+  computeWorkloadHandoffId,
   type SealedComputeWorkloadHandoff,
 } from "../components/ComputeWorkloadPanel";
 import { computeVaultDeployment, computeWorkloadDeployment, deployment } from "../config";
@@ -51,6 +52,7 @@ import {
   cancelComputeJob,
   canCancelComputeJob,
   COMPUTE_PUBLIC_CREDENTIAL_SCOPES,
+  computeLedgerAdjacency,
   createProject,
   decryptCredentialCapsule,
   fetchBalance,
@@ -85,6 +87,7 @@ import {
 } from "../lib/compute";
 import { shortAddress } from "../lib/contract";
 import { computeCredentialQuickstart } from "../lib/computeQuickstart";
+import { computeProviderPresentation } from "../lib/computeProviderPresentation";
 import {
   parseComputeAuthorizationHandoff,
   type ComputeAuthorizationHandoff,
@@ -112,6 +115,14 @@ function computePanelId(key: ConsoleTab): string {
   return key === "dispatch" ? "compute-dispatch-panel" : `compute-panel-${key}`;
 }
 
+function restoreRoutedComputeTabFocus(next: ConsoleTab): void {
+  queueMicrotask(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !active.id.startsWith("compute-tab-")) return;
+    document.getElementById(`compute-tab-${next}`)?.focus({ preventScroll: true });
+  });
+}
+
 const PREVIEW_LEDGER = [
   { type: "debit", label: "Challenge evaluation · AD-01", date: "MODELED", amount: "− 48 cr", state: "modeled", ref: "job_preview" },
   { type: "reserve", label: "LoRA training reservation", date: "MODELED", amount: "− 220 cr", state: "modeled", ref: "job_preview" },
@@ -128,7 +139,7 @@ const PREVIEW_JOBS = [
   { id: "job_preview_02", name: "adapter-qwen3-8b", operation: "Training", model: "Qwen3-8B · LoRA 32", status: "modeled", progress: 8, spend: "220 cr reserved", age: "MODELED", dispatch: "not dispatched" },
 ];
 
-function StateLabel(props: { status: string; level?: "live" | "modeled" | "roadmap" }) {
+function StateLabel(props: { status: string; level?: "live" | "modeled" | "roadmap" | "unavailable" }) {
   const normalized = props.status.toLowerCase();
   const maturity = props.level ?? "live";
   const lifecycle = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
@@ -159,7 +170,7 @@ function jobProgress(job: ComputeJob): number {
 }
 
 function ledgerPresentation(entry: ComputeLedgerTransaction) {
-  if (entry.kind === "operator_grant" || entry.kind === "testnet_grant") return { type: "credit", label: "Operator testnet grant", sign: "+" };
+  if (entry.kind === "testnet_grant") return { type: "credit", label: "Operator testnet grant", sign: "+" };
   if (entry.kind === "job_cancel") return { type: "refund", label: "Wallet-canceled reservation", sign: "+" };
   if (entry.kind === "job_release") return { type: "refund", label: "Released job reservation", sign: "+" };
   if (entry.kind === "job_settle") return { type: "debit", label: "Provisional service settlement", sign: "−" };
@@ -219,8 +230,27 @@ export function Compute(props: {
   const cancellationKeys = new Map<string, string>();
   const projectCreationAttempt = new UnresolvedIdempotencyAttempt();
   const liveReady = createMemo(() => authState() === "ready" && Boolean(project()));
+  const providerPresentation = createMemo(() => computeProviderPresentation(
+    deployment.computeConsoleEnabled,
+    funding()?.dispatch_intents.provider,
+  ));
+  const recentLedgerEntries = createMemo(() => ledger()?.transactions.slice(0, 3) ?? []);
+  const allLedgerEntries = createMemo(() => ledger()?.transactions ?? []);
   const canMutateProject = createMemo(() => ["owner", "admin", "developer"].includes(project()?.role ?? ""));
   const canManageMembers = createMemo(() => ["owner", "admin"].includes(project()?.role ?? ""));
+  const credentialRotationUnavailableReason = (credential: ComputeCredential): string => {
+    if (!canMutateProject()) return "Viewer role is read-only; project credentials cannot be rotated.";
+    if (credential.status !== "active") return `This credential is ${credential.status.replaceAll("_", " ")} and cannot be rotated.`;
+    if (!deviceKeys.has(credential.device_id)) {
+      return "Rotation is available only in the tab that issued this device key; issue a new credential instead.";
+    }
+    return "";
+  };
+  const credentialRevocationUnavailableReason = (credential: ComputeCredential): string => {
+    if (!canMutateProject()) return "Viewer role is read-only; project credentials cannot be revoked.";
+    if (credential.status !== "active") return `This credential is ${credential.status.replaceAll("_", " ")} and cannot be revoked.`;
+    return "";
+  };
   const credentialQuickstart = createMemo(() => {
     if (!deployment.delegateUrl || !projectId()) return "";
     try {
@@ -453,6 +483,11 @@ export function Compute(props: {
   }
 
   async function rotateOne(credential: ComputeCredential): Promise<void> {
+    const unavailableReason = credentialRotationUnavailableReason(credential);
+    if (unavailableReason) {
+      setError(unavailableReason);
+      return;
+    }
     const key = deviceKeys.get(credential.device_id);
     const token = sessionToken();
     if (!key || !token) {
@@ -479,6 +514,11 @@ export function Compute(props: {
   }
 
   async function revokeOne(credential: ComputeCredential): Promise<void> {
+    const unavailableReason = credentialRevocationUnavailableReason(credential);
+    if (unavailableReason) {
+      setError(unavailableReason);
+      return;
+    }
     const token = sessionToken();
     if (!token) return;
     setBusy(`revoke:${credential.credential_id}`);
@@ -689,7 +729,12 @@ export function Compute(props: {
 
   const visibleJobs = createMemo(() => liveReady() ? jobs() : PREVIEW_JOBS);
 
-  createEffect(() => setTab(props.routeTab));
+  createEffect(() => {
+    const next = props.routeTab;
+    const previous = tab();
+    setTab(next);
+    if (previous !== next) restoreRoutedComputeTabFocus(next);
+  });
 
   function chooseTab(next: ConsoleTab): void {
     setTab(next);
@@ -788,15 +833,16 @@ export function Compute(props: {
               return <div class="job-row"><div class={`job-icon ${status}`}><Cpu size={17} /></div><div class="job-main"><div><strong>{entry.name}</strong><span>{liveReady() ? live.job_id : preview.id}</span></div><small>{entry.operation} · {liveReady() ? live.model.replaceAll("_", "-") : preview.model}</small><div class="job-progress"><i style={{ width: `${progress}%` }} /></div></div><div class="job-right"><StateLabel status={status} level={liveReady() ? undefined : "modeled"} /><small>{liveReady() ? `${live.max_credits} cr reserved` : preview.spend}</small></div></div>;
             }}</For>
             <Show when={liveReady() && jobs().length === 0}><div class="table-empty"><ServerCog size={18} /><span>No bounded jobs have been reserved.</span></div></Show>
-            <button class="secondary-button full" type="button" onClick={() => setJobOpen(true)}><LockKeyhole size={15} /> Why reservations are disabled</button>
+            <button class="secondary-button full" type="button" onClick={() => setJobOpen(true)}><LockKeyhole size={15} /> Why reservation creation is held</button>
           </article>
 
-          <article class="console-panel project-policy"><div class="panel-head"><div><p class="overline">Project guardrails</p><h2>{project()?.name ?? "atlas-research"}</h2></div><button class="icon-button" type="button" aria-label="Project settings" onClick={() => setSettingsOpen(true)} disabled={!liveReady()}><Settings2 size={17} /></button></div><div class="policy-row"><span>Per-job maximum</span><strong>{project()?.policy.per_job_max_credits ?? 500} cr</strong></div><div class="policy-row"><span>Daily project limit</span><strong>{project()?.policy.daily_project_max_credits.toLocaleString() ?? "2,500"} cr</strong></div><div class="policy-row"><span>Allowed operations</span><strong>Inference · Training</strong></div><div class="policy-row"><span>Provider dispatch</span><strong>Disconnected</strong></div><div class="policy-check"><Check size={14} /> {liveReady() ? "Live API enforces caps; every job says not_dispatched." : "Modeled values mirror the tested service policy."}</div></article>
+          <article class="console-panel project-policy"><div class="panel-head"><div><p class="overline">Project guardrails</p><h2>{project()?.name ?? "atlas-research"}</h2></div><button class="icon-button" type="button" aria-label="Project settings" onClick={() => setSettingsOpen(true)} disabled={!liveReady()}><Settings2 size={17} /></button></div><div class="policy-row"><span>Per-job maximum</span><strong>{project()?.policy.per_job_max_credits ?? 500} cr</strong></div><div class="policy-row"><span>Daily project limit</span><strong>{project()?.policy.daily_project_max_credits.toLocaleString() ?? "2,500"} cr</strong></div><div class="policy-row"><span>Allowed operations</span><strong>Inference · Training</strong></div><div class="policy-row"><span>Provider dispatch</span><StateLabel status={providerPresentation().label} level={providerPresentation().state} /></div><div class={`policy-check ${providerPresentation().state}`}>{providerPresentation().state === "live" ? <Check size={14} /> : providerPresentation().state === "modeled" ? <Sparkles size={14} /> : <LockKeyhole size={14} />} {providerPresentation().detail}</div></article>
         </section>
 
         <section class="console-panel ledger-preview"><div class="panel-head"><div><p class="overline">Double-entry activity</p><h2>{liveReady() ? "Recent credit movements" : "Modeled ledger"}</h2></div><button class="ghost-button" type="button" onClick={() => chooseTab("funding")}>Full ledger <ArrowRight size={14} /></button></div>
           <Show when={liveReady()} fallback={<For each={PREVIEW_LEDGER}>{(entry) => <div class="ledger-row"><span class={`ledger-icon ${entry.type}`}><ArrowUpRight size={15} /></span><div><strong>{entry.label}</strong><small>{entry.date} · <code>{entry.ref}</code></small></div><span class={`ledger-amount ${entry.type}`}>{entry.amount}</span><StateLabel status={entry.state} level="modeled" /></div>}</For>}>
-            <For each={ledger()?.transactions.slice(0, 3) ?? []}>{(entry) => <LedgerRow entry={entry} />}</For>
+            <LedgerEvidenceBoundary compact />
+            <For each={recentLedgerEntries()}>{(entry, index) => <LedgerRow entry={entry} olderEntry={recentLedgerEntries()[index() + 1]} />}</For>
             <Show when={(ledger()?.transactions.length ?? 0) === 0}><div class="table-empty"><Coins size={18} /><span>No testnet grants or reservations yet.</span></div></Show>
           </Show>
         </section>
@@ -811,6 +857,7 @@ export function Compute(props: {
           delegateUrl={deployment.delegateUrl}
           liveReady={liveReady()}
           config={computeWorkloadDeployment}
+          credentialWalletAdoptionEnabled={funding()?.dispatch_intents.credential_workload_wallet_adoption === true}
           activeHandoff={sealedWorkload()}
           onWorkloadReady={(handoff) => {
             setSealedWorkload(handoff);
@@ -832,7 +879,20 @@ export function Compute(props: {
           <div class="credential-callout"><Fingerprint size={18} /><div><strong>One-time device-decrypted delivery</strong><span>This browser creates an X25519 key in memory, authenticates the capsule binding, checks the JWT claims and generation commitment, and decrypts once. The browser cannot independently verify the service's HS256 signature; HTTPS remains the service-authentication layer.</span></div></div>
           <div class="credential-table-wrap" role="region" aria-label="Project credentials table" tabindex="0"><table class="credential-table"><thead><tr><th>Name</th><th>Credential</th><th>Scopes</th><th>Expires</th><th>Last used</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
             <Show when={liveReady()} fallback={<For each={PREVIEW_KEYS}>{(key) => <tr><td><div class="credential-name"><span><KeyRound size={15} /></span><div><strong>{key.name}</strong><small>{key.kind}</small></div></div></td><td><code>{key.prefix}</code></td><td><div class="scope-list">{key.scopes.map((scope) => <span>{scope}</span>)}</div></td><td>{key.expires}</td><td>{key.used}</td><td><StateLabel status={key.status} level="modeled" /></td><td><span class="table-non-action">Preview only</span></td></tr>}</For>}>
-              <For each={credentials()}>{(key) => <tr><td><div class="credential-name"><span><KeyRound size={15} /></span><div><strong>{key.name}</strong><small>generation {key.generation}</small></div></div></td><td><code>{key.prefix}</code></td><td><div class="scope-list">{key.scopes.map((scope) => <span>{scope}</span>)}</div></td><td>{expiryLabel(key.expires_at)}</td><td>{dateLabel(key.last_used_at)}</td><td><StateLabel status={key.status} /></td><td><div class="row-actions"><button type="button" onClick={() => void rotateOne(key)} disabled={key.status !== "active" || busy() === `rotate:${key.credential_id}`} aria-label={`Rotate ${key.name}`} title={deviceKeys.has(key.device_id) ? "Rotate" : "Available only in the tab that created this device key"}><RotateCcw size={15} /></button><button type="button" onClick={() => void revokeOne(key)} disabled={key.status !== "active" || Boolean(busy())} aria-label={`Revoke ${key.name}`}><Ban size={15} /></button></div></td></tr>}</For>
+              <For each={credentials()}>{(key) => {
+                const rotationReason = () => credentialRotationUnavailableReason(key);
+                const revocationReason = () => credentialRevocationUnavailableReason(key);
+                const reasonKey = key.credential_id.replace(/[^a-zA-Z0-9_-]/g, "-");
+                const rotationReasonId = `compute-credential-rotate-reason-${reasonKey}`;
+                const revocationReasonId = `compute-credential-revoke-reason-${reasonKey}`;
+                const visibleActionReason = () => {
+                  if (!canMutateProject()) return "Viewer · read only";
+                  if (key.status !== "active") return `${key.status.replaceAll("_", " ")} · no actions`;
+                  if (!deviceKeys.has(key.device_id)) return "Rotate only in issuing tab";
+                  return "";
+                };
+                return <tr><td><div class="credential-name"><span><KeyRound size={15} /></span><div><strong>{key.name}</strong><small>generation {key.generation}</small></div></div></td><td><code>{key.prefix}</code></td><td><div class="scope-list">{key.scopes.map((scope) => <span>{scope}</span>)}</div></td><td>{expiryLabel(key.expires_at)}</td><td>{dateLabel(key.last_used_at)}</td><td><StateLabel status={key.status} /></td><td><div class="row-actions"><button type="button" onClick={() => void rotateOne(key)} disabled={Boolean(rotationReason()) || Boolean(busy())} aria-label={`Rotate ${key.name}`} aria-describedby={rotationReason() ? rotationReasonId : undefined} title={rotationReason() || "Rotate in this tab"}><RotateCcw size={15} /></button><button type="button" onClick={() => void revokeOne(key)} disabled={Boolean(revocationReason()) || Boolean(busy())} aria-label={`Revoke ${key.name}`} aria-describedby={revocationReason() ? revocationReasonId : undefined} title={revocationReason() || "Revoke credential"}><Ban size={15} /></button></div><Show when={rotationReason()}><span id={rotationReasonId} class="sr-only">{rotationReason()}</span></Show><Show when={revocationReason()}><span id={revocationReasonId} class="sr-only">{revocationReason()}</span></Show><Show when={visibleActionReason()}><span class="table-non-action" aria-hidden="true"><LockKeyhole size={12} /> {visibleActionReason()}</span></Show></td></tr>;
+              }}</For>
               <Show when={credentials().length === 0}><tr><td colspan="7"><div class="table-empty"><KeyRound size={18} /><span>No credentials have been issued for this project.</span></div></td></tr></Show>
             </Show>
           </tbody></table></div>
@@ -850,10 +910,10 @@ export function Compute(props: {
       <Show when={tab() === "funding"}>
         <div id="compute-panel-funding" role="tabpanel" aria-labelledby="compute-tab-funding" tabindex="0">
         <Show when={sealedWorkload()} fallback={<div class="workload-funding-handoff blocked"><LockKeyhole size={18} /><div><strong>No sealed workload bound</strong><span>You may inspect or fund the vault, but job authorization stays unavailable until a ciphertext-only workload receipt is retained in this tab.</span></div><button class="secondary-button" type="button" onClick={() => chooseTab("workloads")}>Prepare workload <ArrowRight size={14} /></button></div>}>
-          {(handoff) => <div class="workload-funding-handoff ready"><Fingerprint size={18} /><div><strong>Exact workload ready for wallet authorization</strong><span><code>{handoff().receipt.workload_id}</code> · {handoff().authorization.operation} · workload {handoff().authorization.workloadCommitment.slice(0, 18)}…</span></div><button class="proof-button" type="button" onClick={() => chooseTab("workloads")}>Review sealed receipt</button></div>}
+          {(handoff) => <div class="workload-funding-handoff ready"><Fingerprint size={18} /><div><strong>{handoff().authorization.sourceKind === "credential" ? "Credential workload ready for wallet adoption" : "Exact workload ready for wallet authorization"}</strong><span><code>{computeWorkloadHandoffId(handoff())}</code> · source {handoff().authorization.sourceKind} · {handoff().authorization.operation} · workload {handoff().authorization.workloadCommitment.slice(0, 18)}… · device spend: no</span></div><button class="proof-button" type="button" onClick={() => chooseTab("workloads")}>Review workload authority</button></div>}
         </Show>
         <section class="funding-layout"><div class="funding-main"><ComputeVaultPanel projectReference={project()?.project_id} initialJobReference={vaultInspectReference()} workloadAuthorization={sealedWorkload()?.authorization} onAuthorizationReceipt={openExactDispatch} /><article class="console-panel"><div class="panel-head"><div><p class="overline">Separate noncash test lane</p><h2>Operator test grants</h2></div><button class="secondary-button" type="button" onClick={() => setFundOpen(true)}><CreditCard size={15} /> Funding model</button></div><div class="credit-explainer"><div><Coins size={23} /><strong>Nominal metering only</strong><span>closed-loop test units</span></div><p>Test credits are operator-granted, non-transferable, non-redeemable, and usable only for bounded test jobs. They are not purchased value, a token, an investment, a deposit account, a claim on Thinking Machines, or a representation of assets in the onchain capacity vault.</p></div>
-          <Show when={liveReady()} fallback={<For each={PREVIEW_LEDGER}>{(entry) => <div class="ledger-row"><span class={`ledger-icon ${entry.type}`}><ArrowUpRight size={15} /></span><div><strong>{entry.label}</strong><small>{entry.date} · <code>{entry.ref}</code></small></div><span class={`ledger-amount ${entry.type}`}>{entry.amount}</span><StateLabel status="modeled" level="modeled" /></div>}</For>}><For each={ledger()?.transactions ?? []}>{(entry) => <LedgerRow entry={entry} />}</For><Show when={(ledger()?.transactions.length ?? 0) === 0}><div class="table-empty"><Coins size={18} /><span>The live project ledger is empty.</span></div></Show></Show>
+          <Show when={liveReady()} fallback={<For each={PREVIEW_LEDGER}>{(entry) => <div class="ledger-row"><span class={`ledger-icon ${entry.type}`}><ArrowUpRight size={15} /></span><div><strong>{entry.label}</strong><small>{entry.date} · <code>{entry.ref}</code></small></div><span class={`ledger-amount ${entry.type}`}>{entry.amount}</span><StateLabel status="modeled" level="modeled" /></div>}</For>}><LedgerEvidenceBoundary /><For each={allLedgerEntries()}>{(entry, index) => <LedgerRow entry={entry} olderEntry={allLedgerEntries()[index() + 1]} />}</For><Show when={(ledger()?.transactions.length ?? 0) === 0}><div class="table-empty"><Coins size={18} /><span>The live project ledger is empty.</span></div></Show></Show>
         </article></div><aside><article class="console-panel bond-card"><CreditCard size={23} /><p class="overline">Hosted checkout · outside v1</p><h3>No card-funded balance</h3><p>The first production lane is exact-asset pay-as-you-go. A future hosted checkout would require a provider-owned page and verified signed webhook; Wikigen does not collect, proxy, or store card details.</p><div class="bond-stat"><span>Checkout route</span><strong>Not connected</strong></div><div class="non-action-state roadmap"><WalletCards size={15} /> Roadmap only</div></article><article class="console-panel safety-card"><ShieldCheck size={21} /><h3>Production lane: exact assets</h3><p>A job reserves a wallet-authorized maximum in ETH or the pinned ERC20, independent metering may debit no more than that asset cap, and the unused remainder becomes withdrawable. Test grants never convert into vault assets or upstream-provider funds.</p></article></aside></section>
         </div>
       </Show>
@@ -876,7 +936,7 @@ export function Compute(props: {
 
       <Show when={tab() === "jobs"}>
         <div id="compute-panel-jobs" role="tabpanel" aria-labelledby="compute-tab-jobs" tabindex="0">
-        <section class="console-panel jobs-panel"><div class="panel-head"><div><p class="overline">Metadata-only reservations</p><h2>{liveReady() ? "Bounded jobs" : "Modeled jobs"}</h2><p>The API structurally excludes prompts, examples, datasets, and raw outputs. New reservations remain disabled until provider dispatch exists. In a feature-gated live session, current owners, admins, and developers can cancel an exactly queued, never-dispatched reservation and return its credits.</p></div><button class="primary-button" type="button" onClick={() => setJobOpen(true)}><LockKeyhole size={15} /> Why creation is disabled</button></div>
+        <section class="console-panel jobs-panel"><div class="panel-head"><div><p class="overline">Metadata-only reservations</p><h2>{liveReady() ? "Bounded jobs" : "Modeled jobs"}</h2><p>The authenticated CVM has a metadata-only reservation primitive that structurally excludes prompts, examples, datasets, and raw outputs. Browser creation remains release-held until a dedicated capability manifest, versioned ledger-bound receipt, and durable ambiguous-delivery lookup are deployed. These service-credit reservations are separate from the exact-asset provider-dispatch plane and are never treated as dispatched. Current owners, admins, and developers can still cancel an exactly queued reservation and return its credits.</p></div><button class="primary-button" type="button" onClick={() => setJobOpen(true)}><LockKeyhole size={15} /> Why creation is release-held</button></div>
           <Show when={liveReady()} fallback={<For each={PREVIEW_JOBS}>{(job) => <div class="job-row expanded"><div class="job-icon modeled"><Cpu size={17} /></div><div class="job-main"><div><strong>{job.name}</strong><span>{job.id}</span></div><small>{job.operation} · {job.model}</small><div class="job-progress"><i style={{ width: `${job.progress}%` }} /></div></div><div><small>EXECUTION</small><strong>MODELED</strong></div><div><small>SPEND</small><strong>{job.spend}</strong></div><div class="job-right"><StateLabel status="modeled" level="modeled" /><span class="table-non-action"><Fingerprint size={13} /> No receipt</span></div></div>}</For>}>
             <For each={jobs()}>{(job) => {
               const cancelDescriptionId = `cancel-${job.job_id}-description`;
@@ -892,11 +952,11 @@ export function Compute(props: {
 
       <Show when={keyOpen()}><div class="dialog-backdrop" onClick={closeKeyDialog}><section ref={(element) => { credentialDialogRef = element; }} class="credential-dialog" role="dialog" aria-modal="true" aria-labelledby="key-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog}>×</button><div class="dialog-mark"><KeyRound size={22} /></div><p class="overline">Scoped proxy access</p><h2 id="key-title">{oneTimeToken() ? "Copy your credential once" : "Create Wikigen credential"}</h2>
         <Show when={!oneTimeToken()} fallback={<><p>This scoped delegate credential was decrypted inside this tab. It is not an upstream Tinker key and will be erased from the interface when this dialog closes.</p><div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time credential" : "Reveal one-time credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" onClick={() => void copyOneTimeToken()} aria-label="Copy credential"><Copy size={15} /></button></div><Show when={credentialQuickstart()}><div class="credential-quickstart"><div><span><Braces size={14} /><strong>Try one bounded read</strong></span><button type="button" onClick={() => void copyCredentialQuickstart()}><Copy size={13} /> Copy quickstart</button></div><pre><code>{credentialQuickstart()}</code></pre><p>The placeholder keeps your credential out of copied source. This request can only list bounded job metadata; it cannot create, dispatch, or charge work.</p></div></Show><button class="primary-button large full" type="button" onClick={closeKeyDialog}><Check size={17} /> I stored it safely; clear this view</button><p class="modeled-note"><ShieldCheck size={13} /> Plaintext is held only in component memory and is never written to local storage.</p></>}>
-          <div class="credential-callout scope-default-callout"><ShieldCheck size={18} /><div><strong>Least privilege by default</strong><span>Only <code>jobs:read</code> starts selected. Every <code>:create</code> or <code>:delete</code> scope below is a mutation and must be opted into explicitly; <code>jobs:create</code> can reserve bounded service credits even while provider dispatch is disconnected.</span></div></div>
+          <div class="credential-callout scope-default-callout"><ShieldCheck size={18} /><div><strong>Least privilege by default</strong><span>Only <code>jobs:read</code> starts selected. Every <code>:create</code> or <code>:delete</code> scope below is a mutation and must be opted into explicitly; <code>jobs:create</code> can reserve bounded service credits, but it does not authorize the separate exact-asset dispatch plane.</span></div></div>
           <p>The upstream API key remains sealed. A newly generated browser X25519 key receives only a short-lived Compute capability. Arena submission and receipt scopes remain in their purpose-separated authentication domains.</p><div class="form-grid two"><label><span>Credential + device name</span><input maxlength="64" value={keyName()} onInput={(event) => setKeyName(event.currentTarget.value)} /></label><label><span>Device kind</span><select value={deviceKind()} onChange={(event) => setDeviceKind(event.currentTarget.value as DeviceKind)}><option value="developer_device">Developer device</option><option value="ci_service">CI service</option><option value="autonomous_agent">Autonomous agent</option></select></label></div><div class="form-grid two"><label><span>Expires after</span><div class="input-with-suffix"><input value={keyExpiry()} min="1" max="7" type="number" onInput={(event) => setKeyExpiry(event.currentTarget.value)} /><span>DAYS</span></div></label><label><span>Daily spend limit</span><div class="input-with-suffix"><input value={dailyCap()} min="1" max="1000000" type="number" onInput={(event) => setDailyCap(event.currentTarget.value)} /><span>CREDITS</span></div></label></div><fieldset class="scope-picker"><legend>Allowed Compute scopes</legend>{COMPUTE_PUBLIC_CREDENTIAL_SCOPES.map((scope) => <label><input type="checkbox" checked={selectedScopes().includes(scope)} onChange={(event) => setSelectedScopes((current) => event.currentTarget.checked ? [...new Set([...current, scope])] : current.filter((item) => item !== scope))} /> <span><Braces size={14} />{scope}</span></label>)}</fieldset><button class="primary-button large full" type="button" onClick={() => void submitCredential()} disabled={!liveReady() || !keyName().trim() || selectedScopes().length === 0 || Number(dailyCap()) < 1 || Boolean(busy())}>{busy() === "credential" ? <LoaderCircle class="spin" size={17} /> : <Fingerprint size={17} />} Register device key and issue</button><p class="modeled-note"><TriangleAlert size={13} /> Encryption binds one-time delivery to this device key; it is not hardware attestation or per-request proof-of-possession.</p>
         </Show></section></div></Show>
 
-      <Show when={jobOpen()}><div class="dialog-backdrop" onClick={() => setJobOpen(false)}><section ref={(element) => { jobDialogRef = element; }} class="job-dialog" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close job dialog" data-autofocus onClick={() => setJobOpen(false)}>×</button><div class="dialog-mark"><CloudCog size={22} /></div><p class="overline">Reservation safety gate</p><h2 id="job-title">Job creation is disabled</h2><p>The service can durably reserve credits, but it still cannot dispatch provider work. The browser therefore creates no new reservations. In a gated live session, an existing job that is exactly queued and never dispatched can be wallet-canceled with a hash-chained double-entry reversal.</p><div class="job-estimate"><Gauge size={17} /><div><span>Provider dispatch</span><strong>Disconnected</strong></div><div><span>User release</span><strong>Queued jobs only</strong></div></div><div class="non-action-state roadmap"><LockKeyhole size={17} /> No new reservation mutation</div><p class="modeled-note"><Sparkles size={13} /> Cancellation is shown only to a current owner, admin, or developer and reloads the job, balance, and ledger after every attempt.</p></section></div></Show>
+      <Show when={jobOpen()}><div class="dialog-backdrop" onClick={() => setJobOpen(false)}><section ref={(element) => { jobDialogRef = element; }} class="job-dialog" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close job dialog" data-autofocus onClick={() => setJobOpen(false)}>×</button><div class="dialog-mark"><CloudCog size={22} /></div><p class="overline">Reservation safety gate</p><h2 id="job-title">Reservation creation is release-held</h2><p>The authenticated service can atomically reserve noncash test credits and return an inert <code>queued / not_dispatched</code> job. This browser does not expose that mutation until the release publishes a reservation-specific capability, a versioned receipt bound to the ledger reversal path, and a status lookup that can reconcile a committed POST whose response was lost. A broad Compute Console flag is not sufficient authority.</p><div class="job-estimate"><Gauge size={17} /><div><span>Browser reservation</span><strong>Release held</strong></div><div><span>Exact-asset dispatch</span><strong>Separate capability gate</strong></div></div><div class="non-action-state roadmap"><LockKeyhole size={17} /> No browser reservation mutation in this release</div><p class="modeled-note"><Sparkles size={13} /> Existing queued jobs can still be wallet-canceled by a current owner, admin, or developer; every attempt reloads jobs, balance, and the hash-chained ledger.</p></section></div></Show>
 
       <Show when={projectOpen()}><div class="dialog-backdrop" onClick={() => setProjectOpen(false)}><section ref={(element) => { projectDialogRef = element; }} class="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close project dialog" data-autofocus onClick={() => setProjectOpen(false)}>×</button><div class="dialog-mark"><Users size={22} /></div><p class="overline">Wallet-owned workspace</p><h2 id="project-title">Create a Compute project</h2><p>Your connected wallet becomes immutable owner. Public routes cannot expand the fixed 500-credit job cap, 2,500-credit daily cap, or seven-day credential lifetime. You can close this dialog without creating anything; the authorized console will remain available with explicit create, retry, and lock controls.</p><label><span>Project name</span><input maxlength="64" value={projectName()} onInput={(event) => setProjectName(event.currentTarget.value)} /></label><button class="primary-button large full" type="button" onClick={() => void submitProject()} disabled={!projectName().trim() || Boolean(busy())}>{busy() === "project" ? <LoaderCircle class="spin" size={17} /> : <Plus size={17} />} Create bounded project</button></section></div></Show>
 
@@ -905,7 +965,64 @@ export function Compute(props: {
   );
 }
 
-function LedgerRow(props: { entry: ComputeLedgerTransaction }) {
+const LEDGER_ADJACENCY_COPY = {
+  genesis: {
+    label: "Global genesis",
+    detail: "Sequence 1 points to the all-zero genesis sentinel.",
+  },
+  visible_link: {
+    label: "Visible adjacent link",
+    detail: "These consecutive global sequences expose a matching previous-hash link.",
+  },
+  interleaved_global: {
+    label: "Interleaved global sequence",
+    detail: "The project-filtered response omits one or more intervening global transactions.",
+  },
+  outside_view: {
+    label: "Predecessor outside view",
+    detail: "This response slice does not include the immediately preceding global transaction.",
+  },
+  invalid: {
+    label: "Invalid visible link",
+    detail: "The visible sequence or previous-hash relationship is inconsistent.",
+  },
+} as const;
+
+function ledgerHashLabel(value: string): string {
+  return `${value.slice(0, 12)}…${value.slice(-8)}`;
+}
+
+export function LedgerEvidenceBoundary(props: { compact?: boolean }) {
+  return <div class={`ledger-evidence-boundary${props.compact ? " compact" : ""}`}>
+    <Fingerprint size={14} />
+    <span>
+      {props.compact
+        ? "Visible-link labels cover only consecutive global sequences in this project slice; gaps are not chain failures, and this browser does not recompute hashes."
+        : "A link is marked visible only when both consecutive global sequences appear in this project slice. Gaps can contain other projects and are not chain failures. Public rows omit the internal request and idempotency commitments, so this browser validates shape and visible adjacency but does not recompute transaction hashes."}
+    </span>
+  </div>;
+}
+
+export function LedgerRow(props: {
+  entry: ComputeLedgerTransaction;
+  olderEntry?: ComputeLedgerTransaction;
+}) {
   const presentation = ledgerPresentation(props.entry);
-  return <div class="ledger-row"><span class={`ledger-icon ${presentation.type}`}>{presentation.sign === "+" ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><div><strong>{presentation.label}</strong><small>{dateLabel(props.entry.created_at)} · <code>{props.entry.transaction_id}</code></small></div><span class={`ledger-amount ${presentation.type}`}>{presentation.sign} {props.entry.amount_credits.toLocaleString()} cr</span><StateLabel status={props.entry.settlement_status.replaceAll("_", " ")} level="live" /></div>;
+  const adjacency = createMemo(() => computeLedgerAdjacency(props.entry, props.olderEntry));
+  const chainCopy = createMemo(() => LEDGER_ADJACENCY_COPY[adjacency()]);
+  return <div class="ledger-row" data-chain-adjacency={adjacency()}>
+    <span class={`ledger-icon ${presentation.type}`}>{presentation.sign === "+" ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span>
+    <div class="ledger-entry-copy">
+      <strong>{presentation.label}</strong>
+      <small>{dateLabel(props.entry.created_at)} · <code>{props.entry.transaction_id}</code></small>
+      <div class="ledger-proof-line" aria-label={`Ledger sequence ${props.entry.sequence}. Transaction hash ${props.entry.transaction_hash}. Previous hash ${props.entry.previous_hash}. ${chainCopy().label}.`}>
+        <span class="ledger-sequence">SEQ #{props.entry.sequence}</span>
+        <span>TX <code title={props.entry.transaction_hash}>{ledgerHashLabel(props.entry.transaction_hash)}</code></span>
+        <span>PREV <code title={props.entry.previous_hash}>{ledgerHashLabel(props.entry.previous_hash)}</code></span>
+        <span class={`ledger-chain-state ${adjacency()}`} title={chainCopy().detail}>{chainCopy().label}</span>
+      </div>
+    </div>
+    <span class={`ledger-amount ${presentation.type}`}>{presentation.sign} {props.entry.amount_credits.toLocaleString()} cr</span>
+    <StateLabel status={props.entry.settlement_status.replaceAll("_", " ")} level="live" />
+  </div>;
 }

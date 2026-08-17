@@ -60,7 +60,7 @@ import {
   assertTrackedDescriptorMaterializationSources,
   validateCanonicalGeneratedCvmDescriptorSet,
   verifyExactTrackedSourceDescriptorReproduction,
-} from "../../../scripts/cvm-release-descriptor-set.mjs";
+} from "../../../scripts/cvm-release-descriptor-set-v3.mjs";
 
 export const PHALA_CVM_LAUNCH_RECEIPT_SCHEMA =
   "dnai.phala-cvm-launch-receipt.v1";

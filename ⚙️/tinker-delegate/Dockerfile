@@ -14,10 +14,14 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY tinker_delegate/ tinker_delegate/
+COPY scripts/fetch_pinned_qwen3_tokenizer.py scripts/
 
 # Install only lockfile-selected artifacts, make the local project a real wheel
 # rather than an editable source reference, and canonicalize every venv mtime.
 RUN uv sync --frozen --no-dev --extra agent --no-editable && \
+    /.venv/bin/python scripts/fetch_pinned_qwen3_tokenizer.py \
+      --output /opt/dnai/qwen3-8b-tokenizer \
+      --source-date-epoch "${SOURCE_DATE_EPOCH}" && \
     find /.venv -path '*/site-packages/*.dist-info/uv_cache.json' -delete && \
     find /.venv -path '*/site-packages/*.dist-info/RECORD' \
       -exec sed -i '\|uv_cache.json,|d' '{}' + && \
@@ -51,6 +55,7 @@ RUN set -eux; \
     rm -f /var/log/dpkg.log
 
 COPY --from=builder /.venv /.venv
+COPY --from=builder /opt/dnai/qwen3-8b-tokenizer /opt/dnai/qwen3-8b-tokenizer
 
 WORKDIR /app
 

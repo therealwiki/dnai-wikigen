@@ -8,7 +8,6 @@ ACCOUNT=dev
 MAX_TINKER_POLICY_UNITS_PER_OPERATION=10000000000000000000
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 ZERO_BYTES32=0x0000000000000000000000000000000000000000000000000000000000000000
-MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$ROOT_DIR/deployments/base-sepolia.json}"
 MANIFEST_FILTER="$CONTRACTS_DIR/scripts/update-tinker-release-manifest.jq"
 
 if [ -f "$ROOT_DIR/.env" ]; then
@@ -17,6 +16,12 @@ if [ -f "$ROOT_DIR/.env" ]; then
   . "$ROOT_DIR/.env"
   set +a
 fi
+
+# DEPLOYMENT_MANIFEST_PATH and RELEASE_CEREMONY_LEDGER_PATH are resolved only
+# after .env; repository history is never a ceremony fallback.
+# shellcheck disable=SC1091
+. "$CONTRACTS_DIR/scripts/release-ceremony-paths.sh"
+operator_policy_resolve_release_ceremony_paths
 
 # shellcheck disable=SC1091
 . "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"

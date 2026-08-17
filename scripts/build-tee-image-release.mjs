@@ -6,6 +6,10 @@ import { open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  parseCanonicalPublicHttpsUrl,
+} from "./canonical-public-https-url-core.mjs";
+
 export const BUILD_DESCRIPTOR_SCHEMA = "dnai.tee-image-build.v1";
 export const RELEASE_SCHEMA = "dnai.tee-image-release.v1";
 export const PLATFORM = "linux/amd64";
@@ -54,15 +58,7 @@ function sha256(value) {
 
 function safeHttpsUrl(value, label) {
   const raw = boundedString(value, label, 1024);
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`${label} must be an HTTPS URL`);
-  }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
-    throw new Error(`${label} must be an HTTPS URL without credentials or a fragment`);
-  }
+  parseCanonicalPublicHttpsUrl(raw, { label, maximumBytes: 1024 });
   return raw;
 }
 
@@ -546,7 +542,11 @@ export async function main(argv = process.argv.slice(2)) {
   throw new Error("command must be descriptor or aggregate");
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(new URL(
+    "./build-tee-image-release.mjs",
+    import.meta.url,
+  ))) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

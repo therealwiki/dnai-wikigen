@@ -1,6 +1,6 @@
 """Bounded admission control for public wallet challenge issuance.
 
-The three wallet-login surfaces share one limiter.  Its global sliding-window
+The four wallet-signature surfaces share one limiter.  Its global sliding-window
 capacity is required to stay below every process-local nonce store capacity,
 and its window covers the longest configured nonce TTL.  Therefore traffic
 that passes this gate cannot fill any nonce store, even when every accepted
@@ -236,11 +236,13 @@ class WalletChallengeAdmissionLimiter:
             getattr(settings, "wallet_auth_challenge_ttl_seconds", 300),
             getattr(settings, "arena_wallet_auth_challenge_ttl_seconds", 300),
             getattr(settings, "compute_wallet_auth_challenge_ttl_seconds", 300),
+            getattr(settings, "review_authority_challenge_ttl_seconds", 300),
         )
         store_values = (
             getattr(settings, "wallet_auth_max_pending_challenges", 1024),
             getattr(settings, "arena_wallet_auth_max_pending_challenges", 1024),
             getattr(settings, "compute_wallet_auth_max_pending_challenges", 1024),
+            getattr(settings, "review_authority_max_pending_challenges", 1024),
         )
         maximum_ttl = max(
             _positive_int(value, label="wallet challenge TTL", maximum=600)
@@ -285,15 +287,20 @@ class WalletChallengeAdmissionLimiter:
             return 1
         return max(1, math.ceil(values[0] + self.window_seconds - now))
 
-    def _prune_map(self, buckets: dict[str, deque[float]], key: str, now: float) -> deque[float]:
-        bucket = buckets.get(key)
-        if bucket is None:
-            return deque()
-        self._prune(bucket, now)
-        if not bucket:
-            del buckets[key]
-            return deque()
-        return bucket
+    def _prune_map(self, buckets: dict[str, deque[float]], now: float) -> None:
+        """Remove every expired identity bucket while holding ``self._lock``.
+
+        Pruning only the identity named by the current request would leave old
+        one-shot address and peer keys resident forever.  The global capacity
+        bounds this scan to fewer than ``minimum_store_capacity`` live entries,
+        so a complete sweep keeps both identity maps bounded without creating a
+        second, independently fallible eviction policy.
+        """
+
+        for key, bucket in tuple(buckets.items()):
+            self._prune(bucket, now)
+            if not bucket:
+                del buckets[key]
 
     def admit(self, *, address: Any, peer_source: str) -> None:
         canonical_address = _canonical_address(address)
@@ -311,9 +318,17 @@ class WalletChallengeAdmissionLimiter:
             # out while their corresponding nonce records remain live longer.
             now = max(observed_now, self._last_now)
             self._last_now = now
+            prior_global_count = len(self._global)
             self._prune(self._global, now)
-            address_bucket = self._prune_map(self._addresses, canonical_address, now)
-            peer_bucket = self._prune_map(self._peers, canonical_peer, now)
+            # Every identity timestamp is also in the same-window global
+            # bucket.  A full identity sweep is therefore needed only when at
+            # least one global admission expired, avoiding O(capacity) work on
+            # a flood of already-rate-limited requests.
+            if len(self._global) != prior_global_count:
+                self._prune_map(self._addresses, now)
+                self._prune_map(self._peers, now)
+            address_bucket = self._addresses.get(canonical_address, deque())
+            peer_bucket = self._peers.get(canonical_peer, deque())
             retry_values: list[int] = []
             if len(self._global) >= self.global_capacity:
                 retry_values.append(self._retry_after(self._global, now))
@@ -343,5 +358,9 @@ class WalletChallengeAdmissionLimiter:
         with self._lock:
             now = max(observed_now, self._last_now)
             self._last_now = now
+            prior_global_count = len(self._global)
             self._prune(self._global, now)
+            if len(self._global) != prior_global_count:
+                self._prune_map(self._addresses, now)
+                self._prune_map(self._peers, now)
             return len(self._global)

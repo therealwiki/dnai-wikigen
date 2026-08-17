@@ -5,11 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="$SCRIPT_DIR/configure-compute-release.sh"
 POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 MANIFEST_FILTER="$SCRIPT_DIR/update-compute-release-manifest.jq"
+USDC_VERIFIER="$SCRIPT_DIR/verify-base-sepolia-usdc-release.sh"
 
 test -f "$TARGET"
 test -f "$MANIFEST_FILTER"
+test -f "$USDC_VERIFIER"
 bash -n "$TARGET"
 bash -n "$POLICY_GUARD"
+bash -n "$USDC_VERIFIER"
+grep -Fq '$developerFeeBps <= 100' "$MANIFEST_FILTER"
 grep -Fq '. "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"' "$TARGET"
 test "$(grep -Ec '^[[:space:]]*operator_policy_project_and_validate$' "$TARGET")" -eq 1
 policy_line="$(grep -n -m1 '^[[:space:]]*operator_policy_project_and_validate$' "$TARGET" | cut -d: -f1)"
@@ -23,6 +27,31 @@ grep -Fq 'operator_policy_assert_public_env contractEnv COMPUTE_VAULT_METERING_V
 grep -Fq 'operator_policy_assert_public_env contractEnv COMPUTE_VAULT_METERING_QVL_VERIFIER' "$TARGET"
 grep -Fq 'operator_policy_assert_public_env contractEnv COMPUTE_VAULT_DEVELOPER' "$TARGET"
 grep -Fq 'operator_policy_assert_public_env contractEnv COMPUTE_VAULT_DEVELOPER_FEE_BPS' "$TARGET"
+for usdc_authority_env in \
+  COMPUTE_VAULT_ERC20_ASSET_ADDRESS \
+  COMPUTE_VAULT_ERC20_ASSET_CODE_HASH \
+  COMPUTE_VAULT_ERC20_ASSET_SYMBOL \
+  COMPUTE_VAULT_ERC20_ASSET_DECIMALS; do
+  grep -Fq "operator_policy_assert_public_env postDeployEnv $usdc_authority_env" "$TARGET"
+done
+grep -Fq 'BASE_SEPOLIA_SECONDARY_RPC_URL' "$TARGET" "$USDC_VERIFIER"
+grep -Fq 'eth_getBlockByNumber "$block_tag" false' "$USDC_VERIFIER"
+grep -Fq 'eth_getCode "$asset" "$block_hex"' "$USDC_VERIFIER"
+grep -Fq 'eth_call "$call_object" "$block_hex"' "$USDC_VERIFIER"
+grep -Fq 'two_distinct_https_rpcs_exact_finalized_numeric_block_eth_getCode_and_eth_call_agreement' "$TARGET" "$USDC_VERIFIER"
+if [ "$(grep -Ec '^[[:space:]]*verify_canonical_usdc_finalized_authority$' "$TARGET")" -ne 2 ]; then
+  echo "Compute release must prove canonical USDC before wallet access and immediately before broadcast." >&2
+  exit 1
+fi
+first_usdc_proof_line="$(grep -n -m1 '^[[:space:]]*verify_canonical_usdc_finalized_authority$' "$TARGET" | cut -d: -f1)"
+last_usdc_proof_line="$(grep -n '^[[:space:]]*verify_canonical_usdc_finalized_authority$' "$TARGET" | tail -n1 | cut -d: -f1)"
+forge_broadcast_line="$(grep -n '^forge script script/ConfigureComputeRelease.s.sol' "$TARGET" | tail -n1 | cut -d: -f1)"
+if [ "$first_usdc_proof_line" -ge "$wallet_line" ] \
+  || [ "$last_usdc_proof_line" -le "$wallet_line" ] \
+  || [ "$last_usdc_proof_line" -ge "$forge_broadcast_line" ]; then
+  echo "Canonical USDC proof ordering does not guard the Compute release broadcast boundary." >&2
+  exit 1
+fi
 grep -Fq "developer()(address)" "$TARGET"
 grep -Fq "developerFeeBps()(uint16)" "$TARGET"
 for policy_env in \
@@ -104,6 +133,8 @@ if [ "$(grep -Ec '^[[:space:]]*validate_existing_deployment_ledger$' "$TARGET")"
 fi
 for ledger_boundary in \
   'computeReleaseHistory' \
+  'latestUsdcFinalizedAuthority' \
+  'usdcFinalizedAuthority' \
   'latestReleaseTransactions' \
   'transactionHash' \
   'blockNumber' \
@@ -137,6 +168,165 @@ if grep -Eq -- '--private-key|PRIVATE_KEY|raw private' "$TARGET"; then
   exit 1
 fi
 
+# Exercise the read-only USDC verifier with a fake JSON-RPC transport. Local
+# ABI decoding and Keccak hashing still use the installed reviewed cast binary;
+# only network methods are intercepted. Every negative case must fail closed.
+probe_fixture_dir="$(mktemp -d)"
+probe_bin="$probe_fixture_dir/bin"
+mkdir -p "$probe_bin"
+real_cast="$(command -v cast)"
+cat > "$probe_bin/cast" <<'FAKE_CAST'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" != "rpc" ]; then
+  exec "$REAL_CAST" "$@"
+fi
+if [ "${2:-}" != "--rpc-url" ] || [ "$#" -lt 4 ]; then
+  exit 97
+fi
+rpc_url="$3"
+method="$4"
+shift 4
+case "$rpc_url" in
+  https://primary.example/rpc) provider=primary ;;
+  https://secondary.example/rpc) provider=secondary ;;
+  *) exit 98 ;;
+esac
+scenario="${FAKE_RPC_SCENARIO:-success}"
+hash_one=0x1111111111111111111111111111111111111111111111111111111111111111
+hash_two=0x2222222222222222222222222222222222222222222222222222222222222222
+decimals_six=0x0000000000000000000000000000000000000000000000000000000000000006
+decimals_seven=0x0000000000000000000000000000000000000000000000000000000000000007
+symbol_usdc=0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553444300000000000000000000000000000000000000000000000000000000
+symbol_usdt=0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000045553445400000000000000000000000000000000000000000000000000000000
+case "$method" in
+  eth_chainId)
+    if [ "$scenario" = chain_divergence ] && [ "$provider" = secondary ]; then
+      printf '%s\n' '"0x1"'
+    else
+      printf '%s\n' '"0x14a34"'
+    fi
+    ;;
+  eth_getBlockByNumber)
+    block_tag="${1:-}"
+    [ "${2:-}" = false ] || exit 96
+    number=0x64
+    hash="$hash_one"
+    if [ "$block_tag" = finalized ]; then
+      if [ "$scenario" = finalized_number_divergence ] && [ "$provider" = secondary ]; then
+        number=0x65
+      fi
+      if [ "$scenario" = finalized_hash_divergence ] && [ "$provider" = secondary ]; then
+        hash="$hash_two"
+      fi
+    elif [ "$block_tag" = 0x64 ]; then
+      if [ "$scenario" = numeric_block_drift ] && [ "$provider" = secondary ]; then
+        hash="$hash_two"
+      fi
+    else
+      exit 95
+    fi
+    printf '{"number":"%s","hash":"%s"}\n' "$number" "$hash"
+    ;;
+  eth_getCode)
+    [ "${1:-}" = 0x036cbd53842c5426634e7929541ec2318f3dcf7e ] || exit 94
+    [ "${2:-}" = 0x64 ] || exit 93
+    if [ "$scenario" = unsupported_numeric_state ] && [ "$provider" = secondary ]; then
+      exit 92
+    fi
+    if [ "$scenario" = code_divergence ] && [ "$provider" = secondary ]; then
+      printf '%s\n' '"0x6001"'
+    else
+      printf '%s\n' '"0x6000"'
+    fi
+    ;;
+  eth_call)
+    call_object="${1:-}"
+    [ "${2:-}" = 0x64 ] || exit 91
+    if [[ "$call_object" == *313ce567* ]]; then
+      if [ "$scenario" = decimals_divergence ] && [ "$provider" = secondary ]; then
+        printf '"%s"\n' "$decimals_seven"
+      else
+        printf '"%s"\n' "$decimals_six"
+      fi
+    elif [[ "$call_object" == *95d89b41* ]]; then
+      if { [ "$scenario" = symbol_divergence ] && [ "$provider" = secondary ]; } \
+        || [ "$scenario" = both_symbols_wrong ]; then
+        printf '"%s"\n' "$symbol_usdt"
+      else
+        printf '"%s"\n' "$symbol_usdc"
+      fi
+    else
+      exit 90
+    fi
+    ;;
+  *) exit 89 ;;
+esac
+FAKE_CAST
+chmod 0700 "$probe_bin/cast"
+
+expected_probe_code_hash="$(cast keccak 0x6000 | tr '[:upper:]' '[:lower:]')"
+run_usdc_probe() {
+  local scenario="$1"
+  local expected_code_hash="${2:-$expected_probe_code_hash}"
+  PATH="$probe_bin:$PATH" \
+  REAL_CAST="$real_cast" \
+  FAKE_RPC_SCENARIO="$scenario" \
+  BASE_SEPOLIA_RPC_URL=https://primary.example/rpc \
+  BASE_SEPOLIA_SECONDARY_RPC_URL=https://secondary.example/rpc \
+  COMPUTE_VAULT_ERC20_ASSET_ADDRESS=0x036cbd53842c5426634e7929541ec2318f3dcf7e \
+  COMPUTE_VAULT_ERC20_ASSET_CODE_HASH="$expected_code_hash" \
+  COMPUTE_VAULT_ERC20_ASSET_SYMBOL=USDC \
+  COMPUTE_VAULT_ERC20_ASSET_DECIMALS=6 \
+    bash "$USDC_VERIFIER"
+}
+
+happy_probe_receipt="$(run_usdc_probe success)"
+jq -e \
+  --arg codeHash "$expected_probe_code_hash" '
+    .schema == "dnai.base-sepolia-usdc-finalized-authority.v1"
+    and .chainId == 84532
+    and .finalizedBlockNumber == 100
+    and .finalizedBlockHash == ("0x" + ("1" * 64))
+    and .assetAddress == "0x036cbd53842c5426634e7929541ec2318f3dcf7e"
+    and .runtimeCodeHash == $codeHash
+    and .symbol == "USDC"
+    and .decimals == 6
+  ' <<<"$happy_probe_receipt" >/dev/null
+
+for scenario in \
+  chain_divergence \
+  finalized_number_divergence \
+  finalized_hash_divergence \
+  unsupported_numeric_state \
+  code_divergence \
+  decimals_divergence \
+  symbol_divergence \
+  both_symbols_wrong \
+  numeric_block_drift; do
+  if run_usdc_probe "$scenario" >/dev/null 2>&1; then
+    echo "Canonical USDC verifier accepted negative scenario: $scenario" >&2
+    exit 1
+  fi
+done
+if run_usdc_probe success 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  >/dev/null 2>&1; then
+  echo "Canonical USDC verifier accepted runtime code outside signed final authority." >&2
+  exit 1
+fi
+if PATH="$probe_bin:$PATH" REAL_CAST="$real_cast" FAKE_RPC_SCENARIO=success \
+  BASE_SEPOLIA_RPC_URL=https://primary.example/rpc \
+  BASE_SEPOLIA_SECONDARY_RPC_URL=https://primary.example/other \
+  COMPUTE_VAULT_ERC20_ASSET_ADDRESS=0x036cbd53842c5426634e7929541ec2318f3dcf7e \
+  COMPUTE_VAULT_ERC20_ASSET_CODE_HASH="$expected_probe_code_hash" \
+  COMPUTE_VAULT_ERC20_ASSET_SYMBOL=USDC \
+  COMPUTE_VAULT_ERC20_ASSET_DECIMALS=6 \
+    bash "$USDC_VERIFIER" >/dev/null 2>&1; then
+  echo "Canonical USDC verifier accepted two endpoints on the same RPC origin." >&2
+  exit 1
+fi
+rm -rf -- "$probe_fixture_dir"
+
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
 fixture_input="$fixture_dir/input.json"
@@ -164,6 +354,21 @@ metering_verifier=0x5555555555555555555555555555555555555555
 metering_qvl_verifier=0x6666666666666666666666666666666666666666
 metering_policy=0x1111111111111111111111111111111111111111111111111111111111111111
 usdc=0x036cbd53842c5426634e7929541ec2318f3dcf7e
+usdc_code_hash=0x7777777777777777777777777777777777777777777777777777777777777777
+usdc_finalized_authority="$(jq -cn \
+  --arg assetAddress "$usdc" \
+  --arg runtimeCodeHash "$usdc_code_hash" '
+  {
+    schema: "dnai.base-sepolia-usdc-finalized-authority.v1",
+    chainId: 84532,
+    finalizedBlockNumber: 44487090,
+    finalizedBlockHash: ("0x" + ("8" * 64)),
+    assetAddress: $assetAddress,
+    runtimeCodeHash: $runtimeCodeHash,
+    symbol: "USDC",
+    decimals: 6,
+    proof: "two_distinct_https_rpcs_exact_finalized_numeric_block_eth_getCode_and_eth_call_agreement"
+  }')"
 zero_address=0x0000000000000000000000000000000000000000
 zero_bytes32=0x0000000000000000000000000000000000000000000000000000000000000000
 phase_one_transactions="$(jq -cn '[range(1; 5) as $i | {
@@ -387,6 +592,10 @@ merge_phase() {
     --arg meteringQvlVerifierExpected "$metering_qvl_verifier" \
     --arg meteringPolicySetHashExpected "$metering_policy" \
     --arg baseSepoliaUsdc "$usdc" \
+    --arg baseSepoliaUsdcCodeHash "$usdc_code_hash" \
+    --arg baseSepoliaUsdcSymbol "USDC" \
+    --argjson baseSepoliaUsdcDecimals 6 \
+    --argjson usdcFinalizedAuthority "$usdc_finalized_authority" \
     --argjson developerFeeBps "$developer_fee_bps" \
     --argjson developerFeeFrozen "$developer_fee_frozen" \
     --arg meteringVerifier "$active_metering_verifier" \
@@ -440,6 +649,7 @@ merge_phase "$fixture_input" "$phase_one_output" 1 "$review_one" "$final_authori
 jq -e \
   --arg review "$review_one" \
   --arg final "$final_authority" \
+  --argjson usdcFinalizedAuthority "$usdc_finalized_authority" \
   '
     .untouchedTopLevel.sentinel == "preserve-me"
     and .contracts.unrelatedContract.sentinel == "preserve-contract"
@@ -452,6 +662,7 @@ jq -e \
     and .contracts.computeCreditVault.latestReleasePhase == 1
     and .contracts.computeCreditVault.latestReleaseReviewEnvelopeSha256 == $review
     and .contracts.computeCreditVault.latestReleaseFinalAuthoritySha256 == $final
+    and .contracts.computeCreditVault.latestUsdcFinalizedAuthority == $usdcFinalizedAuthority
     and .contracts.computeCreditVault.pendingAssetCount == 1
     and .contracts.computeCreditVault.pendingRatePolicyCount == 1
     and .contracts.computeCreditVault.pendingComposeCount == 1
@@ -465,6 +676,7 @@ jq -e \
           and .phase == 1
           and .reviewEnvelopeSha256 == $review
           and .finalAuthoritySha256 == $final
+          and .usdcFinalizedAuthority == $usdcFinalizedAuthority
           and (.transactions | length) == 4
           and (.transactionHashes | length) == 4
           and (.blockNumbers | length) == 4
@@ -480,6 +692,7 @@ jq -e \
   --arg reviewOne "$review_one" \
   --arg reviewTwo "$review_two" \
   --arg final "$final_authority" \
+  --argjson usdcFinalizedAuthority "$usdc_finalized_authority" \
   '
     .contracts.computeCreditVault.latestReleasePhase == 2
     and .contracts.computeCreditVault.latestReleaseReviewEnvelopeSha256 == $reviewTwo
@@ -488,6 +701,7 @@ jq -e \
     and .computeReleaseHistory[0].reviewEnvelopeSha256 == $reviewOne
     and .computeReleaseHistory[1].reviewEnvelopeSha256 == $reviewTwo
     and all(.computeReleaseHistory[]; .finalAuthoritySha256 == $final)
+    and all(.computeReleaseHistory[]; .usdcFinalizedAuthority == $usdcFinalizedAuthority)
     and .untouchedTopLevel.sentinel == "preserve-me"
     and .contracts.computeCreditVault.deploymentTx == "preserve-deployment-transaction"
   ' "$phase_two_output" >/dev/null
@@ -498,6 +712,7 @@ jq -e \
   --arg final "$final_authority" \
   --arg tee "$tee" \
   --arg compose "$compose" \
+  --argjson usdcFinalizedAuthority "$usdc_finalized_authority" \
   '
     .contracts.computeCreditVault.status == "deployed_exact_compute_release_policy_frozen_active"
     and .contracts.computeCreditVault.policyState == "exact_timelocked_compute_release_policy_frozen_active"
@@ -520,9 +735,21 @@ jq -e \
     and .contracts.computeCreditVault.teeIdentityComposeBindings == [{teeIdentity: $tee, composeHash: $compose}]
     and (.computeReleaseHistory | map(.phase)) == [1, 2, 3]
     and all(.computeReleaseHistory[]; .finalAuthoritySha256 == $final)
+    and all(.computeReleaseHistory[]; .usdcFinalizedAuthority == $usdcFinalizedAuthority)
     and .untouchedTopLevel.sentinel == "preserve-me"
     and .freshDeployment.contractSuite.deploymentIntentSha256 == "preserve-deployment-intent"
   ' "$phase_three_output" >/dev/null
+
+valid_usdc_finalized_authority="$usdc_finalized_authority"
+usdc_finalized_authority="$(jq -c \
+  '.runtimeCodeHash = "0x9999999999999999999999999999999999999999999999999999999999999999"' \
+  <<<"$valid_usdc_finalized_authority")"
+if merge_phase "$fixture_input" "$bad_output" 1 "$review_one" "$final_authority" \
+  "$phase_one_transactions" >/dev/null 2>&1; then
+  echo "Compute ledger merge accepted USDC proof outside the signed runtime authority." >&2
+  exit 1
+fi
+usdc_finalized_authority="$valid_usdc_finalized_authority"
 
 jq --arg bad "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
   '.contracts.computeCreditVault.runtimeCodeHash = $bad' "$fixture_input" > "$bad_input"

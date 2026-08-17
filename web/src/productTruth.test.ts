@@ -13,15 +13,82 @@ import vaultSource from "./views/DataVaults.tsx?raw";
 import overviewSource from "./views/Overview.tsx?raw";
 import { Arena } from "./views/Arena";
 import { Capabilities } from "./views/Capabilities";
+import { Catalog } from "./components/Catalog";
+import { CollaboratePage } from "./views/CollaboratePage";
 
 const noNavigation = () => undefined;
 
 describe("public product truth boundary", () => {
+  it("labels every catalog card at point of use without implying a live health-data service", () => {
+    const html = renderToString(() => createComponent(Catalog, {}));
+    const cardCount = (html.match(/class="card(?: restricted)?\s*"/g) ?? []).length;
+    expect(cardCount).toBeGreaterThan(0);
+    expect(html.match(/data-product-state=/g)).toHaveLength(cardCount);
+    expect(html).toContain("ROADMAP CONCEPT");
+    expect(html).toContain("MODELED DENY EXAMPLE");
+    expect(html).toContain("No live service directory or health-data intake");
+    expect(html).not.toContain('data-product-state="live"');
+  });
+
+  it("separates implemented Collaboration rails, the closed current release, and the modeled failure lab", () => {
+    const html = renderToString(() => createComponent(CollaboratePage, {
+      navigate: noNavigation,
+    }));
+    const bannerPosition = html.indexOf("Production-capable rails implemented · current release closed");
+    const workspacePosition = html.indexOf('class="brief-composer-section"');
+    const consolePosition = html.indexOf('class="collaboration-console"');
+    const networkPosition = html.indexOf('class="collaboration-network"');
+    const coordinationPosition = html.indexOf('class="coordination-section"');
+    const royaltyPosition = html.indexOf('class="royalty-rail"');
+
+    expect(bannerPosition).toBeGreaterThanOrEqual(0);
+    expect(workspacePosition).toBeGreaterThan(bannerPosition);
+    expect(consolePosition).toBeGreaterThan(workspacePosition);
+    expect(networkPosition).toBeGreaterThan(consolePosition);
+    expect(coordinationPosition).toBeGreaterThan(networkPosition);
+    expect(royaltyPosition).toBeGreaterThan(coordinationPosition);
+    expect(collaborateSource).toContain("Production-capable rails implemented · current release closed");
+    expect(collaborateSource).toContain("Release-gated product rails + local failure lab");
+    expect(collaborateSource).toContain("This unsigned/dev release keeps every mutation closed");
+    expect(collaborateSource).toContain("This unsigned/dev release performs no live mutation");
+    expect(collaborateSource).toContain("The failure lab below is modeled");
+    expect(collaborateSource).toContain("CONSENT SNAPSHOT<br/>NO DISPATCH");
+    expect(collaborateSource).toContain("no browser DTO is TDX or QVL proof");
+    expect(collaborateSource).toContain("no health-data intake is enabled");
+    expect(collaborateSource).not.toContain("joint CVM execution and settlement remain roadmap");
+    expect(collaborateSource).not.toContain("cannot dispatch joint CVM work");
+    expect(collaborateSource).not.toContain("Browser-only brief composer · roadmap multi-owner execution");
+    expect(collaborateSource).not.toContain("Modeled transition · single seller only");
+    expect(overviewSource).toContain("PRODUCT RAILS IMPLEMENTED · CURRENT RELEASE CLOSED");
+    expect(capabilitySource).toContain("PRODUCT RAILS IMPLEMENTED");
+    expect(capabilitySource).toContain('level: "implemented"');
+    expect(capabilitySource).not.toContain("Joint CVM dispatch, result release, payment, and royalty allocation remain roadmap");
+  });
+
+  it("separates the connected Arena API and ingress from per-row execution evidence", () => {
+    expect(arenaSource).toContain("Arena API connected · execution unproven");
+    expect(arenaSource).toContain("Ciphertext ingress can be live while execution remains unproven");
+    expect(arenaSource).toContain("every queue and ranking row keeps its own evidence state");
+    expect(arenaSource).toContain("every result needs its own bounded worker provenance");
+    expect(arenaSource).not.toContain("Modeled Arena API connected");
+    expect(arenaSource).not.toContain("Checking the modeled Arena API");
+    expect(overviewSource).toContain("LIVE-CAPABLE INGRESS · EXECUTION PER ROW");
+    expect(capabilitySource).toContain("RELEASE-GATED INGRESS + SAFE-IR");
+    expect(capabilitySource).toContain("A row remains modeled unless it carries bounded worker provenance");
+  });
+
+  it("separates the release-gated Safeguards operator from its modeled simulator", () => {
+    expect(overviewSource).toContain("OPERATOR RELEASE-GATED · SIMULATOR MODELED");
+    expect(overviewSource).toContain("release-gated operator");
+    expect(overviewSource).toContain("separate browser simulator");
+    expect(overviewSource).not.toContain('state: "BROWSER MODEL"');
+  });
+
   it("keeps undeployed CTAs and exact-asset capacity explicitly release-gated", () => {
     const source = [overviewSource, vaultSource, collaborateSource, computeSource].join("\n");
     expect(source).toContain("Release-gated testnet preview");
     expect(source).toContain("Preview diligence room");
-    expect(source).toContain("Modeled transition · single seller only");
+    expect(source).toContain("Separate handoff · release-gated single-seller contract");
     expect(source).toContain("RELEASE GATED");
     expect(source).toContain("release pins are checked in Funding");
     expect(source).toContain("Release configured · verify gates");

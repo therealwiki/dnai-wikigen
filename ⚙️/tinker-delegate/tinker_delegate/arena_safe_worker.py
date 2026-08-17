@@ -52,6 +52,8 @@ from tinker_delegate.arena_ingress import (
     GCM_TAG_BYTES,
     INGRESS_HKDF_INFO,
     ArenaCandidateIngressStore,
+    ArenaIngressError,
+    ArenaIngressMetadata,
     ArenaIngressRecipient,
     StoredArenaCandidateEnvelope,
     arena_attestation_report_data,
@@ -75,6 +77,8 @@ from tinker_delegate.arena_store import (
     ArenaStore,
     ArenaStoreError,
     ChallengeManifest,
+    CiphertextEvidence,
+    CiphertextState,
     ExecutionProvenance,
     QueueReason,
     QueueState,
@@ -866,17 +870,26 @@ class ArenaSafeIrWorker:
         """Process or resume one submission without exposing private details."""
 
         with self._lock:
-            activation = self.verify_activation(occurred_at)
             record = self._arena_store.get_submission(submission_id)
-            challenge = self._challenge_for(record, activation)
-            self._require_submission_policy(record, challenge)
-            if record.state in {QueueState.COMPLETED, QueueState.FAILED}:
-                return self._receipt(record, idempotent=True)
             if record.state in {
+                QueueState.COMPLETED,
+                QueueState.FAILED,
                 QueueState.WITHHELD,
                 QueueState.CANCELLED,
                 QueueState.EXPIRED,
                 QueueState.DEAD_LETTER,
+            }:
+                record = self.cleanup_submission_ciphertext(
+                    record.submission_id,
+                    occurred_at=occurred_at,
+                )
+                if record.state in {QueueState.COMPLETED, QueueState.FAILED}:
+                    return self._receipt(record, idempotent=True)
+                raise ArenaSafeWorkerError("Arena submission is not executable")
+            activation = self.verify_activation(occurred_at)
+            challenge = self._challenge_for(record, activation)
+            self._require_submission_policy(record, challenge)
+            if record.state in {
                 QueueState.REVIEW_HOLD,
             }:
                 raise ArenaSafeWorkerError("Arena submission is not executable")
@@ -894,6 +907,28 @@ class ArenaSafeIrWorker:
 
             plaintext: bytearray | None = None
             try:
+                # Resolve only ciphertext-free index commitments before the
+                # claim. The ingress constructor and describe call do not open
+                # the envelope blob. Registry authorization then binds those
+                # commitments immediately before the store's atomic
+                # claim-vs-owner-cancel compare-and-swap.
+                ingress = ArenaCandidateIngressStore(
+                    self._ingress_store.root_dir,
+                    max_envelopes=self._ingress_store.max_envelopes,
+                )
+                metadata = ingress.describe_envelope(record.encrypted_reference)
+                self._require_registry_claim_authorization(
+                    record=record,
+                    challenge=challenge,
+                    metadata=metadata,
+                    activation=activation,
+                    occurred_at=occurred_at,
+                )
+                record = self._arena_store.claim_safe_ir_submission(
+                    record.submission_id,
+                    occurred_at=occurred_at,
+                ).submission
+
                 if record.state == QueueState.SUBMITTED:
                     record = self._transition(
                         record,
@@ -902,15 +937,9 @@ class ArenaSafeIrWorker:
                         occurred_at,
                     )
 
-                # Parse before admitting to the executable queue.  The ciphertext
-                # is loaded only after the attested-runtime gate above.
-                # The API and worker are separate processes. Re-opening the
-                # atomic ingress index here observes envelopes committed after
-                # this worker process started without retaining a stale index.
-                ingress = ArenaCandidateIngressStore(
-                    self._ingress_store.root_dir,
-                    max_envelopes=self._ingress_store.max_envelopes,
-                )
+                # This is the first ciphertext read. It occurs only after the
+                # durable claim succeeds, so an owner cancellation that won the
+                # same store lock cannot reach this line.
                 stored = ingress.load_envelope(record.encrypted_reference)
                 plaintext = self._decrypt_and_verify(
                     stored=stored,
@@ -935,13 +964,6 @@ class ArenaSafeIrWorker:
                     QueueState.PUBLIC_TESTS,
                     QueueState.SEALED_EVAL,
                 }:
-                    self._require_registry_claim_authorization(
-                        record=record,
-                        challenge=challenge,
-                        stored=stored,
-                        activation=activation,
-                        occurred_at=occurred_at,
-                    )
                     record = self._arena_store.claim_safe_ir_submission(
                         record.submission_id,
                         occurred_at=occurred_at,
@@ -978,6 +1000,10 @@ class ArenaSafeIrWorker:
                     self._execution_provenance(activation, outcome="completed"),
                     occurred_at=occurred_at,
                 )
+                record = self.cleanup_submission_ciphertext(
+                    record.submission_id,
+                    occurred_at=occurred_at,
+                )
                 return self._receipt(record, idempotent=False)
             except (
                 SafeIrError,
@@ -1003,12 +1029,79 @@ class ArenaSafeIrWorker:
                         self._execution_provenance(activation, outcome="failed"),
                         occurred_at=occurred_at,
                     )
+                if current.state in {QueueState.COMPLETED, QueueState.FAILED}:
+                    current = self.cleanup_submission_ciphertext(
+                        current.submission_id,
+                        occurred_at=occurred_at,
+                    )
                 return self._receipt(current, idempotent=False)
             finally:
                 if plaintext is not None:
                     for index in range(len(plaintext)):
                         plaintext[index] = 0
                 policy_scope.close()
+
+    def cleanup_submission_ciphertext(
+        self,
+        submission_id: str,
+        *,
+        occurred_at: int,
+    ) -> SubmissionRecord:
+        """Idempotently unlink terminal ciphertext and persist bounded evidence."""
+
+        current = self._arena_store.get_submission(submission_id)
+        if current.state not in {
+            QueueState.COMPLETED,
+            QueueState.FAILED,
+            QueueState.WITHHELD,
+            QueueState.CANCELLED,
+            QueueState.EXPIRED,
+            QueueState.DEAD_LETTER,
+        }:
+            raise ArenaSafeWorkerError(
+                "Arena ciphertext cleanup requires a terminal submission"
+            )
+        if current.ciphertext_state == CiphertextState.UNLINKED:
+            return current
+        try:
+            ingress = ArenaCandidateIngressStore(
+                self._ingress_store.root_dir,
+                max_envelopes=self._ingress_store.max_envelopes,
+            )
+            result = ingress.erase_envelope(current.encrypted_reference)
+            evidence = CiphertextEvidence(result.evidence)
+        except (ArenaIngressError, OSError):
+            try:
+                return self._arena_store.record_ciphertext_erasure(
+                    submission_id,
+                    evidence=CiphertextEvidence.UNLINK_FAILED,
+                    occurred_at=occurred_at,
+                )
+            except ArenaStoreError:
+                return self._arena_store.get_submission(submission_id)
+        return self._arena_store.record_ciphertext_erasure(
+            submission_id,
+            evidence=evidence,
+            occurred_at=occurred_at,
+        )
+
+    def cleanup_terminal_ciphertexts(
+        self,
+        *,
+        occurred_at: int,
+        limit: int = 32,
+    ) -> int:
+        """Retry a bounded oldest-first batch on every worker polling cycle."""
+
+        cleaned = 0
+        for record in self._arena_store.ciphertext_cleanup_candidates(limit=limit):
+            updated = self.cleanup_submission_ciphertext(
+                record.submission_id,
+                occurred_at=occurred_at,
+            )
+            if updated.ciphertext_state == CiphertextState.UNLINKED:
+                cleaned += 1
+        return cleaned
 
     def close(self) -> None:
         closer = getattr(self._activation_provider, "close", None)
@@ -1134,7 +1227,7 @@ class ArenaSafeIrWorker:
         *,
         record: SubmissionRecord,
         challenge: ChallengeManifest,
-        stored: StoredArenaCandidateEnvelope,
+        metadata: ArenaIngressMetadata,
         activation: ArenaSafeWorkerActivation,
         occurred_at: int,
     ) -> None:
@@ -1148,12 +1241,9 @@ class ArenaSafeIrWorker:
             challenge_manifest_hash=challenge.manifest_hash,
             submission_manifest_hash=arena_submission_manifest_hash(record.manifest),
             candidate_commitment=record.candidate_commitment,
-            ingress_binding_sha256=(
-                "sha256:"
-                + hashlib.sha256(arena_candidate_aad(stored.binding)).hexdigest()
-            ),
+            ingress_binding_sha256=metadata.aad_sha256,
             ingress_registry_authorization_sha256=(
-                stored.binding.registry_authorization_sha256
+                metadata.registry_authorization_sha256
             ),
         )
         try:

@@ -16,12 +16,24 @@ import {
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
   CVM_LAUNCH_SECRET_PHASES,
+  CVM_MAIN_ACCOUNT_GENESIS_COMPOSE_PROFILES_VALUE,
+  CVM_MAIN_ACCOUNT_GENESIS_PROFILE_NAMES,
+  CVM_MAIN_ACCOUNT_GENESIS_PROFILE_POLICY,
+  CVM_MAIN_DISABLED_COMPOSE_PROFILES_VALUE,
+  CVM_MAIN_DISABLED_PROFILE_NAMES,
+  CVM_MAIN_DISABLED_PROFILE_POLICY,
   CVM_MAIN_FINAL_ACTIVATION_COMPOSE_PROFILES_VALUE,
   CVM_MAIN_FINAL_ACTIVATION_PROFILE_NAMES,
   CVM_MAIN_FINAL_ACTIVATION_PROFILE_POLICY,
+  CVM_MAIN_LIVE_DEAL_COMPOSE_PROFILES_VALUE,
+  CVM_MAIN_LIVE_DEAL_PROFILE_NAMES,
+  CVM_MAIN_LIVE_DEAL_PROFILE_POLICY,
   CVM_PUBLIC_ENVIRONMENT_VALUE_PROJECTOR_SCHEMA,
   cvmLaunchEnvironmentKeysDigest,
 } from "./cvm-launch-intent-core.mjs";
+import {
+  normalizeFinalReleaseAuthorityCore,
+} from "./execution-policy-release-core.mjs";
 import { parseCanonicalArtifactText } from "./operator-policy-packet-core.mjs";
 import {
   assertProvenanceVerifiedCompletedPhalaExecutorState,
@@ -52,6 +64,8 @@ export const PHALA_PRIVATE_ENVIRONMENT_ASSEMBLY_RECEIPT_SCHEMA =
   "dnai.phala-private-environment-assembly-receipt.v1";
 export const PHALA_PRIVATE_POST_MEASUREMENT_ENVIRONMENT_ASSEMBLY_RECEIPT_SCHEMA =
   "dnai.phala-private-post-measurement-environment-assembly-receipt.v2";
+export const PHALA_PRIVATE_MAIN_PROFILE_ENVIRONMENT_ASSEMBLY_RECEIPT_SCHEMA =
+  "dnai.phala-private-main-profile-environment-assembly-receipt.v1";
 
 export const PHALA_PROVISIONING_ENVIRONMENT_AUTHORITY_TRUTH =
   "derived_from_exact_all_seven_prepare_observations_with_commit_result_keys_explicitly_pending_not_operator_supplied";
@@ -63,6 +77,8 @@ export const PHALA_PRIVATE_ENVIRONMENT_ASSEMBLY_TRUTH =
   "private_in_memory_exact_key_assembly_not_encryption_commit_service_start_or_tdx_evidence";
 export const PHALA_PRIVATE_POST_MEASUREMENT_ENVIRONMENT_ASSEMBLY_TRUTH =
   "private_in_memory_full_environment_reassembly_for_reviewed_profile_activation_not_encryption_mutation_restart_or_live_authority";
+export const PHALA_PRIVATE_MAIN_PROFILE_ENVIRONMENT_ASSEMBLY_TRUTH =
+  "private_in_memory_code_owned_complete_profile_replacement_not_encryption_mutation_restart_or_service_presence";
 
 const PROVISIONING_AUTHORITY_DOMAIN =
   "dnai-wikigen/phala-provisioning-environment-authority/v3\0";
@@ -396,12 +412,28 @@ function exactValueMap(value, expectedKeys, label, { secret = false } = {}) {
       && !BARE_SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero bare lowercase hash`);
     }
+    if (!secret && key.endsWith("_SHA256") && !SHA256.test(item)) {
+      throw new Error(`${label}.${key} must be a nonzero canonical SHA-256 digest`);
+    }
+    if (!secret && key.endsWith("_EPOCH")) {
+      if (!/^[1-9][0-9]{0,9}$/.test(item)
+        || Number(item) > 4_294_967_295) {
+        throw new Error(`${label}.${key} must be a canonical uint32 epoch`);
+      }
+    }
+    if (!secret && key === "TINKER_CUSTOMER_ENABLED" && item !== "true") {
+      throw new Error(
+        `${label}.${key} must be the exact reviewed final-authority enable marker`,
+      );
+    }
+    if (!secret && key === "TINKER_COLLABORATION_ENABLED"
+      && item !== "false" && item !== "true") {
+      throw new Error(
+        `${label}.${key} must be the exact canonical false or true final-authority feature marker`,
+      );
+    }
     if (key.endsWith("_RUNTIME_CODE_HASH") && !/^0x(?!0{64}$)[0-9a-f]{64}$/.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero lowercase bytes32 hash`);
-    }
-    if (key === "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256"
-      && !SHA256.test(item)) {
-      throw new Error(`${label}.${key} must be a nonzero canonical SHA-256 digest`);
     }
     if (!secret && key.endsWith("_URL")) {
       let endpoint;
@@ -994,6 +1026,199 @@ export function assertPrivatePostMeasurementEnvironmentAssemblyReceipt(value) {
   return value;
 }
 
+const MAIN_PROFILE_ASSEMBLY_POLICIES = Object.freeze({
+  account_genesis: Object.freeze({
+    phase: "post_measurement_policy_bootstrap",
+    profile: CVM_MAIN_ACCOUNT_GENESIS_PROFILE_POLICY,
+    profileNames: CVM_MAIN_ACCOUNT_GENESIS_PROFILE_NAMES,
+    composeProfilesValue: CVM_MAIN_ACCOUNT_GENESIS_COMPOSE_PROFILES_VALUE,
+    secretPhase: "post_measurement_policy_bootstrap",
+    liveTrafficAuthorized: false,
+  }),
+  account_genesis_retired: Object.freeze({
+    phase: "post_measurement_policy_bootstrap_retired",
+    profile: CVM_MAIN_DISABLED_PROFILE_POLICY,
+    profileNames: CVM_MAIN_DISABLED_PROFILE_NAMES,
+    composeProfilesValue: CVM_MAIN_DISABLED_COMPOSE_PROFILES_VALUE,
+    secretPhase: null,
+    liveTrafficAuthorized: false,
+  }),
+  live_deal_runtime: Object.freeze({
+    phase: "post_ceremony_live_deal_runtime",
+    profile: CVM_MAIN_LIVE_DEAL_PROFILE_POLICY,
+    profileNames: CVM_MAIN_LIVE_DEAL_PROFILE_NAMES,
+    composeProfilesValue: CVM_MAIN_LIVE_DEAL_COMPOSE_PROFILES_VALUE,
+    secretPhase: null,
+    liveTrafficAuthorized: false,
+  }),
+});
+
+function createPrivateMainProfileEnvironmentAssembly({
+  accountGenesisAuthoritySha256,
+  baseAssembly,
+  profileKind,
+  secretInput,
+} = {}) {
+  const policy = MAIN_PROFILE_ASSEMBLY_POLICIES[profileKind];
+  if (!policy) {
+    throw new Error("main profile environment assembly kind is unsupported");
+  }
+  if (!baseAssembly || !PRIVATE_POST_MEASUREMENT_ASSEMBLIES.has(baseAssembly)) {
+    throw new Error(
+      "main profile environment assembly requires the exact local full post-measurement base",
+    );
+  }
+  const baseReceipt = privatePostMeasurementEnvironmentAssemblyReceipt(
+    baseAssembly,
+  );
+  if (baseReceipt.schema
+      !== PHALA_PRIVATE_POST_MEASUREMENT_ENVIRONMENT_ASSEMBLY_RECEIPT_SCHEMA
+    || JSON.stringify(baseReceipt.profile_activation)
+      !== JSON.stringify(CVM_MAIN_FINAL_ACTIVATION_PROFILE_POLICY)) {
+    throw new Error("main profile environment base is not the canonical Arena/Compute assembly");
+  }
+  const normalizedGenesisAuthoritySha256 = exactSha256(
+    accountGenesisAuthoritySha256,
+    "account-genesis activation authority",
+  );
+  const baseEntries = privatePostMeasurementEnvironmentEntries(baseAssembly);
+  if (baseEntries.TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256
+      !== normalizedGenesisAuthoritySha256) {
+    throw new Error(
+      "main profile environment does not bind the signed account-genesis authority digest",
+    );
+  }
+  let phaseSecretValues = {};
+  if (policy.secretPhase !== null) {
+    const normalizedSecret = normalizePhaseSecretInput(secretInput, {
+      expectedDomain: "main_runtime_cvm",
+      expectedPhase: policy.secretPhase,
+      expectedBatchId: baseReceipt.batch_id,
+      expectedCvmLaunchIntentSha256: baseReceipt.cvm_launch_intent_sha256,
+    });
+    phaseSecretValues = normalizedSecret.values;
+  } else if (secretInput !== undefined) {
+    throw new Error(
+      "retired or deal main profile environment rejects account-genesis shares",
+    );
+  }
+  const entries = {
+    ...baseEntries,
+    ...phaseSecretValues,
+    COMPOSE_PROFILES: policy.composeProfilesValue,
+  };
+  const expectedKeys = [
+    ...baseReceipt.environment_key_names,
+    ...(policy.secretPhase === null
+      ? []
+      : CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm
+        .encrypted_secret_environment_keys_by_phase[policy.secretPhase]),
+  ].sort();
+  const actualKeys = Object.keys(entries).sort();
+  if (new Set(actualKeys).size !== actualKeys.length
+    || JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)
+    || JSON.stringify(policy.profile)
+      !== JSON.stringify({
+        profile_names: policy.profileNames,
+        compose_profiles_value: policy.composeProfilesValue,
+      })) {
+    throw new Error(
+      "main profile environment assembly keys or code-owned profile set drifted",
+    );
+  }
+  const receipt = Object.freeze({
+    schema: PHALA_PRIVATE_MAIN_PROFILE_ENVIRONMENT_ASSEMBLY_RECEIPT_SCHEMA,
+    truth_status: PHALA_PRIVATE_MAIN_PROFILE_ENVIRONMENT_ASSEMBLY_TRUTH,
+    domain: "main_runtime_cvm",
+    phase: policy.phase,
+    profile_kind: profileKind,
+    profile_activation: Object.freeze({
+      profile_names: Object.freeze([...policy.profileNames]),
+      compose_profiles_value: policy.composeProfilesValue,
+    }),
+    batch_id: baseReceipt.batch_id,
+    cvm_launch_intent_sha256: baseReceipt.cvm_launch_intent_sha256,
+    activation_plan_sha256: baseReceipt.activation_plan_sha256,
+    account_genesis_activation_authority_sha256:
+      normalizedGenesisAuthoritySha256,
+    base_environment_assembly_receipt_sha256: digest(
+      "dnai-wikigen/phala-private-post-measurement-environment-assembly-receipt/v2\0",
+      baseReceipt,
+    ),
+    environment_key_names: actualKeys,
+    environment_key_names_sha256: cvmLaunchEnvironmentKeysDigest(actualKeys),
+    value_count: actualKeys.length,
+    account_genesis_private_share_count:
+      policy.secretPhase === null ? 0 : Object.keys(phaseSecretValues).length,
+    values_present_in_receipt: false,
+    value_hashes_present_in_receipt: false,
+    ciphertext_present_in_receipt: false,
+    encryption_performed: false,
+    phala_sdk_call_performed: false,
+    mutation_performed: false,
+    restart_performed: false,
+    live_traffic_authorized: policy.liveTrafficAuthorized,
+  });
+  const assembly = Object.freeze({
+    entries: Object.freeze({ ...entries }),
+    receipt,
+  });
+  PRIVATE_POST_MEASUREMENT_ASSEMBLIES.add(assembly);
+  PRIVATE_POST_MEASUREMENT_ASSEMBLY_RECEIPTS.add(receipt);
+  return assembly;
+}
+
+/**
+ * Add the two private account-binding shares only for the exact measured
+ * one-shot profile pair. The signed authority digest is already a reviewed
+ * deferred public value; this function refuses any caller-selected profile.
+ */
+export function assemblePrivateAccountGenesisEnvironment(options = {}) {
+  const parsed = exactRecord(options, [
+    "accountGenesisAuthoritySha256",
+    "baseAssembly",
+    "secretInput",
+  ], "private account-genesis environment assembly input");
+  return createPrivateMainProfileEnvironmentAssembly({
+    ...parsed,
+    profileKind: "account_genesis",
+  });
+}
+
+/**
+ * Remove both private shares and replace COMPOSE_PROFILES with the empty set.
+ * This is the only valid terminal state of the one-shot account-genesis
+ * sequence; the ordinary Arena/Compute activator runs separately afterward.
+ */
+export function assemblePrivateAccountGenesisRetirementEnvironment(
+  options = {},
+) {
+  const parsed = exactRecord(options, [
+    "accountGenesisAuthoritySha256",
+    "baseAssembly",
+  ], "private account-genesis retirement environment assembly input");
+  return createPrivateMainProfileEnvironmentAssembly({
+    ...parsed,
+    profileKind: "account_genesis_retired",
+  });
+}
+
+/**
+ * Build the complete long-running profile replacement for the later live-deal
+ * transition. The caller must still supply and validate the separate signed
+ * live authority / completed ceremony gate before any SDK mutation.
+ */
+export function assemblePrivateLiveDealEnvironment(options = {}) {
+  const parsed = exactRecord(options, [
+    "accountGenesisAuthoritySha256",
+    "baseAssembly",
+  ], "private live-deal environment assembly input");
+  return createPrivateMainProfileEnvironmentAssembly({
+    ...parsed,
+    profileKind: "live_deal_runtime",
+  });
+}
+
 export function normalizeDeferredPublicEnvironmentAuthority(value) {
   const parsed = exactRecord(value, [
     "schema",
@@ -1135,6 +1360,19 @@ function evidenceDomainMap(evidenceSet) {
   return new Map(evidenceSet.domains.map((entry) => [entry.domain, entry]));
 }
 
+/**
+ * Project runtime feature markers only from the current normalized final
+ * authority. The launch descriptor supplies an immutable `false` bootstrap
+ * default; this projection is the only path that may later install `true`.
+ */
+export function projectFinalReleaseAuthorityRuntimeFeatureValues(value) {
+  const authority = normalizeFinalReleaseAuthorityCore(value);
+  return Object.freeze({
+    TINKER_COLLABORATION_ENABLED:
+      authority.requested_features.collaboration === true ? "true" : "false",
+  });
+}
+
 function deferredDerivedValues(
   releaseAuthoritySha256,
   evidenceSet,
@@ -1164,10 +1402,13 @@ function deferredDerivedValues(
       "reviewed final authority omits the exact DNASeq worker release binding",
     );
   }
+  const runtimeFeatureValues =
+    projectFinalReleaseAuthorityRuntimeFeatureValues(finalAuthority);
   const policyHash = (domain) => `0x${qvl(domain).qvl_release_policy_sha256.slice(7)}`;
   return {
     main_runtime_cvm: {
       ...challengeRegistryRuntimeEnvironment.environment,
+      ...runtimeFeatureValues,
       TINKER_ARENA_WORKER_QVL_RELEASE_POLICY_HASH: policyHash("arena_qvl_cvm"),
       TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT:
         exactBytes32(

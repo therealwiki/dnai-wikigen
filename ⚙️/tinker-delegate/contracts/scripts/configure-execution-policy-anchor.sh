@@ -18,7 +18,11 @@ if [ -f "$ROOT_DIR/.env" ]; then
   set +a
 fi
 
-MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$ROOT_DIR/deployments/base-sepolia.json}"
+# DEPLOYMENT_MANIFEST_PATH and RELEASE_CEREMONY_LEDGER_PATH are resolved only
+# after .env; repository history is never a ceremony fallback.
+# shellcheck disable=SC1091
+. "$CONTRACTS_DIR/scripts/release-ceremony-paths.sh"
+operator_policy_resolve_release_ceremony_paths
 
 # shellcheck disable=SC1091
 . "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"

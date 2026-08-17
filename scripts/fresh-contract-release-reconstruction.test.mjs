@@ -54,6 +54,7 @@ function validIntent() {
     REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256;
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress = address(1);
+  intent.staticContractInputs.diligenceRoom.governanceController = address(19);
   intent.staticContractInputs.computeCreditVault.developer = address(20);
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment = bytes32(3);
   intent.numericPolicy.contract = {
@@ -210,8 +211,16 @@ test("reconstructs the exact ordered 13 inputs and seven runtime hashes without 
     result.transactions.filter(({ transaction_type }) => transaction_type === "CALL").map(({ sequence }) => sequence),
     [1, 2, 3, 4, 5, 10],
   );
-  assert.equal(result.transactions[0].function_signature, "constructor(bool)");
-  assert.equal(result.transactions[0].expected_input.endsWith(hexDigestForArgs(["abi-encode", "constructor(bool)", "true"])), true);
+  assert.equal(result.transactions[0].function_signature, "constructor(bool,address)");
+  assert.equal(
+    result.transactions[0].expected_input.endsWith(hexDigestForArgs([
+      "abi-encode",
+      "constructor(bool,address)",
+      "true",
+      address(19),
+    ])),
+    true,
+  );
   assert.equal(result.transactions[11].function_signature, "constructor(address,uint256,bool,bytes32,bytes32,bool)");
   assert.equal(
     result.transactions[12].function_signature,
@@ -267,7 +276,7 @@ test("reviewed intent changes independently change reconstructed inputs and auth
   });
   const first = runFixture(firstFixture);
   const changedIntent = validIntent();
-  changedIntent.numericPolicy.contract.computeDeveloperFeeBps = 101;
+  changedIntent.numericPolicy.contract.computeDeveloperFeeBps = 99;
   const second = runFixture(secondFixture, changedIntent);
   assert.notEqual(first.transactions[9].expected_input, second.transactions[9].expected_input);
   assert.notEqual(first.transactions[9].expected_runtime_code_hash, second.transactions[9].expected_runtime_code_hash);

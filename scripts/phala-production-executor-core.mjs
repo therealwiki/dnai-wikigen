@@ -26,6 +26,18 @@ import {
 import {
   assertDurablyPersistedProductionExecutionReplay,
 } from "./phala-production-execution-replay.mjs";
+import {
+  PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA,
+  PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_STATUS,
+  PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_TRUTH,
+} from "./phala-seven-cvm-launch-completion-core.mjs";
+import {
+  normalizePhalaCompletedLaunchContinuityReceipt,
+  phalaCompletedLaunchContinuityReceiptSha256,
+} from "./phala-completed-launch-continuation-core.mjs";
+import {
+  phalaNonLiveBootstrapAuthorizationReceiptSha256,
+} from "./phala-nonlive-bootstrap-authorization-core.mjs";
 
 export {
   PHALA_EXECUTOR_STATE_DOMAIN,
@@ -1061,22 +1073,12 @@ export async function registerProvenanceVerifiedCompletedPhalaExecutorState(
  * mutation seconds, and a separately labelled current read-only continuity
  * receipt.
  */
-export async function registerContinuityVerifiedCompletedPhalaExecutorState(
-  options = {},
+export function validateCompletedLaunchContinuationProvenanceDependencies(
+  dependencies,
 ) {
-  const parsed = exactRecord(options, [
-    "continuationCapability",
-  ], "completed-launch continuation provenance registration input");
-
-  // Claim first. Any validation failure below permanently burns this
-  // same-process capability, which is the intended fail-closed replay rule.
-  const {
-    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance,
-  } = await import("./phala-completed-launch-continuation.mjs");
-  const dependencies =
-    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance(
-      parsed.continuationCapability,
-    );
+  if (!isRecord(dependencies)) {
+    throw new Error("completed-launch continuation dependencies are required");
+  }
   const state = dependencies.executor_final_state;
   const normalized = normalizeCompletedPhalaExecutorState(state);
   if (canonicalCompact(normalized) !== canonicalCompact(state)) {
@@ -1084,14 +1086,6 @@ export async function registerContinuityVerifiedCompletedPhalaExecutorState(
       "continuation executor state must already be exact and normalized",
     );
   }
-  const {
-    normalizePhalaCompletedLaunchContinuityReceipt,
-    phalaCompletedLaunchContinuityReceiptSha256,
-  } = await import("./phala-completed-launch-continuation-core.mjs");
-  const {
-    phalaNonLiveBootstrapAuthorizationReceiptSha256,
-  } = await import("./phala-nonlive-bootstrap-authorization-core.mjs");
-
   const receipt = normalizePhalaCompletedLaunchContinuityReceipt(
     dependencies.current_continuity_receipt,
   );
@@ -1119,10 +1113,9 @@ export async function registerContinuityVerifiedCompletedPhalaExecutorState(
     || journal.automatic_retry_authorized !== false
     || journal.automatic_cleanup_authorized !== false
     || !isRecord(launch)
-    || launch.schema
-      !== "dnai.phala-seven-cvm-launch-completion-receipt.v4"
-    || launch.status
-      !== "all_seven_committed_private_production_posture_and_machine_verifier_evidence_bound"
+    || launch.schema !== PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA
+    || launch.status !== PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_STATUS
+    || launch.truth_status !== PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_TRUTH
     || launch.all_seven_committed !== true
     || launch.all_seven_production_posture_validated !== true
     || launch.all_seven_machine_verified !== true
@@ -1166,6 +1159,27 @@ export async function registerContinuityVerifiedCompletedPhalaExecutorState(
       "completed-launch continuation does not identify one exact historical executor lineage",
     );
   }
+  return Object.freeze({ state, stateDigest });
+}
+
+export async function registerContinuityVerifiedCompletedPhalaExecutorState(
+  options = {},
+) {
+  const parsed = exactRecord(options, [
+    "continuationCapability",
+  ], "completed-launch continuation provenance registration input");
+
+  // Claim first. Any validation failure below permanently burns this
+  // same-process capability, which is the intended fail-closed replay rule.
+  const {
+    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance,
+  } = await import("./phala-completed-launch-continuation.mjs");
+  const dependencies =
+    claimCompletedPhalaSevenCvmLaunchContinuationForProvenance(
+      parsed.continuationCapability,
+    );
+  const { state, stateDigest } =
+    validateCompletedLaunchContinuationProvenanceDependencies(dependencies);
   PROVENANCE_VERIFIED_COMPLETED_STATES.set(state, stateDigest);
   return state;
 }

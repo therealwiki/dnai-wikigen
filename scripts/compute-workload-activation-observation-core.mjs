@@ -5,6 +5,9 @@ import {
   deepFreezeCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
 import {
+  parseCanonicalPublicHttpsUrl,
+} from "./canonical-public-https-url-core.mjs";
+import {
   independentTdxVerdictSigningDigest,
   normalizePhalaComputeWorkloadRecipientActivationVerification,
   normalizePhalaComputeWorkloadRecipientSourceActivation,
@@ -12,7 +15,15 @@ import {
   phalaComputeWorkloadRecipientSourceActivationSha256,
 } from "./phala-seven-cvm-historical-evidence-core.mjs";
 import {
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
 import {
   INDEPENDENT_EIP191_REPLAY_VERIFIER,
@@ -122,6 +133,24 @@ function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function versionedReleaseVerificationAuthoritySha256(value) {
+  const descriptor = isRecord(value)
+    ? Object.getOwnPropertyDescriptor(value, "schema")
+    : null;
+  if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+    fail("O producer release authority requires one own data schema");
+  }
+  if (descriptor.value
+      === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  if (descriptor.value
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  fail("O producer release authority schema version is unsupported");
+}
+
 function exactRecord(value, fields, label) {
   assertCanonicalPlainDataGraph(value, { label });
   if (!isRecord(value)
@@ -214,13 +243,17 @@ function normalizeCapabilityEndpoint(value) {
   }
   let parsed;
   try {
-    parsed = new URL(value);
+    parsed = parseCanonicalPublicHttpsUrl(value, {
+      label: "compute-workload capability endpoint",
+      requirePath: true,
+      maximumBytes: 512,
+    });
   } catch {
     fail("compute-workload capability endpoint is invalid");
   }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password
-    || parsed.search || parsed.hash || parsed.pathname !== COMPUTE_WORKLOAD_CAPABILITY_PATH
-    || parsed.origin === "null" || parsed.port) {
+  if (parsed.pathname !== COMPUTE_WORKLOAD_CAPABILITY_PATH
+    || parsed.port
+    || parsed.href !== value) {
     fail("compute-workload capability endpoint must be one exact public HTTPS origin and path");
   }
   return parsed.href;
@@ -1362,7 +1395,7 @@ export function createUnbrandedComputeWorkloadActivationObservationCandidate(
   const releaseAuthority = releaseVerificationAuthority;
   const binding = normalizeObservationAuthorityBinding(authorityBinding);
   const releaseAuthoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+    versionedReleaseVerificationAuthoritySha256(releaseAuthority);
   if (
     activation.release_authority_sha256 !== releaseAuthoritySha256
     || activation.deployment_intent_sha256

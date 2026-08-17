@@ -1,14 +1,79 @@
-import fs from "node:fs";
-import path from "node:path";
-
 import {
   deepFreezeCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
 import {
-  canonicalPhalaSevenCvmReleaseVerificationAuthorityText,
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as
+    canonicalLegacyPhalaSevenCvmReleaseVerificationAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as
+    canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  phalaNonLiveBootstrapAuthorizationReceiptSha256,
+  reconstructPersistedPhalaNonLiveBootstrapAuthorizationForHistoricalLaunch,
+} from "./phala-nonlive-bootstrap-authorization-core.mjs";
+import {
+  freshContractDeploymentReceiptDigest,
+  historicalFreshContractDeploymentReceiptV3Digest,
+  normalizeFreshContractDeploymentReceipt,
+  normalizeHistoricalFreshContractDeploymentReceiptV3,
+} from "./cvm-launch-intent-core.mjs";
+import {
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA as
+    HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
+  cvmReleaseDescriptorSetReceiptSha256 as
+    historicalCvmReleaseDescriptorSetReceiptSha256,
+  normalizeCvmReleaseDescriptorSetReceipt as
+    normalizeHistoricalCvmReleaseDescriptorSetReceipt,
+} from "./release-manifest-descriptor-historical-core.mjs";
+import {
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
+  cvmReleaseDescriptorSetReceiptSha256,
+  normalizeCvmReleaseDescriptorSetReceipt,
+} from "./cvm-release-descriptor-set-v3.mjs";
+import {
+  normalizeCompletedPhalaExecutorState,
+  phalaExecutorStateDigest,
+} from "./phala-executor-state-core.mjs";
+import {
+  reconstructPersistedPhalaSevenCvmLaunchCompletionHistoricalDependency,
+} from "./phala-seven-cvm-launch-completion-core.mjs";
+import {
+  phalaQvlMeasurementPolicySha256,
+} from "./phala-seven-cvm-measurement-policy.mjs";
+import {
+  normalizePreCeremonyRuntimeAuthority,
+  preCeremonyRuntimeAuthoritySha256,
+  projectPreCeremonyRuntimeAuthorityHistoricalLaunchBinding,
+} from "./pre-ceremony-runtime-authority-core.mjs";
+import {
+  historicalCeremonyAuthorizationCoreSha256,
+  normalizeHistoricalCeremonyAuthorizationCore,
+  projectHistoricalCeremonyExpectedContext,
+} from "./release-authority-historical-core.mjs";
+import {
+  normalizeStageBSuccessorReviewerAuthority,
+} from "./release-authority-current-reviewer-facade.mjs";
+import {
+  PINNED_CAST_SIGNATURE_VERIFIER,
+  verifyIndependentEip191PersonalSignature,
+} from "./release-authority-signature-verifier-core.mjs";
+import {
+  normalizePhalaSevenCvmHistoricalTranscriptFileSet,
+  phalaSevenCvmHistoricalTranscriptFileSetSha256,
+} from "./phala-seven-cvm-historical-transcript.mjs";
 
 export const PHALA_SEVEN_CVM_HISTORICAL_RELEASE_AUTHORITY_METADATA_SCHEMA =
   "dnai.phala-seven-cvm-historical-release-authority-metadata.v1";
@@ -55,6 +120,68 @@ function equal(actual, expected, label) {
   if (actual !== expected) {
     throw new TypeError(`${label} drifted from the original signed lineage`);
   }
+}
+
+function ownSchema(value, label) {
+  if (!isRecord(value)
+    || (Object.getPrototypeOf(value) !== Object.prototype
+      && Object.getPrototypeOf(value) !== null)
+    || !Object.hasOwn(value, "schema")
+    || typeof value.schema !== "string") {
+    throw new TypeError(`${label} has no canonical own schema`);
+  }
+  return value.schema;
+}
+
+function normalizeRecordedReleaseAuthority(value) {
+  const schema = ownSchema(
+    value,
+    "recorded-time release-verification authority",
+  );
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
+  }
+  if (schema
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+  }
+  throw new TypeError(
+    "recorded-time release-verification authority version is unsupported",
+  );
+}
+
+function recordedReleaseAuthoritySha256(value) {
+  const schema = ownSchema(
+    value,
+    "recorded-time release-verification authority",
+  );
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  if (schema
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  throw new TypeError(
+    "recorded-time release-verification authority version is unsupported",
+  );
+}
+
+function canonicalRecordedReleaseAuthorityText(value) {
+  const schema = ownSchema(
+    value,
+    "recorded-time release-verification authority",
+  );
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText(value);
+  }
+  if (schema
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return canonicalLegacyPhalaSevenCvmReleaseVerificationAuthorityText(value);
+  }
+  throw new TypeError(
+    "recorded-time release-verification authority version is unsupported",
+  );
 }
 
 function normalizeMetadata(value) {
@@ -112,12 +239,9 @@ function normalizeMetadata(value) {
 }
 
 function brandHistoricalAuthority(authorityValue, metadataValue) {
-  const authority = normalizePhalaSevenCvmReleaseVerificationAuthority(
-    authorityValue,
-  );
+  const authority = normalizeRecordedReleaseAuthority(authorityValue);
   const metadata = normalizeMetadata(metadataValue);
-  const authoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(authority);
+  const authoritySha256 = recordedReleaseAuthoritySha256(authority);
   equal(
     metadata.release_verification_authority_sha256,
     authoritySha256,
@@ -136,12 +260,11 @@ export function assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationA
       "release verification authority was not historically reconstructed from signed A/L/R/B dependencies",
     );
   }
-  const normalized = normalizePhalaSevenCvmReleaseVerificationAuthority(value);
-  const authoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(normalized);
+  const normalized = normalizeRecordedReleaseAuthority(value);
+  const authoritySha256 = recordedReleaseAuthoritySha256(normalized);
   if (authoritySha256 !== metadata.release_verification_authority_sha256
-    || canonicalPhalaSevenCvmReleaseVerificationAuthorityText(normalized)
-      !== canonicalPhalaSevenCvmReleaseVerificationAuthorityText(value)) {
+    || canonicalRecordedReleaseAuthorityText(normalized)
+      !== canonicalRecordedReleaseAuthorityText(value)) {
     throw new TypeError("historical release-verification authority digest guard failed");
   }
   return value;
@@ -161,6 +284,150 @@ function contract(receipt, name) {
   return found;
 }
 
+function verifyHistoricalReviewSignatures({ signatures, message } = {}) {
+  if (!Array.isArray(signatures) || signatures.length !== 2
+    || typeof message !== "string") {
+    return false;
+  }
+  try {
+    for (const entry of signatures) {
+      verifyIndependentEip191PersonalSignature({
+        address: entry.address,
+        message,
+        signature: entry.signature,
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalize the one coherent recorded-time CVM authority tuple.
+ *
+ * This is an effect-free version router. It does not brand an authority or
+ * renew freshness; it only proves that the descriptor, contract receipt,
+ * descriptor-runtime authority, and release-verification authority all belong
+ * to the same frozen generation.
+ */
+export function normalizeRecordedCvmAuthorityTuple({
+  releaseVerificationAuthority,
+  descriptorSetReceipt,
+  freshContractDeploymentReceipt,
+  expectedDeploymentIntentSha256,
+  expectedReviewerAuthorityGenesisAcceptanceSha256,
+} = {}) {
+  exactRecord(arguments[0], [
+    "descriptorSetReceipt",
+    "expectedDeploymentIntentSha256",
+    "expectedReviewerAuthorityGenesisAcceptanceSha256",
+    "freshContractDeploymentReceipt",
+    "releaseVerificationAuthority",
+  ], "recorded-time CVM authority tuple input");
+  const authority = normalizeRecordedReleaseAuthority(
+    releaseVerificationAuthority,
+  );
+  const currentTuple =
+    authority.schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA;
+  const descriptorSchema = ownSchema(
+    descriptorSetReceipt,
+    "recorded-time descriptor-set receipt",
+  );
+  if ((currentTuple
+        && descriptorSchema !== CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)
+    || (!currentTuple
+        && descriptorSchema
+          !== HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)) {
+    throw new TypeError(
+      "recorded-time release authority and descriptor receipt versions are crossed",
+    );
+  }
+  const descriptors = currentTuple
+    ? normalizeCvmReleaseDescriptorSetReceipt(descriptorSetReceipt)
+    : normalizeHistoricalCvmReleaseDescriptorSetReceipt(descriptorSetReceipt);
+  const descriptorSetSha256 = currentTuple
+    ? cvmReleaseDescriptorSetReceiptSha256(descriptors)
+    : historicalCvmReleaseDescriptorSetReceiptSha256(descriptors);
+  const authorityPins = {
+    expectedDeploymentIntentSha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256,
+    ...(currentTuple
+      ? {
+          expectedTinkerAccountBindingCeremonyReceiptSha256:
+            descriptors.tinker_account_binding_ceremony_receipt_sha256,
+        }
+      : {}),
+  };
+  const contractReceipt = currentTuple
+    ? normalizeFreshContractDeploymentReceipt(
+      freshContractDeploymentReceipt,
+      authorityPins,
+    )
+    : normalizeHistoricalFreshContractDeploymentReceiptV3(
+      freshContractDeploymentReceipt,
+      authorityPins,
+    );
+  const contractReceiptSha256 = `sha256:${currentTuple
+    ? freshContractDeploymentReceiptDigest(contractReceipt, authorityPins)
+    : historicalFreshContractDeploymentReceiptV3Digest(
+      contractReceipt,
+      authorityPins,
+    )}`;
+  const descriptorRuntime = authority.cvm_descriptor_runtime_authority;
+
+  equal(
+    authority.deployment_intent_sha256,
+    expectedDeploymentIntentSha256,
+    "recorded-time authority deployment intent",
+  );
+  equal(
+    authority.release_sha,
+    descriptors.release_sha,
+    "recorded-time authority/descriptor release",
+  );
+  equal(
+    authority.release_sha,
+    contractReceipt.release_sha,
+    "recorded-time authority/contract release",
+  );
+  equal(
+    descriptorRuntime.descriptor_set_receipt_sha256,
+    descriptorSetSha256,
+    "recorded-time descriptor-runtime/descriptor receipt",
+  );
+  equal(
+    authority.contracts.fresh_contract_deployment_receipt_sha256,
+    contractReceiptSha256,
+    "recorded-time authority/contract receipt",
+  );
+  if (currentTuple) {
+    equal(
+      authority.tinker_account_binding_ceremony_receipt_sha256,
+      descriptors.tinker_account_binding_ceremony_receipt_sha256,
+      "current authority/descriptor account-binding ceremony receipt",
+    );
+    equal(
+      descriptorRuntime.tinker_account_binding_ceremony_receipt_sha256,
+      descriptors.tinker_account_binding_ceremony_receipt_sha256,
+      "current descriptor-runtime/descriptor account-binding ceremony receipt",
+    );
+    equal(
+      contractReceipt.tinker_account_binding_ceremony_receipt_sha256,
+      descriptors.tinker_account_binding_ceremony_receipt_sha256,
+      "current contract/descriptor account-binding ceremony receipt",
+    );
+  }
+  return deepFreezeCanonicalPlainDataGraph({
+    current_tuple: currentTuple,
+    release_verification_authority: authority,
+    descriptor_set_receipt: descriptors,
+    descriptor_set_receipt_sha256: descriptorSetSha256,
+    fresh_contract_deployment_receipt: contractReceipt,
+    fresh_contract_deployment_receipt_sha256: contractReceiptSha256,
+  }, { label: "recorded-time CVM authority tuple" });
+}
+
 /**
  * Reconstruct the authority carried by persisted R and authenticated by signed B.
  *
@@ -170,9 +437,8 @@ function contract(receipt, name) {
  */
 export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority({
   releaseVerificationAuthority,
-  signedAReceipt,
+  signedAReconstructionInput,
   launchCompletionReceipt,
-  launchCompletionOptions,
   persistedRuntimeAuthority,
   persistedCeremonyAuthorization,
   ceremonyAuthorizationDependencies,
@@ -185,12 +451,11 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     "descriptorSetReceipt",
     "executorFinalState",
     "historicalTranscriptFileSet",
-    "launchCompletionOptions",
     "launchCompletionReceipt",
     "persistedCeremonyAuthorization",
     "persistedRuntimeAuthority",
     "releaseVerificationAuthority",
-    "signedAReceipt",
+    "signedAReconstructionInput",
   ], "historical release-verification reconstruction input");
   const dependencies = exactRecord(ceremonyAuthorizationDependencies, [
     "deploymentIntent",
@@ -203,108 +468,199 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     throw new TypeError("historical signed-B Stage-B reviewer status history must be an array");
   }
 
-  const [
-    bootstrapModule,
-    contractModule,
-    descriptorSetModule,
-    executorModule,
-    launchModule,
-    measurementPolicyModule,
-    runtimeModule,
-    ceremonyModule,
-    transcriptModule,
-  ] = await Promise.all([
-    import("./phala-nonlive-bootstrap-authorization.mjs"),
-    import("./cvm-launch-intent-core.mjs"),
-    import("./cvm-release-descriptor-set.mjs"),
-    import("./phala-production-executor-core.mjs"),
-    import("./phala-seven-cvm-launch-completion.mjs"),
-    import("./phala-seven-cvm-measurement-policy.mjs"),
-    import("./pre-ceremony-runtime-authority.mjs"),
-    import("./release-ceremony-authorization.mjs"),
-    import("./phala-seven-cvm-historical-transcript.mjs"),
-  ]);
-
-  const authority = normalizePhalaSevenCvmReleaseVerificationAuthority(
+  const authority = normalizeRecordedReleaseAuthority(
     releaseVerificationAuthority,
   );
-  const authoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(authority);
-  const signedA =
-    bootstrapModule.assertHistoricallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt(
-      signedAReceipt,
-    );
+  const authoritySchema = ownSchema(
+    authority,
+    "recorded-time release-verification authority",
+  );
+  const currentTuple =
+    authoritySchema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA;
+  const authoritySha256 = recordedReleaseAuthoritySha256(authority);
+  const signedAInput = exactRecord(signedAReconstructionInput, [
+    "authorization",
+    "authorizationFileIdentity",
+    "bootstrapAuthority",
+    "bootstrapAuthorityFileIdentity",
+    "persistedReceipt",
+    "reviewerAuthority",
+  ], "historical signed-A reconstruction input");
+  const signedAReconstruction =
+    reconstructPersistedPhalaNonLiveBootstrapAuthorizationForHistoricalLaunch({
+      authorization: signedAInput.authorization,
+      bootstrapAuthority: signedAInput.bootstrapAuthority,
+      reviewerAuthority: signedAInput.reviewerAuthority,
+      persistedReceipt: signedAInput.persistedReceipt,
+      launchCompletedAt: launchCompletionReceipt?.completed_at,
+      authorizationFileIdentity: signedAInput.authorizationFileIdentity,
+      bootstrapAuthorityFileIdentity:
+        signedAInput.bootstrapAuthorityFileIdentity,
+    });
+  const signedA = signedAReconstruction.receipt;
   const signedASha256 =
-    bootstrapModule.phalaNonLiveBootstrapAuthorizationReceiptSha256(signedA);
-  const executor = executorModule.normalizeCompletedPhalaExecutorState(
+    phalaNonLiveBootstrapAuthorizationReceiptSha256(signedA);
+  const executor = normalizeCompletedPhalaExecutorState(
     executorFinalState,
   );
-  const executorSha256 = executorModule.phalaExecutorStateDigest(executor);
-  const runtime = runtimeModule.normalizePreCeremonyRuntimeAuthority(
+  const executorSha256 = phalaExecutorStateDigest(executor);
+  const runtime = normalizePreCeremonyRuntimeAuthority(
     persistedRuntimeAuthority,
   );
-  const runtimeSha256 = runtimeModule.preCeremonyRuntimeAuthoritySha256(runtime);
+  const runtimeSha256 = preCeremonyRuntimeAuthoritySha256(runtime);
   const transcript =
-    transcriptModule.normalizePhalaSevenCvmHistoricalTranscriptFileSet(
+    normalizePhalaSevenCvmHistoricalTranscriptFileSet(
       historicalTranscriptFileSet,
     );
   const transcriptSha256 =
-    transcriptModule.phalaSevenCvmHistoricalTranscriptFileSetSha256(transcript);
-  const launchSha256 = launchModule.phalaSevenCvmLaunchCompletionReceiptSha256(
-    launchCompletionReceipt,
-    launchCompletionOptions,
-  );
-  const descriptorSet = descriptorSetModule.normalizeCvmReleaseDescriptorSetReceipt(
+    phalaSevenCvmHistoricalTranscriptFileSetSha256(transcript);
+  const historicalLaunch =
+    reconstructPersistedPhalaSevenCvmLaunchCompletionHistoricalDependency({
+      persistedReceipt: launchCompletionReceipt,
+      persistedExecutorFinalState: executor,
+      historicalPreCeremonyRuntimeBinding:
+        projectPreCeremonyRuntimeAuthorityHistoricalLaunchBinding(runtime),
+      historicalBootstrapAuthorizationBinding:
+        signedAReconstruction.historical_bootstrap_authorization_binding,
+    });
+  const launch = historicalLaunch.receipt;
+  const launchSha256 = historicalLaunch.receipt_sha256;
+  const descriptorSetSchema = ownSchema(
     descriptorSetReceipt,
+    "recorded-time descriptor-set receipt",
   );
-  const descriptorSetSha256 =
-    descriptorSetModule.cvmReleaseDescriptorSetReceiptSha256(descriptorSet);
+  if ((currentTuple
+        && descriptorSetSchema !== CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)
+    || (!currentTuple
+        && descriptorSetSchema
+          !== HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)) {
+    throw new TypeError(
+      "recorded-time release authority and descriptor receipt versions are crossed",
+    );
+  }
+  const descriptorSet = currentTuple
+    ? normalizeCvmReleaseDescriptorSetReceipt(descriptorSetReceipt)
+    : normalizeHistoricalCvmReleaseDescriptorSetReceipt(
+      descriptorSetReceipt,
+    );
+  const descriptorSetSha256 = currentTuple
+    ? cvmReleaseDescriptorSetReceiptSha256(descriptorSet)
+    : historicalCvmReleaseDescriptorSetReceiptSha256(descriptorSet);
   const stageOneSignedAtMs = Date.parse(
     persistedCeremonyAuthorization?.review?.signed_at,
   );
   if (!Number.isSafeInteger(stageOneSignedAtMs) || stageOneSignedAtMs < 1) {
     throw new TypeError("historical signed B has no canonical original signing time");
   }
-  const ceremonyOptions = {
-    deploymentIntent: dependencies.deploymentIntent,
-    freshContractDeploymentReceipt:
-      dependencies.freshContractDeploymentReceipt,
+  const reviewerStage = normalizeStageBSuccessorReviewerAuthority({
     reviewerGenesis: dependencies.reviewerGenesis,
     reviewerGenesisAcceptance: dependencies.reviewerGenesisAcceptance,
     reviewerStatusHistory: dependencies.stageBReviewerStatusHistory,
-    preCeremonyRuntimeAuthority: runtime,
+    deploymentIntent: dependencies.deploymentIntent,
     checkedAtMs: stageOneSignedAtMs,
     enforceFreshness: false,
+  });
+  const reviewerAuthority = {
+    reviewer_authority_genesis_sha256: reviewerStage.genesisSha256,
+    reviewer_authority_genesis_acceptance_sha256:
+      reviewerStage.acceptanceSha256,
+    reviewer_authority_current_status_epoch:
+      reviewerStage.currentStatus.epoch,
+    reviewer_authority_current_status_not_before:
+      reviewerStage.currentStatusNotBefore,
+    reviewer_authority_current_status_expires_at:
+      reviewerStage.currentStatusExpiresAt,
+    reviewer_authority_current_status_sha256:
+      reviewerStage.currentStatusSha256,
+    ...reviewerStage.authority,
   };
-  const ceremony = ceremonyModule.normalizeCeremonyAuthorizationCore(
+  const freshContractAuthorityPins = {
+    expectedDeploymentIntentSha256:
+      authority.deployment_intent_sha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256:
+      reviewerStage.acceptanceSha256,
+    ...(currentTuple
+      ? {
+          expectedTinkerAccountBindingCeremonyReceiptSha256:
+            descriptorSet
+              .tinker_account_binding_ceremony_receipt_sha256,
+        }
+      : {}),
+  };
+  normalizeRecordedCvmAuthorityTuple({
+    releaseVerificationAuthority: authority,
+    descriptorSetReceipt,
+    freshContractDeploymentReceipt:
+      dependencies.freshContractDeploymentReceipt,
+    expectedDeploymentIntentSha256:
+      authority.deployment_intent_sha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256:
+      reviewerStage.acceptanceSha256,
+  });
+  const freshContractSha256AtCeremony = `sha256:${
+    currentTuple
+      ? freshContractDeploymentReceiptDigest(
+        dependencies.freshContractDeploymentReceipt,
+        freshContractAuthorityPins,
+      )
+      : historicalFreshContractDeploymentReceiptV3Digest(
+        dependencies.freshContractDeploymentReceipt,
+        freshContractAuthorityPins,
+      )
+  }`;
+  const ceremonyExpectedContext = projectHistoricalCeremonyExpectedContext({
+    runtimeAuthority: runtime,
+    runtimeAuthoritySha256: runtimeSha256,
+    freshContractDeploymentReceiptSha256:
+      freshContractSha256AtCeremony,
+    signedABootstrapAuthorizationReceiptSha256: signedASha256,
+    toolchain: dependencies.deploymentIntent.release.toolchain,
+  });
+  const ceremonyOptions = {
+    expectedContext: ceremonyExpectedContext,
+    reviewerAuthority,
+    expectedSignatureVerifier: PINNED_CAST_SIGNATURE_VERIFIER,
+    verifyReviewSignatures: verifyHistoricalReviewSignatures,
+  };
+  const ceremony = normalizeHistoricalCeremonyAuthorizationCore(
     persistedCeremonyAuthorization,
     ceremonyOptions,
   );
-  const ceremonySha256 = ceremonyModule.ceremonyAuthorizationCoreSha256(
+  const ceremonySha256 = historicalCeremonyAuthorizationCoreSha256(
     ceremony,
     ceremonyOptions,
   );
   const reviewerAcceptanceSha256 =
     ceremony.deployment_authority.reviewer_authority_genesis_acceptance_sha256;
-  const freshContract = contractModule.normalizeFreshContractDeploymentReceipt(
-    dependencies.freshContractDeploymentReceipt,
-    {
-      expectedDeploymentIntentSha256: authority.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256:
-        reviewerAcceptanceSha256,
-    },
-  );
-  const freshContractSha256 = `sha256:${contractModule
-    .freshContractDeploymentReceiptDigest(freshContract, {
-      expectedDeploymentIntentSha256: authority.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256:
-        reviewerAcceptanceSha256,
-    })}`;
+  const normalizedFreshContractAuthorityPins = {
+    ...freshContractAuthorityPins,
+    expectedReviewerAuthorityGenesisAcceptanceSha256:
+      reviewerAcceptanceSha256,
+  };
+  const freshContract = currentTuple
+    ? normalizeFreshContractDeploymentReceipt(
+      dependencies.freshContractDeploymentReceipt,
+      normalizedFreshContractAuthorityPins,
+    )
+    : normalizeHistoricalFreshContractDeploymentReceiptV3(
+      dependencies.freshContractDeploymentReceipt,
+      normalizedFreshContractAuthorityPins,
+    );
+  const freshContractSha256 = `sha256:${
+    currentTuple
+      ? freshContractDeploymentReceiptDigest(
+        freshContract,
+        normalizedFreshContractAuthorityPins,
+      )
+      : historicalFreshContractDeploymentReceiptV3Digest(
+        freshContract,
+        normalizedFreshContractAuthorityPins,
+      )
+  }`;
   const diligenceRoom = contract(freshContract, "DiligenceRoom");
   const computeVault = contract(freshContract, "ComputeCreditVault");
   const descriptorRuntime = authority.cvm_descriptor_runtime_authority;
   const plan = runtime.post_measurement_activation_plan;
-  const launch = launchCompletionReceipt;
 
   equal(authority.release_sha, signedA.release_sha, "authority/signed-A release");
   equal(authority.release_sha, launch.release_sha, "authority/L release");
@@ -347,11 +703,6 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     "authority/executor signed-A receipt",
   );
   equal(
-    authority.ceremony_nonce,
-    `0x${signedA.authorization_id.slice("sha256:".length)}`,
-    "authority signed-A ceremony nonce",
-  );
-  equal(
     authority.qvl_measurement_policy_set_sha256,
     signedA.qvl_measurement_policy_set_sha256,
     "authority signed-A QVL policy set",
@@ -365,7 +716,7 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
   equal(
     authority.ceremony_nonce,
     plan.runtime_commitments.TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE,
-    "authority activation-plan ceremony nonce",
+    "authority authenticated R activation-plan ceremony nonce",
   );
   const computeWorkloadPolicy = authority.qvl_measurement_policies.find(
     ({ domain }) => domain === "compute_workload_qvl_cvm",
@@ -374,7 +725,7 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     throw new TypeError("authority omits the compute-workload QVL measurement policy");
   }
   equal(
-    measurementPolicyModule.phalaQvlMeasurementPolicySha256(
+    phalaQvlMeasurementPolicySha256(
       computeWorkloadPolicy,
     ),
     plan.runtime_commitments
@@ -428,6 +779,23 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     launch.descriptor_set_receipt_sha256,
     "descriptor-runtime/L descriptor-set receipt",
   );
+  if (currentTuple) {
+    equal(
+      authority.tinker_account_binding_ceremony_receipt_sha256,
+      descriptorSet.tinker_account_binding_ceremony_receipt_sha256,
+      "current authority/descriptor account-binding ceremony receipt",
+    );
+    equal(
+      descriptorRuntime.tinker_account_binding_ceremony_receipt_sha256,
+      descriptorSet.tinker_account_binding_ceremony_receipt_sha256,
+      "current descriptor-runtime/descriptor account-binding ceremony receipt",
+    );
+    equal(
+      freshContract.tinker_account_binding_ceremony_receipt_sha256,
+      descriptorSet.tinker_account_binding_ceremony_receipt_sha256,
+      "current contract/descriptor account-binding ceremony receipt",
+    );
+  }
   equal(
     descriptorRuntime.image_manifest_sha256,
     signedA.image_release_manifest_sha256,
@@ -459,9 +827,9 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     authoritySha256,
     "R release authority digest",
   );
-  if (canonicalPhalaSevenCvmReleaseVerificationAuthorityText(
+  if (canonicalRecordedReleaseAuthorityText(
     plan.release_verification_authority,
-  ) !== canonicalPhalaSevenCvmReleaseVerificationAuthorityText(authority)) {
+  ) !== canonicalRecordedReleaseAuthorityText(authority)) {
     throw new TypeError("R activation plan carries different release authority bytes");
   }
   equal(
@@ -479,6 +847,20 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     transcriptSha256,
     "L historical transcript file set",
   );
+  digest(
+    launch.historical_transcript_persistence_receipt_sha256,
+    "L historical transcript persistence receipt",
+  );
+  if (launch.private_historical_transcript_persisted !== true
+    || launch.private_historical_transcript_contains_raw_quote_and_collateral
+      !== true
+    || launch.raw_quote_publicly_disclosed !== false
+    || launch.raw_collateral_publicly_disclosed !== false
+    || launch.raw_secret_egress !== false) {
+    throw new TypeError(
+      "L does not carry the durable private exact-14 quote/collateral boundary",
+    );
+  }
   if (JSON.stringify(launch.transcript_file_set) !== JSON.stringify(transcript)) {
     throw new TypeError("L historical transcript file-set bytes drifted");
   }
@@ -594,34 +976,3 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     ceremony_authorization_sha256: ceremonySha256,
   });
 }
-
-function isExactNodeTestEntrypoint() {
-  const entrypoint = process.argv[1];
-  if (process.env.NODE_TEST_CONTEXT !== "child-v8"
-    || typeof entrypoint !== "string" || !entrypoint.endsWith(".test.mjs")) {
-    return false;
-  }
-  try {
-    return path.resolve(entrypoint) === fs.realpathSync.native(entrypoint);
-  } catch {
-    return false;
-  }
-}
-
-function createSyntheticHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority({
-  authority,
-  metadata,
-} = {}) {
-  if (!isExactNodeTestEntrypoint()) {
-    throw new TypeError(
-      "synthetic historical release authority is available only inside node --test",
-    );
-  }
-  // Normalization always creates a distinct object. A fresh authority brand is
-  // therefore never upgraded in-place to the historical restart brand.
-  return brandHistoricalAuthority(authority, metadata);
-}
-
-export const __test = Object.freeze({
-  createSyntheticHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority,
-});

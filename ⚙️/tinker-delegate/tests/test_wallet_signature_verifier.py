@@ -358,6 +358,29 @@ class WalletSignatureVerifierTest(unittest.TestCase):
                         signature="0x1234",
                     )
 
+    def test_agreed_number_must_match_the_lagging_provider_finalized_head_hash(self):
+        def contradictory_primary(_method, params):
+            if params[0] == "finalized":
+                return {
+                    "number": hex(FINALIZED_BLOCK),
+                    "hash": "0x" + "cd" * 32,
+                }
+            return {
+                "number": hex(FINALIZED_BLOCK),
+                "hash": FINALIZED_BLOCK_HASH,
+            }
+
+        primary = _rpc()
+        primary.responses["eth_getBlockByNumber"] = contradictory_primary
+        verifier = BaseSepoliaWalletSignatureVerifier(primary, _rpc())
+
+        with self.assertRaisesRegex(WalletSignatureUnavailable, "finalized block"):
+            verifier.verify(
+                address=self.account.address,
+                message=self.message,
+                signature=_sign(self.message),
+            )
+
     def test_rpc_configuration_requires_two_distinct_provider_origins(self):
         with self.assertRaisesRegex(WalletSignatureUnavailable, "two configured"):
             wallet_signature_verifier_from_settings(
@@ -370,6 +393,13 @@ class WalletSignatureVerifierTest(unittest.TestCase):
                     wallet_auth_rpc_url_secondary="https://same.example/secondary",
                 )
             )
+        with self.assertRaisesRegex(WalletSignatureUnavailable, "distinct origins"):
+            wallet_signature_verifier_from_settings(
+                Settings(
+                    wallet_auth_rpc_url="https://same.example./primary",
+                    wallet_auth_rpc_url_secondary="https://same.example/secondary",
+                )
+            )
         verifier = wallet_signature_verifier_from_settings(
             Settings(
                 wallet_auth_rpc_url="https://primary.example/rpc",
@@ -377,6 +407,30 @@ class WalletSignatureVerifierTest(unittest.TestCase):
             )
         )
         self.assertIsInstance(verifier, BaseSepoliaWalletSignatureVerifier)
+
+    def test_real_dstack_settings_pin_the_production_prompt_origin_and_chain(self):
+        with patch.dict("os.environ", {"DSTACK_ENABLED": "true"}, clear=False):
+            settings = Settings()
+            self.assertEqual(settings.wallet_auth_domain, "www.wikigen.me")
+            self.assertEqual(settings.wallet_auth_uri, "https://www.wikigen.me")
+            self.assertEqual(settings.wallet_auth_chain_id, BASE_SEPOLIA_CHAIN_ID)
+            for overrides, expected in (
+                ({"wallet_auth_domain": "localhost"}, "domain"),
+                ({"wallet_auth_uri": "http://localhost:5175"}, "URI"),
+                ({"wallet_auth_chain_id": 1}, "Base Sepolia"),
+            ):
+                with self.subTest(overrides=overrides):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        Settings(**overrides)
+
+        # Modeled/local development remains explicitly configurable and does
+        # not masquerade as the production identity policy.
+        with patch.dict("os.environ", {"DSTACK_ENABLED": "false"}, clear=False):
+            local = Settings(
+                wallet_auth_domain="localhost:5175",
+                wallet_auth_uri="http://localhost:5175",
+            )
+        self.assertEqual(local.wallet_auth_domain, "localhost:5175")
 
     def test_malformed_or_oversized_signature_is_rejected_before_rpc(self):
         primary = FakeRpc(failure=AssertionError("RPC must not be called"))
@@ -403,6 +457,13 @@ class WalletSignatureVerifierTest(unittest.TestCase):
     def test_json_rpc_client_enforces_https_timeout_and_decoded_body_bound(self):
         with self.assertRaisesRegex(WalletSignatureUnavailable, "HTTPS"):
             BoundedJsonRpcClient("http://rpc.example.test")
+        for malformed in (
+            " https://rpc.example.test",
+            "https://rpc.example.test/path\n",
+        ):
+            with self.subTest(malformed=repr(malformed)):
+                with self.assertRaisesRegex(WalletSignatureUnavailable, "invalid"):
+                    BoundedJsonRpcClient(malformed)
 
         oversized = FakeStreamResponse(chunks=(b"x" * 1025,))
         client = BoundedJsonRpcClient(
@@ -553,18 +614,34 @@ class WalletSignatureVerifierTest(unittest.TestCase):
                 (root / name).read_text(encoding="utf-8"),
             )
         for name in production_manifests:
+            production_text = (root / name).read_text(encoding="utf-8")
             self.assertIn(
                 "TINKER_WALLET_AUTH_RPC_URL: "
                 "${TINKER_WALLET_AUTH_RPC_URL:?Trusted Base Sepolia "
                 "wallet-auth HTTPS RPC URL required}",
-                (root / name).read_text(encoding="utf-8"),
+                production_text,
             )
             self.assertIn(
                 "TINKER_WALLET_AUTH_RPC_URL_SECONDARY: "
                 "${TINKER_WALLET_AUTH_RPC_URL_SECONDARY:?Independent secondary "
                 "Base Sepolia wallet-auth HTTPS RPC URL required}",
-                (root / name).read_text(encoding="utf-8"),
+                production_text,
             )
+            self.assertIn(
+                "TINKER_WALLET_AUTH_DOMAIN: www.wikigen.me",
+                production_text,
+            )
+            self.assertIn(
+                "TINKER_WALLET_AUTH_URI: https://www.wikigen.me",
+                production_text,
+            )
+            self.assertIn(
+                'TINKER_WALLET_AUTH_CHAIN_ID: "84532"',
+                production_text,
+            )
+            self.assertNotIn("${TINKER_WALLET_AUTH_DOMAIN", production_text)
+            self.assertNotIn("${TINKER_WALLET_AUTH_URI", production_text)
+            self.assertNotIn("${TINKER_WALLET_AUTH_CHAIN_ID", production_text)
 
 
 class WalletAuthService1271IntegrationTest(unittest.TestCase):

@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import json
 import os
 import stat
@@ -47,6 +48,8 @@ from tinker_delegate.compute_workload_ingress import (
     compute_workload_aad,
     compute_workload_browser_contract,
     compute_workload_commitment,
+    compute_workload_execution_binding_commitment,
+    compute_workload_execution_binding_payload,
     compute_workload_idempotency_hash,
     validate_compute_workload_plaintext,
 )
@@ -79,6 +82,9 @@ CEREMONY_NONCE = "0x" + "43" * 32
 MEASUREMENT_POLICY_SHA256 = "sha256:" + "44" * 32
 MEASUREMENT_POLICY_SET_SHA256 = "sha256:" + "45" * 32
 MAIN_RUNTIME_EVIDENCE_SHA256 = "sha256:" + "46" * 32
+DISPATCH_JOB_ID = "0x" + "81" * 32
+DISPATCH_INTENT_COMMITMENT = "0x" + "82" * 32
+USAGE_RELEASE_CHECKPOINT = "sha256:" + "83" * 32
 
 
 def _b64(value: bytes) -> str:
@@ -331,9 +337,11 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         idempotency_key="workload.test.0001",
         ephemeral_private=None,
         nonce=None,
+        principal=None,
     ):
+        source_principal = principal or self.principal
         binding = self.service.binding_for(
-            principal=self.principal,
+            principal=source_principal,
             manifest=manifest,
             workload_commitment=commitment,
             idempotency_key=idempotency_key,
@@ -366,16 +374,27 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
             ciphertext=_b64(ciphertext),
         )
 
-    def ingest(self, *, idempotency_key="workload.test.0001"):
+    def ingest(
+        self,
+        *,
+        idempotency_key="workload.test.0001",
+        principal=None,
+        ephemeral_private=None,
+        nonce=None,
+    ):
+        source_principal = principal or self.principal
         manifest, plaintext, commitment = self.inference()
         envelope = self.envelope(
             manifest,
             plaintext,
             commitment,
             idempotency_key=idempotency_key,
+            principal=source_principal,
+            ephemeral_private=ephemeral_private,
+            nonce=nonce,
         )
         result = self.service.ingest(
-            principal=self.principal,
+            principal=source_principal,
             manifest=manifest,
             workload_commitment=commitment,
             idempotency_key=idempotency_key,
@@ -743,6 +762,313 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
             metadata["recipient_release_commitment"],
             self.activation.recipient_release_commitment,
         )
+
+    def test_credential_execution_binding_v1_has_a_frozen_public_kat(self):
+        credential = ComputeWorkloadPrincipal(
+            kind="credential",
+            project_id="prj_alpha",
+            actor_id="device_alpha",
+        )
+        _, _, _, _, created = self.ingest(
+            idempotency_key="credential.workload.0001",
+            principal=credential,
+            ephemeral_private=X25519PrivateKey.from_private_bytes(
+                bytes.fromhex("31" * 32)
+            ),
+            nonce=bytes.fromhex("32" * 12),
+        )
+        self.assertEqual(
+            created.workload_id,
+            "wrk_bec902dfeda679768ed7628905f77acb",
+        )
+        self.assertEqual(
+            created.execution_binding_commitment,
+            "sha256:abc93fa6b83c41d70c8396c270a049f0e8136b9207b3aeb4450c8aa17979ca90",
+        )
+        stored = self.store.get_for_project(
+            created.workload_id,
+            project_commitment=credential.project_commitment,
+        )
+        self.assertEqual(
+            compute_workload_execution_binding_commitment(
+                stored.workload_id,
+                stored.binding,
+                stored.envelope,
+            ),
+            created.execution_binding_commitment,
+        )
+        self.assertEqual(
+            compute_workload_execution_binding_payload(
+                stored.workload_id,
+                stored.binding,
+                stored.envelope,
+            ),
+            {
+                "schema": "dnai.compute.workload-execution-binding.v1",
+                "workload_id": "wrk_bec902dfeda679768ed7628905f77acb",
+                "project_commitment": (
+                    "sha256:915388e06e578d85b26e541f8a683be78a0fa4909070b93ac348d08cb378e09e"
+                ),
+                "actor_kind": "credential",
+                "actor_commitment": (
+                    "sha256:cb76f94d6517afa92a9fbbda4726ae0157f9a2c34504d0acce9b99948148c6d7"
+                ),
+                "aad_sha256": (
+                    "sha256:6083d52180ab3fcf8a44cbaf833529e6908e4af524fa0f40ccf6a85efafa3831"
+                ),
+                "manifest_commitment": (
+                    "sha256:045b0ec3e637d9ebf9751f21d89269ac742d2f3d7b60dff8a14e4217e9bfaa8c"
+                ),
+                "workload_commitment": (
+                    "sha256:fe51038888b9e8feb45c14418bb14b9a1920d6513a5df044c9cb034cb0aafd2e"
+                ),
+                "recipient_key_id": (
+                    "sha256:f05fcd1fe8d7be51f79bf91c6b7cf2857a3ba5179d63a0a70e616f5f94423b4f"
+                ),
+                "recipient_release_commitment": (
+                    "sha256:f7b362241093cc99c89194f44cbe5ce96e10cd937f4554d531bbf89c418b2ac9"
+                ),
+            },
+        )
+        receipt = created.to_public_dict()
+        self.assertEqual(receipt["schema_version"], 2)
+        self.assertEqual(
+            receipt["execution_binding"],
+            {
+                "schema": "dnai.compute.workload-execution-binding.v1",
+                "commitment": created.execution_binding_commitment,
+                "source_kind": "credential",
+                "wallet_adoption_required": True,
+                "device_spending_authority": False,
+            },
+        )
+        metadata = self.store.public_metadata(
+            created.workload_id,
+            project_commitment=credential.project_commitment,
+        )
+        self.assertEqual(metadata["schema_version"], 2)
+        self.assertEqual(metadata["execution_binding"], receipt["execution_binding"])
+        with self.assertRaises(ComputeWorkloadIngressUnavailable):
+            self.store.release_ciphertext_after_checkpoint(
+                created.workload_id,
+                project_commitment=credential.project_commitment,
+                actor_commitment=credential.actor_commitment,
+                release_checkpoint_commitment=USAGE_RELEASE_CHECKPOINT,
+            )
+
+    def test_dispatch_claim_is_exact_restart_safe_and_one_job_only(self):
+        credential = ComputeWorkloadPrincipal(
+            kind="credential",
+            project_id="prj_alpha",
+            actor_id="device_alpha",
+        )
+        _, _, _, _, created = self.ingest(
+            idempotency_key="credential.workload.0001",
+            principal=credential,
+            ephemeral_private=X25519PrivateKey.from_private_bytes(
+                bytes.fromhex("31" * 32)
+            ),
+            nonce=bytes.fromhex("32" * 12),
+        )
+        claim, changed = self.service.claim_for_dispatch(
+            created.workload_id,
+            project_id=credential.project_id,
+            job_id=DISPATCH_JOB_ID,
+            intent_commitment=DISPATCH_INTENT_COMMITMENT,
+            funding_wallet=WALLET,
+            source_kind="credential",
+            execution_binding_commitment=created.execution_binding_commitment,
+            recipient_release_commitment=created.recipient_release_commitment,
+        )
+        self.assertTrue(changed)
+        self.assertEqual(
+            claim.commitment,
+            "sha256:af1fe4b3d1eeaae8f9273993989c4d54ff2afd373389786673db39a34792a953",
+        )
+        replay, changed = self.service.claim_for_dispatch(
+            created.workload_id,
+            project_id=credential.project_id,
+            job_id=DISPATCH_JOB_ID,
+            intent_commitment=DISPATCH_INTENT_COMMITMENT,
+            funding_wallet=WALLET,
+            source_kind="credential",
+            execution_binding_commitment=created.execution_binding_commitment,
+            recipient_release_commitment=created.recipient_release_commitment,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(replay, claim)
+        claimed_metadata = self.store.public_metadata(
+            created.workload_id,
+            project_commitment=credential.project_commitment,
+        )
+        self.assertEqual(
+            claimed_metadata["dispatch_adoption"]["state"],
+            "claimed_by_wallet_dispatch",
+        )
+        self.assertFalse(
+            claimed_metadata["dispatch_adoption"][
+                "wallet_adoption_eligible"
+            ]
+        )
+        self.assertEqual(
+            claimed_metadata["dispatch_adoption"]["claim_commitment"],
+            claim.commitment,
+        )
+        self.assertEqual(
+            claimed_metadata["dispatch_adoption"]["funding_authority"],
+            "onchain_wallet_job",
+        )
+        self.assertFalse(
+            claimed_metadata["dispatch_adoption"][
+                "direct_deletion_allowed"
+            ]
+        )
+
+        restarted = ComputeWorkloadIngressStore(
+            self.root,
+            integrity_key=b"i" * 32,
+        )
+        try:
+            observed = restarted.get_claimed_for_execution(
+                created.workload_id,
+                project_commitment=credential.project_commitment,
+                claim=claim,
+            )
+            self.assertEqual(observed.lifecycle, "dispatch_claimed")
+            self.assertEqual(observed.dispatch_claim, claim)
+        finally:
+            restarted.close()
+
+        with self.assertRaises(ComputeWorkloadIngressConflict):
+            self.service.claim_for_dispatch(
+                created.workload_id,
+                project_id=credential.project_id,
+                job_id="0x" + "84" * 32,
+                intent_commitment=DISPATCH_INTENT_COMMITMENT,
+                funding_wallet=WALLET,
+                source_kind="credential",
+                execution_binding_commitment=(
+                    created.execution_binding_commitment
+                ),
+                recipient_release_commitment=(
+                    created.recipient_release_commitment
+                ),
+            )
+
+        _, _, _, _, second = self.ingest(
+            idempotency_key="credential.workload.0002",
+            principal=credential,
+            ephemeral_private=X25519PrivateKey.from_private_bytes(
+                bytes.fromhex("33" * 32)
+            ),
+            nonce=bytes.fromhex("34" * 12),
+        )
+        with self.assertRaises(ComputeWorkloadIngressConflict):
+            self.service.claim_for_dispatch(
+                second.workload_id,
+                project_id=credential.project_id,
+                job_id=DISPATCH_JOB_ID,
+                intent_commitment=DISPATCH_INTENT_COMMITMENT,
+                funding_wallet=WALLET,
+                source_kind="credential",
+                execution_binding_commitment=(
+                    second.execution_binding_commitment
+                ),
+                recipient_release_commitment=(
+                    second.recipient_release_commitment
+                ),
+            )
+
+        with self.assertRaises(ComputeWorkloadIngressError):
+            with self.service.consume_for_execution(
+                created.workload_id,
+                project_commitment=credential.project_commitment,
+            ):
+                pass
+        self.assertEqual(len(list((self.root / "envelopes").iterdir())), 2)
+
+    def test_claimed_provider_lease_release_is_checkpoint_exact_and_zeroizes(self):
+        credential = ComputeWorkloadPrincipal(
+            kind="credential",
+            project_id="prj_alpha",
+            actor_id="device_alpha",
+        )
+        _, _, _, _, created = self.ingest(
+            idempotency_key="credential.workload.0001",
+            principal=credential,
+        )
+        claim, _ = self.service.claim_for_dispatch(
+            created.workload_id,
+            project_id=credential.project_id,
+            job_id=DISPATCH_JOB_ID,
+            intent_commitment=DISPATCH_INTENT_COMMITMENT,
+            funding_wallet=WALLET,
+            source_kind="credential",
+            execution_binding_commitment=created.execution_binding_commitment,
+            recipient_release_commitment=created.recipient_release_commitment,
+        )
+        retained = None
+        with self.service.lease_for_provider_execution(
+            created.workload_id,
+            project_id=credential.project_id,
+            claim=claim,
+            source_kind="credential",
+            recipient_release_commitment=created.recipient_release_commitment,
+        ) as lease:
+            self.assertIn(b"private sequence observation", lease.plaintext)
+            self.assertTrue(lease.reauthenticate().valid)
+            retained = lease.plaintext
+        self.assertIsNotNone(retained)
+        self.assertEqual(bytes(retained), b"\x00" * len(retained))
+        self.assertEqual(len(list((self.root / "envelopes").iterdir())), 1)
+
+        self.assertTrue(
+            self.service.release_after_usage_checkpoint(
+                created.workload_id,
+                project_id=credential.project_id,
+                claim=claim,
+                release_checkpoint_commitment=USAGE_RELEASE_CHECKPOINT,
+            )
+        )
+        self.assertFalse(
+            self.service.release_after_usage_checkpoint(
+                created.workload_id,
+                project_id=credential.project_id,
+                claim=claim,
+                release_checkpoint_commitment=USAGE_RELEASE_CHECKPOINT,
+            )
+        )
+        with self.assertRaises(ComputeWorkloadIngressConflict):
+            self.service.release_after_usage_checkpoint(
+                created.workload_id,
+                project_id=credential.project_id,
+                claim=claim,
+                release_checkpoint_commitment="sha256:" + "85" * 32,
+            )
+        self.assertEqual(list((self.root / "envelopes").iterdir()), [])
+
+    def test_authenticated_v1_index_is_not_opened_as_claim_capable_state(self):
+        self.ingest()
+        self.store.close()
+        index_path = self.root / "index.json"
+        envelope = json.loads(index_path.read_text(encoding="utf-8"))
+        envelope["body"]["schema"] = (
+            "dnai.compute.workload-ingress-index.v1"
+        )
+        envelope["body"]["schema_version"] = 1
+        envelope["mac"] = hmac.new(
+            b"i" * 32,
+            b"dnai-wikigen/compute-workload-store/v1\0"
+            + _canonical(envelope["body"]),
+            hashlib.sha256,
+        ).hexdigest()
+        index_path.write_bytes(_canonical(envelope) + b"\n")
+        os.chmod(index_path, 0o600)
+        with self.assertRaises(ComputeWorkloadIngressCorrupt):
+            ComputeWorkloadIngressStore(
+                self.root,
+                integrity_key=b"i" * 32,
+            )
 
     def test_idempotency_conflict_and_nonce_tuple_replay_are_rejected(self):
         manifest, plaintext, commitment = self.inference()

@@ -367,6 +367,9 @@ class ComposeHardeningTest(unittest.TestCase):
                 "${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256:?Authorized ChallengeRegistry challenge-set digest required}"
             ),
             "TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED": '"true"',
+            "TINKER_ARENA_STORE_INTEGRITY_KEY": '""',
+            "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH": "tinker/arena_store_integrity",
+            "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED": '"false"',
         }
         for name, value in expected_worker_environment.items():
             with self.subTest(service="arena-worker", name=name):
@@ -390,6 +393,9 @@ class ComposeHardeningTest(unittest.TestCase):
                 "${TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH:-tinker/arena_worker_heartbeat}"
             ),
             "TINKER_ARENA_WORKER_HEARTBEAT_INTEGRITY_KEY": '""',
+            "TINKER_ARENA_STORE_INTEGRITY_KEY": '""',
+            "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH": "tinker/arena_store_integrity",
+            "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED": '"false"',
         }.items():
             with self.subTest(service="delegate", name=name):
                 self.assertEqual(
@@ -402,6 +408,48 @@ class ComposeHardeningTest(unittest.TestCase):
             with self.subTest(compose_name=compose_name):
                 compose = (ROOT / compose_name).read_text()
                 self.assertNotIn("  arena-worker:", compose)
+
+    def test_arena_store_integrity_and_legacy_route_policy_are_wired_by_environment(self):
+        for compose_name in ("docker-compose.yaml", "docker-compose.all.yaml"):
+            with self.subTest(compose_name=compose_name, mode="local"):
+                delegate = _service_block(
+                    (ROOT / compose_name).read_text(), "delegate"
+                )
+                self.assertIn(
+                    "TINKER_ARENA_STORE_INTEGRITY_KEY: "
+                    "${TINKER_ARENA_STORE_INTEGRITY_KEY:-}",
+                    delegate,
+                )
+                self.assertIn(
+                    "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH: "
+                    "${TINKER_ARENA_STORE_INTEGRITY_KEY_PATH:-tinker/arena_store_integrity}",
+                    delegate,
+                )
+                self.assertIn(
+                    "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED: "
+                    "${TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED:-false}",
+                    delegate,
+                )
+
+        for compose_name in (
+            "docker-compose.dstack.yaml",
+            "docker-compose.all.dstack.yaml",
+            "docker-compose.all.phala.yaml",
+        ):
+            with self.subTest(compose_name=compose_name, mode="production"):
+                delegate = _service_block(
+                    (ROOT / compose_name).read_text(), "delegate"
+                )
+                self.assertIn('TINKER_ARENA_STORE_INTEGRITY_KEY: ""', delegate)
+                self.assertIn(
+                    "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH: "
+                    "tinker/arena_store_integrity",
+                    delegate,
+                )
+                self.assertIn(
+                    'TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED: "false"',
+                    delegate,
+                )
 
     def test_modeled_arena_agent_store_and_keys_are_bounded_to_local_composes(self):
         for compose_name in (
@@ -442,11 +490,7 @@ class ComposeHardeningTest(unittest.TestCase):
                     (ROOT / compose_name).read_text(),
                     "delegate",
                 )
-                self.assertNotIn("TINKER_ARENA_AGENT_STORE_PATH", delegate)
-                self.assertNotIn(
-                    "TINKER_ARENA_AGENT_CREDENTIAL_KEY_PATH",
-                    delegate,
-                )
+                self.assertNotIn("TINKER_ARENA_AGENT_", delegate)
 
     def test_local_delegate_defaults_match_the_vite_wallet_auth_contract(self):
         for compose_name in ("docker-compose.yaml", "docker-compose.all.yaml"):

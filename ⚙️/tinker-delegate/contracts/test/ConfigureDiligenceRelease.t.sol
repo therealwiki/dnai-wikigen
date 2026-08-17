@@ -10,6 +10,11 @@ contract ConfigureDiligenceReleaseHarness is ConfigureDiligenceReleaseScript {
     function executeConfiguredPhase(uint256 phase, ReleaseInputs memory inputs) external {
         _executePhase(phase, inputs);
     }
+
+    function _acceptDeveloper(DiligenceRoom room) internal override {
+        vm.prank(room.pendingDeveloper());
+        room.acceptDeveloper();
+    }
 }
 
 contract ConfigureDiligenceReleaseTest is Test {
@@ -18,6 +23,7 @@ contract ConfigureDiligenceReleaseTest is Test {
     ConfigureDiligenceReleaseHarness internal script;
     DiligenceRoom internal room;
     address internal operator;
+    address internal governanceController = makeAddr("permanent-diligence-governance");
     address internal verifier = makeAddr("independent-diligence-verifier");
     address internal attestationVerifier = makeAddr("independent-diligence-qvl");
     address internal tee = makeAddr("diligence-tee");
@@ -32,7 +38,7 @@ contract ConfigureDiligenceReleaseTest is Test {
         vm.chainId(BASE_SEPOLIA_CHAIN_ID);
         operator = msg.sender;
         vm.startPrank(operator);
-        room = new DiligenceRoom(true);
+        room = new DiligenceRoom(true, governanceController);
         room.freezeFeeBps();
         room.enableComputeSettlementPolicy();
         room.setComposeApprovalRequired(true);
@@ -44,7 +50,7 @@ contract ConfigureDiligenceReleaseTest is Test {
         script = new ConfigureDiligenceReleaseHarness();
     }
 
-    function test_ThreeTimelockedPhasesProduceExactClosedRelease() public {
+    function test_FourTimelockedPhasesProduceExactClosedReleaseAndGovernanceHandoff() public {
         _runPhase(1);
         assertEq(room.pendingComposeCount(), 1);
         assertEq(room.approvedComposeCount(), 0);
@@ -81,6 +87,67 @@ contract ConfigureDiligenceReleaseTest is Test {
         assertEq(room.teeIdentityComposeHash(tee), compose);
         assertTrue(room.evaluatorPolicySetFrozen());
         assertEq(room.evaluatorPolicySetRoot(), _evaluatorPolicySetRoot());
+        assertEq(room.developer(), operator);
+        assertEq(room.pendingDeveloper(), governanceController);
+        assertGt(room.pendingDeveloperActivatesAt(), block.timestamp);
+
+        vm.prank(makeAddr("seller-during-governance-handoff"));
+        vm.expectRevert(DiligenceRoom.AttestationBindingNotReady.selector);
+        room.createDeal(1 ether, block.timestamp + 1 days, keccak256("handoff-artifact"), tee);
+
+        vm.expectRevert(bytes("developer-transfer timelock has not elapsed"));
+        _runPhaseAsGovernance(4);
+        vm.warp(room.pendingDeveloperActivatesAt());
+        _runPhaseAsGovernance(4);
+
+        assertEq(room.developer(), governanceController);
+        assertEq(room.pendingDeveloper(), address(0));
+        assertEq(room.pendingDeveloperActivatesAt(), 0);
+    }
+
+    function test_ProductionRemainsFailClosedAcrossEveryPhaseThreeTransactionAndCancelledHandoff() public {
+        _runPhase(1);
+        uint256 composeActivatesAt = room.pendingComposeActivations(compose);
+        uint256 qvlActivatesAt = room.pendingAttestationBindingActivatesAt();
+        vm.warp(composeActivatesAt > qvlActivatesAt ? composeActivatesAt : qvlActivatesAt);
+        _runPhase(2);
+        vm.warp(room.pendingTeeIdentityActivations(tee));
+
+        vm.prank(operator);
+        room.activateTeeIdentity(tee);
+        _expectProductionDealActivityClosed("after-tee-activation");
+
+        vm.prank(operator);
+        room.freezeComposeAndEvaluatorPolicySets();
+        _expectProductionDealActivityClosed("after-compose-evaluator-freeze");
+
+        vm.prank(operator);
+        room.freezeTeeIdentityAdditions();
+        assertEq(room.developer(), room.initialDeveloper());
+        _expectProductionDealActivityClosed(keccak256("after-final-policy-freeze-before-handoff"));
+
+        vm.prank(operator);
+        room.proposeDeveloper(governanceController);
+        _expectProductionDealActivityClosed("during-pending-handoff");
+
+        vm.prank(operator);
+        room.cancelDeveloperProposal();
+        assertEq(room.pendingDeveloper(), address(0));
+        assertEq(room.pendingDeveloperActivatesAt(), 0);
+        assertEq(room.developer(), room.initialDeveloper());
+        _expectProductionDealActivityClosed("after-cancelled-handoff");
+
+        vm.prank(operator);
+        room.proposeDeveloper(governanceController);
+        vm.warp(room.pendingDeveloperActivatesAt());
+        vm.prank(governanceController);
+        room.acceptDeveloper();
+
+        address seller = makeAddr("seller-after-controller-acceptance");
+        vm.prank(seller);
+        uint256 dealId =
+            room.createDeal(1 ether, vm.getBlockTimestamp() + 1 days, keccak256("post-controller-acceptance"), tee);
+        assertEq(dealId, 0);
     }
 
     function test_CannotSkipTimelocksOrReplayPhases() public {
@@ -171,7 +238,7 @@ contract ConfigureDiligenceReleaseTest is Test {
 
         inputs = _inputs();
         inputs.operator = makeAddr("wrong-operator");
-        vm.expectRevert(bytes("operator does not own DiligenceRoom"));
+        vm.expectRevert(bytes("diligence initial developer mismatch"));
         script.executeConfiguredPhase(1, inputs);
 
         inputs = _inputs();
@@ -193,11 +260,31 @@ contract ConfigureDiligenceReleaseTest is Test {
         inputs.evaluatorPolicySetRoot = keccak256("wrong-evaluator-policy-root");
         vm.expectRevert(bytes("diligence evaluator policy root mismatch"));
         script.executeConfiguredPhase(1, inputs);
+
+        inputs = _inputs();
+        inputs.governanceController = operator;
+        vm.expectRevert(bytes("diligence governance controller conflicts with deployment authority"));
+        script.executeConfiguredPhase(1, inputs);
+
+        vm.startPrank(operator);
+        DiligenceRoom conflictedRoom = new DiligenceRoom(true, tee);
+        conflictedRoom.freezeFeeBps();
+        conflictedRoom.enableComputeSettlementPolicy();
+        conflictedRoom.setComposeApprovalRequired(true);
+        conflictedRoom.setTeeIdentityApprovalRequired(true);
+        conflictedRoom.freezeApprovalRequirements();
+        vm.stopPrank();
+        inputs = _inputs();
+        inputs.room = conflictedRoom;
+        inputs.roomRuntimeCodeHash = address(conflictedRoom).codehash;
+        inputs.governanceController = tee;
+        vm.expectRevert(bytes("diligence TEE conflicts with a control role"));
+        script.executeConfiguredPhase(1, inputs);
     }
 
     function test_ReleaseRequiresFrozenLifecyclePolicy() public {
         vm.prank(operator);
-        DiligenceRoom unfrozenRoom = new DiligenceRoom(true);
+        DiligenceRoom unfrozenRoom = new DiligenceRoom(true, governanceController);
         ConfigureDiligenceReleaseScript.ReleaseInputs memory inputs = _inputs();
         inputs.room = unfrozenRoom;
         inputs.roomRuntimeCodeHash = address(unfrozenRoom).codehash;
@@ -209,11 +296,22 @@ contract ConfigureDiligenceReleaseTest is Test {
         script.executeConfiguredPhase(phase, _inputs());
     }
 
+    function _runPhaseAsGovernance(uint256 phase) internal {
+        script.executeConfiguredPhase(phase, _inputs());
+    }
+
+    function _expectProductionDealActivityClosed(bytes32 artifactHash) internal {
+        vm.prank(makeAddr("blocked-production-seller"));
+        vm.expectRevert(DiligenceRoom.AttestationBindingNotReady.selector);
+        room.createDeal(1 ether, block.timestamp + 1 days, artifactHash, tee);
+    }
+
     function _inputs() internal view returns (ConfigureDiligenceReleaseScript.ReleaseInputs memory) {
         return ConfigureDiligenceReleaseScript.ReleaseInputs({
             room: room,
             roomRuntimeCodeHash: address(room).codehash,
             operator: operator,
+            governanceController: governanceController,
             resultVerifier: verifier,
             teeIdentity: tee,
             composeHash: compose,

@@ -3,19 +3,18 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL as NodeURL } from "node:url";
 
 const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
-const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const manifestPath = path.join(
   repositoryRoot,
   "web/src/assets/pitch/asset-provenance.json",
 );
-const SOURCE_SPECIFIERS = Object.freeze({
+const SOURCE_URLS = Object.freeze({
   "attested-network":
-    "../../outputs/wikigen-pitch-assets/attested-network.png",
+    new URL("../../outputs/wikigen-pitch-assets/attested-network.png", import.meta.url),
   "private-reward-oracle":
-    "../../outputs/wikigen-pitch-assets/private-reward-oracle.png",
+    new URL("../../outputs/wikigen-pitch-assets/private-reward-oracle.png", import.meta.url),
 });
 
 function sha256(bytes) {
@@ -167,9 +166,9 @@ test("tracked pitch WebPs match their explicit source and derivative provenance"
       ["path", "bytes", "sha256", "embedded_metadata"],
       `${asset.name}: output`,
     );
-    const sourceSpecifier = SOURCE_SPECIFIERS[asset.name];
-    assert.equal(typeof sourceSpecifier, "string", `${asset.name}: source mapping`);
-    const sourcePath = path.resolve(scriptDirectory, sourceSpecifier);
+    const sourceUrl = SOURCE_URLS[asset.name];
+    assert.ok(sourceUrl instanceof NodeURL, `${asset.name}: source mapping`);
+    const sourcePath = fileURLToPath(sourceUrl);
     assert.equal(
       path.relative(repositoryRoot, sourcePath).split(path.sep).join("/"),
       asset.source.path,

@@ -414,12 +414,12 @@ export function ArenaAgentAccess(props: {
           <h4 id="arena-agent-access-title">Enroll a TTT or autonomous competitor</h4>
           <p>Issue a short-lived device credential for only <code>{props.challengeId}@{props.challengeVersion}</code>. It can submit ciphertext and read this wallet’s bounded results; it cannot use Compute, Deal, Tinker, contract, or payment routes.</p>
         </div>
-        <span class="agent-modeled-pill"><TriangleAlert size={12} /> MODELED AUTH</span>
+        <span class="agent-modeled-pill"><TriangleAlert size={12} /> LIVE-CAPABLE AUTH · RELEASE GATED</span>
       </header>
 
       <div class="agent-truth-banner">
         <ShieldCheck size={16} />
-        <span><strong>{props.releaseBoundWorker ? "Release-bound worker presence observed; agent credential is still authentication only" : "Modeled agent control plane · execution not connected"}</strong> No credential is Intel TDX evidence, job authorization, a reward promise, or proof that an evaluator ran. The local HMAC store detects tampering but is not rollback protection.</span>
+        <span><strong>{props.releaseBoundWorker ? "Release-bound worker presence observed; agent credential is still authentication only" : "Release-gated agent control plane · execution not connected"}</strong> Wallet consent, durable credential records, encrypted one-time delivery, rotation, and revocation are live-capable API operations when the release is configured. No credential is Intel TDX evidence, job authorization, a reward promise, or proof that an evaluator ran. The local HMAC store detects tampering but is not rollback protection.</span>
       </div>
 
       <Show when={notice()}><div class="agent-inline-notice success" role="status"><Check size={14} /> {notice()}</div></Show>
@@ -477,7 +477,7 @@ export function ArenaAgentAccess(props: {
           <section ref={(element) => { dialogRef = element; }} class="credential-dialog arena-agent-dialog" role="dialog" aria-modal="true" aria-labelledby="arena-agent-dialog-title" tabindex="-1" onClick={(event) => event.stopPropagation()}>
             <button class="dialog-x" type="button" aria-label="Close agent credential dialog" data-autofocus onClick={closeDialog} disabled={Boolean(busy())}><X size={17} /></button>
             <div class="dialog-mark"><Bot size={22} /></div>
-            <p class="overline">MODELED AGENT ACCESS · NO TDX CLAIM</p>
+            <p class="overline">LIVE-CAPABLE AGENT AUTH · RELEASE GATED · NO TDX CLAIM</p>
             <h2 id="arena-agent-dialog-title">{oneTimeToken() ? "Copy this agent credential once" : "Enroll an Arena agent"}</h2>
             <Show when={oneTimeToken()} fallback={
               <>

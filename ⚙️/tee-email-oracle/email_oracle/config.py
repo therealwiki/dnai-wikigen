@@ -3,20 +3,29 @@
 import re
 from urllib.parse import urlsplit
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _BYTES32 = re.compile(r"^0x[0-9a-fA-F]{64}$")
+_SHA256 = re.compile(r"^sha256:(?!0{64}$)[0-9a-f]{64}$")
+_CVM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$")
 _BASE_SEPOLIA_CHAIN_ID = 84_532
 _CANONICAL_CALLER_IDENTITY = "tinker-delegate.signup"
+_REVIEW_NOTIFICATION_CALLER_IDENTITY = "tinker-delegate.review-operations"
 _PRODUCTION_CRED_STORE_PATH = "/data/credentials.enc"
 _PRODUCTION_REPLAY_STORE_PATH = "/data/otp_replay.enc"
 _PRODUCTION_CHECKPOINT_STORE_PATH = "/data/email_auth_checkpoint.json"
+_PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_PATH = (
+    "/data/review_notification_receipts.json"
+)
 _PRODUCTION_DSTACK_KEY_PATH = "email/creds"
 _PRODUCTION_RUNTIME_KEY_PATH = "oracle/runtime-auth"
 _PRODUCTION_REPLAY_KEY_PATH = "email/otp_replay"
+_PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH = (
+    "email/review_notification_receipts"
+)
 
 
 class Settings(BaseSettings):
@@ -62,6 +71,41 @@ class Settings(BaseSettings):
     otp_replay_store_path: str = "/data/otp_replay.enc"
     otp_replay_store_key: str = ""
     otp_replay_key_path: str = "email/otp_replay"
+
+    # --- Human Review outbound notification boundary ---
+    # Delivery is absent unless the release explicitly enables it and provides
+    # a role-to-recipient map through Phala's encrypted-environment update; the
+    # public launch descriptor commits the environment key and canonical digest,
+    # never the map value. SecretStr also keeps the decrypted value out of
+    # routine Settings repr/log output once it exists inside the CVM process.
+    # The endpoint accepts only hash-only ticket references and fixed release
+    # metadata; recipient addresses leave this process only as SMTP envelope
+    # recipients.
+    review_notifications_enabled: bool = False
+    review_notification_caller_identity: str = (
+        _REVIEW_NOTIFICATION_CALLER_IDENTITY
+    )
+    review_notification_recipients_json: SecretStr = SecretStr("")
+    review_notification_recipients_sha256: str = ""
+    review_notification_smtp_host: str = ""
+    review_notification_smtp_port: int = 465
+    review_notification_smtp_timeout_seconds: float = 10.0
+    review_notification_receipt_store_path: str = (
+        _PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_PATH
+    )
+    review_notification_receipt_store_key: str = ""
+    review_notification_receipt_key_path: str = (
+        _PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH
+    )
+    review_notification_main_runtime_cvm_id: str = ""
+    review_notification_deployment_intent_sha256: str = ""
+    review_notification_release_authority_sha256: str = ""
+    review_notification_ceremony_nonce: str = ""
+    review_notification_policy_sha256: str = ""
+    review_notification_active_reviewers_sha256: str = ""
+    review_notification_genesis_acceptance_sha256: str = ""
+    review_notification_current_status_epoch: int = 0
+    review_notification_current_status_sha256: str = ""
 
     # --- dstack (no-op locally, used in TEE) ---
     dstack_socket: str = "/var/run/dstack.sock"
@@ -145,6 +189,108 @@ class Settings(BaseSettings):
             raise ValueError("production release forbids a static OTP replay key")
         if self.otp_replay_key_path != _PRODUCTION_REPLAY_KEY_PATH:
             raise ValueError("production release requires the exact OTP replay key path")
+        if not self.review_notifications_enabled:
+            if (
+                self.review_notification_recipients_json.get_secret_value()
+                or self.review_notification_recipients_sha256
+                or self.review_notification_smtp_host
+            ):
+                raise ValueError(
+                    "disabled review notifications forbid delivery configuration"
+                )
+            return self
+        if (
+            self.review_notification_caller_identity
+            != _REVIEW_NOTIFICATION_CALLER_IDENTITY
+        ):
+            raise ValueError(
+                "production review notifications require the exact caller identity"
+            )
+        if not self.review_notification_recipients_json.get_secret_value():
+            raise ValueError(
+                "production review notifications require encrypted recipients"
+            )
+        if not _SHA256.fullmatch(
+            self.review_notification_recipients_sha256
+        ):
+            raise ValueError(
+                "production review notifications require a recipient-map digest"
+            )
+        # The sealed mailbox credential must never be presented to an
+        # operator-selected SMTP endpoint.
+        if self.review_notification_smtp_host != "mail.cock.li":
+            raise ValueError(
+                "production review notifications require the pinned SMTP host"
+            )
+        if self.review_notification_smtp_port != 465:
+            raise ValueError(
+                "production review notifications require implicit TLS on port 465"
+            )
+        if not 1 <= self.review_notification_smtp_timeout_seconds <= 30:
+            raise ValueError(
+                "production review notification timeout must be 1-30 seconds"
+            )
+        if (
+            self.review_notification_receipt_store_path
+            != _PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_PATH
+        ):
+            raise ValueError(
+                "production review notifications require the exact receipt path"
+            )
+        if self.review_notification_receipt_store_key:
+            raise ValueError(
+                "production review notifications forbid a static receipt key"
+            )
+        if (
+            self.review_notification_receipt_key_path
+            != _PRODUCTION_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH
+        ):
+            raise ValueError(
+                "production review notifications require the exact receipt key path"
+            )
+        if not _CVM_ID.fullmatch(
+            self.review_notification_main_runtime_cvm_id
+        ):
+            raise ValueError(
+                "production review notifications require the main runtime CVM ID"
+            )
+        for label, value in (
+            (
+                "deployment intent",
+                self.review_notification_deployment_intent_sha256,
+            ),
+            (
+                "release authority",
+                self.review_notification_release_authority_sha256,
+            ),
+            ("review policy", self.review_notification_policy_sha256),
+            (
+                "active reviewers",
+                self.review_notification_active_reviewers_sha256,
+            ),
+            (
+                "reviewer genesis acceptance",
+                self.review_notification_genesis_acceptance_sha256,
+            ),
+            (
+                "reviewer current status",
+                self.review_notification_current_status_sha256,
+            ),
+        ):
+            if not _SHA256.fullmatch(value):
+                raise ValueError(
+                    f"production review notifications require the {label} digest"
+                )
+        if not _BYTES32.fullmatch(
+            self.review_notification_ceremony_nonce
+        ) or int(self.review_notification_ceremony_nonce, 16) == 0:
+            raise ValueError(
+                "production review notifications require the ceremony nonce"
+            )
+        if self.review_notification_current_status_epoch <= 0:
+            raise ValueError(
+                "production review notifications require a reviewer status epoch"
+            )
         return self
 
     # RPC URLs frequently carry provider credentials in their path. Never let

@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Fingerprint,
   Handshake,
+  HeartPulse,
   KeyRound,
   LockKeyhole,
   Menu,
@@ -23,7 +24,7 @@ import { BASE_SEPOLIA, deployment, explorerAddress } from "../config";
 import { formatEth, shortAddress } from "../lib/contract";
 import { wallet, type WalletOption } from "../lib/wallet";
 
-export type RouteKey = "overview" | "arena" | "deals" | "review" | "vaults" | "compute" | "tinker" | "lab" | "catalog" | "verify" | "collaborate" | "not_found";
+export type RouteKey = "overview" | "health" | "arena" | "deals" | "review" | "vaults" | "compute" | "tinker" | "lab" | "catalog" | "verify" | "collaborate" | "not_found";
 
 interface AppShellProps {
   route: RouteKey;
@@ -35,6 +36,7 @@ interface AppShellProps {
 
 const NAV_ITEMS: { route: RouteKey; label: string; icon: typeof Activity }[] = [
   { route: "overview", label: "Overview", icon: Activity },
+  { route: "health", label: "Health guide", icon: HeartPulse },
   { route: "arena", label: "Challenge arena", icon: Beaker },
   { route: "deals", label: "Deal room", icon: CircleDollarSign },
   { route: "review", label: "Review", icon: ClipboardCheck },
@@ -266,7 +268,7 @@ function WalletDialog(props: { open: boolean; close: () => void }) {
 
           <div class="wallet-capability-note">
             <ShieldCheck size={17} aria-hidden="true" />
-            <p><strong>EOA + smart-account login.</strong> Artifact upload, Arena, and Compute nonce exchanges support EOA <code>personal_sign</code> and deployment-configured EIP-1271 verification on Base Sepolia. Connection alone does not prove account type; without the trusted server RPC, those exchanges remain EOA-only and fail closed. Execution-policy approvals still require an allowlisted recoverable EOA signature.</p>
+            <p><strong>EOA + smart-account login.</strong> Artifact upload, Arena, Compute, and Collaboration nonce exchanges support EOA <code>personal_sign</code> and deployment-configured EIP-1271 verification on Base Sepolia. Connection alone does not prove account type; without the trusted server RPC, those exchanges remain EOA-only and fail closed. Execution-policy approvals still require an allowlisted recoverable EOA signature.</p>
           </div>
           <p class="wallet-storage-note">Wikigen’s wallet layer does not write private keys, signatures, or short-lived service tokens to browser storage. It never asks for a private key. A configured connector may manage its own pairing or wallet session.</p>
           <p class="dialog-footnote">Base Sepolia · chain ID {BASE_SEPOLIA.id} · testnet funds only</p>

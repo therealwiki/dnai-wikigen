@@ -21,6 +21,7 @@ from tinker_delegate.arena_ingress import (
     ArenaCandidateIngressService,
     ArenaCandidateIngressStore,
     ArenaIngressCorruptError,
+    ArenaIngressError,
     ArenaIngressRecipient,
     arena_candidate_aad,
     build_arena_candidate_binding,
@@ -34,6 +35,7 @@ from tinker_delegate.arena_safe_worker import (
     ArenaRegistryClaimRequest,
     ArenaSafeIrWorker,
     ArenaSafeWorkerActivation,
+    ArenaSafeWorkerError,
     ArenaSafeWorkerRegistryUnavailable,
     ArenaSafeWorkerUnavailable,
     ArenaWorkerRegistryAuthorization,
@@ -46,6 +48,8 @@ from tinker_delegate.arena_store import (
     BIO_SAFE_IR_CHALLENGE_ID,
     BIO_SAFE_IR_CHALLENGE_VERSION,
     ArenaStore,
+    ArenaStoreError,
+    CiphertextState,
     QueueReason,
     QueueState,
     SubmissionIdentity,
@@ -69,6 +73,7 @@ REGISTRY_ADDRESS = "0x" + "99" * 20
 QVL_POLICY_HASH = "0x" + "aa" * 32
 QVL_CHALLENGE_DIGEST = "0x" + "bb" * 32
 CVM_ID = "cvm-main-runtime-0001"
+ARENA_STORE_KEY = b"a" * 32
 
 
 class _PolicyGate:
@@ -199,7 +204,10 @@ class WorkerHarness:
             BIO_SAFE_IR_CHALLENGE_ID, BIO_SAFE_IR_CHALLENGE_VERSION
         )
         self.identity = SubmissionIdentity(WALLET, PROJECT)
-        self.arena = ArenaStore(root / "arena.json")
+        self.arena = ArenaStore(
+            root / "arena.json",
+            integrity_key=ARENA_STORE_KEY,
+        )
         self.ingress_store = ArenaCandidateIngressStore(root / "candidates")
         self.recipient = ArenaIngressRecipient.from_keypair(
             TEEKeyPair.from_private_key_hex("44" * 32),
@@ -416,16 +424,41 @@ class ArenaSafeWorkerTest(unittest.TestCase):
         events = []
         gate = _RegistryGate(events=events)
         record = self.harness.submit(_valid_source())
+        metadata = self.harness.ingress_store.describe_envelope(
+            record.encrypted_reference
+        )
         original_claim = self.harness.arena.claim_safe_ir_submission
+        original_describe = ArenaCandidateIngressStore.describe_envelope
+        original_load = ArenaCandidateIngressStore.load_envelope
 
         def observed_claim(*args, **kwargs):
             events.append("durable_claim")
             return original_claim(*args, **kwargs)
 
-        with patch.object(
-            self.harness.arena,
-            "claim_safe_ir_submission",
-            side_effect=observed_claim,
+        def observed_describe(store, *args, **kwargs):
+            events.append("metadata_read")
+            return original_describe(store, *args, **kwargs)
+
+        def observed_load(store, *args, **kwargs):
+            events.append("ciphertext_read")
+            return original_load(store, *args, **kwargs)
+
+        with (
+            patch.object(
+                ArenaCandidateIngressStore,
+                "describe_envelope",
+                new=observed_describe,
+            ),
+            patch.object(
+                ArenaCandidateIngressStore,
+                "load_envelope",
+                new=observed_load,
+            ),
+            patch.object(
+                self.harness.arena,
+                "claim_safe_ir_submission",
+                side_effect=observed_claim,
+            ),
         ):
             receipt = self._run(
                 self.harness.worker(registry_claim_gate=gate),
@@ -433,7 +466,15 @@ class ArenaSafeWorkerTest(unittest.TestCase):
             )
 
         self.assertEqual(receipt.final_state, "completed")
-        self.assertEqual(events[:2], ["registry_authorized", "durable_claim"])
+        self.assertEqual(
+            events[:4],
+            [
+                "metadata_read",
+                "registry_authorized",
+                "durable_claim",
+                "ciphertext_read",
+            ],
+        )
         self.assertEqual(len(gate.requests), 1)
         request, occurred_at = gate.requests[0]
         self.assertIsInstance(request, ArenaRegistryClaimRequest)
@@ -442,14 +483,93 @@ class ArenaSafeWorkerTest(unittest.TestCase):
             request.ingress_registry_authorization_sha256,
             "sha256:" + "ee" * 32,
         )
-        stored = self.harness.ingress_store.load_envelope(
-            record.encrypted_reference
-        )
         self.assertEqual(
             request.ingress_binding_sha256,
-            "sha256:"
-            + hashlib.sha256(arena_candidate_aad(stored.binding)).hexdigest(),
+            metadata.aad_sha256,
         )
+        with self.assertRaisesRegex(
+            ArenaIngressError, "Unknown Arena sealed reference"
+        ):
+            self.harness.ingress_store.load_envelope(
+                record.encrypted_reference
+            )
+
+    def test_metadata_read_then_owner_cancel_prevents_claim_and_ciphertext_read(self):
+        record = self.harness.submit(_valid_source(), name="cancel-before-claim")
+        ingress = ArenaCandidateIngressStore(
+            self.harness.ingress_store.root_dir,
+            max_envelopes=self.harness.ingress_store.max_envelopes,
+        )
+        metadata = ingress.describe_envelope(record.encrypted_reference)
+        self.assertEqual(metadata.key_id, self.harness.recipient.key_id)
+
+        cancelled = self.harness.arena.cancel_owner_submission(
+            record.submission_id,
+            wallet_address=WALLET,
+            challenge_id=record.challenge_id,
+            challenge_version=record.challenge_version,
+            occurred_at=150,
+        )
+        self.assertTrue(cancelled.changed)
+        cleaned = self.harness.worker().cleanup_submission_ciphertext(
+            record.submission_id,
+            occurred_at=150,
+        )
+        self.assertEqual(cleaned.ciphertext_state, CiphertextState.UNLINKED)
+        with self.assertRaises(ArenaStoreError):
+            self.harness.arena.claim_safe_ir_submission(
+                record.submission_id,
+                occurred_at=151,
+            )
+        with self.assertRaises(ArenaIngressError):
+            ingress.load_envelope(record.encrypted_reference)
+
+    def test_worker_claim_then_owner_cancel_is_rejected_before_ciphertext_read(self):
+        record = self.harness.submit(_valid_source(), name="claim-before-cancel")
+        ingress = ArenaCandidateIngressStore(
+            self.harness.ingress_store.root_dir,
+            max_envelopes=self.harness.ingress_store.max_envelopes,
+        )
+        metadata = ingress.describe_envelope(record.encrypted_reference)
+
+        claim = self.harness.arena.claim_safe_ir_submission(
+            record.submission_id,
+            occurred_at=150,
+        )
+        self.assertIsNotNone(claim.submission.worker_claimed_at)
+        with self.assertRaisesRegex(ArenaStoreError, "durably claimed"):
+            self.harness.arena.cancel_owner_submission(
+                record.submission_id,
+                wallet_address=WALLET,
+                challenge_id=record.challenge_id,
+                challenge_version=record.challenge_version,
+                occurred_at=151,
+            )
+        stored = ingress.load_envelope(record.encrypted_reference)
+        self.assertEqual(stored.envelope.ciphertext_sha256, metadata.ciphertext_sha256)
+
+    def test_terminal_replay_cleans_before_activation_and_remains_non_executable(self):
+        record = self.harness.submit(_valid_source(), name="terminal-replay-cleanup")
+        self.harness.arena.cancel_owner_submission(
+            record.submission_id,
+            wallet_address=WALLET,
+            challenge_id=record.challenge_id,
+            challenge_version=record.challenge_version,
+            occurred_at=150,
+        )
+
+        with self.assertRaisesRegex(ArenaSafeWorkerError, "not executable"):
+            self.harness.worker(execution_enabled=False).process_submission(
+                record.submission_id,
+                occurred_at=160,
+            )
+
+        cleaned = self.harness.arena.get_submission(record.submission_id)
+        self.assertEqual(cleaned.ciphertext_state, CiphertextState.UNLINKED)
+        with self.assertRaises(ArenaIngressError):
+            self.harness.ingress_store.load_envelope(
+                record.encrypted_reference
+            )
 
     def test_registry_failure_or_wrong_claim_binding_prevents_durable_claim(self):
         for name, gate in (
@@ -471,7 +591,8 @@ class ArenaSafeWorkerTest(unittest.TestCase):
                         record.submission_id,
                     )
                 stored = self.harness.arena.get_submission(record.submission_id)
-                self.assertEqual(stored.state, QueueState.QUEUED)
+                self.assertEqual(stored.state, QueueState.SUBMITTED)
+                self.assertIsNone(stored.worker_claimed_at)
                 self.assertFalse(
                     any(
                         event.reason == QueueReason.WORKER_CLAIMED
@@ -547,13 +668,20 @@ class ArenaSafeWorkerTest(unittest.TestCase):
         self.assertNotIn("passwd", json.dumps(first.to_bounded_dict()))
         self.assertNotIn("open", json.dumps(first.to_bounded_dict()))
 
-    def test_plaintext_commitment_mismatch_fails_after_authenticated_decryption(self):
+    def test_plaintext_commitment_mismatch_fails_before_claim_or_ciphertext_read(self):
         record = self.harness.submit(
             _valid_source(), declared_commitment="sha256:" + "0" * 64
         )
-        receipt = self._run(self.harness.worker(), record.submission_id)
-        self.assertEqual(receipt.final_state, "failed")
-        self.assertEqual(receipt.failure_code, "execution_failed")
+        with self.assertRaises(ArenaSafeWorkerRegistryUnavailable):
+            self._run(self.harness.worker(), record.submission_id)
+        stored = self.harness.arena.get_submission(record.submission_id)
+        self.assertEqual(stored.state, QueueState.SUBMITTED)
+        self.assertIsNone(stored.worker_claimed_at)
+        self.assertIsNotNone(
+            self.harness.ingress_store.load_envelope(
+                record.encrypted_reference
+            )
+        )
 
     def test_aes_gcm_tampering_fails_without_detail(self):
         record = self.harness.submit(_valid_source(), tamper_ciphertext=True)

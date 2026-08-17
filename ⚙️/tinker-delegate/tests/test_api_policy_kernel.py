@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import tempfile
 import threading
@@ -43,6 +44,9 @@ from tinker_delegate.policy_kernel import (
 TOKEN = "policy-operator-test-token"
 APPROVER_PRIVATE_KEY = "0x" + "33" * 32
 OTHER_PRIVATE_KEY = "0x" + "44" * 32
+EVALUATE_IDEMPOTENCY_DOMAIN = (
+    b"dnai-wikigen/execution-policy-evaluate-idempotency/v1\0"
+)
 
 
 def _approval_domain(approver_root_hash: str, *, release: str = "1") -> str:
@@ -56,6 +60,13 @@ def _approval_domain(approver_root_hash: str, *, release: str = "1") -> str:
         + ":"
         + approver_root_hash
     )
+
+
+def _evaluate_idempotency_key(approval_message_hash: str) -> str:
+    return "sha256:" + hashlib.sha256(
+        EVALUATE_IDEMPOTENCY_DOMAIN
+        + bytes.fromhex(approval_message_hash)
+    ).hexdigest()
 
 
 def _request(**overrides):
@@ -195,6 +206,46 @@ class PolicyKernelApiTest(unittest.TestCase):
             },
         )
 
+    def _idempotent_evaluate_payload(
+        self,
+        *,
+        resource_id: str,
+        expires_at: int | None = None,
+        signing_key: str = APPROVER_PRIVATE_KEY,
+    ) -> tuple[dict[str, str], dict[str, object], dict[str, object]]:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        payload: dict[str, object] = {
+            "surface": "deal_evaluation",
+            "resource_id": resource_id,
+            "expires_at": expires_at or int(time.time()) + 300,
+            "request": _request(),
+            "policy": _policy(),
+        }
+        approval = self.client.post(
+            "/policy/approval-message",
+            headers=headers,
+            json=payload,
+        )
+        self.assertEqual(approval.status_code, 200, approval.text)
+        approval_body = approval.json()
+        signer = Account.from_key(signing_key)
+        payload.update(
+            {
+                "previous_decision_hash": approval_body[
+                    "previous_decision_hash"
+                ],
+                "approver_address": signer.address,
+                "approval_signature": Account.sign_message(
+                    encode_defunct(text=approval_body["approval_message"]),
+                    private_key=signing_key,
+                ).signature.hex(),
+                "idempotency_key": _evaluate_idempotency_key(
+                    approval_body["approval_message_hash"]
+                ),
+            }
+        )
+        return headers, payload, approval_body
+
     def test_policy_endpoint_requires_runtime_auth(self):
         missing = self._post(token="")
         wrong = self._post(token="wrong-token")
@@ -203,6 +254,21 @@ class PolicyKernelApiTest(unittest.TestCase):
         self.assertEqual(missing.status_code, 401)
         self.assertEqual(wrong.status_code, 403)
         self.assertEqual(status_missing.status_code, 401)
+
+    def test_review_queue_anchor_surface_is_not_exposed_by_generic_policy_api(self):
+        response = self.client.post(
+            "/policy/evaluate",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            json={
+                "surface": "review_queue_state",
+                "resource_id": "review-authority-context",
+                "expires_at": int(time.time()) + 300,
+                "request": _request(),
+                "policy": _policy(),
+                "previous_decision_hash": ZERO_DECISION_HASH,
+            },
+        )
+        self.assertEqual(response.status_code, 422)
 
     def test_compute_context_is_server_derived_and_cannot_be_caller_supplied(self):
         intent = ComputeDispatchIntent.create(
@@ -226,6 +292,9 @@ class PolicyKernelApiTest(unittest.TestCase):
             workload_schema="dnai.compute.workload.inference.v1",
             manifest_commitment="0x" + "91" * 32,
             workload_commitment="0x" + "92" * 32,
+            workload_source_kind="wallet",
+            workload_execution_binding_commitment="sha256:" + "94" * 32,
+            workload_recipient_release_commitment="sha256:" + "95" * 32,
         )
 
         class AuthoritativeJournal:
@@ -462,6 +531,145 @@ class PolicyKernelApiTest(unittest.TestCase):
             status.json()["record"]["rollback_anchor"],
         )
         self.assertNotIn("deal-7", status.text)
+
+    def test_exact_evaluate_retry_returns_original_result_without_second_append(self):
+        headers, payload, _approval = self._idempotent_evaluate_payload(
+            resource_id="deal-idempotent-replay"
+        )
+
+        first = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+        replay = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), first.json())
+        self.assertNotIn("idempotency_key", replay.json())
+        self.assertEqual(
+            api._get_execution_policy_store().latest(
+                surface="deal_evaluation",
+                resource_id="deal-idempotent-replay",
+            )["sequence"],
+            1,
+        )
+        self.assertEqual(len(self.anchor_gateway.records), 1)
+
+    def test_evaluate_idempotency_key_rejects_changed_body_or_signature(self):
+        other = Account.from_key(OTHER_PRIVATE_KEY)
+        other_hash = execution_policy_approver_hash(other.address)
+        root = execution_policy_approver_root_hash(
+            [self.approver_hash, other_hash]
+        )
+        api.settings = api.settings.model_copy(
+            update={
+                "execution_policy_approved_signers": (
+                    f"{self.approver.address},{other.address}"
+                ),
+                "execution_policy_approver_root_hash": root,
+                "execution_policy_approval_domain": _approval_domain(root),
+            }
+        )
+        headers, payload, approval = self._idempotent_evaluate_payload(
+            resource_id="deal-idempotency-conflict"
+        )
+        first = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+
+        changed_body = {
+            **payload,
+            "request": _request(request_id="changed-request"),
+        }
+        body_conflict = self.client.post(
+            "/policy/evaluate", headers=headers, json=changed_body
+        )
+
+        changed_signature = {
+            **payload,
+            "approver_address": other.address,
+            "approval_signature": Account.sign_message(
+                encode_defunct(text=approval["approval_message"]),
+                private_key=OTHER_PRIVATE_KEY,
+            ).signature.hex(),
+        }
+        signature_conflict = self.client.post(
+            "/policy/evaluate", headers=headers, json=changed_signature
+        )
+
+        self.assertEqual(body_conflict.status_code, 409, body_conflict.text)
+        self.assertEqual(
+            body_conflict.json()["detail"],
+            "Execution policy idempotency key conflicts with request",
+        )
+        self.assertEqual(
+            signature_conflict.status_code,
+            409,
+            signature_conflict.text,
+        )
+        self.assertEqual(
+            signature_conflict.json()["detail"],
+            (
+                "Execution policy idempotency key was already used "
+                "for a different approval"
+            ),
+        )
+        self.assertEqual(len(self.anchor_gateway.records), 1)
+
+    def test_exact_retry_reconciles_pending_anchor_before_returning_success(self):
+        headers, payload, _approval = self._idempotent_evaluate_payload(
+            resource_id="deal-idempotent-anchor-recovery"
+        )
+        self.anchor_gateway.fail_next_anchor = True
+
+        failed = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+        recovered = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+
+        self.assertEqual(failed.status_code, 503, failed.text)
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        self.assertEqual(
+            recovered.json()["execution_binding"]["sequence"],
+            1,
+        )
+        self.assertEqual(len(self.anchor_gateway.records), 1)
+
+    def test_replay_still_requires_auth_and_an_unexpired_intent(self):
+        expires_at = int(time.time()) + 300
+        headers, payload, _approval = self._idempotent_evaluate_payload(
+            resource_id="deal-idempotent-auth-expiry",
+            expires_at=expires_at,
+        )
+        first = self.client.post(
+            "/policy/evaluate", headers=headers, json=payload
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+
+        missing_auth = self.client.post("/policy/evaluate", json=payload)
+        wrong_auth = self.client.post(
+            "/policy/evaluate",
+            headers={"Authorization": "Bearer wrong-token"},
+            json=payload,
+        )
+        with patch("time.time", return_value=expires_at + 1):
+            expired = self.client.post(
+                "/policy/evaluate", headers=headers, json=payload
+            )
+
+        self.assertEqual(missing_auth.status_code, 401, missing_auth.text)
+        self.assertEqual(wrong_auth.status_code, 403, wrong_auth.text)
+        self.assertEqual(expired.status_code, 400, expired.text)
+        self.assertEqual(
+            expired.json()["detail"],
+            "Execution policy decision intent is expired",
+        )
+        self.assertEqual(len(self.anchor_gateway.records), 1)
 
     def test_malformed_and_oversized_policy_inputs_return_bounded_deny(self):
         malformed_request = _request(raw_private_artifact="do-not-echo")

@@ -54,6 +54,29 @@ def valid_transactions($expectedCount):
   and all(.[].blockTimestamp; is_safe_uint and . > 0)
   and ([.[].transactionHash] | unique | length) == length;
 
+def valid_usdc_finalized_authority($asset; $runtimeCodeHash; $symbol; $decimals):
+  type == "object"
+  and keys == [
+    "assetAddress",
+    "chainId",
+    "decimals",
+    "finalizedBlockHash",
+    "finalizedBlockNumber",
+    "proof",
+    "runtimeCodeHash",
+    "schema",
+    "symbol"
+  ]
+  and .schema == "dnai.base-sepolia-usdc-finalized-authority.v1"
+  and .chainId == 84532
+  and ((.assetAddress | ascii_downcase) == ($asset | ascii_downcase))
+  and ((.runtimeCodeHash | ascii_downcase) == ($runtimeCodeHash | ascii_downcase))
+  and .symbol == $symbol
+  and .decimals == $decimals
+  and (.finalizedBlockNumber | is_safe_uint and . > 0)
+  and (.finalizedBlockHash | is_nonzero_bytes32)
+  and .proof == "two_distinct_https_rpcs_exact_finalized_numeric_block_eth_getCode_and_eth_call_agreement";
+
 . as $root
 | require(type == "object"; "deployment ledger must be a JSON object")
 | require((.network | type) == "object" and .network.chainId == $chainId;
@@ -99,6 +122,17 @@ def valid_transactions($expectedCount):
     "compute metering release binding is invalid")
 | require(($baseSepoliaUsdc | is_address) and ($baseSepoliaUsdc | ascii_downcase) != zero_address;
     "Base Sepolia USDC address is invalid")
+| require(($baseSepoliaUsdcCodeHash | is_nonzero_bytes32)
+    and $baseSepoliaUsdcSymbol == "USDC"
+    and ($baseSepoliaUsdcDecimals | is_safe_uint) and $baseSepoliaUsdcDecimals == 6;
+    "Base Sepolia USDC signed authority is invalid")
+| require(($usdcFinalizedAuthority
+      | valid_usdc_finalized_authority(
+          $baseSepoliaUsdc;
+          $baseSepoliaUsdcCodeHash;
+          $baseSepoliaUsdcSymbol;
+          $baseSepoliaUsdcDecimals));
+    "Base Sepolia USDC finalized authority receipt is invalid")
 | require(($meteringVerifier | is_address) and ($meteringQvlVerifier | is_address)
     and ($pendingMeteringVerifier | is_address) and ($pendingMeteringQvlVerifier | is_address)
     and ($meteringPolicySetHash | is_bytes32) and ($pendingMeteringPolicySetHash | is_bytes32)
@@ -165,7 +199,7 @@ def valid_transactions($expectedCount):
     "compute release history is missing, duplicated, or out of order")
 | require((.contracts.computeCreditVault.latestReleasePhase // 0) == ($phase - 1);
     "current ComputeCreditVault release phase is out of order")
-| require($developerFeeFrozen and $developerFeeBps <= 2000;
+| require($developerFeeFrozen and $developerFeeBps <= 100;
     "compute developer fee is not exact and frozen")
 | require(
     if $phase == 1 then
@@ -354,7 +388,8 @@ def valid_transactions($expectedCount):
     latestReleaseRecordedAt: $recordedAt,
     latestReleaseSourceCommit: $sourceCommit,
     latestReleaseReviewEnvelopeSha256: $reviewEnvelopeSha256,
-    latestReleaseFinalAuthoritySha256: $finalAuthoritySha256
+    latestReleaseFinalAuthoritySha256: $finalAuthoritySha256,
+    latestUsdcFinalizedAuthority: $usdcFinalizedAuthority
   })
 | .computeReleaseHistory = ((.computeReleaseHistory // []) + [{
     kind: "compute_exact_release_policy_phase",
@@ -379,5 +414,6 @@ def valid_transactions($expectedCount):
     meteringVerifier: $meteringVerifierExpected,
     meteringQvlVerifier: $meteringQvlVerifierExpected,
     meteringPolicySetHash: $meteringPolicySetHashExpected,
+    usdcFinalizedAuthority: $usdcFinalizedAuthority,
     postState: $postState
   }])

@@ -26,9 +26,9 @@ export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER = Object.freeze([
   "--independent-metering-independent-tdx-verdict",
 ]);
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES =
-  1024 * 1024;
+  2 * 1024 * 1024;
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES =
-  8 * 1024 * 1024;
+  16 * 1024 * 1024;
 export const PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_BASENAME_BY_FLAG =
   Object.freeze(Object.fromEntries(
     PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.map((flag) => [

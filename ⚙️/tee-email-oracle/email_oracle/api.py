@@ -666,3 +666,11 @@ async def provision_credentials_encrypted(payload: EncryptedCredentialPayload):
         tdx_quote_hash=_hash_text(quote) if quote else "",
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+# Keep the outbound Human Review capability in its own narrow module.  This
+# service-level include is the only integration point with the OTP API; the
+# router owns bounded parsing, release authorization, SMTP, and idempotency.
+from email_oracle.review_notifications import router as review_notification_router
+
+app.include_router(review_notification_router)

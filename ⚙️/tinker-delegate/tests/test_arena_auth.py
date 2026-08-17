@@ -7,6 +7,7 @@ from eth_account.messages import encode_defunct
 from tinker_delegate.arena_auth import (
     ARENA_AGENT_MANAGE_SCOPE,
     ARENA_AGENT_MANAGEMENT_SCOPES,
+    ARENA_OWNER_MANAGE_SCOPE,
     ARENA_OWNER_READ_SCOPE,
     ARENA_SESSION_SCOPES,
     ARENA_SUBMIT_SCOPE,
@@ -16,6 +17,8 @@ from tinker_delegate.arena_auth import (
     ArenaWalletChallengeStore,
     _decode_token,
     _encode_token,
+    arena_agent_store_integrity_key,
+    arena_store_integrity_key,
     arena_token_signing_key,
 )
 from tinker_delegate.config import Settings
@@ -90,6 +93,9 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
         self.assertIn("urn:dnai:scope:challenge:submit", challenge.message)
         self.assertEqual(claims.scopes, ARENA_SESSION_SCOPES)
         self.assertIn(f"urn:dnai:scope:{ARENA_OWNER_READ_SCOPE}", challenge.message)
+        self.assertIn(f"urn:dnai:scope:{ARENA_OWNER_MANAGE_SCOPE}", challenge.message)
+        self.assertIn("cancel only before worker claim", challenge.message)
+        self.assertIn("retry terminal ciphertext unlink", challenge.message)
         self.assertNotIn(ARENA_AGENT_MANAGE_SCOPE, challenge.message)
         verified = self.service.verify_token(
             token,
@@ -107,6 +113,14 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
             now=150,
         )
         self.assertEqual(owner_verified.scopes, ARENA_SESSION_SCOPES)
+        manage_verified = self.service.verify_token(
+            token,
+            required_scope=ARENA_OWNER_MANAGE_SCOPE,
+            challenge_id="synthetic-assay-qc",
+            challenge_version="1.0.0",
+            now=150,
+        )
+        self.assertEqual(manage_verified.scopes, ARENA_SESSION_SCOPES)
         with self.assertRaisesRegex(ArenaAuthError, "missing required"):
             self.service.verify_token(
                 token,
@@ -150,7 +164,11 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
             now=120,
         )
         self.assertEqual(verified.scopes, ARENA_AGENT_MANAGEMENT_SCOPES)
-        for disallowed in (ARENA_SUBMIT_SCOPE, ARENA_OWNER_READ_SCOPE):
+        for disallowed in (
+            ARENA_SUBMIT_SCOPE,
+            ARENA_OWNER_READ_SCOPE,
+            ARENA_OWNER_MANAGE_SCOPE,
+        ):
             with self.subTest(disallowed=disallowed):
                 with self.assertRaisesRegex(ArenaAuthError, "missing required"):
                     self.service.verify_token(
@@ -299,6 +317,36 @@ class ArenaWalletAuthServiceTest(unittest.TestCase):
 
         self.assertEqual(len(key), 32)
         derive.assert_called_once_with("tinker/arena-auth-test")
+
+    def test_arena_queue_integrity_key_has_its_own_domain_and_dstack_path(self):
+        settings = Settings(
+            wallet_auth_signing_key=LOCAL_SIGNING_KEY,
+            arena_store_integrity_key="same-local-input-" + ("a" * 32),
+            arena_agent_store_integrity_key="same-local-input-" + ("a" * 32),
+            arena_store_integrity_key_path="tinker/arena-store-test",
+        )
+        with patch(
+            "tinker_delegate.arena_auth.dstack_utils.is_dstack_enabled",
+            return_value=False,
+        ):
+            queue_key = arena_store_integrity_key(settings)
+            agent_key = arena_agent_store_integrity_key(settings)
+        self.assertEqual(len(queue_key), 32)
+        self.assertNotEqual(queue_key, agent_key)
+
+        with (
+            patch(
+                "tinker_delegate.arena_auth.dstack_utils.is_dstack_enabled",
+                return_value=True,
+            ),
+            patch(
+                "tinker_delegate.arena_auth.dstack_utils.derive_storage_key",
+                return_value=b"q" * 32,
+            ) as derive,
+        ):
+            dstack_key = arena_store_integrity_key(settings)
+        self.assertEqual(len(dstack_key), 32)
+        derive.assert_called_once_with("tinker/arena-store-test")
 
     def test_missing_key_fails_before_challenge(self):
         service = ArenaWalletAuthService(Settings(), ArenaWalletChallengeStore())

@@ -50,6 +50,7 @@ OWNER = "0x" + "11" * 20
 WRITER = "0x" + "22" * 20
 CONTRACT = "0x" + "33" * 20
 RELEASE = "0x" + "44" * 32
+RELEASE_AUTHORITY_SHA256 = "sha256:" + "45" * 32
 CODE = bytes.fromhex("6001600055")
 CODE_HASH = "0x" + keccak(CODE).hex()
 BLOCK_99 = "0x" + "99" * 32
@@ -221,6 +222,7 @@ def _gateway(harness: _RpcHarness, **overrides) -> HttpsExecutionPolicyAnchorGat
         "runtime_code_hash": CODE_HASH,
         "writer_address": WRITER,
         "writer_release_commitment": RELEASE,
+        "release_authority_sha256": RELEASE_AUTHORITY_SHA256,
         "confirmations": 2,
         "max_block_age_seconds": 3_600,
         "max_future_block_skew_seconds": 30,

@@ -16,6 +16,10 @@ const CONFIGURE_GUARD = path.join(
   "scripts",
   "operator-policy-configure-guard.sh",
 );
+const RELEASE_CEREMONY_PATHS = path.join(
+  path.dirname(CONFIGURE_GUARD),
+  "release-ceremony-paths.sh",
+);
 
 test("tracked prior-operator ledger is explicitly historical and contains no present-authority wording", () => {
   const text = fs.readFileSync(LEGACY_LEDGER, "utf8");
@@ -38,7 +42,7 @@ test("tracked prior-operator ledger is explicitly historical and contains no pre
   );
 });
 
-test("fresh receipt projection and shared ceremony guard reject the legacy ledger", () => {
+test("fresh receipt projection and release ceremony boundary reject the legacy ledger", () => {
   const ledger = JSON.parse(fs.readFileSync(LEGACY_LEDGER, "utf8"));
   assert.throws(
     () => projectFreshContractDeploymentReceipt(ledger, {
@@ -50,9 +54,31 @@ test("fresh receipt projection and shared ceremony guard reject the legacy ledge
 
   const result = spawnSync(
     "bash",
-    ["-c", '. "$1"; MANIFEST_PATH="$2"; operator_policy_require_fresh_release_ledger', "bash", CONFIGURE_GUARD, LEGACY_LEDGER],
+    [
+      "-c",
+      [
+        'require_env() { local name="$1"; if [ -z "${!name:-}" ]; then return 1; fi; }',
+        'ROOT_DIR="$3"',
+        'DEPLOYMENT_MANIFEST_PATH="$4"',
+        'RELEASE_CEREMONY_LEDGER_PATH="$5"',
+        'RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT="$6"',
+        '. "$1"',
+        '. "$2"',
+        "operator_policy_resolve_release_ceremony_paths && operator_policy_require_fresh_release_ledger",
+      ].join("; "),
+      "bash",
+      RELEASE_CEREMONY_PATHS,
+      CONFIGURE_GUARD,
+      ROOT,
+      path.join(ROOT, "deployments", "fresh-base-sepolia.json"),
+      LEGACY_LEDGER,
+      path.join(ROOT, ".release-ceremony-evidence"),
+    ],
     { cwd: ROOT, encoding: "utf8" },
   );
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Historical schemaVersion 1, superseded, or non-fresh/);
+  assert.match(
+    result.stderr,
+    /historical deployments\/base-sepolia\.json ledger is never ceremony authority/i,
+  );
 });

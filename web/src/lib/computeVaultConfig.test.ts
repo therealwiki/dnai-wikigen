@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { parseComputeVaultConfig } from "./computeVaultConfig";
 
 const address = "0x1111111111111111111111111111111111111111";
+const nativeProvider = "0x7777777777777777777777777777777777777777";
+const erc20Provider = "0x8888888888888888888888888888888888888888";
 const hash = `0x${"ab".repeat(32)}`;
 const quotePin = `sha256:${"cd".repeat(32)}`;
 
@@ -25,6 +27,8 @@ describe("Compute vault release configuration", () => {
     expect(config.authorizationConfigured).toBe(false);
     expect(config.issues.join(" ")).toMatch(/METERING_POLICY_SET_HASH/);
     expect(config.issues.join(" ")).toMatch(/COMPUTE_METERING_VERIFIED_QUOTE_SHA256/);
+    expect(config.issues.join(" ")).toMatch(/DEVELOPER_FEE_BPS/);
+    expect(config.issues.join(" ")).toMatch(/NATIVE_PROVIDER/);
     expect(config.issues.join(" ")).toMatch(/complete release-pinned ERC20/);
   });
 
@@ -54,19 +58,49 @@ describe("Compute vault release configuration", () => {
       VITE_COMPUTE_VAULT_METERING_QVL_VERIFIER: "0x6666666666666666666666666666666666666666",
       VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH: hash,
       VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256: quotePin,
+      VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS: "100",
       VITE_COMPUTE_VAULT_TEE_IDENTITY: "0x4444444444444444444444444444444444444444",
       VITE_COMPUTE_VAULT_COMPOSE_HASH: hash,
       VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT: hash,
+      VITE_COMPUTE_VAULT_NATIVE_PROVIDER: nativeProvider,
       VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS: "0x5555555555555555555555555555555555555555",
       VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH: hash,
       VITE_COMPUTE_VAULT_ERC20_SYMBOL: "usdc",
       VITE_COMPUTE_VAULT_ERC20_DECIMALS: "6",
       VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT: hash,
+      VITE_COMPUTE_VAULT_ERC20_PROVIDER: erc20Provider,
     });
     expect(config.issues).toEqual([]);
     expect(config.authorizationConfigured).toBe(true);
     expect(config.token).toMatchObject({ symbol: "USDC", decimals: 6 });
     expect(config.meteringVerifiedQuoteSha256).toBe(quotePin);
+    expect(config.developerFeeBps).toBe(100);
+    expect(config.nativeRatePolicyProvider?.toLowerCase()).toBe(nativeProvider);
+    expect(config.token?.ratePolicyProvider?.toLowerCase()).toBe(erc20Provider);
+  });
+
+  it("rejects an unpinned fee or collapsed rate-policy payout recipients", () => {
+    const malformedFee = parseComputeVaultConfig({
+      VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS: "2001",
+    });
+    expect(malformedFee.developerFeeBps).toBeUndefined();
+    expect(malformedFee.issues.join(" ")).toMatch(/0 through 2000/);
+
+    const collapsedProviders = parseComputeVaultConfig({
+      VITE_COMPUTE_VAULT_NATIVE_PROVIDER: nativeProvider,
+      VITE_COMPUTE_VAULT_ERC20_PROVIDER: nativeProvider,
+    });
+    expect(collapsedProviders.issues).toContain(
+      "Compute vault native and ERC20 rate-policy providers must be distinct",
+    );
+
+    const zeroProvider = parseComputeVaultConfig({
+      VITE_COMPUTE_VAULT_NATIVE_PROVIDER:
+        "0x0000000000000000000000000000000000000000",
+    });
+    expect(zeroProvider.issues).toContain(
+      "VITE_COMPUTE_VAULT_NATIVE_PROVIDER cannot be the zero address",
+    );
   });
 
   it("requires distinct meter and metering-QVL release signers", () => {

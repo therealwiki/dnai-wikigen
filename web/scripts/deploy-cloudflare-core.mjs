@@ -10,15 +10,27 @@ import {
   serializeEnv,
 } from "./release-env-core.mjs";
 import { exactRpcEndpoints } from "./security-headers-core.mjs";
+import {
+  normalizeRoyaltyReleaseBrowserEnv,
+  ROYALTY_RELEASE_BROWSER_ENV_KEYS,
+} from "./royalty-release-env-core.mjs";
+import {
+  COLLABORATION_EXECUTION_RELEASE_ENV_KEYS,
+  normalizeCollaborationExecutionReleaseEnv,
+} from "./collaboration-execution-release-env-core.mjs";
 
 const LIVE_FEATURE_FLAGS = [
   "VITE_ENABLE_CONTRACT_WRITES",
   "VITE_ENABLE_ARTIFACT_UPLOAD",
   "VITE_ENABLE_COMPUTE_CONSOLE",
+  "VITE_ENABLE_TINKER_CUSTOMER",
+  "VITE_ENABLE_COLLABORATION",
   "VITE_ENABLE_ARENA_SUBMISSION",
   "VITE_ENABLE_COMPUTE_VAULT_FUNDING",
   "VITE_ENABLE_COMPUTE_VAULT_AUTHORIZATION",
   "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD",
+  "VITE_COLLABORATION_EXECUTION_ENABLED",
+  "VITE_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
 ];
 const FORBIDDEN_RELEASE_ENV_KEYS = Object.freeze([
   // This legacy name conflates the Diligence execution signer with the
@@ -115,6 +127,7 @@ const REQUIRED_LIVE_FEATURE_FLAGS = [
   "VITE_ENABLE_COMPUTE_VAULT_FUNDING",
   "VITE_ENABLE_COMPUTE_VAULT_AUTHORIZATION",
   "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD",
+  "VITE_COLLABORATION_EXECUTION_ENABLED",
 ];
 
 // These are the non-optional bindings for the baseline live product.
@@ -127,6 +140,8 @@ const REQUIRED_LIVE_BINDINGS = [
   "VITE_DILIGENCE_ROOM_ADDRESS",
   "VITE_DILIGENCE_ROOM_CODE_HASH",
   "VITE_DILIGENCE_ROOM_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER",
   "VITE_DILIGENCE_RESULT_VERIFIER",
   "VITE_DILIGENCE_ATTESTATION_VERIFIER",
   "VITE_DILIGENCE_QVL_RELEASE_POLICY_HASH",
@@ -134,6 +149,10 @@ const REQUIRED_LIVE_BINDINGS = [
   "VITE_CHALLENGE_REGISTRY_CODE_HASH",
   "VITE_ROYALTY_DISTRIBUTOR_ADDRESS",
   "VITE_ROYALTY_DISTRIBUTOR_CODE_HASH",
+  ...ROYALTY_RELEASE_BROWSER_ENV_KEYS,
+  ...COLLABORATION_EXECUTION_RELEASE_ENV_KEYS.filter(
+    (key) => !ROYALTY_RELEASE_BROWSER_ENV_KEYS.includes(key),
+  ),
   "VITE_TINKER_ENCUMBRANCE_ADDRESS",
   "VITE_TINKER_ENCUMBRANCE_CODE_HASH",
   "VITE_EMAIL_ORACLE_AUTH_ADDRESS",
@@ -169,14 +188,17 @@ const REQUIRED_LIVE_BINDINGS = [
   "VITE_COMPUTE_VAULT_METERING_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_QVL_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH",
+  "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
   "VITE_COMPUTE_VAULT_TEE_IDENTITY",
   "VITE_COMPUTE_VAULT_COMPOSE_HASH",
   "VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH",
   "VITE_COMPUTE_VAULT_ERC20_SYMBOL",
   "VITE_COMPUTE_VAULT_ERC20_DECIMALS",
   "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
   "VITE_COMPUTE_WORKLOAD_QVL_VERIFIER",
   "VITE_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH",
   "VITE_COMPUTE_WORKLOAD_COMPOSE_HASH",
@@ -205,6 +227,8 @@ const RELEASE_BINDINGS = [
   "VITE_DILIGENCE_ROOM_ADDRESS",
   "VITE_DILIGENCE_ROOM_CODE_HASH",
   "VITE_DILIGENCE_ROOM_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER",
+  "VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER",
   "VITE_DILIGENCE_RESULT_VERIFIER",
   "VITE_DILIGENCE_ATTESTATION_VERIFIER",
   "VITE_DILIGENCE_QVL_RELEASE_POLICY_HASH",
@@ -212,6 +236,10 @@ const RELEASE_BINDINGS = [
   "VITE_CHALLENGE_REGISTRY_CODE_HASH",
   "VITE_ROYALTY_DISTRIBUTOR_ADDRESS",
   "VITE_ROYALTY_DISTRIBUTOR_CODE_HASH",
+  ...ROYALTY_RELEASE_BROWSER_ENV_KEYS,
+  ...COLLABORATION_EXECUTION_RELEASE_ENV_KEYS.filter(
+    (key) => !ROYALTY_RELEASE_BROWSER_ENV_KEYS.includes(key),
+  ),
   "VITE_TINKER_ENCUMBRANCE_ADDRESS",
   "VITE_TINKER_ENCUMBRANCE_CODE_HASH",
   "VITE_EMAIL_ORACLE_AUTH_ADDRESS",
@@ -248,14 +276,17 @@ const RELEASE_BINDINGS = [
   "VITE_COMPUTE_VAULT_METERING_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_QVL_VERIFIER",
   "VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH",
+  "VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS",
   "VITE_COMPUTE_VAULT_TEE_IDENTITY",
   "VITE_COMPUTE_VAULT_COMPOSE_HASH",
   "VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_NATIVE_PROVIDER",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS",
   "VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH",
   "VITE_COMPUTE_VAULT_ERC20_SYMBOL",
   "VITE_COMPUTE_VAULT_ERC20_DECIMALS",
   "VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT",
+  "VITE_COMPUTE_VAULT_ERC20_PROVIDER",
   "VITE_COMPUTE_WORKLOAD_QVL_VERIFIER",
   "VITE_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH",
   "VITE_COMPUTE_WORKLOAD_COMPOSE_HASH",
@@ -530,6 +561,8 @@ export function validateSemanticValidationReceipt({ env, headSha, receipt }) {
     "release_inputs_sha256",
     "release_sha",
     "reviewer_authority_genesis_acceptance_sha256",
+    "royalty_release_history_receipt_sha256",
+    "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256",
     "schema",
     "status",
@@ -554,6 +587,8 @@ export function validateSemanticValidationReceipt({ env, headSha, receipt }) {
       receipt.compute_workload_activation_observation_sha256,
       receipt.compute_workload_browser_binding_sha256,
       receipt.live_activation_authority_sha256,
+      receipt.royalty_release_history_sha256,
+      receipt.royalty_release_history_receipt_sha256,
       receipt.runtime_authority_dependency_sha256,
       receipt.release_inputs_sha256,
       receipt.release_env_sha256,
@@ -574,6 +609,27 @@ export function validateSemanticValidationReceipt({ env, headSha, receipt }) {
       "live Cloudflare semantic validation receipt collapses D into the dist manifest",
     );
   }
+  const royaltyRelease = normalizeRoyaltyReleaseBrowserEnv(env);
+  if (receipt.royalty_release_history_sha256
+      !== royaltyRelease.historySha256
+    || receipt.royalty_release_history_receipt_sha256
+      !== royaltyRelease.historyReceiptSha256) {
+    throw new Error(
+      "live Cloudflare semantic authority does not bind the exact Royalty release H projection",
+    );
+  }
+  const collaborationRelease = normalizeCollaborationExecutionReleaseEnv(
+    env,
+    {
+      VITE_COLLABORATION_EXECUTION_RELEASE_SHA: expectedSha,
+      VITE_COLLABORATION_EXECUTION_MAIN_RUNTIME_CVM_ID:
+        clean(env.VITE_PHALA_CVM_ID),
+      VITE_ROYALTY_RELEASE_HISTORY_SHA256:
+        receipt.royalty_release_history_sha256,
+      VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256:
+        receipt.royalty_release_history_receipt_sha256,
+    },
+  );
   let serialized;
   try {
     serialized = canonicalEffectiveReleaseEnv(env);
@@ -595,6 +651,13 @@ export function validateSemanticValidationReceipt({ env, headSha, receipt }) {
     computeWorkloadBrowserBindingSha256:
       receipt.compute_workload_browser_binding_sha256,
     liveActivationAuthoritySha256: receipt.live_activation_authority_sha256,
+    royaltyReleaseHistorySha256: royaltyRelease.historySha256,
+    royaltyReleaseHistoryReceiptSha256: royaltyRelease.historyReceiptSha256,
+    finalReleaseAuthoritySha256:
+      collaborationRelease.VITE_FINAL_RELEASE_AUTHORITY_SHA256,
+    collaborationReleaseVerificationSha256:
+      collaborationRelease
+        .VITE_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256,
     runtimeAuthorityDependencySha256: receipt.runtime_authority_dependency_sha256,
     releaseInputsSha256: receipt.release_inputs_sha256,
     frontendBuildCandidateReceiptSha256:

@@ -27,9 +27,20 @@ import {
 } from "./phala-seven-cvm-historical-transcript.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_EXECUTION_ORDER,
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE,
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
 
 /**
@@ -46,13 +57,13 @@ export const PHALA_CVM_DOMAIN_LAUNCH_COMPLETION_EVIDENCE_SCHEMA =
 export const PHALA_CVM_DOMAIN_LAUNCH_COMPLETION_EVIDENCE_STATUS =
   "committed_private_production_posture_and_machine_verifier_evidence_bound";
 export const PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA =
-  "dnai.phala-seven-cvm-launch-completion-receipt.v4";
+  "dnai.phala-seven-cvm-launch-completion-receipt.v5";
 export const PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-seven-cvm-launch-completion-receipt/v4\0";
+  "dnai-wikigen/phala-seven-cvm-launch-completion-receipt/v5\0";
 export const PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_STATUS =
   "all_seven_committed_private_production_posture_and_machine_verifier_evidence_bound";
 export const PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_TRUTH =
-  "exact_seven_cvm_release_resource_posture_five_qvl_identity_and_two_workload_verdict_activation_evidence_leases_bound_with_private_identity_quote_transcript_persistence_no_external_quote_private_artifact_secret_or_live_authority";
+  "exact_seven_cvm_release_resource_posture_five_qvl_identity_and_two_workload_verdict_activation_evidence_leases_bound_after_exact_14_private_quote_and_collateral_transcript_persistence_with_no_public_quote_collateral_private_artifact_secret_or_live_authority";
 export const PHALA_SEVEN_CVM_COMPLETION_ORDER = Object.freeze([
   ...PHALA_SEVEN_CVM_RELEASE_VERIFICATION_EXECUTION_ORDER,
 ]);
@@ -131,6 +142,40 @@ function exactRecord(value, fields, label) {
     throw new TypeError(`${label} must contain exactly the frozen fields`);
   }
   return value;
+}
+
+function normalizeVersionedReleaseVerificationAuthority(value) {
+  const descriptor = isRecord(value)
+    ? Object.getOwnPropertyDescriptor(value, "schema")
+    : null;
+  if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+    throw new TypeError(
+      "seven-CVM completion release authority requires one own data schema",
+    );
+  }
+  if (descriptor.value
+      === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    const authority =
+      normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
+    return Object.freeze({
+      authority,
+      sha256:
+        currentPhalaSevenCvmReleaseVerificationAuthoritySha256(authority),
+    });
+  }
+  if (descriptor.value
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    const authority =
+      normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+    return Object.freeze({
+      authority,
+      sha256:
+        legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(authority),
+    });
+  }
+  throw new TypeError(
+    "seven-CVM completion release authority schema version is unsupported",
+  );
 }
 
 function sorted(value) {
@@ -516,11 +561,12 @@ export function normalizePhalaSevenCvmLaunchCompletionExpectedAuthority(value) {
     );
   }
 
-  const releaseAuthority = normalizePhalaSevenCvmReleaseVerificationAuthority(
+  const {
+    authority: releaseAuthority,
+    sha256: releaseAuthoritySha256,
+  } = normalizeVersionedReleaseVerificationAuthority(
     expected.release_verification_authority,
   );
-  const releaseAuthoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
   const runtimeAuthority = releaseAuthority.cvm_descriptor_runtime_authority;
   if (releaseAuthoritySha256 !== expected.release_verification_authority_sha256
     || releaseAuthority.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE
@@ -705,7 +751,11 @@ export function normalizePhalaSevenCvmLaunchCompletionReceipt(
     "live_traffic_authorized",
     "late_secret_activation_authorized",
     "compute_workload_recipient_activation_authorized",
+    "private_historical_transcript_persisted",
+    "private_historical_transcript_contains_raw_quote_and_collateral",
     "private_historical_identity_response_quote_bytes_persisted",
+    "raw_quote_publicly_disclosed",
+    "raw_collateral_publicly_disclosed",
     "raw_quote_external_egress",
     "raw_private_artifact_egress",
     "raw_secret_egress",
@@ -770,8 +820,13 @@ export function normalizePhalaSevenCvmLaunchCompletionReceipt(
     || parsed.live_traffic_authorized !== false
     || parsed.late_secret_activation_authorized !== false
     || parsed.compute_workload_recipient_activation_authorized !== false
+    || parsed.private_historical_transcript_persisted !== true
+    || parsed.private_historical_transcript_contains_raw_quote_and_collateral
+      !== true
     || parsed.private_historical_identity_response_quote_bytes_persisted
       !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
     || parsed.raw_quote_external_egress !== false
     || parsed.raw_private_artifact_egress !== false
     || parsed.raw_secret_egress !== false
@@ -873,7 +928,11 @@ export function normalizePhalaSevenCvmLaunchCompletionReceipt(
     live_traffic_authorized: false,
     late_secret_activation_authorized: false,
     compute_workload_recipient_activation_authorized: false,
+    private_historical_transcript_persisted: true,
+    private_historical_transcript_contains_raw_quote_and_collateral: true,
     private_historical_identity_response_quote_bytes_persisted: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_quote_external_egress: false,
     raw_private_artifact_egress: false,
     raw_secret_egress: false,
@@ -964,7 +1023,11 @@ export function createPhalaSevenCvmLaunchCompletionReceiptCandidate(
     live_traffic_authorized: false,
     late_secret_activation_authorized: false,
     compute_workload_recipient_activation_authorized: false,
+    private_historical_transcript_persisted: true,
+    private_historical_transcript_contains_raw_quote_and_collateral: true,
     private_historical_identity_response_quote_bytes_persisted: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_quote_external_egress: false,
     raw_private_artifact_egress: false,
     raw_secret_egress: false,

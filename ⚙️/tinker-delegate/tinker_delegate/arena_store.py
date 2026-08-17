@@ -21,6 +21,8 @@ rejected candidate.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fcntl
 import hashlib
 import hmac
@@ -44,25 +46,34 @@ from tinker_delegate.arena_safe_ir import (
 from tinker_delegate.ladder_release import LadderLeaderboard, LadderPolicy, LadderRelease
 
 
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 4
+STORE_INTEGRITY_SCHEMA = "dnai.arena-store-integrity.v1"
+STORE_INTEGRITY_ALGORITHM = "HMAC-SHA256"
+_STORE_INTEGRITY_DOMAIN = b"dnai-wikigen/arena-store-state/v1\0"
+_STORE_KEY_ID_DOMAIN = b"dnai-wikigen/arena-store-key-id/v1\0"
 CATALOG_SCHEMA_VERSION = 1
 CHALLENGE_SCHEMA_VERSION = 1
 SUBMISSION_SCHEMA_VERSION = 1
 PUBLIC_SUBMISSION_SCHEMA_VERSION = 2
+OWNER_SUBMISSION_SCHEMA_VERSION = 3
 PUBLIC_QUEUE_SCHEMA_VERSION = 2
 PUBLIC_LEADERBOARD_SCHEMA_VERSION = 2
-PUBLIC_OWNER_SUBMISSIONS_SCHEMA_VERSION = 2
+PUBLIC_OWNER_SUBMISSIONS_SCHEMA_VERSION = 3
 
 MAX_STORE_BYTES = 8 * 1024 * 1024
 MAX_CHALLENGES = 32
 MAX_SUBMISSIONS = 10_000
 MAX_QUEUE_EVENTS = 32
 MAX_PUBLIC_LEADERBOARD_ROWS = 100
+MAX_PUBLIC_QUEUE_ROWS = 100
 MAX_OWNER_SUBMISSION_ROWS = 100
+MAX_PUBLIC_CURSOR_BYTES = 512
 MAX_ENCRYPTED_REFERENCE_BYTES = 512
 MAX_IDEMPOTENCY_KEY_BYTES = 128
 MAX_PROJECT_ID_BYTES = 64
 MAX_TIMESTAMP = 4_102_444_800  # 2100-01-01 UTC; bounds caller-controlled integers.
+MAX_CIPHERTEXT_ERASE_ATTEMPTS = 1_000_000
+TERMINAL_CIPHERTEXT_RETENTION_SECONDS = 3_600
 
 BIO_CHALLENGE_ID = "synthetic-bio-assay-qc"
 BIO_CHALLENGE_VERSION = "1.0.0"
@@ -115,6 +126,20 @@ _ENCRYPTED_REFERENCE = re.compile(
 )
 _REFERENCE_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SUBMISSION_ID = re.compile(r"^sub_[0-9a-f]{24}$")
+_PUBLIC_CURSOR_BODY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+_PUBLIC_CURSOR_PREFIX = "arena_page_v1"
+_PUBLIC_CURSOR_VERSION = 1
+_PUBLIC_CURSOR_FIELDS = frozenset(
+    {
+        "version",
+        "surface",
+        "challenge_id",
+        "challenge_version",
+        "anchor_submission_id",
+        "order_sha256",
+    }
+)
 
 
 class ArenaStoreError(ValueError):
@@ -165,6 +190,24 @@ class QueueReason(str, Enum):
     CALLER_CANCELLED = "caller_cancelled"
     QUEUE_EXPIRED = "queue_expired"
     RETRY_EXHAUSTED = "retry_exhausted"
+
+
+class CiphertextState(str, Enum):
+    """Durable lifecycle of the sealed candidate directory entry."""
+
+    RETAINED = "retained"
+    ERASURE_PENDING = "erasure_pending"
+    ERASURE_RETRY_REQUIRED = "erasure_retry_required"
+    UNLINKED = "unlinked"
+
+
+class CiphertextEvidence(str, Enum):
+    """Bounded observation, deliberately not a physical-media erasure claim."""
+
+    NONE = "none"
+    DIRECTORY_ENTRY_UNLINKED = "directory_entry_unlinked"
+    DIRECTORY_ENTRY_ABSENT = "directory_entry_absent"
+    UNLINK_FAILED = "unlink_failed"
 
 
 _ALLOWED_TRANSITIONS: dict[QueueState, frozenset[QueueState]] = {
@@ -246,6 +289,17 @@ _EXPECTED_REASON_FOR_STATE: dict[QueueState, frozenset[QueueReason]] = {
     QueueState.DEAD_LETTER: frozenset({QueueReason.RETRY_EXHAUSTED}),
 }
 
+_TERMINAL_QUEUE_STATES = frozenset(
+    {
+        QueueState.COMPLETED,
+        QueueState.FAILED,
+        QueueState.WITHHELD,
+        QueueState.CANCELLED,
+        QueueState.EXPIRED,
+        QueueState.DEAD_LETTER,
+    }
+)
+
 
 def _require_exact_keys(
     payload: Mapping[str, Any], expected: frozenset[str], *, label: str
@@ -310,6 +364,172 @@ def _sha256_json(payload: Any, *, prefix: str) -> str:
     digest.update(b"\0")
     digest.update(_canonical_json(payload))
     return digest.hexdigest()
+
+
+def _public_page_order_sha256(
+    records: list["SubmissionRecord"],
+    *,
+    surface: str,
+) -> str:
+    """Commit to a complete ordered page source without encoding private order keys."""
+
+    return _sha256_json(
+        [record.submission_id for record in records],
+        prefix=f"arena_public_{surface}_page_order_v1",
+    )
+
+
+def _encode_public_page_cursor(
+    *,
+    surface: str,
+    challenge_id: str,
+    challenge_version: str,
+    anchor_submission_id: str,
+    order_sha256: str,
+) -> str:
+    """Encode a deterministic, integrity-checked public pagination cursor.
+
+    The cursor contains no wallet/project identity, score, reward, or exact
+    timing. Its checksum is not an authorization MAC: every decoded value is
+    still validated against the current public ordered set before use.
+    """
+
+    payload = {
+        "version": _PUBLIC_CURSOR_VERSION,
+        "surface": surface,
+        "challenge_id": challenge_id,
+        "challenge_version": challenge_version,
+        "anchor_submission_id": anchor_submission_id,
+        "order_sha256": order_sha256,
+    }
+    raw = _canonical_json(payload)
+    body = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    checksum = hashlib.sha256(
+        b"arena_public_page_cursor_v1\0" + raw
+    ).hexdigest()
+    cursor = f"{_PUBLIC_CURSOR_PREFIX}.{body}.{checksum}"
+    _require_bounded_string(
+        cursor,
+        label="public pagination cursor",
+        maximum_bytes=MAX_PUBLIC_CURSOR_BYTES,
+    )
+    return cursor
+
+
+def _decode_public_page_cursor(cursor: str) -> dict[str, Any]:
+    """Decode only the cursor envelope; scope and snapshot checks happen later."""
+
+    malformed = "public pagination cursor is malformed"
+    try:
+        token = _require_bounded_string(
+            cursor,
+            label="public pagination cursor",
+            maximum_bytes=MAX_PUBLIC_CURSOR_BYTES,
+        )
+        prefix, body, checksum = token.split(".")
+        if (
+            prefix != _PUBLIC_CURSOR_PREFIX
+            or not body
+            or not _PUBLIC_CURSOR_BODY.fullmatch(body)
+            or not _HEX_64.fullmatch(checksum)
+        ):
+            raise ArenaStoreError(malformed)
+        padding = "=" * (-len(body) % 4)
+        raw = base64.b64decode(
+            body + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+        if len(raw) > MAX_PUBLIC_CURSOR_BYTES:
+            raise ArenaStoreError(malformed)
+        expected_checksum = hashlib.sha256(
+            b"arena_public_page_cursor_v1\0" + raw
+        ).hexdigest()
+        if not hmac.compare_digest(checksum, expected_checksum):
+            raise ArenaStoreError(malformed)
+        payload = json.loads(
+            raw.decode("ascii"),
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=lambda value: _raise(
+                f"non-finite JSON constant is forbidden: {value}"
+            ),
+        )
+        if not isinstance(payload, Mapping):
+            raise ArenaStoreError(malformed)
+        _require_exact_keys(
+            payload,
+            _PUBLIC_CURSOR_FIELDS,
+            label="public pagination cursor",
+        )
+        if raw != _canonical_json(payload):
+            raise ArenaStoreError(malformed)
+        if payload["version"] != _PUBLIC_CURSOR_VERSION:
+            raise ArenaStoreError(malformed)
+        surface = payload["surface"]
+        challenge_id = payload["challenge_id"]
+        challenge_version = payload["challenge_version"]
+        anchor_submission_id = payload["anchor_submission_id"]
+        order_sha256 = payload["order_sha256"]
+        if surface not in {"queue", "leaderboard"}:
+            raise ArenaStoreError(malformed)
+        if (
+            not isinstance(challenge_id, str)
+            or not _IDENTIFIER.fullmatch(challenge_id)
+            or not isinstance(challenge_version, str)
+            or not _SEMVER.fullmatch(challenge_version)
+            or not isinstance(anchor_submission_id, str)
+            or not _SUBMISSION_ID.fullmatch(anchor_submission_id)
+            or not isinstance(order_sha256, str)
+            or not _HEX_64.fullmatch(order_sha256)
+        ):
+            raise ArenaStoreError(malformed)
+        return dict(payload)
+    except (
+        ArenaStoreError,
+        UnicodeDecodeError,
+        ValueError,
+        binascii.Error,
+    ):
+        raise ArenaStoreError(malformed) from None
+
+
+def _public_page_start(
+    records: list["SubmissionRecord"],
+    *,
+    cursor: str | None,
+    surface: str,
+    challenge_id: str,
+    challenge_version: str,
+    order_sha256: str,
+) -> int:
+    """Resolve a cursor only inside its exact immutable public page snapshot."""
+
+    if cursor is None:
+        return 0
+    payload = _decode_public_page_cursor(cursor)
+    if payload["surface"] != surface:
+        raise ArenaStoreError("public pagination cursor is outside this surface")
+    if (
+        payload["challenge_id"] != challenge_id
+        or payload["challenge_version"] != challenge_version
+    ):
+        raise ArenaStoreError(
+            "public pagination cursor is outside this challenge page"
+        )
+    if not hmac.compare_digest(payload["order_sha256"], order_sha256):
+        raise ArenaStoreError("public pagination cursor is stale")
+    anchor_submission_id = payload["anchor_submission_id"]
+    try:
+        return next(
+            index + 1
+            for index, record in enumerate(records)
+            if hmac.compare_digest(
+                record.submission_id,
+                anchor_submission_id,
+            )
+        )
+    except StopIteration:
+        raise ArenaStoreError("public pagination cursor is stale") from None
 
 
 @dataclass(frozen=True)
@@ -1339,6 +1559,58 @@ def _unobserved_execution_provenance(runtime: str) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class CiphertextReceipt:
+    """Non-secret commitments retained after the ciphertext is unlinked."""
+
+    blob_sha256: str
+    ciphertext_sha256: str
+    key_id: str
+
+    _FIELDS = frozenset({"blob_sha256", "ciphertext_sha256", "key_id"})
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("blob_sha256", self.blob_sha256),
+            ("ciphertext_sha256", self.ciphertext_sha256),
+            ("key_id", self.key_id),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value.startswith("sha256:")
+                or not _HEX_64.fullmatch(value.removeprefix("sha256:"))
+            ):
+                raise ArenaStoreError(f"ciphertext receipt {label} is malformed")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "blob_sha256": self.blob_sha256,
+            "ciphertext_sha256": self.ciphertext_sha256,
+            "key_id": self.key_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "CiphertextReceipt":
+        _require_exact_keys(payload, cls._FIELDS, label="ciphertext receipt")
+        return cls(
+            blob_sha256=_require_bounded_string(
+                payload["blob_sha256"],
+                label="ciphertext receipt blob_sha256",
+                maximum_bytes=71,
+            ),
+            ciphertext_sha256=_require_bounded_string(
+                payload["ciphertext_sha256"],
+                label="ciphertext receipt ciphertext_sha256",
+                maximum_bytes=71,
+            ),
+            key_id=_require_bounded_string(
+                payload["key_id"],
+                label="ciphertext receipt key_id",
+                maximum_bytes=71,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class SubmissionRecord:
     submission_id: str
     challenge_id: str
@@ -1351,6 +1623,13 @@ class SubmissionRecord:
     created_at: int
     updated_at: int
     events: tuple[QueueEvent, ...]
+    ciphertext_receipt: CiphertextReceipt | None = None
+    worker_claimed_at: int | None = None
+    ciphertext_state: CiphertextState = CiphertextState.RETAINED
+    ciphertext_retention_deadline: int | None = None
+    ciphertext_erase_attempts: int = 0
+    ciphertext_last_erase_at: int | None = None
+    ciphertext_evidence: CiphertextEvidence = CiphertextEvidence.NONE
     ladder_release: LadderRelease | None = None
     ladder_released_at: int | None = None
     execution_provenance: ExecutionProvenance | None = None
@@ -1368,10 +1647,28 @@ class SubmissionRecord:
             "created_at",
             "updated_at",
             "events",
+            "ciphertext_receipt",
+            "worker_claimed_at",
+            "ciphertext_state",
+            "ciphertext_retention_deadline",
+            "ciphertext_erase_attempts",
+            "ciphertext_last_erase_at",
+            "ciphertext_evidence",
             "ladder_release",
             "ladder_released_at",
             "execution_provenance",
             "raw_candidate_persisted",
+        }
+    )
+    _LEGACY_PERSISTED_FIELDS = _PERSISTED_FIELDS - frozenset(
+        {
+            "ciphertext_receipt",
+            "worker_claimed_at",
+            "ciphertext_state",
+            "ciphertext_retention_deadline",
+            "ciphertext_erase_attempts",
+            "ciphertext_last_erase_at",
+            "ciphertext_evidence",
         }
     )
 
@@ -1421,6 +1718,121 @@ class SubmissionRecord:
             raise ArenaStoreError("submission created_at does not match first queue event")
         if self.events[-1].to_state != self.state or self.events[-1].occurred_at > self.updated_at:
             raise ArenaStoreError("submission queue state or updated_at does not match history")
+        if self.ciphertext_receipt is not None and not isinstance(
+            self.ciphertext_receipt, CiphertextReceipt
+        ):
+            raise ArenaStoreError("submission ciphertext receipt is malformed")
+        if self.worker_claimed_at is not None:
+            _require_int(
+                self.worker_claimed_at,
+                label="worker_claimed_at",
+                minimum=self.created_at,
+                maximum=self.updated_at,
+            )
+        if not isinstance(self.ciphertext_state, CiphertextState):
+            raise ArenaStoreError("submission ciphertext state is malformed")
+        _require_int(
+            self.ciphertext_erase_attempts,
+            label="ciphertext_erase_attempts",
+            minimum=0,
+            maximum=MAX_CIPHERTEXT_ERASE_ATTEMPTS,
+        )
+        if self.ciphertext_last_erase_at is not None:
+            _require_int(
+                self.ciphertext_last_erase_at,
+                label="ciphertext_last_erase_at",
+                minimum=self.created_at,
+                maximum=self.updated_at,
+            )
+            if self.ciphertext_erase_attempts < 1:
+                raise ArenaStoreError(
+                    "ciphertext erase timestamp requires an attempted unlink"
+                )
+        elif self.ciphertext_erase_attempts != 0:
+            raise ArenaStoreError(
+                "ciphertext erase attempts require a last-attempt timestamp"
+            )
+        if not isinstance(self.ciphertext_evidence, CiphertextEvidence):
+            raise ArenaStoreError("submission ciphertext evidence is malformed")
+        terminal = self.state in _TERMINAL_QUEUE_STATES
+        if terminal:
+            if self.ciphertext_state == CiphertextState.RETAINED:
+                raise ArenaStoreError(
+                    "terminal submission cannot retain ciphertext without an erasure state"
+                )
+            if self.ciphertext_retention_deadline is None:
+                raise ArenaStoreError(
+                    "terminal submission needs a bounded ciphertext retention deadline"
+                )
+            _require_int(
+                self.ciphertext_retention_deadline,
+                label="ciphertext_retention_deadline",
+                minimum=self.events[-1].occurred_at,
+                maximum=MAX_TIMESTAMP,
+            )
+        elif (
+            self.ciphertext_state != CiphertextState.RETAINED
+            or self.ciphertext_retention_deadline is not None
+            or self.ciphertext_erase_attempts != 0
+            or self.ciphertext_last_erase_at is not None
+            or self.ciphertext_evidence != CiphertextEvidence.NONE
+        ):
+            raise ArenaStoreError(
+                "nonterminal submission cannot enter ciphertext erasure lifecycle"
+            )
+        expected_evidence = {
+            CiphertextState.RETAINED: frozenset({CiphertextEvidence.NONE}),
+            CiphertextState.ERASURE_PENDING: frozenset({CiphertextEvidence.NONE}),
+            CiphertextState.ERASURE_RETRY_REQUIRED: frozenset(
+                {CiphertextEvidence.UNLINK_FAILED}
+            ),
+            CiphertextState.UNLINKED: frozenset(
+                {
+                    CiphertextEvidence.DIRECTORY_ENTRY_UNLINKED,
+                    CiphertextEvidence.DIRECTORY_ENTRY_ABSENT,
+                }
+            ),
+        }
+        if self.ciphertext_evidence not in expected_evidence[self.ciphertext_state]:
+            raise ArenaStoreError(
+                "submission ciphertext evidence does not match its lifecycle state"
+            )
+        if (
+            self.ciphertext_state
+            in {CiphertextState.RETAINED, CiphertextState.ERASURE_PENDING}
+            and self.ciphertext_erase_attempts != 0
+        ):
+            raise ArenaStoreError(
+                "unattempted ciphertext lifecycle state cannot record unlink attempts"
+            )
+        if (
+            self.ciphertext_state
+            in {
+                CiphertextState.ERASURE_RETRY_REQUIRED,
+                CiphertextState.UNLINKED,
+            }
+            and self.ciphertext_erase_attempts < 1
+        ):
+            raise ArenaStoreError(
+                "attempted ciphertext lifecycle state requires unlink evidence"
+            )
+        if (
+            terminal
+            and self.ciphertext_retention_deadline
+            > min(
+                MAX_TIMESTAMP,
+                self.events[-1].occurred_at
+                + TERMINAL_CIPHERTEXT_RETENTION_SECONDS,
+            )
+        ):
+            raise ArenaStoreError(
+                "ciphertext retention deadline exceeds the configured maximum"
+            )
+        if (
+            self.state == QueueState.CANCELLED
+            and self.worker_claimed_at is not None
+        ):
+            raise ArenaStoreError("a worker-claimed submission cannot be owner-cancelled")
         if (self.ladder_release is None) != (self.ladder_released_at is None):
             raise ArenaStoreError("Ladder release and timestamp must be present together")
         if self.ladder_release is not None:
@@ -1503,9 +1915,10 @@ class SubmissionRecord:
             if self.execution_provenance is not None
             else _unobserved_execution_provenance(self.manifest.runtime)
         )
+        lifecycle = self.to_ciphertext_lifecycle_dict()
         return {
             "surface": "arena_owner_submission",
-            "schema_version": PUBLIC_SUBMISSION_SCHEMA_VERSION,
+            "schema_version": OWNER_SUBMISSION_SCHEMA_VERSION,
             "submission_id": self.submission_id,
             "challenge_id": self.challenge_id,
             "challenge_version": self.challenge_version,
@@ -1524,6 +1937,22 @@ class SubmissionRecord:
                 if self.execution_provenance is not None
                 else EXECUTION_ASSURANCE
             ),
+            "ciphertext_lifecycle": lifecycle,
+            "owner_actions": {
+                "can_cancel": (
+                    self.worker_claimed_at is None
+                    and self.state not in _TERMINAL_QUEUE_STATES
+                    and QueueState.CANCELLED in _ALLOWED_TRANSITIONS[self.state]
+                ),
+                "can_retry_ciphertext_erasure": (
+                    self.state in _TERMINAL_QUEUE_STATES
+                    and self.ciphertext_state
+                    in {
+                        CiphertextState.ERASURE_PENDING,
+                        CiphertextState.ERASURE_RETRY_REQUIRED,
+                    }
+                ),
+            },
             "raw_candidate_egress": False,
             "encrypted_reference_egress": False,
             "exact_score_egress": False,
@@ -1532,9 +1961,43 @@ class SubmissionRecord:
             "internal_error_egress": False,
         }
 
+    def to_ciphertext_lifecycle_dict(self) -> dict[str, Any]:
+        """Return owner-safe retention state and current unlink evidence."""
+
+        return {
+            "state": self.ciphertext_state.value,
+            "retention_policy": "terminal_immediate_unlink_with_bounded_retry",
+            "max_terminal_retention_seconds": (
+                TERMINAL_CIPHERTEXT_RETENTION_SECONDS
+            ),
+            "unlink_attempts": self.ciphertext_erase_attempts,
+            "current_state_evidence": self.ciphertext_evidence.value,
+            "retryable": self.ciphertext_state
+            in {
+                CiphertextState.ERASURE_PENDING,
+                CiphertextState.ERASURE_RETRY_REQUIRED,
+            },
+            "receipt": (
+                self.ciphertext_receipt.to_dict()
+                if self.ciphertext_receipt is not None
+                else None
+            ),
+            "ciphertext_egress": False,
+            "sealed_reference_egress": False,
+            "physical_erasure_claimed": False,
+        }
+
     def to_worker_dict(self, capability: ExecutionCapability) -> dict[str, Any]:
         """Return the sealed reference only to an in-boundary runtime caller."""
 
+        if (
+            self.worker_claimed_at is None
+            or self.state in _TERMINAL_QUEUE_STATES
+            or self.ciphertext_state != CiphertextState.RETAINED
+        ):
+            raise ArenaStoreError(
+                "Arena ciphertext is unavailable without a current durable worker claim"
+            )
         public = self.to_public_dict(capability)
         public["surface"] = "arena_submission_worker"
         public["encrypted_reference"] = self.encrypted_reference
@@ -1553,6 +2016,17 @@ class SubmissionRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "events": [event.to_persisted_dict() for event in self.events],
+            "ciphertext_receipt": (
+                self.ciphertext_receipt.to_dict()
+                if self.ciphertext_receipt is not None
+                else None
+            ),
+            "worker_claimed_at": self.worker_claimed_at,
+            "ciphertext_state": self.ciphertext_state.value,
+            "ciphertext_retention_deadline": self.ciphertext_retention_deadline,
+            "ciphertext_erase_attempts": self.ciphertext_erase_attempts,
+            "ciphertext_last_erase_at": self.ciphertext_last_erase_at,
+            "ciphertext_evidence": self.ciphertext_evidence.value,
             "ladder_release": (
                 _ladder_release_to_dict(self.ladder_release)
                 if self.ladder_release is not None
@@ -1568,8 +2042,19 @@ class SubmissionRecord:
         }
 
     @classmethod
-    def from_persisted_dict(cls, payload: Mapping[str, Any]) -> "SubmissionRecord":
-        _require_exact_keys(payload, cls._PERSISTED_FIELDS, label="persisted submission")
+    def from_persisted_dict(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        legacy_schema: bool = False,
+    ) -> "SubmissionRecord":
+        _require_exact_keys(
+            payload,
+            cls._LEGACY_PERSISTED_FIELDS
+            if legacy_schema
+            else cls._PERSISTED_FIELDS,
+            label="persisted submission",
+        )
         if payload["raw_candidate_persisted"] is not False:
             raise ArenaStoreError("Arena must never persist a raw candidate")
         identity = payload["identity"]
@@ -1589,6 +2074,103 @@ class SubmissionRecord:
             state = QueueState(str(payload["state"]))
         except ValueError as exc:
             raise ArenaStoreError("persisted submission state is unsupported") from exc
+        events_parsed = tuple(
+            QueueEvent.from_mapping(event)
+            if isinstance(event, Mapping)
+            else _raise("persisted queue event must be an object")
+            for event in events
+        )
+        if legacy_schema:
+            worker_claimed_at = next(
+                (
+                    event.occurred_at
+                    for event in events_parsed
+                    if event.to_state == QueueState.PROVISIONING
+                ),
+                None,
+            )
+            terminal = state in _TERMINAL_QUEUE_STATES
+            ciphertext_state = (
+                CiphertextState.ERASURE_PENDING
+                if terminal
+                else CiphertextState.RETAINED
+            )
+            ciphertext_retention_deadline = (
+                min(
+                    MAX_TIMESTAMP,
+                    _require_int(
+                        payload["updated_at"],
+                        label="updated_at",
+                        minimum=0,
+                        maximum=MAX_TIMESTAMP,
+                    )
+                    + TERMINAL_CIPHERTEXT_RETENTION_SECONDS,
+                )
+                if terminal
+                else None
+            )
+            ciphertext_receipt = None
+            ciphertext_erase_attempts = 0
+            ciphertext_last_erase_at = None
+            ciphertext_evidence = CiphertextEvidence.NONE
+        else:
+            receipt_payload = payload["ciphertext_receipt"]
+            if receipt_payload is not None and not isinstance(
+                receipt_payload, Mapping
+            ):
+                raise ArenaStoreError("persisted ciphertext receipt is malformed")
+            ciphertext_receipt = (
+                CiphertextReceipt.from_mapping(receipt_payload)
+                if receipt_payload is not None
+                else None
+            )
+            worker_claimed_at = (
+                None
+                if payload["worker_claimed_at"] is None
+                else _require_int(
+                    payload["worker_claimed_at"],
+                    label="worker_claimed_at",
+                    minimum=0,
+                    maximum=MAX_TIMESTAMP,
+                )
+            )
+            try:
+                ciphertext_state = CiphertextState(
+                    str(payload["ciphertext_state"])
+                )
+                ciphertext_evidence = CiphertextEvidence(
+                    str(payload["ciphertext_evidence"])
+                )
+            except ValueError as exc:
+                raise ArenaStoreError(
+                    "persisted ciphertext lifecycle is unsupported"
+                ) from exc
+            ciphertext_retention_deadline = (
+                None
+                if payload["ciphertext_retention_deadline"] is None
+                else _require_int(
+                    payload["ciphertext_retention_deadline"],
+                    label="ciphertext_retention_deadline",
+                    minimum=0,
+                    maximum=MAX_TIMESTAMP,
+                )
+            )
+            ciphertext_erase_attempts = _require_int(
+                payload["ciphertext_erase_attempts"],
+                label="ciphertext_erase_attempts",
+                minimum=0,
+                maximum=MAX_CIPHERTEXT_ERASE_ATTEMPTS,
+            )
+            ciphertext_last_erase_at = (
+                None
+                if payload["ciphertext_last_erase_at"] is None
+                else _require_int(
+                    payload["ciphertext_last_erase_at"],
+                    label="ciphertext_last_erase_at",
+                    minimum=0,
+                    maximum=MAX_TIMESTAMP,
+                )
+            )
         return cls(
             submission_id=_require_bounded_string(
                 payload["submission_id"], label="submission_id", maximum_bytes=28
@@ -1626,12 +2208,14 @@ class SubmissionRecord:
                 minimum=0,
                 maximum=MAX_TIMESTAMP,
             ),
-            events=tuple(
-                QueueEvent.from_mapping(event)
-                if isinstance(event, Mapping)
-                else _raise("persisted queue event must be an object")
-                for event in events
-            ),
+            events=events_parsed,
+            ciphertext_receipt=ciphertext_receipt,
+            worker_claimed_at=worker_claimed_at,
+            ciphertext_state=ciphertext_state,
+            ciphertext_retention_deadline=ciphertext_retention_deadline,
+            ciphertext_erase_attempts=ciphertext_erase_attempts,
+            ciphertext_last_erase_at=ciphertext_last_erase_at,
+            ciphertext_evidence=ciphertext_evidence,
             ladder_release=(
                 _ladder_release_from_mapping(ladder_payload)
                 if ladder_payload is not None
@@ -1659,6 +2243,12 @@ class SubmissionRecord:
 class SubmissionResult:
     submission: SubmissionRecord
     created: bool
+
+
+@dataclass(frozen=True)
+class OwnerCancellationResult:
+    submission: SubmissionRecord
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -1718,7 +2308,7 @@ class _ArenaState:
 
 
 class ArenaStore:
-    """Thread- and process-safe, copy-on-write Arena JSON store.
+    """Thread- and process-safe, authenticated copy-on-write Arena JSON store.
 
     Writes use a same-directory temporary file, ``fsync``, and ``os.replace``.
     Every operation also holds a same-directory ``flock`` and reloads the
@@ -1726,27 +2316,42 @@ class ArenaStore:
     therefore share this file without stale snapshots or lost updates. The
     worker uses a distinct lifetime lease for single-worker election; this
     lock protects state consistency rather than evaluator ownership.
+
+    The canonical state envelope is authenticated with a purpose-separated
+    HMAC key. This detects modification under the current key, but it does not
+    make the file monotonic: an older valid envelope can still be replayed by
+    an actor able to roll back the backing volume. No caller may describe this
+    HMAC as anti-rollback evidence.
     """
 
-    _ROOT_FIELDS = frozenset(
+    _ROOT_FIELDS = frozenset({"surface", "schema_version", "payload", "integrity"})
+    _PAYLOAD_FIELDS = frozenset(
         {
-            "surface",
-            "schema_version",
             "catalog",
             "submissions",
             "idempotency",
             "raw_candidate_persisted",
         }
     )
+    _INTEGRITY_FIELDS = frozenset({"schema", "algorithm", "key_id", "value"})
 
     def __init__(
         self,
         path: str | Path,
         *,
+        integrity_key: bytes,
         catalog: ChallengeCatalog | None = None,
         max_submissions: int = MAX_SUBMISSIONS,
     ) -> None:
         self.path = Path(path)
+        if not isinstance(integrity_key, bytes) or len(integrity_key) < 32:
+            raise ArenaStoreError(
+                "Arena store integrity key must be at least 32 bytes"
+            )
+        self._integrity_key = bytes(integrity_key)
+        self._integrity_key_id = hashlib.sha256(
+            _STORE_KEY_ID_DOMAIN + self._integrity_key
+        ).hexdigest()
         self._lock = threading.RLock()
         self._operation_depth = 0
         self._operation_fd: int | None = None
@@ -1801,6 +2406,38 @@ class ArenaStore:
             record = self._get_submission(submission_id)
             challenge = self._state.catalog.get(
                 record.challenge_id, record.challenge_version
+            )
+            return record.to_owner_dict(challenge.execution_capability)
+
+    def authenticated_owner_submission(
+        self,
+        submission_id: str,
+        *,
+        wallet_address: str,
+        challenge_id: str,
+        challenge_version: str,
+    ) -> dict[str, Any]:
+        """Return an owner row only after exact wallet and version matching."""
+
+        if (
+            not isinstance(wallet_address, str)
+            or not _WALLET_ADDRESS.fullmatch(wallet_address)
+        ):
+            raise ArenaStoreError("owner wallet address is malformed")
+        with self._operation():
+            record = self._get_submission(submission_id)
+            if (
+                record.challenge_id != challenge_id
+                or record.challenge_version != challenge_version
+                or not hmac.compare_digest(
+                    record.identity.wallet_address,
+                    wallet_address.lower(),
+                )
+            ):
+                raise ArenaStoreError("unknown Arena owner submission")
+            challenge = self._state.catalog.get(
+                record.challenge_id,
+                record.challenge_version,
             )
             return record.to_owner_dict(challenge.execution_capability)
 
@@ -1904,6 +2541,177 @@ class ArenaStore:
                 "internal_error_egress": False,
             }
 
+    def cancel_owner_submission(
+        self,
+        submission_id: str,
+        *,
+        wallet_address: str,
+        challenge_id: str,
+        challenge_version: str,
+        occurred_at: int,
+    ) -> OwnerCancellationResult:
+        """Atomically cancel only while the authenticated owner still wins the claim race."""
+
+        if (
+            not isinstance(wallet_address, str)
+            or not _WALLET_ADDRESS.fullmatch(wallet_address)
+        ):
+            raise ArenaStoreError("owner wallet address is malformed")
+        timestamp = _require_int(
+            occurred_at,
+            label="occurred_at",
+            minimum=0,
+            maximum=MAX_TIMESTAMP,
+        )
+        with self._operation():
+            current = self._get_submission(submission_id)
+            if (
+                current.challenge_id != challenge_id
+                or current.challenge_version != challenge_version
+                or not hmac.compare_digest(
+                    current.identity.wallet_address,
+                    wallet_address.lower(),
+                )
+            ):
+                # Keep an unknown identifier and a different owner's identifier
+                # on the same bounded error surface.
+                raise ArenaStoreError("unknown Arena owner submission")
+            if current.state == QueueState.CANCELLED:
+                return OwnerCancellationResult(submission=current, changed=False)
+            if current.worker_claimed_at is not None:
+                raise ArenaStoreError(
+                    "Arena submission was already durably claimed by a worker"
+                )
+            if (
+                current.state in _TERMINAL_QUEUE_STATES
+                or QueueState.CANCELLED not in _ALLOWED_TRANSITIONS[current.state]
+            ):
+                raise ArenaStoreError(
+                    "Arena submission is no longer owner-cancellable"
+                )
+            if timestamp < current.updated_at:
+                raise ArenaStoreError("owner cancellation timestamp regressed")
+            if len(current.events) >= MAX_QUEUE_EVENTS:
+                raise ArenaStoreError("queue event history is full")
+            event = QueueEvent(
+                sequence=len(current.events) + 1,
+                from_state=current.state,
+                to_state=QueueState.CANCELLED,
+                occurred_at=timestamp,
+                reason=QueueReason.CALLER_CANCELLED,
+            )
+            updated = replace(
+                current,
+                state=QueueState.CANCELLED,
+                updated_at=timestamp,
+                events=current.events + (event,),
+                ciphertext_state=CiphertextState.ERASURE_PENDING,
+                ciphertext_retention_deadline=min(
+                    MAX_TIMESTAMP,
+                    timestamp + TERMINAL_CIPHERTEXT_RETENTION_SECONDS,
+                ),
+                ciphertext_erase_attempts=0,
+                ciphertext_last_erase_at=None,
+                ciphertext_evidence=CiphertextEvidence.NONE,
+            )
+            self._replace_submission(updated)
+            return OwnerCancellationResult(submission=updated, changed=True)
+
+    def record_ciphertext_erasure(
+        self,
+        submission_id: str,
+        *,
+        evidence: CiphertextEvidence | str,
+        occurred_at: int,
+    ) -> SubmissionRecord:
+        """Persist one bounded unlink observation; retries are idempotent."""
+
+        try:
+            observed = (
+                evidence
+                if isinstance(evidence, CiphertextEvidence)
+                else CiphertextEvidence(evidence)
+            )
+        except ValueError as exc:
+            raise ArenaStoreError("unsupported ciphertext erasure evidence") from exc
+        if observed not in {
+            CiphertextEvidence.DIRECTORY_ENTRY_UNLINKED,
+            CiphertextEvidence.DIRECTORY_ENTRY_ABSENT,
+            CiphertextEvidence.UNLINK_FAILED,
+        }:
+            raise ArenaStoreError("unsupported ciphertext erasure evidence")
+        timestamp = _require_int(
+            occurred_at,
+            label="occurred_at",
+            minimum=0,
+            maximum=MAX_TIMESTAMP,
+        )
+        with self._operation():
+            current = self._get_submission(submission_id)
+            if current.state not in _TERMINAL_QUEUE_STATES:
+                raise ArenaStoreError(
+                    "ciphertext erasure requires a terminal Arena submission"
+                )
+            if current.ciphertext_state == CiphertextState.UNLINKED:
+                return current
+            if timestamp < current.updated_at:
+                raise ArenaStoreError("ciphertext erasure timestamp regressed")
+            if current.ciphertext_erase_attempts >= MAX_CIPHERTEXT_ERASE_ATTEMPTS:
+                raise ArenaStoreError("ciphertext erasure attempt limit reached")
+            succeeded = observed in {
+                CiphertextEvidence.DIRECTORY_ENTRY_UNLINKED,
+                CiphertextEvidence.DIRECTORY_ENTRY_ABSENT,
+            }
+            updated = replace(
+                current,
+                updated_at=timestamp,
+                ciphertext_state=(
+                    CiphertextState.UNLINKED
+                    if succeeded
+                    else CiphertextState.ERASURE_RETRY_REQUIRED
+                ),
+                ciphertext_erase_attempts=current.ciphertext_erase_attempts + 1,
+                ciphertext_last_erase_at=timestamp,
+                ciphertext_evidence=observed,
+            )
+            self._replace_submission(updated)
+            return updated
+
+    def ciphertext_cleanup_candidates(
+        self,
+        *,
+        limit: int = 32,
+    ) -> tuple[SubmissionRecord, ...]:
+        """Return a bounded oldest-first snapshot for idempotent cleanup retry."""
+
+        cleanup_limit = _require_int(
+            limit,
+            label="ciphertext cleanup limit",
+            minimum=1,
+            maximum=100,
+        )
+        with self._operation():
+            candidates = sorted(
+                (
+                    record
+                    for record in self._state.submissions.values()
+                    if record.state in _TERMINAL_QUEUE_STATES
+                    and record.ciphertext_state
+                    in {
+                        CiphertextState.ERASURE_PENDING,
+                        CiphertextState.ERASURE_RETRY_REQUIRED,
+                    }
+                ),
+                key=lambda item: (
+                    item.ciphertext_retention_deadline
+                    if item.ciphertext_retention_deadline is not None
+                    else MAX_TIMESTAMP,
+                    item.updated_at,
+                    item.submission_id,
+                ),
+            )
+            return tuple(candidates[:cleanup_limit])
+
     def submit(
         self,
         *,
@@ -1915,6 +2723,7 @@ class ArenaStore:
         manifest: SubmissionManifest | Mapping[str, Any],
         idempotency_key: str,
         submitted_at: int,
+        ciphertext_receipt: CiphertextReceipt | Mapping[str, Any] | None = None,
     ) -> SubmissionResult:
         caller_identity = (
             identity
@@ -1928,6 +2737,17 @@ class ArenaStore:
         )
         commitment = _validate_candidate_commitment(candidate_commitment)
         encrypted_ref = _validate_encrypted_reference(encrypted_reference)
+        receipt = (
+            ciphertext_receipt
+            if isinstance(ciphertext_receipt, CiphertextReceipt)
+            else (
+                CiphertextReceipt.from_mapping(ciphertext_receipt)
+                if isinstance(ciphertext_receipt, Mapping)
+                else None
+            )
+        )
+        if ciphertext_receipt is not None and receipt is None:
+            raise ArenaStoreError("ciphertext receipt is malformed")
         timestamp = _require_int(
             submitted_at,
             label="submitted_at",
@@ -1963,6 +2783,8 @@ class ArenaStore:
                 "encrypted_reference": encrypted_ref,
                 "manifest": candidate_manifest.to_persisted_dict(),
             }
+            if receipt is not None:
+                request_payload["ciphertext_receipt"] = receipt.to_dict()
             request_hash = _sha256_json(
                 request_payload, prefix="arena_submission_request"
             )
@@ -2001,6 +2823,7 @@ class ArenaStore:
                 created_at=timestamp,
                 updated_at=timestamp,
                 events=(initial_event,),
+                ciphertext_receipt=receipt,
             )
             idem_record = _IdempotencyRecord(
                 key_hash=key_hash,
@@ -2044,6 +2867,13 @@ class ArenaStore:
                 )
             if transition_reason not in _EXPECTED_REASON_FOR_STATE[destination]:
                 raise ArenaStoreError("queue reason does not match destination state")
+            if (
+                destination == QueueState.CANCELLED
+                and current.worker_claimed_at is not None
+            ):
+                raise ArenaStoreError(
+                    "Arena submission was already durably claimed by a worker"
+                )
             if timestamp < current.updated_at:
                 raise ArenaStoreError("queue transition timestamp regressed")
             if len(current.events) >= MAX_QUEUE_EVENTS:
@@ -2068,6 +2898,40 @@ class ArenaStore:
                 state=destination,
                 updated_at=timestamp,
                 events=current.events + (event,),
+                worker_claimed_at=(
+                    timestamp
+                    if destination == QueueState.PROVISIONING
+                    and current.worker_claimed_at is None
+                    else current.worker_claimed_at
+                ),
+                ciphertext_state=(
+                    CiphertextState.ERASURE_PENDING
+                    if destination in _TERMINAL_QUEUE_STATES
+                    else current.ciphertext_state
+                ),
+                ciphertext_retention_deadline=(
+                    min(
+                        MAX_TIMESTAMP,
+                        timestamp + TERMINAL_CIPHERTEXT_RETENTION_SECONDS,
+                    )
+                    if destination in _TERMINAL_QUEUE_STATES
+                    else current.ciphertext_retention_deadline
+                ),
+                ciphertext_erase_attempts=(
+                    0
+                    if destination in _TERMINAL_QUEUE_STATES
+                    else current.ciphertext_erase_attempts
+                ),
+                ciphertext_last_erase_at=(
+                    None
+                    if destination in _TERMINAL_QUEUE_STATES
+                    else current.ciphertext_last_erase_at
+                ),
+                ciphertext_evidence=(
+                    CiphertextEvidence.NONE
+                    if destination in _TERMINAL_QUEUE_STATES
+                    else current.ciphertext_evidence
+                ),
             )
             self._replace_submission(updated)
             return updated
@@ -2153,6 +3017,14 @@ class ArenaStore:
                 updated_at=timestamp,
                 events=current.events + (event,),
                 execution_provenance=provenance,
+                ciphertext_state=CiphertextState.ERASURE_PENDING,
+                ciphertext_retention_deadline=min(
+                    MAX_TIMESTAMP,
+                    timestamp + TERMINAL_CIPHERTEXT_RETENTION_SECONDS,
+                ),
+                ciphertext_erase_attempts=0,
+                ciphertext_last_erase_at=None,
+                ciphertext_evidence=CiphertextEvidence.NONE,
             )
             self._replace_submission(updated)
             return updated
@@ -2248,6 +3120,7 @@ class ArenaStore:
         challenge_version: str,
         *,
         limit: int = MAX_PUBLIC_LEADERBOARD_ROWS,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         row_limit = _require_int(
             limit,
@@ -2286,9 +3159,34 @@ class ArenaStore:
                     item.ladder_released_at,
                     item.submission_id,
                 ),
-            )[:row_limit]
+            )
+            order_sha256 = _public_page_order_sha256(
+                ranked,
+                surface="leaderboard",
+            )
+            start = _public_page_start(
+                ranked,
+                cursor=cursor,
+                surface="leaderboard",
+                challenge_id=challenge_id,
+                challenge_version=challenge_version,
+                order_sha256=order_sha256,
+            )
+            page = ranked[start : start + row_limit]
+            has_more = start + len(page) < len(ranked)
+            next_cursor = (
+                _encode_public_page_cursor(
+                    surface="leaderboard",
+                    challenge_id=challenge_id,
+                    challenge_version=challenge_version,
+                    anchor_submission_id=page[-1].submission_id,
+                    order_sha256=order_sha256,
+                )
+                if has_more and page
+                else None
+            )
             rows: list[dict[str, Any]] = []
-            for rank, record in enumerate(ranked, start=1):
+            for rank, record in enumerate(page, start=start + 1):
                 release = record.ladder_release
                 assert release is not None
                 rows.append(
@@ -2330,6 +3228,8 @@ class ArenaStore:
                 "step_denominator": challenge.ladder_policy.step_denominator,
                 "row_count": len(rows),
                 "rows": rows,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
                 "execution_capability": challenge.execution_capability.to_public_dict(),
                 "product_status": PER_ROW_PRODUCT_STATUS,
                 "execution_assurance": PER_ROW_EXECUTION_ASSURANCE,
@@ -2344,9 +3244,15 @@ class ArenaStore:
         challenge_id: str,
         challenge_version: str,
         *,
-        limit: int = 100,
+        limit: int = MAX_PUBLIC_QUEUE_ROWS,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        queue_limit = _require_int(limit, label="queue limit", minimum=1, maximum=100)
+        queue_limit = _require_int(
+            limit,
+            label="queue limit",
+            minimum=1,
+            maximum=MAX_PUBLIC_QUEUE_ROWS,
+        )
         with self._operation():
             challenge = self._state.catalog.get(challenge_id, challenge_version)
             matching = sorted(
@@ -2357,17 +3263,44 @@ class ArenaStore:
                     and record.challenge_version == challenge_version
                 ),
                 key=lambda item: (-item.created_at, item.submission_id),
-            )[:queue_limit]
+            )
+            order_sha256 = _public_page_order_sha256(
+                matching,
+                surface="queue",
+            )
+            start = _public_page_start(
+                matching,
+                cursor=cursor,
+                surface="queue",
+                challenge_id=challenge_id,
+                challenge_version=challenge_version,
+                order_sha256=order_sha256,
+            )
+            page = matching[start : start + queue_limit]
+            has_more = start + len(page) < len(matching)
+            next_cursor = (
+                _encode_public_page_cursor(
+                    surface="queue",
+                    challenge_id=challenge_id,
+                    challenge_version=challenge_version,
+                    anchor_submission_id=page[-1].submission_id,
+                    order_sha256=order_sha256,
+                )
+                if has_more and page
+                else None
+            )
             return {
                 "surface": "arena_public_queue",
                 "schema_version": PUBLIC_QUEUE_SCHEMA_VERSION,
                 "challenge_id": challenge_id,
                 "challenge_version": challenge_version,
-                "submission_count": len(matching),
+                "submission_count": len(page),
                 "submissions": [
                     record.to_public_dict(challenge.execution_capability)
-                    for record in matching
+                    for record in page
                 ],
+                "has_more": has_more,
+                "next_cursor": next_cursor,
                 "execution_capability": challenge.execution_capability.to_public_dict(),
                 "product_status": PER_ROW_PRODUCT_STATUS,
                 "execution_assurance": PER_ROW_EXECUTION_ASSURANCE,
@@ -2421,11 +3354,15 @@ class ArenaStore:
         *,
         occurred_at: int,
     ) -> ArenaWorkerClaim:
-        """Atomically claim a queued safe-IR record or resume a durable claim.
+        """Atomically win the owner-cancel race before any ciphertext read.
 
-        ``queued -> provisioning`` is the durable claim boundary. A record
-        already in ``provisioning``, ``public_tests``, or ``sealed_eval`` is a
-        crash-recovery claim and is returned without another queue event.
+        The first call persists ``worker_claimed_at`` even when the record is
+        still ``submitted`` or ``policy_screen``. This marker and owner
+        cancellation are compare-and-swap operations under the same
+        cross-process store lock. Once policy screening later reaches
+        ``queued``, a repeated claim call performs the existing
+        ``queued -> provisioning`` event. A replacement worker resumes the
+        durable marker without reading a cancelled record.
         """
 
         timestamp = _require_int(
@@ -2444,21 +3381,38 @@ class ArenaStore:
                 raise ArenaStoreError(
                     "worker claim requires the pinned DNASeq safe-IR challenge"
                 )
+            recovered = current.worker_claimed_at is not None
+            if current.state in _TERMINAL_QUEUE_STATES:
+                raise ArenaStoreError(
+                    "Arena submission is not ready for a worker claim"
+                )
+            if timestamp < current.updated_at:
+                raise ArenaStoreError("worker claim timestamp regressed")
+            if current.worker_claimed_at is None:
+                current = replace(
+                    current,
+                    worker_claimed_at=timestamp,
+                    updated_at=timestamp,
+                )
+                self._replace_submission(current)
             if current.state == QueueState.QUEUED:
-                claimed = self.transition_submission(
+                current = self.transition_submission(
                     submission_id,
                     QueueState.PROVISIONING,
                     reason=QueueReason.WORKER_CLAIMED,
                     occurred_at=timestamp,
                 )
-                return ArenaWorkerClaim(submission=claimed, recovered=False)
-            if current.state in {
+            elif current.state not in {
+                QueueState.SUBMITTED,
+                QueueState.POLICY_SCREEN,
                 QueueState.PROVISIONING,
                 QueueState.PUBLIC_TESTS,
                 QueueState.SEALED_EVAL,
             }:
-                return ArenaWorkerClaim(submission=current, recovered=True)
-            raise ArenaStoreError("Arena submission is not ready for a worker claim")
+                raise ArenaStoreError(
+                    "Arena submission is not ready for a worker claim"
+                )
+            return ArenaWorkerClaim(submission=current, recovered=recovered)
 
     def _get_submission(self, submission_id: str) -> SubmissionRecord:
         if not isinstance(submission_id, str) or not _SUBMISSION_ID.fullmatch(submission_id):
@@ -2636,8 +3590,6 @@ class ArenaStore:
 
     def _persist(self, state: _ArenaState) -> None:
         payload = {
-            "surface": "arena_store",
-            "schema_version": STORE_SCHEMA_VERSION,
             "catalog": state.catalog.to_public_dict(),
             "submissions": [
                 record.to_persisted_dict()
@@ -2653,7 +3605,26 @@ class ArenaStore:
             ],
             "raw_candidate_persisted": False,
         }
-        encoded = _canonical_json(payload) + b"\n"
+        authenticated = {
+            "surface": "arena_store",
+            "schema_version": STORE_SCHEMA_VERSION,
+            "payload": payload,
+        }
+        authenticated_bytes = _canonical_json(authenticated)
+        root = {
+            **authenticated,
+            "integrity": {
+                "schema": STORE_INTEGRITY_SCHEMA,
+                "algorithm": STORE_INTEGRITY_ALGORITHM,
+                "key_id": self._integrity_key_id,
+                "value": hmac.new(
+                    self._integrity_key,
+                    _STORE_INTEGRITY_DOMAIN + authenticated_bytes,
+                    hashlib.sha256,
+                ).hexdigest(),
+            },
+        }
+        encoded = _canonical_json(root) + b"\n"
         if len(encoded) > MAX_STORE_BYTES:
             raise ArenaStoreError("Arena persistence exceeds maximum store size")
         parent = self.path.parent
@@ -2696,17 +3667,64 @@ class ArenaStore:
             _require_exact_keys(payload, self._ROOT_FIELDS, label="Arena persistence root")
             if payload["surface"] != "arena_store":
                 raise ArenaStoreError("unsupported Arena persistence surface")
-            if payload["raw_candidate_persisted"] is not False:
-                raise ArenaStoreError("Arena persistence claims raw candidate data")
-            _require_int(
+            schema_version = _require_int(
                 payload["schema_version"],
                 label="Arena store schema_version",
                 minimum=STORE_SCHEMA_VERSION,
                 maximum=STORE_SCHEMA_VERSION,
             )
-            raw_catalog = payload["catalog"]
-            raw_submissions = payload["submissions"]
-            raw_idempotency = payload["idempotency"]
+            if schema_version != STORE_SCHEMA_VERSION:
+                raise ArenaStoreError("unsupported Arena persistence schema")
+            state_payload = payload["payload"]
+            integrity = payload["integrity"]
+            if not isinstance(state_payload, Mapping):
+                raise ArenaStoreError("Arena persistence payload must be an object")
+            _require_exact_keys(
+                state_payload,
+                self._PAYLOAD_FIELDS,
+                label="Arena persistence payload",
+            )
+            if not isinstance(integrity, Mapping):
+                raise ArenaStoreError("Arena persistence integrity must be an object")
+            _require_exact_keys(
+                integrity,
+                self._INTEGRITY_FIELDS,
+                label="Arena persistence integrity",
+            )
+            if (
+                integrity["schema"] != STORE_INTEGRITY_SCHEMA
+                or integrity["algorithm"] != STORE_INTEGRITY_ALGORITHM
+                or not isinstance(integrity["key_id"], str)
+                or not _HEX_64.fullmatch(integrity["key_id"])
+                or not isinstance(integrity["value"], str)
+                or not _HEX_64.fullmatch(integrity["value"])
+            ):
+                raise ArenaStoreError(
+                    "Arena persistence integrity envelope is invalid"
+                )
+            if not hmac.compare_digest(
+                integrity["key_id"], self._integrity_key_id
+            ):
+                raise ArenaStoreError("Arena persistence integrity key is invalid")
+            authenticated = {
+                "surface": payload["surface"],
+                "schema_version": payload["schema_version"],
+                "payload": state_payload,
+            }
+            expected_integrity = hmac.new(
+                self._integrity_key,
+                _STORE_INTEGRITY_DOMAIN + _canonical_json(authenticated),
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(integrity["value"], expected_integrity):
+                raise ArenaStoreError("Arena persistence integrity verification failed")
+            if raw != _canonical_json(payload) + b"\n":
+                raise ArenaStoreError("Arena persistence is not canonical JSON")
+            if state_payload["raw_candidate_persisted"] is not False:
+                raise ArenaStoreError("Arena persistence claims raw candidate data")
+            raw_catalog = state_payload["catalog"]
+            raw_submissions = state_payload["submissions"]
+            raw_idempotency = state_payload["idempotency"]
             if not isinstance(raw_catalog, Mapping):
                 raise ArenaStoreError("persisted catalog must be an object")
             if not isinstance(raw_submissions, list) or not isinstance(raw_idempotency, list):
@@ -2721,7 +3739,10 @@ class ArenaStore:
             for item in raw_submissions:
                 if not isinstance(item, Mapping):
                     raise ArenaStoreError("persisted submission must be an object")
-                record = SubmissionRecord.from_persisted_dict(item)
+                record = SubmissionRecord.from_persisted_dict(
+                    item,
+                    legacy_schema=False,
+                )
                 if record.submission_id in submissions:
                     raise ArenaStoreError("duplicate persisted submission_id")
                 challenge = catalog.get(record.challenge_id, record.challenge_version)
@@ -2750,6 +3771,15 @@ class ArenaStore:
                         "candidate_commitment": submission.candidate_commitment,
                         "encrypted_reference": submission.encrypted_reference,
                         "manifest": submission.manifest.to_persisted_dict(),
+                        **(
+                            {
+                                "ciphertext_receipt": (
+                                    submission.ciphertext_receipt.to_dict()
+                                )
+                            }
+                            if submission.ciphertext_receipt is not None
+                            else {}
+                        ),
                     },
                     prefix="arena_submission_request",
                 )

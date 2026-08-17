@@ -16,7 +16,7 @@ bash -n "$LEGACY_APPROVAL_HELPER"
 for guard_boundary in \
   'ceremony-authority-projector.mjs' \
   'dnai.ceremony-authority-projection.v1' \
-  '.assertionCount == 31' \
+  '.assertionCount == 36' \
   'Legacy OPERATOR_POLICY_PACKET_* inputs are retired and rejected' \
   'OPERATOR_POLICY_PROJECTION_PATH is rejected; ceremony values are derived by the code-owned cryptographic projector'; do
   if ! grep -Fq "$guard_boundary" "$POLICY_GUARD"; then

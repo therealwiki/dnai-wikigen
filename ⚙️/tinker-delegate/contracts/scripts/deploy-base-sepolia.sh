@@ -11,14 +11,18 @@ CHAIN_ID=84532
 ACCOUNT=dev
 MIN_EMAIL_ORACLE_UPGRADE_DELAY=172800
 MAX_EMAIL_ORACLE_UPGRADE_DELAY=31536000
-MAX_COMPUTE_VAULT_DEVELOPER_FEE_BPS=2000
+MAX_COMPUTE_VAULT_DEVELOPER_FEE_BPS=100
 MAX_TINKER_POLICY_UNITS_PER_OPERATION=10000000000000000000
+FRESH_DEPLOYMENT_GAS_ESTIMATE_MULTIPLIER=130
+FRESH_DEPLOYMENT_BALANCE_SAFETY_MULTIPLIER=2
 ZERO_BYTES32=0x0000000000000000000000000000000000000000000000000000000000000000
 AUTHORITY_COMMITMENT_READ_PROOF=primary_and_secondary_rpc_exact_getter_match_at_deployment_block
 DEPLOYMENT_INTENT_RECEIPT=""
 DEPLOYMENT_REVIEW_RECEIPT=""
 DEPLOYMENT_REVIEW_EVIDENCE_SHA256=""
 REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256=""
+TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT=""
+TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256=""
 DEPLOYMENT_INTENT_SHA256_BYTES32=""
 REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256_BYTES32=""
 DEPLOYMENT_RECEIPTS='{}'
@@ -30,6 +34,8 @@ BROADCAST_JOURNAL_PATH=""
 RELEASE_WORKSPACE=""
 RELEASE_WORKTREE=""
 RUN_PATH=""
+DRY_RUN_PATH=""
+DRY_RUN_OUTPUT=""
 VERIFICATION_RECEIPT_PATH=""
 tmp_manifest=""
 seed_manifest=""
@@ -104,6 +110,132 @@ validate_uint() {
   if [[ ! "$value" =~ ^[0-9]+$ ]]; then
     echo "$name must be an unsigned integer." >&2
     exit 1
+  fi
+}
+
+assert_exact_fresh_suite_transaction_plan() {
+  local artifact_path="$1"
+  if [ ! -f "$artifact_path" ] || [ -L "$artifact_path" ]; then
+    echo "Fresh-suite transaction-plan artifact is missing or unsafe: $artifact_path" >&2
+    return 1
+  fi
+  if [ "$(wc -c < "$artifact_path" | tr -d '[:space:]')" -gt 2097152 ]; then
+    echo "Fresh-suite transaction-plan artifact exceeds the 2 MiB evidence bound." >&2
+    return 1
+  fi
+  if ! jq -e '
+    (.transactions | type == "array" and length == 13)
+    and ([.transactions[] | {contractName, transactionType, function}] == [
+      {contractName:"DiligenceRoom",transactionType:"CREATE",function:null},
+      {contractName:"DiligenceRoom",transactionType:"CALL",function:"freezeFeeBps()"},
+      {contractName:"DiligenceRoom",transactionType:"CALL",function:"enableComputeSettlementPolicy()"},
+      {contractName:"DiligenceRoom",transactionType:"CALL",function:"setComposeApprovalRequired(bool)"},
+      {contractName:"DiligenceRoom",transactionType:"CALL",function:"setTeeIdentityApprovalRequired(bool)"},
+      {contractName:"DiligenceRoom",transactionType:"CALL",function:"freezeApprovalRequirements()"},
+      {contractName:"TinkerAccountEncumbrance",transactionType:"CREATE",function:null},
+      {contractName:"RoyaltyDistributor",transactionType:"CREATE",function:null},
+      {contractName:"ChallengeRegistry",transactionType:"CREATE",function:null},
+      {contractName:"ComputeCreditVault",transactionType:"CREATE",function:null},
+      {contractName:"ComputeCreditVault",transactionType:"CALL",function:"freezeDeveloperFee()"},
+      {contractName:"EmailOracleAuth",transactionType:"CREATE",function:null},
+      {contractName:"ExecutionPolicyAnchor",transactionType:"CREATE",function:null}
+    ])
+    and all(.transactions[];
+      (.transaction | type == "object")
+      and (.transaction.from | type == "string" and test("^0x[0-9a-fA-F]{40}$"))
+      and (.transaction.input | type == "string" and test("^0x([0-9a-fA-F]{2})+$"))
+      and (.transaction.nonce | (type == "string" or type == "number")))
+    )
+  ' "$artifact_path" >/dev/null; then
+    echo "Artifact must contain the exact ordered 13-transaction fresh-suite plan." >&2
+    return 1
+  fi
+}
+
+derive_dry_run_gas_requirement() {
+  local output_path="$1"
+  local estimate_json
+  local estimated_gas_units
+  local estimated_gas_price_gwei
+  local estimated_amount_eth
+  if [ ! -f "$output_path" ] || [ -L "$output_path" ] \
+    || [ "$(wc -c < "$output_path" | tr -d '[:space:]')" -gt 2097152 ]; then
+    echo "Forge dry-run output is missing, unsafe, or exceeds the 2 MiB bound." >&2
+    return 1
+  fi
+  if ! estimate_json="$(jq -sc '
+    [ .[] | select(
+        type == "object"
+        and keys == [
+          "chain",
+          "estimated_amount_required",
+          "estimated_gas_price",
+          "estimated_total_gas_used",
+          "token_symbol"
+        ]
+      ) ] as $estimates
+    | if ($estimates | length) == 1
+        and $estimates[0].chain == 84532
+        and ($estimates[0].estimated_total_gas_used | type == "number")
+        and ($estimates[0].estimated_total_gas_used | floor) == $estimates[0].estimated_total_gas_used
+        and $estimates[0].estimated_total_gas_used > 0
+        and $estimates[0].estimated_total_gas_used <= 9007199254740991
+        and ($estimates[0].estimated_gas_price | type == "string" and test("^(0|[1-9][0-9]*)(\\.[0-9]{1,9})?$"))
+        and ($estimates[0].estimated_amount_required | type == "string" and test("^(0|[1-9][0-9]*)(\\.[0-9]{1,18})?$"))
+        and $estimates[0].token_symbol == "ETH"
+      then $estimates[0]
+      else error("missing or malformed unique Base Sepolia gas estimate")
+      end
+  ' "$output_path")"; then
+    echo "Forge did not emit one canonical Base Sepolia gas estimate." >&2
+    return 1
+  fi
+  estimated_gas_units="$(jq -r '.estimated_total_gas_used' <<<"$estimate_json")"
+  estimated_gas_price_gwei="$(jq -r '.estimated_gas_price' <<<"$estimate_json")"
+  estimated_amount_eth="$(jq -r '.estimated_amount_required' <<<"$estimate_json")"
+  node --input-type=module - \
+    "$estimated_gas_units" \
+    "$estimated_gas_price_gwei" \
+    "$estimated_amount_eth" \
+    "$FRESH_DEPLOYMENT_BALANCE_SAFETY_MULTIPLIER" <<'NODE'
+const [gasText, priceText, amountText, safetyText] = process.argv.slice(2);
+function decimalUnits(value, decimals) {
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(value);
+  if (!match || (match[2] || "").length > decimals) throw new Error("invalid decimal units");
+  const fraction = (match[2] || "").padEnd(decimals, "0");
+  return BigInt(match[1]) * (10n ** BigInt(decimals)) + BigInt(fraction || "0");
+}
+try {
+  if (!/^[1-9][0-9]*$/.test(gasText) || !/^[1-9][0-9]*$/.test(safetyText)) {
+    throw new Error("invalid gas projection integers");
+  }
+  const gas = BigInt(gasText);
+  const gasPriceWei = decimalUnits(priceText, 9);
+  const forgeAmountWei = decimalUnits(amountText, 18);
+  if (gasPriceWei === 0n || gas * gasPriceWei !== forgeAmountWei) {
+    throw new Error("Forge gas projection is internally inconsistent");
+  }
+  const requiredBalanceWei = forgeAmountWei * BigInt(safetyText);
+  if (requiredBalanceWei === 0n) throw new Error("gas requirement is zero");
+  process.stdout.write(`${requiredBalanceWei}\t${priceText}\t${forgeAmountWei}\n`);
+} catch {
+  process.exitCode = 1;
+}
+NODE
+}
+
+require_balance_at_least() {
+  local actual_wei="$1"
+  local required_wei="$2"
+  if ! node --input-type=module - "$actual_wei" "$required_wei" <<'NODE'
+const [actual, required] = process.argv.slice(2);
+if (!/^(0|[1-9][0-9]*)$/.test(actual)
+  || !/^[1-9][0-9]*$/.test(required)
+  || BigInt(actual) < BigInt(required)) process.exitCode = 1;
+NODE
+  then
+    echo "DEPLOYMENT_OPERATOR balance does not cover the exact simulated 13-transaction gas requirement plus the code-owned safety margin." >&2
+    return 1
   fi
 }
 
@@ -610,7 +742,12 @@ require_env DEPLOYMENT_INTENT_PATH
 require_env DEPLOYMENT_INTENT_SHA256
 require_env OPERATOR_POLICY_REVIEW_ENVELOPE_PATH
 require_env OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256
+require_env RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH
+require_env RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH
+require_env RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH
+require_env RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH
 require_env DEPLOYMENT_OPERATOR
+require_env DILIGENCE_GOVERNANCE_CONTROLLER
 require_env COMPUTE_VAULT_DEVELOPER
 require_env COMPUTE_VAULT_DEVELOPER_FEE_BPS
 require_env RELEASE_SHA
@@ -621,6 +758,10 @@ require_env EMAIL_ORACLE_UPGRADE_DELAY
 
 require_absolute_authority_file DEPLOYMENT_INTENT_PATH
 require_absolute_authority_file OPERATOR_POLICY_REVIEW_ENVELOPE_PATH
+require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH
+require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH
+require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH
+require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH
 validate_sha256 DEPLOYMENT_INTENT_SHA256 "$DEPLOYMENT_INTENT_SHA256"
 validate_sha256 OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256 "$OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256"
 validate_release_sha RELEASE_SHA "$RELEASE_SHA"
@@ -679,7 +820,7 @@ if [ "${#DEPLOYMENT_INTENT_RECEIPT}" -gt 8192 ] || ! jq -e \
     and (.reviewerAuthorityCurrentStatusEpoch % 1) == 0
     and (.reviewerAuthorityCurrentStatusSha256 | test("^sha256:[0-9a-f]{64}$"))
     and .reviewerAuthorityCurrentStatusSha256 != "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-    and .staticContractInputCount == 2
+    and .staticContractInputCount == 3
   ' <<<"$DEPLOYMENT_INTENT_RECEIPT" >/dev/null; then
   echo "Deployment-intent receipt does not match the reviewed digest, release, or exact schema." >&2
   exit 1
@@ -744,12 +885,81 @@ validate_bytes32 \
 # the intent by construction and are measured into the later final authority.
 assert_intent_string_equal DEPLOYMENT_OPERATOR deploymentControl.operatorAddress
 assert_intent_string_equal RELEASE_SHA release.releaseSha
+assert_intent_string_equal DILIGENCE_GOVERNANCE_CONTROLLER staticContractInputs.diligenceRoom.governanceController
 assert_intent_string_equal COMPUTE_VAULT_DEVELOPER staticContractInputs.computeCreditVault.developer
 assert_intent_string_equal TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT staticContractInputs.tinkerAccountEncumbrance.accountCommitment
 assert_intent_number_equal COMPUTE_VAULT_DEVELOPER_FEE_BPS numericPolicy.contract.computeDeveloperFeeBps
 assert_intent_number_equal EMAIL_ORACLE_UPGRADE_DELAY numericPolicy.contract.emailOracleUpgradeDelaySeconds
 assert_intent_string_equal TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI numericPolicy.contract.tinkerMaxAddBalanceWei
 assert_intent_string_equal TINKER_ENCUMBRANCE_MAX_SPEND_WEI numericPolicy.contract.tinkerMaxSpendWei
+
+verify_current_tinker_account_binding_ceremony() {
+  local phase="$1"
+  local receipt
+  if ! receipt="$(
+    TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT="$TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT" \
+      node "$ROOT_DIR/scripts/tinker-account-binding-ceremony.mjs" \
+        ceremony-check \
+        --reviewer-genesis "$RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH" \
+        --genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH" \
+        --current-status "$RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH" \
+        --status-history "$RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH" \
+        --deployment-intent "$DEPLOYMENT_INTENT_PATH"
+  )"; then
+    echo "Tinker account-binding ceremony verification failed at $phase." >&2
+    return 1
+  fi
+  if [ "${#receipt}" -gt 16384 ] || ! jq -e \
+    --arg accountCommitment "$TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT" \
+    --arg deploymentIntentSha256 "$DEPLOYMENT_INTENT_SHA256" \
+    --arg reviewerGenesisSha256 "$REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256" \
+    --arg reviewerCurrentSha256 "$(jq -er '.reviewerAuthorityCurrentStatusSha256' <<<"$DEPLOYMENT_INTENT_RECEIPT")" '
+      .schema == "dnai.tinker-account-binding-ceremony-receipt.v1"
+      and .status == "tinker_account_binding_two_reviewer_ceremony_verified"
+      and .truth_status == "opaque_attested_account_binding_handle_not_provider_identifier_proof_requires_later_measured_provider_binding"
+      and .historical_replay == false
+      and .deployment_intent_matched == true
+      and .environment_commitment_matched == true
+      and .account_commitment == $accountCommitment
+      and .deployment_intent_sha256 == $deploymentIntentSha256
+      and .reviewer_authority_genesis_acceptance_sha256 == $reviewerGenesisSha256
+      and .reviewer_authority_current_status_sha256 == $reviewerCurrentSha256
+      and .binding_chain_id == 84532
+      and .verified_signature_count == 2
+      and (.signers | type == "array" and length == 2)
+      and .attested_provider_binding_required == true
+      and .provider_identifier_committed == false
+      and .raw_binding_root_egress == false
+      and .raw_share_egress == false
+      and .share_or_root_digest_published == false
+      and .network_request_performed == false
+      and .remote_state_mutated == false
+      and (.tinker_account_binding_ceremony_receipt_sha256
+        | type == "string"
+        and test("^sha256:[0-9a-f]{64}$")
+        and . != "sha256:" + ("0" * 64))
+    ' <<<"$receipt" >/dev/null; then
+    echo "Tinker account-binding ceremony receipt is not the exact fresh deployment authority at $phase." >&2
+    return 1
+  fi
+  printf '%s' "$receipt"
+}
+
+# Recompute the fixed-path two-reviewer account-binding ceremony before the
+# deployment helper is allowed to enumerate or unlock any wallet. This is a
+# local, read-only EIP-191 replay; it performs no RPC request or remote
+# mutation. Fresh deployment never accepts historical reviewer authority.
+if ! TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT="$(
+  verify_current_tinker_account_binding_ceremony "initial wallet-access gate"
+)"; then
+  exit 1
+fi
+TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256="$(jq -er \
+  '.tinker_account_binding_ceremony_receipt_sha256' \
+  <<<"$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT")"
+validate_sha256 \
+  TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256 \
+  "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256"
 
 CURRENT_SOURCE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
 if [ "$CURRENT_SOURCE_COMMIT" != "$RELEASE_SHA" ]; then
@@ -770,7 +980,16 @@ if [ "${FOUNDRY_KEYSTORE_ACCOUNT:-dev}" != "$ACCOUNT" ]; then
 fi
 
 validate_address DEPLOYMENT_OPERATOR "$DEPLOYMENT_OPERATOR"
+validate_address DILIGENCE_GOVERNANCE_CONTROLLER "$DILIGENCE_GOVERNANCE_CONTROLLER"
 validate_address COMPUTE_VAULT_DEVELOPER "$COMPUTE_VAULT_DEVELOPER"
+if [ "$(normalize_address "$DEPLOYMENT_OPERATOR")" = "$(normalize_address "$DILIGENCE_GOVERNANCE_CONTROLLER")" ]; then
+  echo "DEPLOYMENT_OPERATOR and DILIGENCE_GOVERNANCE_CONTROLLER must be separate roles." >&2
+  exit 1
+fi
+if [ "$(normalize_address "$DILIGENCE_GOVERNANCE_CONTROLLER")" = "$(normalize_address "$COMPUTE_VAULT_DEVELOPER")" ]; then
+  echo "DILIGENCE_GOVERNANCE_CONTROLLER and compute developer must be separate roles." >&2
+  exit 1
+fi
 if [ "$(normalize_address "$DEPLOYMENT_OPERATOR")" = "$(normalize_address "$COMPUTE_VAULT_DEVELOPER")" ]; then
   echo "DEPLOYMENT_OPERATOR and compute developer must be separate roles." >&2
   exit 1
@@ -812,6 +1031,7 @@ if ! cast wallet list | awk '{print $1}' | grep -qx "$ACCOUNT"; then
 fi
 
 export DEPLOYMENT_OPERATOR
+export DILIGENCE_GOVERNANCE_CONTROLLER
 export COMPUTE_VAULT_DEVELOPER
 export COMPUTE_VAULT_DEVELOPER_FEE_BPS
 export TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT
@@ -875,6 +1095,7 @@ echo "RPC source:          BASE_SEPOLIA_RPC_URL (value not printed)"
 echo "Chain ID:            $live_chain_id"
 echo "Keystore account:    dev"
 echo "Operator:            $DEPLOYMENT_OPERATOR"
+echo "Diligence controller: $DILIGENCE_GOVERNANCE_CONTROLLER (immutable constructor binding)"
 echo "Result verifier:     unset until the post-deploy timelocked diligence ceremony"
 echo "Compute developer:   $COMPUTE_VAULT_DEVELOPER"
 echo "Metering binding:    unset until the post-deploy timelocked QVL ceremony"
@@ -902,9 +1123,25 @@ forge test --threads 1
 
 echo
 echo "== Dry run =="
+DRY_RUN_OUTPUT="$(mktemp "$RELEASE_WORKSPACE/foundry/dry-run-output.XXXXXX.jsonl")"
 forge script script/DeployFreshSuite.s.sol \
   --rpc-url "$RPC_URL" \
-  --sender "$DEPLOYMENT_OPERATOR"
+  --sender "$DEPLOYMENT_OPERATOR" \
+  --gas-estimate-multiplier "$FRESH_DEPLOYMENT_GAS_ESTIMATE_MULTIPLIER" \
+  --json > "$DRY_RUN_OUTPUT"
+
+DRY_RUN_PATH="$FOUNDRY_BROADCAST/DeployFreshSuite.s.sol/$CHAIN_ID/dry-run/run-latest.json"
+assert_exact_fresh_suite_transaction_plan "$DRY_RUN_PATH"
+IFS=$'\t' read -r \
+  required_operator_balance_wei \
+  dry_run_gas_price_gwei \
+  forge_estimated_amount_wei \
+  < <(derive_dry_run_gas_requirement "$DRY_RUN_OUTPUT")
+validate_uint required_operator_balance_wei "$required_operator_balance_wei"
+validate_uint forge_estimated_amount_wei "$forge_estimated_amount_wei"
+echo "Exact dry-run plan:  13 transactions"
+echo "Forge gas estimate:  $forge_estimated_amount_wei wei (130% gas-unit multiplier)"
+echo "Required balance:    $required_operator_balance_wei wei (2x balance safety margin)"
 
 if [ "$BROADCAST" != "true" ]; then
   echo
@@ -913,10 +1150,6 @@ if [ "$BROADCAST" != "true" ]; then
   exit 0
 fi
 
-echo
-echo "== Keystore signer check =="
-unlocked_signer="$(cast wallet address --account dev)"
-assert_address_equal "dev keystore signer" "$DEPLOYMENT_OPERATOR" "$unlocked_signer"
 assert_source_checkout_exact "immediate pre-broadcast"
 assert_release_toolchain_exact
 assert_contract_build_metadata_exact
@@ -926,6 +1159,28 @@ if [ "$(normalize_quantity "reviewed dry-run operator nonce" "$operator_nonce")"
   echo "Operator nonce changed after the reviewed dry run; refusing to enter the indeterminate broadcast boundary." >&2
   exit 1
 fi
+pre_broadcast_operator_balance_wei="$(cast balance "$DEPLOYMENT_OPERATOR" --rpc-url "$RPC_URL")"
+require_balance_at_least "$pre_broadcast_operator_balance_wei" "$required_operator_balance_wei"
+
+# Close the build/dry-run time-of-check gap immediately before the encrypted
+# keystore is unlocked. The full canonical receipt must still be byte-identical
+# to the initial current-authority replay; expiry, lineage drift, file
+# replacement, or deployment-binding drift all fail before signer access.
+if ! PRE_BROADCAST_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT="$(
+  verify_current_tinker_account_binding_ceremony "immediate pre-broadcast gate"
+)"; then
+  exit 1
+fi
+if [ "$PRE_BROADCAST_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT" \
+  != "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT" ]; then
+  echo "Tinker account-binding ceremony authority changed after the reviewed dry run." >&2
+  exit 1
+fi
+
+echo
+echo "== Keystore signer check =="
+unlocked_signer="$(cast wallet address --account dev)"
+assert_address_equal "dev keystore signer" "$DEPLOYMENT_OPERATOR" "$unlocked_signer"
 
 echo
 echo "== Broadcast reviewed-scope suite =="
@@ -936,6 +1191,8 @@ forge script script/DeployFreshSuite.s.sol:DeployFreshSuiteScript \
   --rpc-url "$RPC_URL" \
   --sender "$DEPLOYMENT_OPERATOR" \
   --account dev \
+  --with-gas-price "${dry_run_gas_price_gwei}gwei" \
+  --gas-estimate-multiplier "$FRESH_DEPLOYMENT_GAS_ESTIMATE_MULTIPLIER" \
   --broadcast \
   --slow
 forge_broadcast_status=$?
@@ -1110,7 +1367,13 @@ done
 
 # Reconstruct every exact CREATE and CALL input from the immutable release
 # snapshot before consulting the mined transactions.
-DILIGENCE_CREATE_INPUT="$(creation_input DiligenceRoom 'constructor(bool)' true)"
+DILIGENCE_CREATE_INPUT="$(
+  creation_input \
+    DiligenceRoom \
+    'constructor(bool,address)' \
+    true \
+    "$DILIGENCE_GOVERNANCE_CONTROLLER"
+)"
 DILIGENCE_FREEZE_FEE_INPUT="$(cast calldata 'freezeFeeBps()' | tr '[:upper:]' '[:lower:]')"
 DILIGENCE_ENABLE_SETTLEMENT_INPUT="$(cast calldata 'enableComputeSettlementPolicy()' | tr '[:upper:]' '[:lower:]')"
 DILIGENCE_REQUIRE_COMPOSE_INPUT="$(cast calldata 'setComposeApprovalRequired(bool)' true | tr '[:upper:]' '[:lower:]')"
@@ -1126,7 +1389,9 @@ ENCUMBRANCE_CREATE_INPUT="$(
     "$TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI" \
     "$TINKER_ENCUMBRANCE_MAX_SPEND_WEI"
 )"
-ROYALTY_CREATE_INPUT="$(creation_input RoyaltyDistributor '')"
+ROYALTY_CREATE_INPUT="$(
+  creation_input RoyaltyDistributor 'constructor(address)' "$DEPLOYMENT_OPERATOR"
+)"
 CHALLENGE_CREATE_INPUT="$(creation_input ChallengeRegistry 'constructor(address)' "$DEPLOYMENT_OPERATOR")"
 COMPUTE_VAULT_CREATE_INPUT="$(
   creation_input \
@@ -1334,14 +1599,14 @@ collect_broadcast_transaction() {
 # Every one of the exact 13 mined transactions is confirmed before any
 # deployment-manifest path is created or mutated. The EXIT trap retains the
 # raw Foundry artifact plus any partial normalized evidence on any mismatch.
-collect_broadcast_transaction 0 diligenceRoom DiligenceRoom CREATE 'constructor(bool)' "$DILIGENCE_CREATE_INPUT" "$DILIGENCE_ADDRESS"
+collect_broadcast_transaction 0 diligenceRoom DiligenceRoom CREATE 'constructor(bool,address)' "$DILIGENCE_CREATE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 1 diligenceRoom DiligenceRoom CALL 'freezeFeeBps()' "$DILIGENCE_FREEZE_FEE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 2 diligenceRoom DiligenceRoom CALL 'enableComputeSettlementPolicy()' "$DILIGENCE_ENABLE_SETTLEMENT_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 3 diligenceRoom DiligenceRoom CALL 'setComposeApprovalRequired(bool)' "$DILIGENCE_REQUIRE_COMPOSE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 4 diligenceRoom DiligenceRoom CALL 'setTeeIdentityApprovalRequired(bool)' "$DILIGENCE_REQUIRE_IDENTITY_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 5 diligenceRoom DiligenceRoom CALL 'freezeApprovalRequirements()' "$DILIGENCE_FREEZE_APPROVAL_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 6 tinkerAccountEncumbrance TinkerAccountEncumbrance CREATE 'constructor(address,bytes32,bytes32,uint256,uint256)' "$ENCUMBRANCE_CREATE_INPUT" "$ENCUMBRANCE_ADDRESS"
-collect_broadcast_transaction 7 royaltyDistributor RoyaltyDistributor CREATE 'constructor()' "$ROYALTY_CREATE_INPUT" "$ROYALTY_ADDRESS"
+collect_broadcast_transaction 7 royaltyDistributor RoyaltyDistributor CREATE 'constructor(address)' "$ROYALTY_CREATE_INPUT" "$ROYALTY_ADDRESS"
 collect_broadcast_transaction 8 challengeRegistry ChallengeRegistry CREATE 'constructor(address)' "$CHALLENGE_CREATE_INPUT" "$CHALLENGE_ADDRESS"
 collect_broadcast_transaction 9 computeCreditVault ComputeCreditVault CREATE 'constructor(address,address,uint16)' "$COMPUTE_VAULT_CREATE_INPUT" "$COMPUTE_VAULT_ADDRESS"
 collect_broadcast_transaction 10 computeCreditVault ComputeCreditVault CALL 'freezeDeveloperFee()' "$COMPUTE_VAULT_FREEZE_FEE_INPUT" "$COMPUTE_VAULT_ADDRESS"
@@ -1448,8 +1713,9 @@ DILIGENCE_RUNTIME_CODE_HASH="$(
   assert_runtime_code \
     DiligenceRoom \
     "$DILIGENCE_ADDRESS" \
-    'constructor(bool)' \
-    true
+    'constructor(bool,address)' \
+    true \
+    "$DILIGENCE_GOVERNANCE_CONTROLLER"
 )"
 ENCUMBRANCE_RUNTIME_CODE_HASH="$(
   assert_runtime_code \
@@ -1463,7 +1729,7 @@ ENCUMBRANCE_RUNTIME_CODE_HASH="$(
     "$TINKER_ENCUMBRANCE_MAX_SPEND_WEI"
 )"
 ROYALTY_RUNTIME_CODE_HASH="$(
-  assert_runtime_code RoyaltyDistributor "$ROYALTY_ADDRESS" ''
+  assert_runtime_code RoyaltyDistributor "$ROYALTY_ADDRESS" 'constructor(address)' "$DEPLOYMENT_OPERATOR"
 )"
 CHALLENGE_RUNTIME_CODE_HASH="$(
   assert_runtime_code \
@@ -1506,6 +1772,12 @@ EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH="$(
 echo
 echo "== On-chain trust-root reads =="
 DILIGENCE_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'developer()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_INITIAL_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'initialDeveloper()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER="$(cast call "$DILIGENCE_ADDRESS" 'releaseGovernanceController()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_PROTOCOL_FEE_RECIPIENT="$(cast call "$DILIGENCE_ADDRESS" 'protocolFeeRecipient()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_PENDING_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'pendingDeveloper()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_PENDING_DEVELOPER_AT="$(cast call "$DILIGENCE_ADDRESS" 'pendingDeveloperActivatesAt()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
+DILIGENCE_DEVELOPER_TRANSFER_DELAY="$(cast call "$DILIGENCE_ADDRESS" 'DEVELOPER_TRANSFER_DELAY()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
 DILIGENCE_PRODUCTION_RELEASE="$(cast call "$DILIGENCE_ADDRESS" 'productionRelease()(bool)' --rpc-url "$RPC_URL")"
 DILIGENCE_DEAL_COUNT="$(cast call "$DILIGENCE_ADDRESS" 'dealCount()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
 DILIGENCE_VERIFIER="$(cast call "$DILIGENCE_ADDRESS" 'resultVerifier()(address)' --rpc-url "$RPC_URL")"
@@ -1570,6 +1842,17 @@ ENCUMBRANCE_POLICY_FROZEN="$(cast call "$ENCUMBRANCE_ADDRESS" 'releasePolicyFroz
 ENCUMBRANCE_EMERGENCY_HALTED="$(cast call "$ENCUMBRANCE_ADDRESS" 'emergencyHalted()(bool)' --rpc-url "$RPC_URL")"
 ENCUMBRANCE_EXPECTED_EMPTY_COMPOSE_ROOT="$(cast call "$ENCUMBRANCE_ADDRESS" 'computeComposeRoot(bytes32[])(bytes32)' '[]' --rpc-url "$RPC_URL")"
 ENCUMBRANCE_EXPECTED_EMPTY_MANAGER_ROOT="$(cast call "$ENCUMBRANCE_ADDRESS" 'computeManagerRoot(address[])(bytes32)' '[]' --rpc-url "$RPC_URL")"
+
+ROYALTY_OWNER="$(cast call "$ROYALTY_ADDRESS" 'owner()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_PENDING_OWNER="$(cast call "$ROYALTY_ADDRESS" 'pendingOwner()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_PAUSED="$(cast call "$ROYALTY_ADDRESS" 'paused()(bool)' --rpc-url "$RPC_URL")"
+ROYALTY_SETTLEMENT_VERIFIER="$(cast call "$ROYALTY_ADDRESS" 'settlementVerifier()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_QVL_VERIFIER="$(cast call "$ROYALTY_ADDRESS" 'qvlVerifier()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_EXECUTION_POLICY_ANCHOR="$(cast call "$ROYALTY_ADDRESS" 'executionPolicyAnchor()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_ANCHOR_WRITER_RELEASE="$(cast call "$ROYALTY_ADDRESS" 'anchorWriterReleaseCommitment()(bytes32)' --rpc-url "$RPC_URL")"
+ROYALTY_RELEASE_POLICY="$(cast call "$ROYALTY_ADDRESS" 'releasePolicyCommitment()(bytes32)' --rpc-url "$RPC_URL")"
+ROYALTY_AUTHORITY_NONCE="$(cast call "$ROYALTY_ADDRESS" 'authorityNonce()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')"
+ROYALTY_PENDING_AUTHORITY_AT="$(cast call "$ROYALTY_ADDRESS" 'pendingAuthorityActivatesAt()(uint64)' --rpc-url "$RPC_URL" | awk '{print $1}')"
 
 CHALLENGE_OWNER="$(cast call "$CHALLENGE_ADDRESS" 'owner()(address)' --rpc-url "$RPC_URL")"
 CHALLENGE_PENDING_OWNER="$(cast call "$CHALLENGE_ADDRESS" 'pendingOwner()(address)' --rpc-url "$RPC_URL")"
@@ -1700,6 +1983,21 @@ EXECUTION_POLICY_ANCHOR_GLOBAL_SEQUENCE="$(cast call "$EXECUTION_POLICY_ANCHOR_A
 EXECUTION_POLICY_ANCHOR_GLOBAL_HEAD="$(cast call "$EXECUTION_POLICY_ANCHOR_ADDRESS" 'globalHead()(bytes32)' --rpc-url "$RPC_URL")"
 
 assert_address_equal "DiligenceRoom developer" "$DEPLOYMENT_OPERATOR" "$DILIGENCE_DEVELOPER"
+assert_address_equal "DiligenceRoom initial developer" "$DEPLOYMENT_OPERATOR" "$DILIGENCE_INITIAL_DEVELOPER"
+assert_address_equal \
+  "DiligenceRoom immutable release governance controller" \
+  "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  "$DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER"
+assert_address_equal \
+  "DiligenceRoom immutable protocol fee recipient" \
+  "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  "$DILIGENCE_PROTOCOL_FEE_RECIPIENT"
+assert_address_equal "DiligenceRoom pending developer" "$(cast address-zero)" "$DILIGENCE_PENDING_DEVELOPER"
+if [ "$DILIGENCE_PENDING_DEVELOPER_AT" != "0" ] \
+  || [ "$DILIGENCE_DEVELOPER_TRANSFER_DELAY" != "172800" ]; then
+  echo "DiligenceRoom must begin with no pending developer and the reviewed two-day transfer delay." >&2
+  exit 1
+fi
 if [ "$DILIGENCE_PRODUCTION_RELEASE" != "true" ] || [ "$DILIGENCE_DEAL_COUNT" != "0" ]; then
   echo "DiligenceRoom must be constructor-bound to production mode with zero deployment-window deals." >&2
   exit 1
@@ -1822,6 +2120,19 @@ if [ "$(normalize_address "$ENCUMBRANCE_RELEASE_COMMITMENT")" != "$ZERO_BYTES32"
   || [ "$ENCUMBRANCE_POLICY_FROZEN" != "false" ] \
   || [ "$ENCUMBRANCE_EMERGENCY_HALTED" != "true" ]; then
   echo "Fresh Tinker encumbrance must be halted with no active or pending release policy." >&2
+  exit 1
+fi
+if [ "$(normalize_address "$ROYALTY_OWNER")" != "$(normalize_address "$DEPLOYMENT_OPERATOR")" ] \
+  || [ "$(normalize_address "$ROYALTY_PENDING_OWNER")" != "$(normalize_address "$(cast address-zero)")" ] \
+  || [ "$ROYALTY_PAUSED" != "true" ] \
+  || [ "$(normalize_address "$ROYALTY_SETTLEMENT_VERIFIER")" != "$(normalize_address "$(cast address-zero)")" ] \
+  || [ "$(normalize_address "$ROYALTY_QVL_VERIFIER")" != "$(normalize_address "$(cast address-zero)")" ] \
+  || [ "$(normalize_address "$ROYALTY_EXECUTION_POLICY_ANCHOR")" != "$(normalize_address "$(cast address-zero)")" ] \
+  || [ "$(normalize_address "$ROYALTY_ANCHOR_WRITER_RELEASE")" != "$ZERO_BYTES32" ] \
+  || [ "$(normalize_address "$ROYALTY_RELEASE_POLICY")" != "$ZERO_BYTES32" ] \
+  || [ "$ROYALTY_AUTHORITY_NONCE" != "0" ] \
+  || [ "$ROYALTY_PENDING_AUTHORITY_AT" != "0" ]; then
+  echo "RoyaltyDistributor must deploy operator-owned, paused, and without active or pending authority." >&2
   exit 1
 fi
 if [ "$CHALLENGE_PAUSED" != "false" ] \
@@ -1950,13 +2261,17 @@ manifest_input="$seed_manifest"
 DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SOURCE_COMMIT="$RELEASE_SHA"
 
-jq \
+# The immutable 0444 receipt is also the byte-exact seed for the external
+# ceremony ledger. Sort every object key so the receipt is canonical on first
+# publication and never needs a mutating normalization pass later.
+jq -S \
   --arg deployedAt "$DEPLOYED_AT" \
   --arg operator "$DEPLOYMENT_OPERATOR" \
   --arg verifier "$DILIGENCE_VERIFIER" \
   --arg sourceCommit "$SOURCE_COMMIT" \
   --arg deploymentIntentSha256 "$DEPLOYMENT_INTENT_SHA256" \
   --arg reviewerAuthorityGenesisAcceptanceSha256 "$REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256" \
+  --arg tinkerAccountBindingCeremonyReceiptSha256 "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
   --arg deploymentReviewEnvelopeSha256 "$OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256" \
   --arg deploymentReviewEvidenceSha256 "$DEPLOYMENT_REVIEW_EVIDENCE_SHA256" \
   --argjson deploymentReceipts "$DEPLOYMENT_RECEIPTS" \
@@ -1965,6 +2280,14 @@ jq \
   --arg diligence "$DILIGENCE_ADDRESS" \
   --arg diligenceTx "$DILIGENCE_TX" \
   --arg diligenceRuntimeCodeHash "$DILIGENCE_RUNTIME_CODE_HASH" \
+  --arg diligenceDeveloper "$DILIGENCE_DEVELOPER" \
+  --arg diligenceInitialDeveloper "$DILIGENCE_INITIAL_DEVELOPER" \
+  --arg diligenceGovernanceController "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  --arg diligenceReleaseGovernanceController "$DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER" \
+  --arg diligenceProtocolFeeRecipient "$DILIGENCE_PROTOCOL_FEE_RECIPIENT" \
+  --arg diligencePendingDeveloper "$DILIGENCE_PENDING_DEVELOPER" \
+  --arg diligencePendingDeveloperAt "$DILIGENCE_PENDING_DEVELOPER_AT" \
+  --arg diligenceDeveloperTransferDelay "$DILIGENCE_DEVELOPER_TRANSFER_DELAY" \
   --argjson diligenceProductionRelease "$DILIGENCE_PRODUCTION_RELEASE" \
   --arg diligenceDealCount "$DILIGENCE_DEAL_COUNT" \
   --arg diligencePendingVerifier "$DILIGENCE_PENDING_VERIFIER" \
@@ -2027,6 +2350,16 @@ jq \
   --arg royalty "$ROYALTY_ADDRESS" \
   --arg royaltyTx "$ROYALTY_TX" \
   --arg royaltyRuntimeCodeHash "$ROYALTY_RUNTIME_CODE_HASH" \
+  --arg royaltyOwner "$ROYALTY_OWNER" \
+  --arg royaltyPendingOwner "$ROYALTY_PENDING_OWNER" \
+  --argjson royaltyPaused "$ROYALTY_PAUSED" \
+  --arg royaltySettlementVerifier "$ROYALTY_SETTLEMENT_VERIFIER" \
+  --arg royaltyQvlVerifier "$ROYALTY_QVL_VERIFIER" \
+  --arg royaltyExecutionPolicyAnchor "$ROYALTY_EXECUTION_POLICY_ANCHOR" \
+  --arg royaltyAnchorWriterRelease "$ROYALTY_ANCHOR_WRITER_RELEASE" \
+  --arg royaltyReleasePolicy "$ROYALTY_RELEASE_POLICY" \
+  --arg royaltyAuthorityNonce "$ROYALTY_AUTHORITY_NONCE" \
+  --arg royaltyPendingAuthorityAt "$ROYALTY_PENDING_AUTHORITY_AT" \
   --arg challenge "$CHALLENGE_ADDRESS" \
   --arg challengeTx "$CHALLENGE_TX" \
   --arg challengeRuntimeCodeHash "$CHALLENGE_RUNTIME_CODE_HASH" \
@@ -2135,7 +2468,12 @@ echo "Diligence TEE gates are enabled and irreversibly frozen; empty mappings re
 if [ "$VERIFY" = "true" ]; then
   echo
   echo "== Submit source verification after ledger recording =="
-  DILIGENCE_CONSTRUCTOR_ARGS="$(cast abi-encode 'constructor(bool)' true)"
+  DILIGENCE_CONSTRUCTOR_ARGS="$(
+    cast abi-encode \
+      'constructor(bool,address)' \
+      true \
+      "$DILIGENCE_GOVERNANCE_CONTROLLER"
+  )"
   ENCUMBRANCE_CONSTRUCTOR_ARGS="$(
     cast abi-encode \
       'constructor(address,bytes32,bytes32,uint256,uint256)' \
@@ -2144,6 +2482,9 @@ if [ "$VERIFY" = "true" ]; then
       "$ZERO_BYTES32" \
       "$TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI" \
       "$TINKER_ENCUMBRANCE_MAX_SPEND_WEI"
+  )"
+  ROYALTY_CONSTRUCTOR_ARGS="$(
+    cast abi-encode 'constructor(address)' "$DEPLOYMENT_OPERATOR"
   )"
   CHALLENGE_CONSTRUCTOR_ARGS="$(
     cast abi-encode 'constructor(address)' "$DEPLOYMENT_OPERATOR"
@@ -2193,6 +2534,7 @@ if [ "$VERIFY" = "true" ]; then
     --chain "$CHAIN_ID" \
     --rpc-url "$RPC_URL" \
     --etherscan-api-key "$ETHERSCAN_API_KEY" \
+    --constructor-args "$ROYALTY_CONSTRUCTOR_ARGS" \
     "$ROYALTY_ADDRESS" \
     src/RoyaltyDistributor.sol:RoyaltyDistributor
 

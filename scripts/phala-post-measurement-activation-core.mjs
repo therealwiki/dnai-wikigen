@@ -11,8 +11,19 @@ import {
   cvmLaunchEnvironmentKeysDigest,
 } from "./cvm-launch-intent-core.mjs";
 import {
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
 import {
   phalaQvlMeasurementPolicySha256,
@@ -71,6 +82,40 @@ const ENVIRONMENT_KEY = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeVersionedReleaseVerificationAuthority(value) {
+  const descriptor = isRecord(value)
+    ? Object.getOwnPropertyDescriptor(value, "schema")
+    : null;
+  if (!descriptor || !Object.hasOwn(descriptor, "value")) {
+    throw new TypeError(
+      "post-measurement plan release authority requires one own data schema",
+    );
+  }
+  if (descriptor.value
+      === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    const authority =
+      normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
+    return Object.freeze({
+      authority,
+      sha256:
+        currentPhalaSevenCvmReleaseVerificationAuthoritySha256(authority),
+    });
+  }
+  if (descriptor.value
+      === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    const authority =
+      normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+    return Object.freeze({
+      authority,
+      sha256:
+        legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(authority),
+    });
+  }
+  throw new TypeError(
+    "post-measurement plan release authority schema version is unsupported",
+  );
 }
 
 function exactRecord(value, keys, label) {
@@ -301,11 +346,12 @@ export function normalizePhalaPostMeasurementActivationPlan(value) {
     parsed.profile_activation,
   );
   const commitments = exactCommitments(parsed.runtime_commitments);
-  const releaseAuthority = normalizePhalaSevenCvmReleaseVerificationAuthority(
+  const {
+    authority: releaseAuthority,
+    sha256: releaseAuthoritySha256,
+  } = normalizeVersionedReleaseVerificationAuthority(
     parsed.release_verification_authority,
   );
-  const releaseAuthoritySha256 =
-    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
   const mainReleaseDescriptor = releaseAuthority.descriptors.find(
     (entry) => entry.domain === "main_runtime_cvm",
   );

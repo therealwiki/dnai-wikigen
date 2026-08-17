@@ -40,6 +40,11 @@ for operator_policy_env in \
   DEPLOYMENT_INTENT_SHA256 \
   OPERATOR_POLICY_REVIEW_ENVELOPE_PATH \
   OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256 \
+  RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH \
+  RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH \
+  RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH \
+  RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH \
+  DILIGENCE_GOVERNANCE_CONTROLLER \
   RELEASE_SHA; do
   if ! grep -q "require_env $operator_policy_env" "$DEPLOY_HELPER"; then
     echo "Fresh-suite deployment must require explicit $operator_policy_env configuration." >&2
@@ -57,7 +62,7 @@ if [ "$(grep -Fc 'operator-policy-packet.mjs' "$DEPLOY_HELPER")" -ne 2 ] \
   || ! grep -q 'canonicalCvmCount == 7' "$DEPLOY_HELPER" \
   || ! grep -q 'qvlNumericPolicyCount == 5' "$DEPLOY_HELPER" \
   || ! grep -q 'dynamicRuntimeAuthorityCount == 0' "$DEPLOY_HELPER" \
-  || ! grep -q 'staticContractInputCount == 2' "$DEPLOY_HELPER" \
+  || ! grep -q 'staticContractInputCount == 3' "$DEPLOY_HELPER" \
   || ! grep -q 'dnai.deployment-intent-validation-receipt.v6' "$DEPLOY_HELPER" \
   || ! grep -q 'reviewerAuthorityCurrentStatusEpoch' "$DEPLOY_HELPER" \
   || ! grep -q 'reviewerAuthorityCurrentStatusSha256' "$DEPLOY_HELPER"; then
@@ -78,6 +83,7 @@ if ! grep -q 'canonicalCvmCount == 7' "$OPERATOR_CONFIGURE_GUARD" \
 fi
 
 for reviewed_intent_binding in \
+  DILIGENCE_GOVERNANCE_CONTROLLER \
   COMPUTE_VAULT_DEVELOPER \
   COMPUTE_VAULT_DEVELOPER_FEE_BPS \
   DEPLOYMENT_OPERATOR \
@@ -100,15 +106,41 @@ if ! grep -q 'Legacy operator-policy packet and projection inputs are retired an
 fi
 
 policy_validation_line="$(grep -n -m1 'check-intent' "$DEPLOY_HELPER" | cut -d: -f1)"
+binding_ceremony_line="$(grep -n -m1 'ceremony-check' "$DEPLOY_HELPER" | cut -d: -f1)"
 wallet_access_line="$(grep -n -m1 'cast wallet list' "$DEPLOY_HELPER" | cut -d: -f1)"
 dry_run_line="$(grep -n -m1 '== Dry run ==' "$DEPLOY_HELPER" | cut -d: -f1)"
 broadcast_line="$(grep -n -m1 '== Broadcast reviewed-scope suite ==' "$DEPLOY_HELPER" | cut -d: -f1)"
-if [ "$policy_validation_line" -ge "$wallet_access_line" ] \
+if [ -z "$binding_ceremony_line" ] \
+  || [ "$policy_validation_line" -ge "$binding_ceremony_line" ] \
+  || [ "$binding_ceremony_line" -ge "$wallet_access_line" ] \
+  || [ "$binding_ceremony_line" -ge "$dry_run_line" ] \
+  || [ "$binding_ceremony_line" -ge "$broadcast_line" ] \
+  || [ "$policy_validation_line" -ge "$wallet_access_line" ] \
   || [ "$policy_validation_line" -ge "$dry_run_line" ] \
   || [ "$policy_validation_line" -ge "$broadcast_line" ]; then
-  echo "Operator-policy validation must happen before wallet access, dry-run, or broadcast paths." >&2
+  echo "Operator-policy and Tinker account-binding ceremony validation must happen before wallet access, dry-run, or broadcast paths." >&2
   exit 1
 fi
+
+for binding_boundary in \
+  'tinker-account-binding-ceremony.mjs' \
+  'require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH' \
+  'require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH' \
+  'require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH' \
+  'require_absolute_authority_file RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH' \
+  '--genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH"' \
+  'tinker_account_binding_ceremony_receipt_sha256' \
+  '.historical_replay == false' \
+  '.deployment_intent_matched == true' \
+  '.environment_commitment_matched == true' \
+  '.verified_signature_count == 2' \
+  '.network_request_performed == false' \
+  '.remote_state_mutated == false'; do
+  if ! grep -Fq -- "$binding_boundary" "$DEPLOY_HELPER"; then
+    echo "Fresh-suite deployment is missing account-binding ceremony proof: $binding_boundary" >&2
+    exit 1
+  fi
+done
 
 for toolchain_boundary in \
   'assert_release_toolchain_exact' \
@@ -153,6 +185,41 @@ for required_compute_env in \
     exit 1
   fi
 done
+
+if ! grep -Fq 'MAX_COMPUTE_VAULT_DEVELOPER_FEE_BPS=100' "$DEPLOY_HELPER" \
+  || ! grep -Fq 'MAX_FRESH_RELEASE_DEVELOPER_FEE_BPS = 100' "$FRESH_SUITE" \
+  || ! grep -Fq 'compute developer fee exceeds fresh-release cap' "$FRESH_SUITE"; then
+  echo "Fresh-suite deployment must reject a Compute developer fee above 100 bps." >&2
+  exit 1
+fi
+
+for gas_boundary in \
+  'FRESH_DEPLOYMENT_GAS_ESTIMATE_MULTIPLIER=130' \
+  'FRESH_DEPLOYMENT_BALANCE_SAFETY_MULTIPLIER=2' \
+  'derive_dry_run_gas_requirement' \
+  'assert_exact_fresh_suite_transaction_plan "$DRY_RUN_PATH"' \
+  'require_balance_at_least "$pre_broadcast_operator_balance_wei" "$required_operator_balance_wei"' \
+  '--with-gas-price "${dry_run_gas_price_gwei}gwei"' \
+  '--gas-estimate-multiplier "$FRESH_DEPLOYMENT_GAS_ESTIMATE_MULTIPLIER"'; do
+  if ! grep -Fq -- "$gas_boundary" "$DEPLOY_HELPER"; then
+    echo "Fresh-suite deployment is missing the exact simulated gas-sufficiency boundary: $gas_boundary" >&2
+    exit 1
+  fi
+done
+gas_plan_line="$(grep -n -m1 '^assert_exact_fresh_suite_transaction_plan "$DRY_RUN_PATH"' "$DEPLOY_HELPER" | cut -d: -f1)"
+gas_balance_line="$(grep -n -m1 '^require_balance_at_least "$pre_broadcast_operator_balance_wei"' "$DEPLOY_HELPER" | cut -d: -f1)"
+initial_binding_recheck_line="$(grep -n -m1 'verify_current_tinker_account_binding_ceremony "initial wallet-access gate"' "$DEPLOY_HELPER" | cut -d: -f1)"
+pre_broadcast_binding_recheck_line="$(grep -n -m1 'verify_current_tinker_account_binding_ceremony "immediate pre-broadcast gate"' "$DEPLOY_HELPER" | cut -d: -f1)"
+keystore_unlock_line="$(grep -n -m1 'cast wallet address --account dev' "$DEPLOY_HELPER" | cut -d: -f1)"
+if [ "$gas_plan_line" -ge "$keystore_unlock_line" ] \
+  || [ "$gas_balance_line" -ge "$pre_broadcast_binding_recheck_line" ] \
+  || [ "$pre_broadcast_binding_recheck_line" -ge "$keystore_unlock_line" ] \
+  || [ "$initial_binding_recheck_line" -ge "$gas_plan_line" ] \
+  || [ "$(grep -Fc 'verify_current_tinker_account_binding_ceremony "' "$DEPLOY_HELPER")" -ne 2 ] \
+  || ! grep -Fq '!= "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT"' "$DEPLOY_HELPER"; then
+  echo "Exact transaction-plan gas projection and balance sufficiency must pass before keystore unlock." >&2
+  exit 1
+fi
 
 if ! grep -q 'new EmailOracleAuth' "$FRESH_SUITE"; then
   echo "Fresh-suite deployment must include a new EmailOracleAuth contract." >&2
@@ -230,6 +297,31 @@ if ! grep -q 'src/EmailOracleAuth.sol:EmailOracleAuth' "$DEPLOY_HELPER" \
   || ! grep -q 'dnai.basescan-verification-submission-receipt.v1' "$DEPLOY_HELPER" \
   || ! grep -q 'submitted_not_confirmed' "$DEPLOY_HELPER"; then
   echo "Fresh contract BaseScan submission evidence must remain separate from the immutable deployment manifest." >&2
+  exit 1
+fi
+
+royalty_constructor_block="$(sed -n '/^  ROYALTY_CONSTRUCTOR_ARGS="\$(/,/^  )"/p' "$DEPLOY_HELPER")"
+if [ "$(grep -Fc 'ROYALTY_CONSTRUCTOR_ARGS="$(' "$DEPLOY_HELPER")" -ne 1 ] \
+  || [ "$(grep -Fc -- '--constructor-args "$ROYALTY_CONSTRUCTOR_ARGS"' "$DEPLOY_HELPER")" -ne 1 ] \
+  || ! grep -Fq 'cast abi-encode '\''constructor(address)'\'' "$DEPLOYMENT_OPERATOR"' \
+    <<<"$royalty_constructor_block" \
+  || ! awk '
+    /^[[:space:]]*forge verify-contract[[:space:]]*\\$/ {
+      in_verification = 1
+      royalty_args = 0
+      next
+    }
+    in_verification && /--constructor-args "\$ROYALTY_CONSTRUCTOR_ARGS"/ {
+      royalty_args = 1
+    }
+    in_verification && /src\/RoyaltyDistributor\.sol:RoyaltyDistributor/ {
+      found = 1
+      if (!royalty_args) exit 1
+      in_verification = 0
+    }
+    END { if (!found) exit 1 }
+  ' "$DEPLOY_HELPER"; then
+  echo "RoyaltyDistributor BaseScan verification must bind constructor(address) to DEPLOYMENT_OPERATOR." >&2
   exit 1
 fi
 
@@ -431,14 +523,14 @@ BROADCAST_TRANSACTIONS_FIXTURE="$(jq -cn '
       blockHash: ("0x" + ($blockHashByte * 32))
     };
   [
-    tx(0;"diligenceRoom";"DiligenceRoom";"CREATE";"constructor(bool)";"01";null;"0x3333333333333333333333333333333333333333";20;"a";101;"11"),
+    tx(0;"diligenceRoom";"DiligenceRoom";"CREATE";"constructor(bool,address)";"01";null;"0x3333333333333333333333333333333333333333";20;"a";101;"11"),
     tx(1;"diligenceRoom";"DiligenceRoom";"CALL";"freezeFeeBps()";"08";"0x3333333333333333333333333333333333333333";null;21;"b";108;"88"),
     tx(2;"diligenceRoom";"DiligenceRoom";"CALL";"enableComputeSettlementPolicy()";"09";"0x3333333333333333333333333333333333333333";null;22;"c";109;"99"),
     tx(3;"diligenceRoom";"DiligenceRoom";"CALL";"setComposeApprovalRequired(bool)";"0a";"0x3333333333333333333333333333333333333333";null;23;"d";110;"aa"),
     tx(4;"diligenceRoom";"DiligenceRoom";"CALL";"setTeeIdentityApprovalRequired(bool)";"0b";"0x3333333333333333333333333333333333333333";null;24;"e";111;"bb"),
     tx(5;"diligenceRoom";"DiligenceRoom";"CALL";"freezeApprovalRequirements()";"0c";"0x3333333333333333333333333333333333333333";null;25;"f";112;"cc"),
     tx(6;"tinkerAccountEncumbrance";"TinkerAccountEncumbrance";"CREATE";"constructor(address,bytes32,bytes32,uint256,uint256)";"02";null;"0x4444444444444444444444444444444444444444";26;"1";102;"22"),
-    tx(7;"royaltyDistributor";"RoyaltyDistributor";"CREATE";"constructor()";"03";null;"0x5555555555555555555555555555555555555555";27;"2";103;"33"),
+    tx(7;"royaltyDistributor";"RoyaltyDistributor";"CREATE";"constructor(address)";"03";null;"0x5555555555555555555555555555555555555555";27;"2";103;"33"),
     tx(8;"challengeRegistry";"ChallengeRegistry";"CREATE";"constructor(address)";"04";null;"0x6666666666666666666666666666666666666666";28;"3";104;"44"),
     tx(9;"computeCreditVault";"ComputeCreditVault";"CREATE";"constructor(address,address,uint16)";"06";null;"0x8888888888888888888888888888888888888888";29;"4";105;"55"),
     tx(10;"computeCreditVault";"ComputeCreditVault";"CALL";"freezeDeveloperFee()";"0d";"0x8888888888888888888888888888888888888888";null;30;"5";113;"dd"),
@@ -454,6 +546,7 @@ jq \
   --arg sourceCommit "0123456789abcdef" \
   --arg deploymentIntentSha256 "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1" \
   --arg reviewerAuthorityGenesisAcceptanceSha256 "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1" \
+  --arg tinkerAccountBindingCeremonyReceiptSha256 "sha256:f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1" \
   --arg deploymentReviewEnvelopeSha256 "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1" \
   --arg deploymentReviewEvidenceSha256 "sha256:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1" \
   --argjson deploymentReceipts "$DEPLOYMENT_RECEIPTS_FIXTURE" \
@@ -462,6 +555,14 @@ jq \
   --arg diligence "0x3333333333333333333333333333333333333333" \
   --arg diligenceTx "0x0101010101010101010101010101010101010101010101010101010101010101" \
   --arg diligenceRuntimeCodeHash "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" \
+  --arg diligenceDeveloper "0x1111111111111111111111111111111111111111" \
+  --arg diligenceInitialDeveloper "0x1111111111111111111111111111111111111111" \
+  --arg diligenceGovernanceController "0x2222222222222222222222222222222222222222" \
+  --arg diligenceReleaseGovernanceController "0x2222222222222222222222222222222222222222" \
+  --arg diligenceProtocolFeeRecipient "0x2222222222222222222222222222222222222222" \
+  --arg diligencePendingDeveloper "0x0000000000000000000000000000000000000000" \
+  --arg diligencePendingDeveloperAt "0" \
+  --arg diligenceDeveloperTransferDelay "172800" \
   --argjson diligenceProductionRelease true \
   --arg diligenceDealCount "0" \
   --arg diligencePendingVerifier "0x0000000000000000000000000000000000000000" \
@@ -524,6 +625,16 @@ jq \
   --arg royalty "0x5555555555555555555555555555555555555555" \
   --arg royaltyTx "0x0303030303030303030303030303030303030303030303030303030303030303" \
   --arg royaltyRuntimeCodeHash "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" \
+  --arg royaltyOwner "0x1111111111111111111111111111111111111111" \
+  --arg royaltyPendingOwner "0x0000000000000000000000000000000000000000" \
+  --argjson royaltyPaused true \
+  --arg royaltySettlementVerifier "0x0000000000000000000000000000000000000000" \
+  --arg royaltyQvlVerifier "0x0000000000000000000000000000000000000000" \
+  --arg royaltyExecutionPolicyAnchor "0x0000000000000000000000000000000000000000" \
+  --arg royaltyAnchorWriterRelease "0x0000000000000000000000000000000000000000000000000000000000000000" \
+  --arg royaltyReleasePolicy "0x0000000000000000000000000000000000000000000000000000000000000000" \
+  --arg royaltyAuthorityNonce "0" \
+  --arg royaltyPendingAuthorityAt "0" \
   --arg challenge "0x6666666666666666666666666666666666666666" \
   --arg challengeTx "0x0404040404040404040404040404040404040404040404040404040404040404" \
   --arg challengeRuntimeCodeHash "0x9999999999999999999999999999999999999999999999999999999999999999" \
@@ -658,6 +769,9 @@ jq -e \
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.dealCount == 0
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.feeBpsFrozen == true
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.runtimeCodeHash == "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  and .deploymentHistory[-1].deployedContracts.diligenceRoom.initialDeveloper == "0x1111111111111111111111111111111111111111"
+  and .deploymentHistory[-1].deployedContracts.diligenceRoom.releaseGovernanceController == "0x2222222222222222222222222222222222222222"
+  and .deploymentHistory[-1].deployedContracts.diligenceRoom.protocolFeeRecipient == "0x2222222222222222222222222222222222222222"
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.resultVerifier == "0x0000000000000000000000000000000000000000"
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.pendingResultVerifier == "0x0000000000000000000000000000000000000000"
   and .deploymentHistory[-1].deployedContracts.diligenceRoom.pendingResultVerifierActivatesAt == 0
@@ -742,6 +856,14 @@ jq -e \
   and .contracts.diligenceRoom.status == "deployed_fail_closed_pending_tee_binding"
   and .contracts.diligenceRoom.feeBpsFrozen == true
   and .contracts.diligenceRoom.runtimeCodeHash == "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  and .contracts.diligenceRoom.developer == "0x1111111111111111111111111111111111111111"
+  and .contracts.diligenceRoom.initialDeveloper == "0x1111111111111111111111111111111111111111"
+  and .contracts.diligenceRoom.releaseGovernanceController == "0x2222222222222222222222222222222222222222"
+  and .contracts.diligenceRoom.protocolFeeRecipient == "0x2222222222222222222222222222222222222222"
+  and .contracts.diligenceRoom.pendingDeveloper == "0x0000000000000000000000000000000000000000"
+  and .contracts.diligenceRoom.pendingDeveloperActivatesAt == 0
+  and .contracts.diligenceRoom.developerTransferDelaySeconds == 172800
+  and .contracts.diligenceRoom.governanceHandoffStatus == "pending_final_authority_and_release_ceremony"
   and .contracts.diligenceRoom.resultVerifier == "0x0000000000000000000000000000000000000000"
   and .contracts.diligenceRoom.pendingResultVerifier == "0x0000000000000000000000000000000000000000"
   and .contracts.diligenceRoom.pendingResultVerifierActivatesAt == 0
@@ -848,7 +970,17 @@ jq -e \
   and .contracts.computeCreditVault.priceOracle == false
   and .contracts.computeCreditVault.policyState == "execution_fail_closed_pending_timelocked_release_binding"
   and .contracts.computeCreditVault.runtimeCodeHash == "0xabababababababababababababababababababababababababababababababab"
-  and .contracts.royaltyDistributor.queryReplayDomain == "distributor_address_and_query_ref"
+  and .contracts.royaltyDistributor.status == "deployed_paused_unbound_pending_royalty_release"
+  and .contracts.royaltyDistributor.owner == "0x1111111111111111111111111111111111111111"
+  and .contracts.royaltyDistributor.pendingOwner == "0x0000000000000000000000000000000000000000"
+  and .contracts.royaltyDistributor.paused == true
+  and .contracts.royaltyDistributor.settlementVerifier == "0x0000000000000000000000000000000000000000"
+  and .contracts.royaltyDistributor.qvlVerifier == "0x0000000000000000000000000000000000000000"
+  and .contracts.royaltyDistributor.executionPolicyAnchor == "0x0000000000000000000000000000000000000000"
+  and .contracts.royaltyDistributor.releasePolicyCommitment == "0x0000000000000000000000000000000000000000000000000000000000000000"
+  and .contracts.royaltyDistributor.authorityNonce == 0
+  and .contracts.royaltyDistributor.pendingAuthorityActivatesAt == 0
+  and .contracts.royaltyDistributor.settlementReplayDomain == "global_settlement_id_and_global_settlement_nonce"
   and .contracts.royaltyDistributor.runtimeCodeHash == "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   and .contracts.emailOracleAuth.status == "deployed_deny_all_pending_cvm_binding"
   and .contracts.emailOracleAuth.productionRelease == true
@@ -903,6 +1035,7 @@ jq -e \
   and .freshDeployment.contractSuite.broadcastTransactions == $broadcastTransactions
   and .freshDeployment.contractSuite.deploymentIntentSha256 == "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
   and .freshDeployment.contractSuite.reviewerAuthorityGenesisAcceptanceSha256 == "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+  and .freshDeployment.contractSuite.tinkerAccountBindingCeremonyReceiptSha256 == "sha256:f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
   and .freshDeployment.contractSuite.deploymentReviewEnvelopeSha256 == "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
   and .freshDeployment.contractSuite.deploymentReviewEvidenceSha256 == "sha256:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
   and .freshDeployment.contractSuite.authorityStage == "deployment_intent_review_only"
@@ -921,6 +1054,7 @@ jq -e \
   and .freshDeployment.contractSuite.verificationStatus == "not_requested"
   and .deploymentHistory[-1].deploymentIntentSha256 == "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
   and .deploymentHistory[-1].reviewerAuthorityGenesisAcceptanceSha256 == "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
+  and .deploymentHistory[-1].tinkerAccountBindingCeremonyReceiptSha256 == "sha256:f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
   and .deploymentHistory[-1].deploymentReviewEnvelopeSha256 == "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
   and .deploymentHistory[-1].deploymentReviewEvidenceSha256 == "sha256:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
   and .deploymentHistory[-1].authorityStage == "deployment_intent_review_only"

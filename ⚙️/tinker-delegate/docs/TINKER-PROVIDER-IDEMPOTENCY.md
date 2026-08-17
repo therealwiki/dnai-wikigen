@@ -1,6 +1,6 @@
-# Tinker provider idempotency release gate
+# Tinker provider execution and ambiguity gate
 
-Audit date: 2026-07-16
+Audit date: 2026-07-23
 
 Local transport follow-up: 2026-07-21. This follow-up made no provider request
 and used no provider credential.
@@ -25,11 +25,21 @@ reproduced.
 
 ## Decision
 
-The production adapter remains unavailable. The installed SDK does not expose
-a documented end-to-end primitive sufficient to prove crash-safe replay of a
-multi-step paid Compute dispatch. `tinker-compute-runtime` must continue to
-return `idempotent_tinker_provider_adapter_unavailable` before `startJob` or
-any provider call.
+The release does **not** claim provider-side idempotent replay. Instead, the
+production adapter implements a stricter at-most-once local attempt boundary:
+it durably checkpoints `provider_attempt_checkpointed` immediately before the
+first allowlisted provider request. If the process loses a conclusive bounded
+result after that checkpoint, the job becomes the terminal
+`provider_outcome_ambiguous` state. It is never automatically redispatched and
+its encrypted workload remains sealed for separately attested reconciliation.
+
+The adapter, request grammar, SDK source, endpoint commitment, offline
+tokenizer, and these crash semantics are frozen by provider release
+`sha256:4264a2226ac9c850d8f053c98ac90d0f6dcbc58702919899384a9b2442b35631`.
+This is an implemented release gate, not evidence that a provider or CVM is
+currently live. Public dispatch remains fail-closed unless the exact release
+configuration validates and the worker publishes a fresh authenticated local
+heartbeat. Browser and customer credentials never satisfy that gate.
 
 This is narrower than saying that Tinker has no idempotency machinery. Version
 0.22.7's generated transport accepts an `idempotency_key` on low-level POST
@@ -70,23 +80,18 @@ uncertainty. It would not prove that retrying cannot double-create a model,
 repeat an optimizer mutation, repeat billable sampling, or lose the bounded
 usage result.
 
-Two repository-local prerequisites are also absent, independently of the
-upstream replay contract:
+The repository-local release now also binds the exact adapter source and SDK
+source hash, the low-level request allowlist, endpoint hash, offline tokenizer
+bundle, dstack-only sealed credential path, Base Sepolia vault/runtime pins,
+recipient-QVL lineage, and exact workload/manifest commitments. The provider
+heartbeat proves only authenticated local process presence; it is explicitly
+not Intel TDX evidence and cannot replace the separate release/attestation
+chain.
 
-- There is no release-pinned authenticated provider-conformance receipt,
-  verifier identity, or receipt-validation path. A local mock server or
-  self-asserted fixture cannot turn `supports_idempotent_dispatch` on.
-- A separately attested, class-padded, secret-blinded encrypted workload
-  ingress/read interface now exists and binds its exact manifest/workload
-  commitments into the dispatch intent. Its production recipient activation is
-  still fail-closed until the authenticated independent-QVL adapter is
-  configured, and the Base Sepolia authorization must still sign the exact
-  transitive intent binding before a provider adapter could be enabled.
-
-For those reasons, implementing only a key-derivation helper, low-level SDK
-wrapper, or internal step journal would not be a release-grade adapter. The
-adapter and public capability must remain absent until both the provider proof
-and workload binding exist.
+A request key is still sent as a deterministic request commitment where the
+pinned transport permits it, but neither the journal, API, nor receipt labels
+that key as an upstream replay guarantee. A local mock server or self-asserted
+fixture cannot set `idempotent_provider_replay_claimed` to true.
 
 Primary references:
 
@@ -96,11 +101,12 @@ Primary references:
 - [Tinker APIFuture API](https://tinker-docs.thinkingmachines.ai/tinker/api-reference/apifuture/)
 - [Thinking Machines Lab Tinker SDK source](https://github.com/thinking-machines-lab/tinker)
 
-## Required proof before enabling the adapter
+## Required proof before claiming replay-safe redispatch
 
-The release gate may be reconsidered only after a pinned SDK and official
+The current at-most-once adapter does not require or claim these semantics.
+Automatic redispatch must remain false unless a future pinned SDK and official
 server contract provide either one atomic dispatch primitive or complete
-per-step recovery. At minimum, the contract must guarantee:
+per-step recovery. At minimum, that future contract must guarantee:
 
 1. A caller-supplied stable key for model creation and every billable or
    state-mutating recipe step.

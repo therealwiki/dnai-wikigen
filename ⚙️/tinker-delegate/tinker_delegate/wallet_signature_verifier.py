@@ -16,6 +16,7 @@ return the exact EIP-1271 magic value for
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import math
 import re
@@ -329,6 +330,20 @@ class BaseSepoliaWalletSignatureVerifier:
                         primary_block.block_hash,
                         secondary_block.block_hash,
                     )
+                    or (
+                        primary_head.number == agreed_number
+                        and not hmac.compare_digest(
+                            primary_head.block_hash,
+                            primary_block.block_hash,
+                        )
+                    )
+                    or (
+                        secondary_head.number == agreed_number
+                        and not hmac.compare_digest(
+                            secondary_head.block_hash,
+                            secondary_block.block_hash,
+                        )
+                    )
                 ):
                     raise WalletSignatureUnavailable(
                         "wallet signature RPC providers disagree on the finalized block"
@@ -584,6 +599,8 @@ def _validated_rpc_url(value: Any) -> str:
     if not isinstance(value, str):
         raise WalletSignatureUnavailable("wallet signature RPC URL is invalid")
     normalized = value.strip()
+    if normalized != value or re.search(r"[\x00-\x20\x7f]", value):
+        raise WalletSignatureUnavailable("wallet signature RPC URL is invalid")
     if len(normalized.encode("utf-8")) > 4096:
         raise WalletSignatureUnavailable("wallet signature RPC URL is invalid")
     try:
@@ -607,7 +624,18 @@ def _validated_rpc_url(value: Any) -> str:
 
 def _rpc_origin_identity(value: str) -> tuple[str, str, int]:
     parsed = urlsplit(value)
-    hostname = (parsed.hostname or "").lower()
+    hostname = (parsed.hostname or "").rstrip(".")
+    if not hostname:
+        raise WalletSignatureUnavailable("wallet signature RPC URL is invalid")
+    try:
+        hostname = ipaddress.ip_address(hostname).compressed
+    except ValueError:
+        try:
+            hostname = hostname.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise WalletSignatureUnavailable(
+                "wallet signature RPC URL is invalid"
+            ) from exc
     port = parsed.port or 443
     return parsed.scheme.lower(), hostname, port
 

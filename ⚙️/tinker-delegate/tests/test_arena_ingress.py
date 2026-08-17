@@ -30,6 +30,7 @@ from tinker_delegate.arena_ingress import (
     ArenaCandidateIngressStore,
     ArenaIngressConflict,
     ArenaIngressCorruptError,
+    ArenaIngressErasureRetryable,
     ArenaIngressError,
     ArenaIngressUnavailable,
     arena_attestation_report_data,
@@ -754,8 +755,9 @@ class ArenaIngressServiceTest(unittest.TestCase):
         original = blob.read_bytes()
         blob.write_bytes(b'{"partial":')
         os.chmod(blob, 0o600)
+        corrupted = ArenaCandidateIngressStore(self.ingress_root, max_envelopes=32)
         with self.assertRaises(ArenaIngressCorruptError):
-            ArenaCandidateIngressStore(self.ingress_root, max_envelopes=32)
+            corrupted.load_envelope(result.sealed_reference)
 
         blob.write_bytes(original)
         os.chmod(blob, 0o600)
@@ -768,6 +770,76 @@ class ArenaIngressServiceTest(unittest.TestCase):
         blob.unlink()
         with self.assertRaises(ArenaIngressCorruptError):
             restarted.load_envelope(result.sealed_reference)
+
+    def test_metadata_read_never_opens_ciphertext_and_unlink_is_idempotent(self):
+        result = self._ingest()
+        with patch.object(
+            ArenaCandidateIngressStore,
+            "_load_blob",
+            side_effect=AssertionError("ciphertext opened before claim"),
+        ):
+            restarted = ArenaCandidateIngressStore(
+                self.ingress_root,
+                max_envelopes=32,
+            )
+            metadata = restarted.describe_envelope(result.sealed_reference)
+        self.assertEqual(metadata.blob_sha256, result.blob_sha256)
+        self.assertEqual(metadata.ciphertext_sha256, result.ciphertext_sha256)
+
+        erased = restarted.erase_envelope(result.sealed_reference)
+        self.assertEqual(erased.evidence, "directory_entry_unlinked")
+        self.assertFalse(erased.to_bounded_dict()["physical_erasure_claimed"])
+        replay = restarted.erase_envelope(result.sealed_reference)
+        self.assertEqual(replay.evidence, "directory_entry_absent")
+        self.assertFalse(replay.to_bounded_dict()["physical_erasure_claimed"])
+        with self.assertRaises(ArenaIngressError):
+            restarted.load_envelope(result.sealed_reference)
+
+    def test_crash_after_unlink_retries_from_pending_index_and_absence_evidence(self):
+        result = self._ingest()
+        original_persist = self.store._persist_index
+        calls = 0
+
+        def crash_on_finalization(records):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated crash after unlink")
+            return original_persist(records)
+
+        with patch.object(
+            self.store,
+            "_persist_index",
+            side_effect=crash_on_finalization,
+        ):
+            with self.assertRaises(ArenaIngressErasureRetryable):
+                self.store.erase_envelope(result.sealed_reference)
+
+        restarted = ArenaCandidateIngressStore(
+            self.ingress_root,
+            max_envelopes=32,
+        )
+        with self.assertRaises(ArenaIngressError):
+            restarted.describe_envelope(result.sealed_reference)
+        retried = restarted.erase_envelope(result.sealed_reference)
+        self.assertEqual(retried.evidence, "directory_entry_absent")
+        ArenaCandidateIngressStore(self.ingress_root, max_envelopes=32)
+
+    def test_symlink_substitution_fails_closed_without_unlinking_external_target(self):
+        result = self._ingest()
+        blob = next(
+            path
+            for path in self.ingress_root.rglob("*")
+            if path.is_file() and path.name != "index.json"
+        )
+        external = self.root / "must-remain.txt"
+        external.write_text("outside", encoding="utf-8")
+        blob.unlink()
+        blob.symlink_to(external)
+
+        with self.assertRaises(ArenaIngressCorruptError):
+            self.store.erase_envelope(result.sealed_reference)
+        self.assertEqual(external.read_text(encoding="utf-8"), "outside")
 
     def test_builder_uses_configured_root_and_stable_recipient(self):
         settings = Settings(

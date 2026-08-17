@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -22,6 +23,7 @@ import {
 import {
   canonicalReleaseCeremonyLedgerJsonText,
   commitReleaseCeremonyLedgerRevision,
+  CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS,
   finalizeReleaseCeremonyLedger,
   initializeReleaseCeremonyLedger,
   normalizeReleaseCeremonyLedgerFinalizationReceipt,
@@ -35,6 +37,7 @@ import {
   RELEASE_CEREMONY_LEDGER_EVIDENCE_MODE,
   RELEASE_CEREMONY_LEDGER_FROZEN_MODE,
   RELEASE_CEREMONY_LEDGER_GENESIS_DOMAIN,
+  RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS,
   RELEASE_CEREMONY_LEDGER_PROTOCOL,
   releaseCeremonyLedgerGenesisChainSha256,
   releaseCeremonyLedgerGlobalReconciliationSha256,
@@ -46,6 +49,8 @@ const ROOT = fs.realpathSync.native(path.resolve(import.meta.dirname, ".."));
 const RELEASE_SHA = "1".repeat(40);
 const INTENT_SHA256 = `sha256:${"2".repeat(64)}`;
 const REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256 = `sha256:${"3".repeat(64)}`;
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256 =
+  `sha256:${"4".repeat(64)}`;
 const OPERATOR_ADDRESS = `0x${"a1".repeat(20)}`;
 const INITIALIZATION_TOKEN = "1".repeat(64);
 const ONCHAIN_RECONCILIATION_SHA256 = `sha256:${"a".repeat(64)}`;
@@ -158,6 +163,8 @@ function contractLedgerFixture() {
         deploymentIntentSha256: INTENT_SHA256,
         reviewerAuthorityGenesisAcceptanceSha256:
           REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+        tinkerAccountBindingCeremonyReceiptSha256:
+          TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
         keystoreAccount: "dev",
         runtimeCodeProof: "exact_creation_reexecution_match_all_contracts",
         exactCreationInputProof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -173,6 +180,8 @@ function contractLedgerFixture() {
       deploymentIntentSha256: INTENT_SHA256,
       reviewerAuthorityGenesisAcceptanceSha256:
         REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+      tinkerAccountBindingCeremonyReceiptSha256:
+        TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
       broadcastTransactionsSha256,
     }],
     contracts,
@@ -210,6 +219,8 @@ function fixture(t) {
     deploymentIntentSha256: INTENT_SHA256,
     reviewerAuthorityGenesisAcceptanceSha256:
       REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+    tinkerAccountBindingCeremonyReceiptSha256:
+      TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   };
 }
 
@@ -245,6 +256,31 @@ function initialize(f) {
     });
   } finally {
     release(f, "ceremony_ledger_initialization", INITIALIZATION_TOKEN);
+  }
+}
+
+function rewriteSourceManifest(f, mutate) {
+  const value = JSON.parse(fs.readFileSync(f.sourceManifestPath, "utf8"));
+  mutate(value);
+  fs.chmodSync(f.sourceManifestPath, 0o600);
+  fs.writeFileSync(
+    f.sourceManifestPath,
+    canonicalReleaseCeremonyLedgerJsonText(value),
+    { mode: 0o444 },
+  );
+  fs.chmodSync(f.sourceManifestPath, 0o444);
+}
+
+function assertInitializationRejected(f, expected) {
+  const token = "6".repeat(64);
+  const options = acquire(f, "ceremony_ledger_initialization", token);
+  try {
+    assert.throws(
+      () => initializeReleaseCeremonyLedger(options),
+      expected,
+    );
+  } finally {
+    release(f, "ceremony_ledger_initialization", token);
   }
 }
 
@@ -364,6 +400,155 @@ test("initialization copies the immutable fresh manifest byte-for-byte exactly o
   }
 });
 
+test("initialization requires the independent ceremony pin and both exact manifest copies", (t) => {
+  const missingExternalPin = fixture(t);
+  const token = "5".repeat(64);
+  const options = acquire(
+    missingExternalPin,
+    "ceremony_ledger_initialization",
+    token,
+  );
+  delete options.tinkerAccountBindingCeremonyReceiptSha256;
+  try {
+    assert.throws(
+      () => initializeReleaseCeremonyLedger(options),
+      /independently verified Tinker account-binding ceremony receipt digest/,
+    );
+  } finally {
+    release(missingExternalPin, "ceremony_ledger_initialization", token);
+  }
+
+  for (const [label, mutate, expected] of [
+    [
+      "missing current-suite pin",
+      (value) => {
+        delete value.freshDeployment.contractSuite
+          .tinkerAccountBindingCeremonyReceiptSha256;
+      },
+      /fresh fail-closed suite/,
+    ],
+    [
+      "substituted current-suite pin",
+      (value) => {
+        value.freshDeployment.contractSuite
+          .tinkerAccountBindingCeremonyReceiptSha256 =
+            `sha256:${"e".repeat(64)}`;
+      },
+      /fresh fail-closed suite/,
+    ],
+    [
+      "missing history pin",
+      (value) => {
+        delete value.deploymentHistory[0]
+          .tinkerAccountBindingCeremonyReceiptSha256;
+      },
+      /account-binding ceremony receipt/,
+    ],
+    [
+      "substituted history pin",
+      (value) => {
+        value.deploymentHistory[0]
+          .tinkerAccountBindingCeremonyReceiptSha256 =
+            `sha256:${"e".repeat(64)}`;
+      },
+      /account-binding ceremony receipt/,
+    ],
+  ]) {
+    const f = fixture(t);
+    rewriteSourceManifest(f, mutate);
+    assertInitializationRejected(f, expected, label);
+  }
+
+  const substitutedExternalPin = fixture(t);
+  substitutedExternalPin.tinkerAccountBindingCeremonyReceiptSha256 =
+    `sha256:${"e".repeat(64)}`;
+  assertInitializationRejected(
+    substitutedExternalPin,
+    /fresh fail-closed suite/,
+  );
+});
+
+test("CLI initializes once and commits every helper candidate to the one external ledger", (t) => {
+  const f = fixture(t);
+  const cli = path.join(ROOT, "scripts", "release-ceremony-ledger-cli.mjs");
+  const common = [
+    "--repository-root", f.repositoryRoot,
+    "--source-manifest", f.sourceManifestPath,
+    "--ledger", f.ledgerPath,
+    "--evidence-root", f.evidenceRoot,
+    "--lock-root", f.lockRoot,
+    "--release-sha", f.releaseSha,
+    "--deployment-intent-sha256", f.deploymentIntentSha256,
+    "--reviewer-genesis-acceptance-sha256",
+    f.reviewerAuthorityGenesisAcceptanceSha256,
+    "--tinker-account-binding-ceremony-receipt-sha256",
+    f.tinkerAccountBindingCeremonyReceiptSha256,
+  ];
+  const sourceBefore = fs.readFileSync(f.sourceManifestPath);
+  const missingCeremonyPin = common.slice(0, -2);
+  const missingResult = spawnSync(process.execPath, [
+    cli, "replay", ...missingCeremonyPin,
+  ], { encoding: "utf8" });
+  assert.notEqual(missingResult.status, 0);
+  assert.match(
+    missingResult.stderr,
+    /--tinker-account-binding-ceremony-receipt-sha256 is required/,
+  );
+  const initializeToken = "7".repeat(64);
+  acquire(f, "ceremony_ledger_initialization", initializeToken);
+  try {
+    const result = spawnSync(process.execPath, [
+      cli, "initialize", ...common,
+      "--writer-id", "ceremony_ledger_initialization",
+      "--owner-token", initializeToken,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ledger_mode, "0600");
+  } finally {
+    release(f, "ceremony_ledger_initialization", initializeToken);
+  }
+
+  const secondToken = "8".repeat(64);
+  acquire(f, "ceremony_ledger_initialization", secondToken);
+  try {
+    const second = spawnSync(process.execPath, [
+      cli, "initialize", ...common,
+      "--writer-id", "ceremony_ledger_initialization",
+      "--owner-token", secondToken,
+    ], { encoding: "utf8" });
+    assert.notEqual(second.status, 0);
+    assert.match(second.stderr, /target must be absent|evidence root must be empty/);
+  } finally {
+    release(f, "ceremony_ledger_initialization", secondToken);
+  }
+
+  const candidatePath = path.join(f.ledgerRoot, "helper-candidate.json");
+  fs.writeFileSync(candidatePath, candidateText(f, "diligence-release"), {
+    flag: "wx",
+    mode: 0o600,
+  });
+  fs.chmodSync(candidatePath, 0o600);
+  const writerToken = "9".repeat(64);
+  acquire(f, "diligence_release", writerToken);
+  try {
+    const committed = spawnSync(process.execPath, [
+      cli, "commit", ...common,
+      "--writer-id", "diligence_release",
+      "--owner-token", writerToken,
+      "--candidate", candidatePath,
+    ], { encoding: "utf8" });
+    assert.equal(committed.status, 0, committed.stderr);
+    assert.equal(JSON.parse(committed.stdout).revision_count, 1);
+  } finally {
+    release(f, "diligence_release", writerToken);
+  }
+
+  assert.deepEqual(fs.readFileSync(f.sourceManifestPath), sourceBefore);
+  assert.equal(fs.statSync(f.sourceManifestPath).mode & 0o777, 0o444);
+  assert.equal(fs.statSync(f.ledgerPath).mode & 0o777, 0o600);
+  assert.equal(currentReplay(f).revision_count, 1);
+});
+
 test("CAS commits canonical candidates and replay rejects stale or malformed writers", (t) => {
   const f = fixture(t);
   const initial = initialize(f);
@@ -411,6 +596,47 @@ test("CAS commits canonical candidates and replay rejects stale or malformed wri
   assert.equal(replay.finalized, false);
   assert.equal(fs.readdirSync(path.join(f.evidenceRoot, ".staging")).length, 0);
   assert.equal(fs.existsSync(path.join(f.evidenceRoot, "pending.json")), false);
+});
+
+test("legacy writer projection stays frozen while royalty release can commit and replay", (t) => {
+  assert.deepEqual(RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS, [
+    "challenge_registry_release",
+    "compute_release",
+    "diligence_release",
+    "email_oracle_release",
+    "execution_policy_anchor_release",
+    "tinker_release",
+  ]);
+  assert.deepEqual(CURRENT_RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS, [
+    ...RELEASE_CEREMONY_LEDGER_MUTATION_WRITERS,
+    "royalty_release",
+  ]);
+
+  const f = fixture(t);
+  const initial = initialize(f);
+  const ownerToken = "a2".repeat(32);
+  const options = acquire(f, "royalty_release", ownerToken);
+  try {
+    const committed = commitReleaseCeremonyLedgerRevision({
+      ...options,
+      expectedRevision: 0,
+      expectedLedgerSha256: initial.current_ledger_sha256,
+      candidateLedgerText: candidateText(f, "royalty-phase-one-finalized"),
+      now: new Date("2026-07-21T12:11:00.000Z"),
+    });
+    assert.equal(committed.revision_count, 1);
+    const replayed = currentReplay(f);
+    assert.equal(replayed.revision_count, 1);
+    const receipt = normalizeReleaseCeremonyLedgerRevisionReceipt(
+      JSON.parse(fs.readFileSync(
+        path.join(f.evidenceRoot, "revisions", "000000000001.json"),
+        "utf8",
+      )),
+    );
+    assert.equal(receipt.writer_id, "royalty_release");
+  } finally {
+    release(f, "royalty_release", ownerToken);
+  }
 });
 
 for (const [faultPoint, expectedAction] of [

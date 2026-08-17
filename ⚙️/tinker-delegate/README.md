@@ -39,8 +39,9 @@ agent compute tokens; one token type is never accepted as another:
   `artifact:upload`, expires after five minutes by default, and works for only
   that deal. The encrypted artifact endpoint checks the authenticated address
   against the funded in-TEE `DealContext.seller` before decrypting any bytes.
-- EIP-1271 support is one shared verifier used by seller upload, Arena, and
-  Compute authentication. It is enabled only when the operator configures
+- EIP-1271 support is one shared verifier used by seller upload, Arena,
+  Compute, Collaboration, and Review authentication. It is enabled only when
+  the operator configures
   `TINKER_WALLET_AUTH_RPC_URL` and `TINKER_WALLET_AUTH_RPC_URL_SECONDARY` on
   distinct provider origins; no request can select an RPC. Both providers must
   report Base Sepolia `84532`. The verifier selects the lower reported
@@ -63,7 +64,8 @@ agent compute tokens; one token type is never accepted as another:
   development fallback and must remain empty in Phala. Pending challenges are
   process-local and intentionally become invalid on restart; deploy the API as
   one worker until a shared sealed nonce store is added.
-- Deal, Arena, and Compute challenge issuance share one atomic 600-second
+- Deal, Arena, Compute, Collaboration, and Review challenge issuance share one
+  atomic 600-second
   sliding-window admission gate. Its global capacity (`768`) is below each
   process-local nonce store (`1024`), with subordinate canonical-address (`64`)
   and direct-peer (`256`) buckets. Saturation returns the same bounded `429`
@@ -118,11 +120,65 @@ agent compute tokens; one token type is never accepted as another:
   append-only/double-entry with idempotent reserve, settle, and release. A
   current owner/admin/developer wallet may atomically cancel only an exactly
   queued, never-dispatched job and return its reservation; device credentials,
-  viewers, running work, and settled work cannot use that path. Every job
-  remains explicitly `not_dispatched` and every settlement remains
-  non-provider-authoritative. Card, ETH, and USDC Compute funding mutations are
-  absent until a signed webhook or audited deposit vault exists. See the
+  viewers, running work, and settled work cannot use that path. Every legacy
+  service-credit job remains explicitly `not_dispatched` and every internal
+  settlement remains non-provider-authoritative. That ledger has no card, ETH,
+  or USDC funding mutation. The separate exact-asset journal and
+  `ComputeCreditVault` path are source-implemented but release-gated; they do
+  not turn the service-credit ledger into a payment rail. See the
   repository-level `docs/compute-console-api.md` for the exact API contract.
+- Collaboration rooms use a sixth, exact `collaboration:console` wallet-token
+  domain and purpose-separated dstack keys. The backend gate defaults false and
+  blocks authentication, reads, mutations, key derivation, and store opening
+  unless it is exactly enabled by the current release authority. Schema v2
+  keeps creator declarations as pending invitations until each wallet accepts,
+  separates accepted owner roles from exact-current-query approvals, and uses
+  bounded snapshot-bound pagination. A public control-plane run record remains
+  only a `joint_consent_snapshot_not_dispatched`; that record is not provider
+  execution, TDX evidence, settlement, royalty distribution, or token minting.
+  The separate release-gated Collaboration execution service implements the
+  production-shaped continuation after the complete fresh grant set: derive
+  the deterministic exact royalty reservation; wait for the sponsor's exact
+  native/ERC-20 escrow; admit the worker only after one RPC-reported finalized,
+  EIP-1898-pinned match of that reservation and the exact Compute job; run the
+  bounded one-shot Compute path; anchor the exact settlement decision on demand
+  and obtain purpose-separated main-runtime/QVL authorizations; hand the
+  sponsor wallet the zero-value `settleReserved` call; then reconcile finalized
+  permanent state. The server never receives the sponsor's private key, and
+  direct distribute calls remain compatibility-only. Challenges,
+  idempotency records, snapshots, and explicitly archived quiescent rooms have
+  public bounded retention. Active or pending authority is never silently
+  pruned. Local HMAC mode detects current-file tampering but remains explicitly
+  non-monotonic. A live dstack surface instead requires the release-bound Base
+  Sepolia execution-policy anchor, commits every exact schema-v2 state through
+  a crash-recoverable compare-and-set, and fails closed on unavailable,
+  regressed, or mismatched heads before wallet challenge issuance, reads, or
+  mutations. The execution sequence is source/test proof only: this working
+  tree has no fresh Base Sepolia/Phala/QVL/sponsor-funding/settlement activation.
+  The rollback witness, DTOs, heartbeats, local signers, and RPC-reported
+  finalized reads are not execution, Intel TDX, independent-QVL, provider,
+  settlement, RPC-quorum, or consensus evidence. See
+  `docs/COLLABORATION-BACKEND.md`.
+- The wallet-owned Tinker customer lifecycle reuses only the short-lived
+  `compute:console` wallet session; its proxy credentials have a separate
+  issuer, audience, key ID, dstack key path, and training-only scope. The
+  browser can request or recover one immutable logical account, observe
+  activation state, issue lower-capped credentials to non-exportable X25519
+  device keys, rotate with revoke-before-issue ordering, and revoke a
+  credential or account. A request is not provider-account evidence:
+  activation remains an internal operation requiring independently signed
+  provisioning evidence, exact frozen release agreement, fresh TDX/QVL
+  evidence, and an external rollback anchor. Inference, card intake, token
+  exchange and provider-key minting remain absent. The separate
+  `/tinker/customer/train` route now accepts only a lower-authority bearer and
+  three bounded integer controls, durably claims dispatch before the sealed SDK,
+  signs fixed-ceiling authority settlement/release evidence, and holds every
+  uncertain post-claim outcome for reconciliation without provider redispatch.
+  This is not provider-authoritative billing, and it is not live until the fresh
+  release is activated. The feature is disabled unless one SHA-256-pinned
+  private runtime authority and all of its evidence/anchor dependencies are present. See
+  `docs/TINKER-CUSTOMER-ADAPTER.md` for the HTTP contract and residual
+  activation boundary.
 - Deal evaluation now has an explicit trust-bearing activation mode rather
   than a hard-coded stub. `TINKER_EVALUATOR_MODE=disabled` is the safe default;
   `stub` enables deterministic local integration only and is rejected whenever
@@ -820,8 +876,16 @@ All settings use the `TINKER_` env prefix:
 | `TINKER_ARENA_AGENT_STORE_PATH` | *(empty)* | HMAC-authenticated credential/device state; local composes set `/data/arena_agent_credentials.json`, while empty disables the surface |
 | `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY` | *(empty)* | Local-development-only HMAC input; never a rollback-resistant counter or anchor |
 | `TINKER_ARENA_AGENT_STORE_INTEGRITY_KEY_PATH` | `tinker/arena_agent_store_integrity` | Separate dstack derivation path for store integrity; never reuse the credential-signing path |
-| `TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS` | `600` | Shared sliding window; must cover the longest Deal/Arena/Compute challenge TTL |
-| `TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT` | `768` | Accepted challenges across all three surfaces per window; must remain below every nonce-store capacity |
+| `TINKER_COLLABORATION_ENABLED` | `false` | Exact backend control-plane gate; production may project `true` only from current signed v3 `requested_features.collaboration`, never from another gate or an ambient operator override |
+| `TINKER_COLLABORATION_STORE_PATH` | *(empty)* | Schema-v2 HMAC-authenticated current-state room path; live dstack additionally requires the release-pinned Base Sepolia execution-policy rollback anchor |
+| `TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH` | `tinker/collaboration_wallet_auth` | Distinct dstack derivation path for the `collaboration:console` wallet-token domain |
+| `TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS` | `300` | Collaboration console login nonce lifetime, capped at 600 seconds |
+| `TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS` | `600` | Collaboration console bearer lifetime, capped at 900 seconds |
+| `TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES` | `1024` | Process-local pending Collaboration login nonce capacity |
+| `TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS` | `300` | Exact owner-role and exact-current-query signature lifetime, constrained to 60–900 seconds |
+| `TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH` | `tinker/collaboration_store_integrity` | Purpose-separated dstack HMAC key path; local mode remains non-monotonic, while live dstack combines this current-state integrity with the external release-bound anchor |
+| `TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS` | `600` | Shared sliding window; must cover the longest Deal/Arena/Compute/Collaboration/Review challenge TTL |
+| `TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT` | `768` | Accepted challenges across all five surfaces per window; must remain below every nonce-store capacity |
 | `TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT` | `64` | Canonical wallet-address challenge admissions per shared window |
 | `TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT` | `256` | Direct peer (IPv4 or IPv6 /64) challenge admissions per shared window |
 | `TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS` | *(empty)* | Exact direct-proxy CIDRs; forwarded identity remains disabled unless the approved header is also set |
@@ -1103,6 +1167,9 @@ Remaining activation work is operational and deliberately fail-closed:
   Diligence-QVL, Compute-metering, TEE-admission, and anchor-writer ceremonies;
 - deploy and independently verify all seven CVM descriptors and their bounded
   Intel TDX/QVL evidence;
+- prove one exact Collaboration run from sponsor-funded reservation through
+  bounded Compute, sponsor-wallet `settleReserved`, and finalized permanent
+  reconciliation without substituting a test signer or aggregate balance;
 - run the canonical check-only release validator against the exact live chain,
   deployment ledger, five external QVL roots, and evidence artifacts;
 - enable Deal settlement only after a separately attested confidential

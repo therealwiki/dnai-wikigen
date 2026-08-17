@@ -10,11 +10,15 @@ import {
   computeWorkloadRecipientKeyId,
   computeWorkloadRecipientReleaseCommitment,
   deriveComputeWorkloadWireBinding,
+  eraseUnconsumedComputeWorkload,
+  fetchComputeWorkloadMetadata,
+  parseComputeWorkloadMetadata,
   parseComputeWorkloadEncryptionContract,
   prepareComputeWorkloadUpload,
   uploadPreparedComputeWorkload,
   type ComputeWorkloadEncryptionContract,
   type ComputeWorkloadManifest,
+  type ComputeWorkloadMetadata,
   type ComputeWorkloadRecipientActivation,
   type ComputeWorkloadRecipientAttestation,
   type ComputeWorkloadTrustPolicy,
@@ -42,6 +46,7 @@ const MEASUREMENT_POLICY_SHA256 = `sha256:${"7c".repeat(32)}`;
 const MAIN_RUNTIME_EVIDENCE_SHA256 = `sha256:${"7d".repeat(32)}`;
 const PROJECT_ID = "prj_alpha";
 const WALLET = `0x${"11".repeat(20)}`;
+const WORKLOAD_ID = `wrk_${"ab".repeat(16)}`;
 
 function bytesHex(value: Uint8Array): string {
   return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -271,6 +276,55 @@ const inferenceManifest: ComputeWorkloadManifest = {
   max_sample_tokens: 128,
   max_train_tokens: 0,
 };
+
+function workloadMetadata(
+  overrides: Partial<ComputeWorkloadMetadata> = {},
+): ComputeWorkloadMetadata {
+  return {
+    surface: "compute_workload_metadata",
+    schema_version: 2,
+    workload_id: WORKLOAD_ID,
+    workload_schema: "dnai.compute.workload.inference.v1",
+    operation: "inference",
+    model: "qwen3_8b",
+    recipe: "qwen3_8b_bounded",
+    payload_size_class: "4k",
+    example_count_class: "none",
+    resource_caps: {
+      max_prefill_tokens: 1_024,
+      max_sample_tokens: 128,
+      max_train_tokens: 0,
+    },
+    manifest_commitment: `sha256:${"41".repeat(32)}`,
+    workload_commitment: `sha256:${"42".repeat(32)}`,
+    recipient_key_id: `sha256:${"43".repeat(32)}`,
+    activation_commitment: `sha256:${"44".repeat(32)}`,
+    recipient_release_commitment: `sha256:${"45".repeat(32)}`,
+    execution_binding: {
+      schema: "dnai.compute.workload-execution-binding.v1",
+      commitment: `sha256:${"46".repeat(32)}`,
+      source_kind: "wallet",
+      wallet_adoption_required: false,
+      device_spending_authority: false,
+    },
+    dispatch_adoption: {
+      state: "available_for_wallet_dispatch",
+      wallet_adoption_eligible: true,
+      dispatch_claimed: false,
+      claim_commitment: null,
+      funding_authority: "wallet_required",
+      device_spending_authority: false,
+      direct_deletion_allowed: true,
+    },
+    ciphertext_egress: false,
+    raw_prompt_egress: false,
+    raw_examples_egress: false,
+    raw_dataset_egress: false,
+    raw_output_egress: false,
+    provider_dispatch_enabled: false,
+    ...overrides,
+  };
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -642,7 +696,7 @@ describe("Compute sealed workload browser wire", () => {
     });
     const receipt = (created: boolean) => ({
       surface: "compute_workload_ingress_receipt",
-      schema_version: 1,
+      schema_version: 2,
       workload_id: `wrk_${"ab".repeat(16)}`,
       workload_schema: prepared.expected.workloadSchema,
       workload_commitment: prepared.expected.workloadCommitment,
@@ -652,6 +706,22 @@ describe("Compute sealed workload browser wire", () => {
       key_id: prepared.expected.keyId,
       activation_commitment: prepared.expected.activationCommitment,
       recipient_release_commitment: prepared.expected.recipientReleaseCommitment,
+      execution_binding: {
+        schema: "dnai.compute.workload-execution-binding.v1",
+        commitment: `sha256:${"ce".repeat(32)}`,
+        source_kind: "wallet",
+        wallet_adoption_required: false,
+        device_spending_authority: false,
+      },
+      dispatch_adoption: {
+        state: "available_for_wallet_dispatch",
+        wallet_adoption_eligible: true,
+        dispatch_claimed: false,
+        claim_commitment: null,
+        funding_authority: "wallet_required",
+        device_spending_authority: false,
+        direct_deletion_allowed: true,
+      },
       created,
       idempotent_replay: !created,
       ciphertext_egress: false,
@@ -671,9 +741,190 @@ describe("Compute sealed workload browser wire", () => {
       workloadSchema: inferenceManifest.schema,
       manifestCommitment: `0x${prepared.expected.manifestCommitment.slice(7)}`,
       workloadCommitment: `0x${prepared.expected.workloadCommitment.slice(7)}`,
+      sourceKind: "wallet",
+      executionBindingCommitment: `sha256:${"ce".repeat(32)}`,
+      recipientReleaseCommitment: prepared.expected.recipientReleaseCommitment,
     });
     expect(replay.receipt.idempotent_replay).toBe(true);
     expect(request.mock.calls[0]?.[1]?.body).toBe(request.mock.calls[1]?.[1]?.body);
     expect(String(request.mock.calls[0]?.[1]?.body)).not.toContain("PRIVATE RETRY PAYLOAD");
+  });
+
+  it("strictly recovers bounded server metadata without ciphertext egress", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse(workloadMetadata()),
+    );
+    const recovered = await fetchComputeWorkloadMetadata(
+      "https://delegate.example/",
+      "Bearer wallet-session-token-123456",
+      PROJECT_ID,
+      WORKLOAD_ID,
+    );
+    expect(recovered).toEqual(workloadMetadata());
+    expect(request).toHaveBeenCalledWith(
+      `https://delegate.example/compute/projects/${PROJECT_ID}/workloads/${WORKLOAD_ID}`,
+      expect.objectContaining({
+        method: "GET",
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer wallet-session-token-123456",
+        },
+      }),
+    );
+    expect(JSON.stringify(recovered)).not.toContain("ciphertext_sha256");
+    expect(recovered.ciphertext_egress).toBe(false);
+    expect(recovered.provider_dispatch_enabled).toBe(false);
+    expect(recovered.execution_binding.source_kind).toBe("wallet");
+    expect(recovered.dispatch_adoption.state).toBe("available_for_wallet_dispatch");
+  });
+
+  it("rejects metadata field drift, cross-ID substitution, and inconsistent manifest caps", () => {
+    const extra = { ...workloadMetadata(), ciphertext: "forbidden" };
+    expect(() => parseComputeWorkloadMetadata(extra, WORKLOAD_ID)).toThrow(
+      /missing or unexpected fields/i,
+    );
+    expect(() => parseComputeWorkloadMetadata(
+      workloadMetadata({ workload_id: `wrk_${"cd".repeat(16)}` }),
+      WORKLOAD_ID,
+    )).toThrow(/id binding/i);
+    expect(() => parseComputeWorkloadMetadata(
+      workloadMetadata({
+        operation: "training",
+        workload_schema: "dnai.compute.workload.inference.v1",
+      }),
+      WORKLOAD_ID,
+    )).toThrow(/manifest caps|inference/i);
+  });
+
+  it("parses credential adoption authority and fails closed on claim contradictions", () => {
+    const credential = workloadMetadata({
+      execution_binding: {
+        schema: "dnai.compute.workload-execution-binding.v1",
+        commitment: `sha256:${"51".repeat(32)}`,
+        source_kind: "credential",
+        wallet_adoption_required: true,
+        device_spending_authority: false,
+      },
+      dispatch_adoption: {
+        state: "wallet_adoption_required",
+        wallet_adoption_eligible: true,
+        dispatch_claimed: false,
+        claim_commitment: null,
+        funding_authority: "wallet_required",
+        device_spending_authority: false,
+        direct_deletion_allowed: true,
+      },
+    });
+    const parsed = parseComputeWorkloadMetadata(credential, WORKLOAD_ID);
+    expect(parsed.execution_binding.source_kind).toBe("credential");
+    expect(parsed.execution_binding.device_spending_authority).toBe(false);
+    expect(parsed.dispatch_adoption.wallet_adoption_eligible).toBe(true);
+
+    const claimed = workloadMetadata({
+      execution_binding: credential.execution_binding,
+      dispatch_adoption: {
+        state: "claimed_by_wallet_dispatch",
+        wallet_adoption_eligible: false,
+        dispatch_claimed: true,
+        claim_commitment: `sha256:${"52".repeat(32)}`,
+        funding_authority: "onchain_wallet_job",
+        device_spending_authority: false,
+        direct_deletion_allowed: false,
+      },
+    });
+    expect(parseComputeWorkloadMetadata(claimed, WORKLOAD_ID)
+      .dispatch_adoption.claim_commitment).toBe(`sha256:${"52".repeat(32)}`);
+    expect(() => parseComputeWorkloadMetadata({
+      ...claimed,
+      dispatch_adoption: {
+        ...claimed.dispatch_adoption,
+        direct_deletion_allowed: true,
+      },
+    }, WORKLOAD_ID)).toThrow(/direct-deletion/i);
+  });
+
+  it("accepts only the exact server erasure receipt for an unconsumed ciphertext", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        surface: "compute_workload_deletion",
+        schema_version: 1,
+        workload_id: WORKLOAD_ID,
+        deleted: true,
+        ciphertext_egress: false,
+        raw_workload_egress: false,
+        provider_dispatch_performed: false,
+      }),
+    );
+    const result = await eraseUnconsumedComputeWorkload(
+      "https://delegate.example",
+      "Bearer wallet-session-token-123456",
+      PROJECT_ID,
+      WORKLOAD_ID,
+    );
+    expect(result).toMatchObject({
+      state: "deleted",
+      workload_id: WORKLOAD_ID,
+      exact_deletion_receipt: true,
+      unconsumed_ciphertext_retrievable: false,
+      receipt: {
+        deleted: true,
+        ciphertext_egress: false,
+        raw_workload_egress: false,
+        provider_dispatch_performed: false,
+      },
+    });
+    expect(request.mock.calls[0]?.[1]).toMatchObject({
+      method: "DELETE",
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+    });
+  });
+
+  it("recovers a lost deletion response without inventing an erasure receipt", async () => {
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const result = await eraseUnconsumedComputeWorkload(
+      "https://delegate.example",
+      "Bearer wallet-session-token-123456",
+      PROJECT_ID,
+      WORKLOAD_ID,
+    );
+    expect(result).toEqual({
+      state: "not_retrievable_after_uncertain_response",
+      workload_id: WORKLOAD_ID,
+      exact_deletion_receipt: false,
+      unconsumed_ciphertext_retrievable: false,
+      recovery_lookup_performed: true,
+    });
+    expect(request.mock.calls.map(([, init]) => init?.method)).toEqual(["DELETE", "GET"]);
+    expect("receipt" in result).toBe(false);
+  });
+
+  it("reports retained ciphertext after a lost response and never calls a 404 consumed state deleted", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(jsonResponse(workloadMetadata()));
+    await expect(eraseUnconsumedComputeWorkload(
+      "https://delegate.example",
+      "Bearer wallet-session-token-123456",
+      PROJECT_ID,
+      WORKLOAD_ID,
+    )).rejects.toThrow(/still reports sealed ciphertext retained/i);
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(null, { status: 404 }),
+    );
+    await expect(eraseUnconsumedComputeWorkload(
+      "https://delegate.example",
+      "Bearer wallet-session-token-123456",
+      PROJECT_ID,
+      WORKLOAD_ID,
+    )).rejects.toThrow(/may already be consumed, released, deleted/i);
   });
 });

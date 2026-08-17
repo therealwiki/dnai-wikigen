@@ -532,6 +532,7 @@ SELLER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[2]')"
 BUYER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[3]')"
 TEE_IDENTITY="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[4]')"
 CHALLENGE_CONTROLLER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[5]')"
+DILIGENCE_GOVERNANCE_CONTROLLER="$CHALLENGE_CONTROLLER"
 COMPUTE_VAULT_DEVELOPER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[6]')"
 COMPUTE_VAULT_METERING_VERIFIER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[7]')"
 EXECUTION_POLICY_ANCHOR_WRITER="$(printf '%s' "$ACCOUNTS_JSON" | jq -r '.[8]')"
@@ -544,6 +545,7 @@ for account_entry in \
   "BUYER:$BUYER" \
   "TEE_IDENTITY:$TEE_IDENTITY" \
   "CHALLENGE_CONTROLLER:$CHALLENGE_CONTROLLER" \
+  "DILIGENCE_GOVERNANCE_CONTROLLER:$DILIGENCE_GOVERNANCE_CONTROLLER" \
   "COMPUTE_VAULT_DEVELOPER:$COMPUTE_VAULT_DEVELOPER" \
   "COMPUTE_VAULT_METERING_VERIFIER:$COMPUTE_VAULT_METERING_VERIFIER" \
   "EXECUTION_POLICY_ANCHOR_WRITER:$EXECUTION_POLICY_ANCHOR_WRITER" \
@@ -591,6 +593,7 @@ EMAIL_ORACLE_UPGRADE_DELAY=172800
 COMPUTE_VAULT_DEVELOPER_FEE_BPS=100
 
 export DEPLOYMENT_OPERATOR
+export DILIGENCE_GOVERNANCE_CONTROLLER
 export DILIGENCE_RESULT_VERIFIER
 export COMPUTE_VAULT_DEVELOPER
 export COMPUTE_VAULT_METERING_VERIFIER
@@ -612,6 +615,7 @@ echo "Chain ID shape:      $LIVE_CHAIN_ID"
 echo "RPC:                 $RPC_URL (loopback Anvil only)"
 echo "Signer mode:         unlocked Anvil JSON-RPC accounts"
 echo "Operator:            $DEPLOYMENT_OPERATOR"
+echo "Diligence controller: $DILIGENCE_GOVERNANCE_CONTROLLER"
 echo "Result verifier:     $DILIGENCE_RESULT_VERIFIER"
 echo "Compute developer:   $COMPUTE_VAULT_DEVELOPER"
 echo "Metering verifier:   $COMPUTE_VAULT_METERING_VERIFIER"
@@ -687,7 +691,13 @@ collect_deployment_receipt executionPolicyAnchor "$EXECUTION_POLICY_ANCHOR_TX" "
 # Reconstruct every CREATE and setup CALL from the compiled source, then bind
 # the Foundry artifact to the independently read transaction and receipt. The
 # canonical core consumes only this normalized 13-record ledger.
-DILIGENCE_CREATE_INPUT="$(creation_input DiligenceRoom 'constructor(bool)' true)"
+DILIGENCE_CREATE_INPUT="$(
+  creation_input \
+    DiligenceRoom \
+    'constructor(bool,address)' \
+    true \
+    "$DILIGENCE_GOVERNANCE_CONTROLLER"
+)"
 DILIGENCE_FREEZE_FEE_INPUT="$(cast calldata 'freezeFeeBps()' | tr '[:upper:]' '[:lower:]')"
 DILIGENCE_ENABLE_SETTLEMENT_INPUT="$(cast calldata 'enableComputeSettlementPolicy()' | tr '[:upper:]' '[:lower:]')"
 DILIGENCE_REQUIRE_COMPOSE_INPUT="$(cast calldata 'setComposeApprovalRequired(bool)' true | tr '[:upper:]' '[:lower:]')"
@@ -703,7 +713,9 @@ ENCUMBRANCE_CREATE_INPUT="$(
     "$TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI" \
     "$TINKER_ENCUMBRANCE_MAX_SPEND_WEI"
 )"
-ROYALTY_CREATE_INPUT="$(creation_input RoyaltyDistributor '')"
+ROYALTY_CREATE_INPUT="$(
+  creation_input RoyaltyDistributor 'constructor(address)' "$DEPLOYMENT_OPERATOR"
+)"
 CHALLENGE_CREATE_INPUT="$(creation_input ChallengeRegistry 'constructor(address)' "$DEPLOYMENT_OPERATOR")"
 COMPUTE_VAULT_CREATE_INPUT="$(
   creation_input \
@@ -739,14 +751,14 @@ EXPECTED_TRANSACTION_NONCE="$(
     "$(jq -er '.transactions[0].transaction.nonce' "$RUN_PATH")"
 )"
 
-collect_broadcast_transaction 0 diligenceRoom DiligenceRoom CREATE 'constructor(bool)' "$DILIGENCE_CREATE_INPUT" "$DILIGENCE_ADDRESS"
+collect_broadcast_transaction 0 diligenceRoom DiligenceRoom CREATE 'constructor(bool,address)' "$DILIGENCE_CREATE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 1 diligenceRoom DiligenceRoom CALL 'freezeFeeBps()' "$DILIGENCE_FREEZE_FEE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 2 diligenceRoom DiligenceRoom CALL 'enableComputeSettlementPolicy()' "$DILIGENCE_ENABLE_SETTLEMENT_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 3 diligenceRoom DiligenceRoom CALL 'setComposeApprovalRequired(bool)' "$DILIGENCE_REQUIRE_COMPOSE_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 4 diligenceRoom DiligenceRoom CALL 'setTeeIdentityApprovalRequired(bool)' "$DILIGENCE_REQUIRE_IDENTITY_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 5 diligenceRoom DiligenceRoom CALL 'freezeApprovalRequirements()' "$DILIGENCE_FREEZE_APPROVAL_INPUT" "$DILIGENCE_ADDRESS"
 collect_broadcast_transaction 6 tinkerAccountEncumbrance TinkerAccountEncumbrance CREATE 'constructor(address,bytes32,bytes32,uint256,uint256)' "$ENCUMBRANCE_CREATE_INPUT" "$ENCUMBRANCE_ADDRESS"
-collect_broadcast_transaction 7 royaltyDistributor RoyaltyDistributor CREATE 'constructor()' "$ROYALTY_CREATE_INPUT" "$ROYALTY_ADDRESS"
+collect_broadcast_transaction 7 royaltyDistributor RoyaltyDistributor CREATE 'constructor(address)' "$ROYALTY_CREATE_INPUT" "$ROYALTY_ADDRESS"
 collect_broadcast_transaction 8 challengeRegistry ChallengeRegistry CREATE 'constructor(address)' "$CHALLENGE_CREATE_INPUT" "$CHALLENGE_ADDRESS"
 collect_broadcast_transaction 9 computeCreditVault ComputeCreditVault CREATE 'constructor(address,address,uint16)' "$COMPUTE_VAULT_CREATE_INPUT" "$COMPUTE_VAULT_ADDRESS"
 collect_broadcast_transaction 10 computeCreditVault ComputeCreditVault CALL 'freezeDeveloperFee()' "$COMPUTE_VAULT_FREEZE_FEE_INPUT" "$COMPUTE_VAULT_ADDRESS"
@@ -800,7 +812,12 @@ validate_sha256 BROADCAST_TRANSACTIONS_SHA256 "$BROADCAST_TRANSACTIONS_SHA256"
 echo
 echo "== Exact runtime-bytecode proofs =="
 DILIGENCE_RUNTIME_CODE_HASH="$(
-  assert_runtime_code DiligenceRoom "$DILIGENCE_ADDRESS" 'constructor(bool)' true
+  assert_runtime_code \
+    DiligenceRoom \
+    "$DILIGENCE_ADDRESS" \
+    'constructor(bool,address)' \
+    true \
+    "$DILIGENCE_GOVERNANCE_CONTROLLER"
 )"
 ENCUMBRANCE_RUNTIME_CODE_HASH="$(
   assert_runtime_code \
@@ -813,7 +830,9 @@ ENCUMBRANCE_RUNTIME_CODE_HASH="$(
     "$TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI" \
     "$TINKER_ENCUMBRANCE_MAX_SPEND_WEI"
 )"
-ROYALTY_RUNTIME_CODE_HASH="$(assert_runtime_code RoyaltyDistributor "$ROYALTY_ADDRESS" '')"
+ROYALTY_RUNTIME_CODE_HASH="$(
+  assert_runtime_code RoyaltyDistributor "$ROYALTY_ADDRESS" 'constructor(address)' "$DEPLOYMENT_OPERATOR"
+)"
 CHALLENGE_RUNTIME_CODE_HASH="$(
   assert_runtime_code ChallengeRegistry "$CHALLENGE_ADDRESS" 'constructor(address)' "$DEPLOYMENT_OPERATOR"
 )"
@@ -851,6 +870,16 @@ EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH="$(
 echo
 echo "== Initial roles and fail-closed policy =="
 DILIGENCE_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'developer()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_INITIAL_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'initialDeveloper()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER="$(
+  cast call "$DILIGENCE_ADDRESS" 'releaseGovernanceController()(address)' --rpc-url "$RPC_URL"
+)"
+DILIGENCE_PROTOCOL_FEE_RECIPIENT="$(
+  cast call "$DILIGENCE_ADDRESS" 'protocolFeeRecipient()(address)' --rpc-url "$RPC_URL"
+)"
+DILIGENCE_PENDING_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'pendingDeveloper()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_PENDING_DEVELOPER_AT="$(read_uint "$DILIGENCE_ADDRESS" 'pendingDeveloperActivatesAt()(uint256)')"
+DILIGENCE_DEVELOPER_TRANSFER_DELAY="$(read_uint "$DILIGENCE_ADDRESS" 'DEVELOPER_TRANSFER_DELAY()(uint256)')"
 DILIGENCE_PRODUCTION_RELEASE="$(cast call "$DILIGENCE_ADDRESS" 'productionRelease()(bool)' --rpc-url "$RPC_URL")"
 DILIGENCE_DEAL_COUNT="$(read_uint "$DILIGENCE_ADDRESS" 'dealCount()(uint256)')"
 DILIGENCE_VERIFIER="$(cast call "$DILIGENCE_ADDRESS" 'resultVerifier()(address)' --rpc-url "$RPC_URL")"
@@ -933,6 +962,16 @@ ENCUMBRANCE_EMERGENCY_HALTED="$(cast call "$ENCUMBRANCE_ADDRESS" 'emergencyHalte
 ENCUMBRANCE_EXPECTED_EMPTY_COMPOSE_ROOT="$(cast call "$ENCUMBRANCE_ADDRESS" 'computeComposeRoot(bytes32[])(bytes32)' '[]' --rpc-url "$RPC_URL")"
 ENCUMBRANCE_EXPECTED_EMPTY_MANAGER_ROOT="$(cast call "$ENCUMBRANCE_ADDRESS" 'computeManagerRoot(address[])(bytes32)' '[]' --rpc-url "$RPC_URL")"
 
+ROYALTY_OWNER="$(cast call "$ROYALTY_ADDRESS" 'owner()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_PENDING_OWNER="$(cast call "$ROYALTY_ADDRESS" 'pendingOwner()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_PAUSED="$(cast call "$ROYALTY_ADDRESS" 'paused()(bool)' --rpc-url "$RPC_URL")"
+ROYALTY_SETTLEMENT_VERIFIER="$(cast call "$ROYALTY_ADDRESS" 'settlementVerifier()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_QVL_VERIFIER="$(cast call "$ROYALTY_ADDRESS" 'qvlVerifier()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_EXECUTION_POLICY_ANCHOR="$(cast call "$ROYALTY_ADDRESS" 'executionPolicyAnchor()(address)' --rpc-url "$RPC_URL")"
+ROYALTY_ANCHOR_WRITER_RELEASE="$(cast call "$ROYALTY_ADDRESS" 'anchorWriterReleaseCommitment()(bytes32)' --rpc-url "$RPC_URL")"
+ROYALTY_RELEASE_POLICY="$(cast call "$ROYALTY_ADDRESS" 'releasePolicyCommitment()(bytes32)' --rpc-url "$RPC_URL")"
+ROYALTY_AUTHORITY_NONCE="$(read_uint "$ROYALTY_ADDRESS" 'authorityNonce()(uint256)')"
+ROYALTY_PENDING_AUTHORITY_AT="$(read_uint "$ROYALTY_ADDRESS" 'pendingAuthorityActivatesAt()(uint64)')"
 ROYALTY_INITIAL_PENDING="$(
   read_uint "$ROYALTY_ADDRESS" 'pending(address,address)(uint256)' "$ZERO_ADDRESS" "$DEPLOYMENT_OPERATOR"
 )"
@@ -1013,6 +1052,18 @@ EXECUTION_POLICY_ANCHOR_INITIAL_SEQUENCE="$(read_uint "$EXECUTION_POLICY_ANCHOR_
 EXECUTION_POLICY_ANCHOR_INITIAL_HEAD="$(cast call "$EXECUTION_POLICY_ANCHOR_ADDRESS" 'globalHead()(bytes32)' --rpc-url "$RPC_URL")"
 
 assert_address_equal "DiligenceRoom developer" "$DEPLOYMENT_OPERATOR" "$DILIGENCE_DEVELOPER"
+assert_address_equal "DiligenceRoom initial developer" "$DEPLOYMENT_OPERATOR" "$DILIGENCE_INITIAL_DEVELOPER"
+assert_address_equal \
+  "DiligenceRoom immutable release governance controller" \
+  "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  "$DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER"
+assert_address_equal \
+  "DiligenceRoom immutable protocol fee recipient" \
+  "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  "$DILIGENCE_PROTOCOL_FEE_RECIPIENT"
+assert_address_equal "DiligenceRoom initial pending developer" "$ZERO_ADDRESS" "$DILIGENCE_PENDING_DEVELOPER"
+assert_equal "DiligenceRoom initial pending developer time" 0 "$DILIGENCE_PENDING_DEVELOPER_AT"
+assert_equal "DiligenceRoom developer transfer delay" 172800 "$DILIGENCE_DEVELOPER_TRANSFER_DELAY"
 assert_equal "DiligenceRoom production posture" true "$DILIGENCE_PRODUCTION_RELEASE"
 assert_equal "DiligenceRoom initial deal count" 0 "$DILIGENCE_DEAL_COUNT"
 assert_address_equal "DiligenceRoom initial result verifier" "$ZERO_ADDRESS" "$DILIGENCE_VERIFIER"
@@ -1072,7 +1123,17 @@ assert_equal "Tinker empty pending compose count" 0 "$ENCUMBRANCE_PENDING_COMPOS
 assert_equal "Tinker empty pending manager count" 0 "$ENCUMBRANCE_PENDING_MANAGER_COUNT"
 assert_equal "Tinker release policy initially open" false "$ENCUMBRANCE_POLICY_FROZEN"
 assert_equal "Tinker fresh deployment halted" true "$ENCUMBRANCE_EMERGENCY_HALTED"
-assert_equal "RoyaltyDistributor ownerless initial pending balance" 0 "$ROYALTY_INITIAL_PENDING"
+assert_address_equal "RoyaltyDistributor owner" "$DEPLOYMENT_OPERATOR" "$ROYALTY_OWNER"
+assert_address_equal "RoyaltyDistributor pending owner" "$ZERO_ADDRESS" "$ROYALTY_PENDING_OWNER"
+assert_equal "RoyaltyDistributor fresh deployment paused" true "$ROYALTY_PAUSED"
+assert_address_equal "RoyaltyDistributor empty settlement verifier" "$ZERO_ADDRESS" "$ROYALTY_SETTLEMENT_VERIFIER"
+assert_address_equal "RoyaltyDistributor empty QVL verifier" "$ZERO_ADDRESS" "$ROYALTY_QVL_VERIFIER"
+assert_address_equal "RoyaltyDistributor empty policy anchor" "$ZERO_ADDRESS" "$ROYALTY_EXECUTION_POLICY_ANCHOR"
+assert_equal "RoyaltyDistributor empty anchor-writer release" "$ZERO_BYTES32" "$ROYALTY_ANCHOR_WRITER_RELEASE"
+assert_equal "RoyaltyDistributor empty release policy" "$ZERO_BYTES32" "$ROYALTY_RELEASE_POLICY"
+assert_equal "RoyaltyDistributor initial authority nonce" 0 "$ROYALTY_AUTHORITY_NONCE"
+assert_equal "RoyaltyDistributor empty pending authority" 0 "$ROYALTY_PENDING_AUTHORITY_AT"
+assert_equal "RoyaltyDistributor initial pending balance" 0 "$ROYALTY_INITIAL_PENDING"
 assert_address_equal "ChallengeRegistry owner" "$DEPLOYMENT_OPERATOR" "$CHALLENGE_OWNER"
 assert_address_equal "ChallengeRegistry pending owner" "$ZERO_ADDRESS" "$CHALLENGE_PENDING_OWNER"
 assert_equal "ChallengeRegistry initial pause" false "$CHALLENGE_PAUSED"
@@ -1405,6 +1466,18 @@ DILIGENCE_FREEZE_IDENTITY_TX="$(
   send_tx diligence-freeze-identity "$DEPLOYMENT_OPERATOR" \
     "$DILIGENCE_ADDRESS" 'freezeTeeIdentityAdditions()'
 )"
+DILIGENCE_PROPOSE_DEVELOPER_TX="$(
+  send_tx diligence-propose-governance-controller "$DEPLOYMENT_OPERATOR" \
+    "$DILIGENCE_ADDRESS" 'proposeDeveloper(address)' "$DILIGENCE_GOVERNANCE_CONTROLLER"
+)"
+cast rpc evm_increaseTime 172800 --rpc-url "$RPC_URL" >/dev/null
+cast rpc evm_mine --rpc-url "$RPC_URL" >/dev/null
+DILIGENCE_ACCEPT_DEVELOPER_TX="$(
+  send_tx diligence-accept-governance-controller "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+    "$DILIGENCE_ADDRESS" 'acceptDeveloper()'
+)"
+DILIGENCE_FINAL_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'developer()(address)' --rpc-url "$RPC_URL")"
+DILIGENCE_FINAL_PENDING_DEVELOPER="$(cast call "$DILIGENCE_ADDRESS" 'pendingDeveloper()(address)' --rpc-url "$RPC_URL")"
 DILIGENCE_FINAL_ATTESTATION_VERIFIER="$(cast call "$DILIGENCE_ADDRESS" 'attestationVerifier()(address)' --rpc-url "$RPC_URL")"
 DILIGENCE_FINAL_ATTESTATION_POLICY_HASH="$(cast call "$DILIGENCE_ADDRESS" 'attestationReleasePolicyHash()(bytes32)' --rpc-url "$RPC_URL")"
 DILIGENCE_FINAL_ATTESTATION_FROZEN="$(cast call "$DILIGENCE_ADDRESS" 'attestationBindingFrozen()(bool)' --rpc-url "$RPC_URL")"
@@ -1427,6 +1500,14 @@ DILIGENCE_FINAL_APPROVED_TEE_COUNT="$(read_uint "$DILIGENCE_ADDRESS" 'approvedTe
 DILIGENCE_FINAL_PENDING_TEE_COUNT="$(read_uint "$DILIGENCE_ADDRESS" 'pendingTeeIdentityCount()(uint256)')"
 DILIGENCE_FINAL_TEE_ADDITIONS_FROZEN="$(cast call "$DILIGENCE_ADDRESS" 'teeIdentityAdditionsFrozen()(bool)' --rpc-url "$RPC_URL")"
 assert_address_equal "DiligenceRoom final result verifier" "$DILIGENCE_RESULT_VERIFIER" "$DILIGENCE_FINAL_RESULT_VERIFIER"
+assert_address_equal \
+  "DiligenceRoom final governance controller" \
+  "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  "$DILIGENCE_FINAL_DEVELOPER"
+assert_address_equal \
+  "DiligenceRoom final pending developer" \
+  "$ZERO_ADDRESS" \
+  "$DILIGENCE_FINAL_PENDING_DEVELOPER"
 assert_equal "DiligenceRoom final result-verifier freeze" true "$DILIGENCE_FINAL_RESULT_VERIFIER_FROZEN"
 assert_address_equal "DiligenceRoom final attestation verifier" "$DILIGENCE_ATTESTATION_VERIFIER" "$DILIGENCE_FINAL_ATTESTATION_VERIFIER"
 assert_equal "DiligenceRoom final attestation policy" "$DILIGENCE_QVL_RELEASE_POLICY_HASH" "$DILIGENCE_FINAL_ATTESTATION_POLICY_HASH"
@@ -1558,7 +1639,7 @@ SELLER_PENDING="$(
   read_uint "$DILIGENCE_ADDRESS" 'pendingWithdrawals(address,address)(uint256)' "$ZERO_ADDRESS" "$SELLER"
 )"
 DEVELOPER_PENDING="$(
-  read_uint "$DILIGENCE_ADDRESS" 'pendingWithdrawals(address,address)(uint256)' "$ZERO_ADDRESS" "$DEPLOYMENT_OPERATOR"
+  read_uint "$DILIGENCE_ADDRESS" 'pendingWithdrawals(address,address)(uint256)' "$ZERO_ADDRESS" "$DILIGENCE_GOVERNANCE_CONTROLLER"
 )"
 BUYER_PENDING="$(
   read_uint "$DILIGENCE_ADDRESS" 'pendingWithdrawals(address,address)(uint256)' "$ZERO_ADDRESS" "$BUYER"
@@ -1673,6 +1754,14 @@ jq -n '{}' | jq \
   --arg diligence "$DILIGENCE_ADDRESS" \
   --arg diligenceTx "$DILIGENCE_TX" \
   --arg diligenceRuntimeCodeHash "$DILIGENCE_RUNTIME_CODE_HASH" \
+  --arg diligenceDeveloper "$DILIGENCE_DEVELOPER" \
+  --arg diligenceInitialDeveloper "$DILIGENCE_INITIAL_DEVELOPER" \
+  --arg diligenceGovernanceController "$DILIGENCE_GOVERNANCE_CONTROLLER" \
+  --arg diligenceReleaseGovernanceController "$DILIGENCE_RELEASE_GOVERNANCE_CONTROLLER" \
+  --arg diligenceProtocolFeeRecipient "$DILIGENCE_PROTOCOL_FEE_RECIPIENT" \
+  --arg diligencePendingDeveloper "$DILIGENCE_PENDING_DEVELOPER" \
+  --arg diligencePendingDeveloperAt "$DILIGENCE_PENDING_DEVELOPER_AT" \
+  --arg diligenceDeveloperTransferDelay "$DILIGENCE_DEVELOPER_TRANSFER_DELAY" \
   --argjson diligenceProductionRelease "$DILIGENCE_PRODUCTION_RELEASE" \
   --arg diligenceDealCount "$DILIGENCE_DEAL_COUNT" \
   --arg diligencePendingVerifier "$DILIGENCE_INITIAL_PENDING_VERIFIER" \
@@ -1735,6 +1824,16 @@ jq -n '{}' | jq \
   --arg royalty "$ROYALTY_ADDRESS" \
   --arg royaltyTx "$ROYALTY_TX" \
   --arg royaltyRuntimeCodeHash "$ROYALTY_RUNTIME_CODE_HASH" \
+  --arg royaltyOwner "$ROYALTY_OWNER" \
+  --arg royaltyPendingOwner "$ROYALTY_PENDING_OWNER" \
+  --argjson royaltyPaused "$ROYALTY_PAUSED" \
+  --arg royaltySettlementVerifier "$ROYALTY_SETTLEMENT_VERIFIER" \
+  --arg royaltyQvlVerifier "$ROYALTY_QVL_VERIFIER" \
+  --arg royaltyExecutionPolicyAnchor "$ROYALTY_EXECUTION_POLICY_ANCHOR" \
+  --arg royaltyAnchorWriterRelease "$ROYALTY_ANCHOR_WRITER_RELEASE" \
+  --arg royaltyReleasePolicy "$ROYALTY_RELEASE_POLICY" \
+  --arg royaltyAuthorityNonce "$ROYALTY_AUTHORITY_NONCE" \
+  --arg royaltyPendingAuthorityAt "$ROYALTY_PENDING_AUTHORITY_AT" \
   --arg challenge "$CHALLENGE_ADDRESS" \
   --arg challengeTx "$CHALLENGE_TX" \
   --arg challengeRuntimeCodeHash "$CHALLENGE_RUNTIME_CODE_HASH" \

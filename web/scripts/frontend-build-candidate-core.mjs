@@ -12,19 +12,19 @@ import {
 } from "./cloudflare-external-build-closure-core.mjs";
 
 export const FRONTEND_BUILD_CANDIDATE_SCHEMA =
-  "dnai.frontend-build-candidate.v2";
+  "dnai.frontend-build-candidate.v3";
 export const FRONTEND_BUILD_CANDIDATE_STATUS =
   "pre_live_activation_candidate";
 export const FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS =
   "pre_live_activation_candidate_not_deploy_authority";
 export const FRONTEND_BUILD_CANDIDATE_DOMAIN =
-  "dnai-wikigen/frontend-build-candidate/v2\0";
+  "dnai-wikigen/frontend-build-candidate/v3\0";
 export const FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA =
-  "dnai.frontend-build-candidate-input-manifest.v2";
+  "dnai.frontend-build-candidate-input-manifest.v3";
 export const FRONTEND_BUILD_INPUT_MANIFEST_DOMAIN =
-  "dnai-wikigen/frontend-build-candidate-input-manifest/v2\0";
+  "dnai-wikigen/frontend-build-candidate-input-manifest/v3\0";
 export const FRONTEND_BUILD_INPUT_MANIFEST_TRUTH_STATUS =
-  "deterministic_pre_D_inputs_excluding_signed_C_D_and_dist_not_deploy_authority";
+  "deterministic_pre_D_inputs_including_independent_H_excluding_signed_C_D_and_dist_not_deploy_authority";
 
 export const FRONTEND_BUILD_LIVE_CANDIDATE_PROJECTION =
   "live_candidate_prebuild_projection_v1";
@@ -71,6 +71,7 @@ export const FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS = Object.freeze([
   "--arena-evidence",
   "--anchor-writer-evidence",
   "--email-oracle-evidence",
+  "--royalty-release-history-receipt",
   "--compute-workload-activation-observation",
 ]);
 
@@ -96,7 +97,15 @@ export const FRONTEND_BUILD_SEMANTIC_LINEAGE_FIELDS = Object.freeze([
   "qvl_measurement_policy_set_sha256",
   "runtime_authority_dependency_sha256",
   "ceremony_authorization_sha256",
+  "royalty_release_history_sha256",
+  "royalty_release_history_receipt_sha256",
   "compute_workload_activation_observation_sha256",
+]);
+
+export const FRONTEND_BUILD_ROYALTY_RELEASE_HISTORY_FIELDS = Object.freeze([
+  "history_receipt_raw_sha256",
+  "history_sha256",
+  "receipt_sha256",
 ]);
 
 export const FRONTEND_BUILD_AUTHORITY_ROOT_FIELDS = Object.freeze([
@@ -312,7 +321,7 @@ export function normalizeFrontendBuildInputManifest(value) {
     "authority_roots", "build_controls", "frontend_dist_included", "git_source",
     "external_build_closure", "pre_D_private_inputs", "primary_rpc_url",
     "projected_env_sha256", "qvl_verifier_roots", "raw_secret_egress",
-    "release_sha", "schema", "secondary_rpc_url", "semantic_lineage",
+    "release_sha", "royalty_release_history", "schema", "secondary_rpc_url", "semantic_lineage",
     "truth_status",
   ], "frontend build input manifest");
   if (parsed.schema !== FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA
@@ -346,6 +355,24 @@ export function normalizeFrontendBuildInputManifest(value) {
   if (new Set(Object.values(semanticLineage)).size
     !== FRONTEND_BUILD_SEMANTIC_LINEAGE_FIELDS.length) {
     fail("frontend build semantic lineage roots must remain distinct");
+  }
+  const royaltyReleaseHistory = exactDigestRecord(
+    parsed.royalty_release_history,
+    FRONTEND_BUILD_ROYALTY_RELEASE_HISTORY_FIELDS,
+    "frontend build Royalty release history binding",
+  );
+  const royaltyReceiptInput = privateInputs.find(
+    (entry) => entry.flag === "--royalty-release-history-receipt",
+  );
+  if (!royaltyReceiptInput
+    || royaltyReleaseHistory.history_receipt_raw_sha256 !== royaltyReceiptInput.sha256
+    || royaltyReleaseHistory.history_sha256
+      !== semanticLineage.royalty_release_history_sha256
+    || royaltyReleaseHistory.receipt_sha256
+      !== semanticLineage.royalty_release_history_receipt_sha256
+    || new Set(Object.values(royaltyReleaseHistory)).size
+      !== FRONTEND_BUILD_ROYALTY_RELEASE_HISTORY_FIELDS.length) {
+    fail("frontend build Royalty H raw bytes, receipt digest, and history digest are not exact-bound");
   }
   const authorityRoots = exactDigestRecord(
     parsed.authority_roots,
@@ -410,6 +437,7 @@ export function normalizeFrontendBuildInputManifest(value) {
     git_source: source,
     pre_D_private_inputs: privateInputs,
     semantic_lineage: semanticLineage,
+    royalty_release_history: royaltyReleaseHistory,
     projected_env_sha256: sha256(
       parsed.projected_env_sha256,
       "frontend build projected environment digest",
@@ -431,6 +459,7 @@ export function createFrontendBuildInputManifest({
   sourceFingerprintSha256,
   preDPrivateInputs,
   semanticLineage,
+  royaltyReleaseHistoryBinding,
   serializedEnv,
   primaryRpcUrl,
   secondaryRpcUrl,
@@ -450,6 +479,7 @@ export function createFrontendBuildInputManifest({
     },
     pre_D_private_inputs: preDPrivateInputs,
     semantic_lineage: semanticLineage,
+    royalty_release_history: royaltyReleaseHistoryBinding,
     projected_env_sha256: frontendBuildProjectedEnvSha256(serializedEnv),
     primary_rpc_url: primaryRpcUrl,
     secondary_rpc_url: secondaryRpcUrl,
@@ -534,6 +564,10 @@ export function createFrontendBuildCandidateReceipt({
       reviewerAcceptance,
     ceremony_authorization_sha256: ceremonyAuthorization,
     runtime_authority_dependency_sha256: runtimeAuthority,
+    royalty_release_history_sha256:
+      normalizedInputManifest.royalty_release_history.history_sha256,
+    royalty_release_history_receipt_sha256:
+      normalizedInputManifest.royalty_release_history.receipt_sha256,
     compute_workload_activation_observation_sha256: observationSha256,
     frontend_build_sha256: sha256(
       frontendBuildSha256,
@@ -550,7 +584,8 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     "ceremony_authorization_sha256", "chain_id",
     "compute_workload_activation_observation_sha256", "deployment_intent_sha256",
     "frontend_build_sha256", "raw_secret_egress", "release_env_sha256", "release_inputs_sha256",
-    "release_sha", "reviewer_authority_genesis_acceptance_sha256",
+    "release_sha", "reviewer_authority_genesis_acceptance_sha256", "royalty_release_history_receipt_sha256",
+    "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256", "schema", "status", "truth_status",
   ], "frontend build candidate receipt");
   if (
@@ -584,6 +619,14 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     runtime_authority_dependency_sha256: sha256(
       parsed.runtime_authority_dependency_sha256,
       "frontend build runtime authority dependency digest",
+    ),
+    royalty_release_history_sha256: sha256(
+      parsed.royalty_release_history_sha256,
+      "frontend build Royalty release history digest",
+    ),
+    royalty_release_history_receipt_sha256: sha256(
+      parsed.royalty_release_history_receipt_sha256,
+      "frontend build Royalty H receipt digest",
     ),
     compute_workload_activation_observation_sha256: sha256(
       parsed.compute_workload_activation_observation_sha256,

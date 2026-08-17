@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   SEMANTIC_VALIDATION_SCHEMA,
@@ -19,11 +20,15 @@ import {
   SEMANTIC_VALIDATION_TRUTH_STATUS,
   SEMANTIC_VALIDATOR_INPUT_FLAGS,
   SEMANTIC_VALIDATOR_WRAPPER_FLAGS,
+  FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+  PREBUILD_CANDIDATE_MODE_FLAG,
   PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS,
+  assertCandidateReceiptOutputPreflight,
   assertCleanReleaseSource,
   assertExactSemanticValidatorInputsUnchanged,
   assertLiveActivationAuthorityEvidenceBinding,
   exactSemanticValidatorArtifactPaths,
+  historicalSemanticInputsWithoutRoyaltyHistory,
   loadBoundedArtifact,
   loadDeploymentIntent,
   loadExactSemanticValidatorInputs,
@@ -35,11 +40,20 @@ import {
   releaseRpcEndpoints,
   semanticValidationReceipt,
 } from "./build-release-env.mjs";
+import {
+  EXACT35_MODEL_A_INPUT_FLAGS,
+  EXACT37_MODEL_A_INPUT_FLAGS,
+} from "../../scripts/exact37-model-a-semantic-validator.mjs";
 import { __test as cloudflareReleaseArtifactTest } from "./cloudflare-release-artifact-core.mjs";
 import {
   FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS,
   FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
 } from "./frontend-build-candidate-core.mjs";
+
+const modulePath = fileURLToPath(new URL(
+  "./build-release-env.test.mjs",
+  import.meta.url,
+));
 
 const DEPLOYMENT_INTENT_SHA256 = `sha256:${"a1".repeat(32)}`;
 const REVIEWER_ACCEPTANCE_SHA256 = `sha256:${"a2".repeat(32)}`;
@@ -75,8 +89,8 @@ function exactValidatorArgs() {
   ]);
 }
 
-test("validator parser requires the exact 37 canonical evidence files", () => {
-  assert.equal(SEMANTIC_VALIDATOR_INPUT_FLAGS.length, 37);
+test("validator parser requires the exact current 38 canonical evidence files", () => {
+  assert.equal(SEMANTIC_VALIDATOR_INPUT_FLAGS.length, 38);
   assert.deepEqual(SEMANTIC_VALIDATOR_WRAPPER_FLAGS, ["--check-only"]);
   assert.deepEqual(
     SEMANTIC_VALIDATOR_INPUT_FLAGS,
@@ -106,6 +120,10 @@ test("validator parser requires the exact 37 canonical evidence files", () => {
     "/tmp/dnai-validator/seven-cvm-launch-completion-receipt.json",
   );
   assert.equal(
+    parsed.royaltyReleaseHistoryReceipt,
+    "/tmp/dnai-validator/royalty-release-history-receipt.json",
+  );
+  assert.equal(
     parsed.computeWorkloadActivationObservation,
     "/tmp/dnai-validator/compute-workload-activation-observation.json",
   );
@@ -124,6 +142,10 @@ test("validator parser requires the exact 37 canonical evidence files", () => {
   assert.throws(
     () => parseArgs(["--help"]),
     /unknown argument: --help/,
+  );
+  assert.throws(
+    () => parseArgs([PREBUILD_CANDIDATE_MODE_FLAG, ...exactValidatorArgs()]),
+    /unknown argument: --produce-candidate/,
   );
   assert.throws(
     () => parseArgs(["--release", "/tmp/one.json", "--release", "/tmp/two.json"]),
@@ -164,7 +186,7 @@ test("validator parser requires the exact 37 canonical evidence files", () => {
   );
 
   const paths = exactSemanticValidatorArtifactPaths(parsed);
-  assert.equal(paths.entries.length, 37);
+  assert.equal(paths.entries.length, 38);
   assert.equal(paths.entries[0].flag, "--release");
   assert.equal(paths.byFlag["--release"], parsed.release);
   assert.equal(paths.byKey.release, parsed.release);
@@ -175,8 +197,63 @@ test("validator parser requires the exact 37 canonical evidence files", () => {
   );
 });
 
-test("prebuild parser requires exactly the acyclic 35 inputs and rejects C/D", () => {
-  assert.equal(PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS.length, 35);
+test("D publication preflight requires the fixed private no-clobber target", async () => {
+  assert.equal(
+    FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+    path.resolve(
+      path.dirname(modulePath),
+      "..",
+      "..",
+      ".release",
+      "frontend-build-candidate-receipt.json",
+    ),
+  );
+  const temporary = await realpath(await mkdtemp(path.join(tmpdir(), "dnai-D-publication-")));
+  const releaseDirectory = path.join(temporary, ".release");
+  const outputPath = path.join(
+    releaseDirectory,
+    "frontend-build-candidate-receipt.json",
+  );
+  let ignoredChecks = 0;
+  const preflight = () => assertCandidateReceiptOutputPreflight({
+    outputPath,
+    allowedOutputPath: outputPath,
+    assertIgnoredCandidate: async (candidatePath) => {
+      assert.equal(candidatePath, outputPath);
+      ignoredChecks += 1;
+    },
+  });
+  try {
+    await assert.rejects(
+      preflight,
+      /existing operator-owned 0700 \.release directory/,
+    );
+    await mkdir(releaseDirectory, { mode: 0o755 });
+    await assert.rejects(
+      preflight,
+      /canonical operator-owned 0700 \.release directory/,
+    );
+    await chmod(releaseDirectory, 0o700);
+    await preflight();
+    assert.equal(ignoredChecks, 1);
+    await writeFile(outputPath, "{}\n", { mode: 0o600 });
+    await assert.rejects(preflight, /already exists and no-clobber/);
+    assert.equal(ignoredChecks, 2);
+    await assert.rejects(
+      () => assertCandidateReceiptOutputPreflight({
+        outputPath,
+        allowedOutputPath: `${outputPath}.alternate`,
+        assertIgnoredCandidate: async () => {},
+      }),
+      /exact canonical publication path/,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("prebuild parser requires exactly the acyclic current 36 inputs and rejects C/D", () => {
+  assert.equal(PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS.length, 36);
   assert.deepEqual(
     PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS,
     FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
@@ -189,6 +266,10 @@ test("prebuild parser requires exactly the acyclic 35 inputs and rejects C/D", (
   assert.equal(parsed.release, "/tmp/dnai-prebuild/release.json");
   assert.equal(parsed.liveActivationAuthority, undefined);
   assert.equal(parsed.frontendBuildCandidateReceipt, undefined);
+  assert.equal(
+    parsed.royaltyReleaseHistoryReceipt,
+    "/tmp/dnai-prebuild/royalty-release-history-receipt.json",
+  );
   for (const rejected of [
     "--live-activation-authority",
     "--frontend-build-candidate-receipt",
@@ -273,9 +354,10 @@ test("semantic receipt is deterministic, bounded, and hash-only", () => {
   const releaseSha = "a".repeat(40);
   const receipt = semanticValidationReceipt(
     releaseSha,
-    "VITE_RELEASE_SHA=abc\n",
+    `VITE_RELEASE_SHA=abc\nVITE_ROYALTY_RELEASE_HISTORY_SHA256=sha256:${"91".repeat(32)}\nVITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256=sha256:${"92".repeat(32)}\n`,
     AUTHORITY_BINDING,
   );
+  assert.equal(Object.keys(receipt).length, 19);
   assert.deepEqual(Object.keys(receipt).sort(), [
     "ceremony_authorization_sha256",
     "chain_id",
@@ -290,6 +372,8 @@ test("semantic receipt is deterministic, bounded, and hash-only", () => {
     "release_inputs_sha256",
     "release_sha",
     "reviewer_authority_genesis_acceptance_sha256",
+    "royalty_release_history_receipt_sha256",
+    "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256",
     "schema",
     "status",
@@ -315,6 +399,14 @@ test("semantic receipt is deterministic, bounded, and hash-only", () => {
     COMPUTE_WORKLOAD_BROWSER_BINDING_SHA256,
   );
   assert.equal(receipt.frontend_build_sha256, FRONTEND_BUILD_SHA256);
+  assert.equal(
+    receipt.royalty_release_history_sha256,
+    `sha256:${"91".repeat(32)}`,
+  );
+  assert.equal(
+    receipt.royalty_release_history_receipt_sha256,
+    `sha256:${"92".repeat(32)}`,
+  );
   assert.equal(
     receipt.frontend_build_candidate_receipt_sha256,
     FRONTEND_BUILD_CANDIDATE_RECEIPT_SHA256,
@@ -486,7 +578,7 @@ test("release inputs are canonical, bounded, stable no-follow regular files", as
   }
 });
 
-test("exact-37 loader reads distinct canonical private transcripts once", async () => {
+test("current exact-38 loader reads distinct canonical private transcripts once", async () => {
   const directory = await realpath(await mkdtemp(
     path.join(tmpdir(), "dnai-exact37-inputs-"),
   ));
@@ -499,10 +591,10 @@ test("exact-37 loader reads distinct canonical private transcripts once", async 
     }
     const parsed = parseArgs(["--check-only", ...argv]);
     const loaded = await loadExactSemanticValidatorInputs(parsed);
-    assert.equal(loaded.entries.length, 37);
-    assert.equal(loaded.artifactPaths.entries.length, 37);
-    assert.equal(Object.keys(loaded.byFlag).length, 37);
-    assert.equal(Object.keys(loaded.byKey).length, 37);
+    assert.equal(loaded.entries.length, 38);
+    assert.equal(loaded.artifactPaths.entries.length, 38);
+    assert.equal(Object.keys(loaded.byFlag).length, 38);
+    assert.equal(Object.keys(loaded.byKey).length, 38);
     assert.equal(loaded.byFlag["--release"], loaded.byKey.release);
     assert.equal(loaded.byKey.release.value.flag, "--release");
     assert.equal(loaded.byKey.release.text, `${JSON.stringify({ flag: "--release" }, null, 2)}\n`);
@@ -520,6 +612,19 @@ test("exact-37 loader reads distinct canonical private transcripts once", async 
       await assertExactSemanticValidatorInputsUnchanged(loaded),
       loaded,
     );
+    const historicalLive = historicalSemanticInputsWithoutRoyaltyHistory(
+      loaded,
+      EXACT37_MODEL_A_INPUT_FLAGS,
+    );
+    assert.equal(historicalLive.entries.length, 37);
+    assert.equal(
+      historicalLive.byFlag["--royalty-release-history-receipt"],
+      undefined,
+    );
+    assert.deepEqual(
+      historicalLive.entries.map((entry) => entry.flag),
+      EXACT37_MODEL_A_INPUT_FLAGS,
+    );
     const prebuildArgv = argv.filter((_value, index) => {
       const flagIndex = index % 2 === 0 ? index : index - 1;
       return PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS.includes(argv[flagIndex]);
@@ -528,12 +633,21 @@ test("exact-37 loader reads distinct canonical private transcripts once", async 
     const prebuildLoaded = await loadExactPrebuildSemanticValidatorInputs(
       prebuildParsed,
     );
-    assert.equal(prebuildLoaded.entries.length, 35);
-    assert.equal(Object.keys(prebuildLoaded.byKey).length, 35);
+    assert.equal(prebuildLoaded.entries.length, 36);
+    assert.equal(Object.keys(prebuildLoaded.byKey).length, 36);
+    const historicalPrebuild = historicalSemanticInputsWithoutRoyaltyHistory(
+      prebuildLoaded,
+      EXACT35_MODEL_A_INPUT_FLAGS,
+    );
+    assert.equal(historicalPrebuild.entries.length, 35);
+    assert.equal(
+      historicalPrebuild.byFlag["--royalty-release-history-receipt"],
+      undefined,
+    );
     const duplicate = { ...parsed, releaseCore: parsed.release };
     await assert.rejects(
       loadExactSemanticValidatorInputs(duplicate),
-      /37 distinct private input files/,
+      /38 distinct private input files/,
     );
 
     await writeFile(parsed.computeWorkloadQvlIdentityRequest, "{\"not\":\"canonical\"}\n");
@@ -550,7 +664,7 @@ test("exact-37 loader reads distinct canonical private transcripts once", async 
   }
 });
 
-test("main reaches only the fail-closed Model-A handoff after exact-37 loading", async () => {
+test("main enters the current exact-38 semantic path after stable loading", async () => {
   const directory = await realpath(await mkdtemp(
     path.join(tmpdir(), "dnai-model-a-handoff-"),
   ));
@@ -568,7 +682,7 @@ test("main reaches only the fail-closed Model-A handoff after exact-37 loading",
     console.log = (value) => { stdout.push(String(value)); };
     await assert.rejects(
       main(["--check-only", ...argv]),
-      /Model-A exact-37 semantic validator integration is incomplete/,
+      /release candidate fields are not exact/,
     );
     assert.deepEqual(stdout, []);
     await assert.rejects(

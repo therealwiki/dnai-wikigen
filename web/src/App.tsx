@@ -15,6 +15,7 @@ import {
 import { Overview } from "./views/Overview";
 
 const Arena = lazy(() => import("./views/Arena").then((module) => ({ default: module.Arena })));
+const HealthExplorer = lazy(() => import("./views/HealthExplorer").then((module) => ({ default: module.HealthExplorer })));
 const Capabilities = lazy(() => import("./views/Capabilities").then((module) => ({ default: module.Capabilities })));
 const CollaboratePage = lazy(() => import("./views/CollaboratePage").then((module) => ({ default: module.CollaboratePage })));
 const Compute = lazy(() => import("./views/Compute").then((module) => ({ default: module.Compute })));
@@ -114,6 +115,7 @@ export function App() {
       )}>
         <Switch fallback={<Overview navigate={navigate} />}>
           <Match when={route() === "overview"}><Overview navigate={navigate} /></Match>
+          <Match when={route() === "health"}><HealthExplorer navigate={navigate} /></Match>
           <Match when={route() === "arena"}>
             <Arena
               navigate={navigate}
@@ -129,7 +131,7 @@ export function App() {
           <Match when={route() === "tinker"}>
             <TinkerAccount
               requestWalletConnection={() => setWalletDialogOpen(true)}
-              openCompute={() => navigate("compute")}
+              openCompute={navigateCompute}
             />
           </Match>
           <Match when={route() === "lab"}><SafeguardsLab navigate={navigate} /></Match>

@@ -122,10 +122,33 @@ test("TDX v4 structural parser extracts TD10 and TD15 candidates without verifyi
   assert.throws(() => parsePhalaHistoricalTdxV4QuoteCandidates(Buffer.alloc(1_024)));
 });
 
-test("historical authority bytes exactly match the production receipt authority", () => {
-  assert.deepEqual(
-    PINNED_SEVEN_CVM_HISTORICAL_DCAP_VERIFIER_AUTHORITY,
-    PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER,
+test("historical authority remains byte-exact across the reviewed current-host rotation", () => {
+  const historical = PINNED_SEVEN_CVM_HISTORICAL_DCAP_VERIFIER_AUTHORITY;
+  const current = PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER;
+  const changedKeys = Object.keys(current)
+    .filter((key) => current[key] !== historical[key])
+    .sort();
+
+  assert.deepEqual(changedKeys, [
+    "isolated_runtime_environment_sha256",
+    "macos_build",
+    "macos_version",
+    "system_version_plist_sha256",
+    "verifier_script_sha256",
+  ]);
+  assert.equal(historical.macos_version, "26.5.1");
+  assert.equal(historical.macos_build, "25F80");
+  assert.equal(
+    historical.system_version_plist_sha256,
+    "d90b1755e5dbb837d2ca1e11083c6e36e6219193a0fcf036d0f7cfe5366e031e",
+  );
+  assert.equal(
+    historical.isolated_runtime_environment_sha256,
+    "sha256:43fe517cb1b20e1a9009902cc9b7bea76e2788ec810251e373fbb7c45b60eb0b",
+  );
+  assert.equal(
+    historical.verifier_script_sha256,
+    "0ce3ad72b0b3c9821e1660396cd24ca7fc64cadf99cdb2df6fbe505c63dc7d0f",
   );
 });
 

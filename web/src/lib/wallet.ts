@@ -735,6 +735,15 @@ export interface ComputeWalletTokenResponse {
   expires_at: number;
 }
 
+export interface CollaborationWalletTokenResponse {
+  access_token: string;
+  token_type: "Bearer";
+  address: string;
+  scopes: ["collaboration:console"];
+  issued_at: number;
+  expires_at: number;
+}
+
 interface ArenaWalletTokenBase {
   access_token: string;
   token_type: "Bearer";
@@ -746,7 +755,7 @@ interface ArenaWalletTokenBase {
 }
 
 export interface ArenaWalletTokenResponse extends ArenaWalletTokenBase {
-  scopes: ["challenge:submit", "challenge:submissions:read"];
+  scopes: ["challenge:submit", "challenge:submissions:read", "challenge:submissions:manage"];
 }
 
 export interface ArenaAgentManagementTokenResponse extends ArenaWalletTokenBase {
@@ -756,7 +765,7 @@ export interface ArenaAgentManagementTokenResponse extends ArenaWalletTokenBase 
 interface ArenaWalletChallengeResponse extends SigningChallengeResponse {
   challenge_id: string;
   challenge_version: string;
-  scope: "challenge:submit challenge:submissions:read" | "challenge:agents:manage";
+  scope: "challenge:submit challenge:submissions:read challenge:submissions:manage" | "challenge:agents:manage";
   issued_at: number;
   expires_at: number;
 }
@@ -768,6 +777,16 @@ interface ComputeWalletChallengeResponse {
   issued_at: number;
   expires_at: number;
   scope: "compute:console";
+  chain_id: 84532;
+}
+
+interface CollaborationWalletChallengeResponse {
+  address: string;
+  nonce: string;
+  message: string;
+  issued_at: number;
+  expires_at: number;
+  scope: "collaboration:console";
   chain_id: 84532;
 }
 
@@ -1025,6 +1044,61 @@ async function authorizeComputeConsole(): Promise<ComputeWalletTokenResponse> {
   return token;
 }
 
+async function authorizeCollaborationConsole(): Promise<CollaborationWalletTokenResponse> {
+  if (!deployment.delegateUrl) throw new Error("Fresh delegate endpoint is not configured");
+  const context = await walletAuthorizationContext();
+  const expectedAddress = context.address;
+  const baseUrl = deployment.delegateUrl.replace(/\/$/, "");
+  const challenge = await responseJson<CollaborationWalletChallengeResponse>(await fetch(`${baseUrl}/auth/collaboration/challenge`, {
+    method: "POST",
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address: expectedAddress }),
+    signal: AbortSignal.timeout(10_000),
+  }));
+  if (challenge.chain_id !== BASE_SEPOLIA.id) throw new Error("Collaboration challenge is not bound to Base Sepolia");
+  validateSigningChallenge(challenge, {
+    address: expectedAddress,
+    scope: "collaboration:console",
+    statement: "Authorize access to the multi-owner Collaboration Console. This signature will not create a room, approve owner consent, trigger a blockchain transaction, or transfer funds.",
+    resources: ["- urn:dnai:scope:collaboration:console"],
+    maximumTtlSeconds: 600,
+  });
+  const signature = await signAuthorizationMessage(context, challenge.message);
+  const token = await responseJson<CollaborationWalletTokenResponse>(await fetch(`${baseUrl}/auth/collaboration/token`, {
+    method: "POST",
+    credentials: "omit",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nonce: challenge.nonce, signature }),
+    signal: AbortSignal.timeout(10_000),
+  }));
+  assertWalletAuthorizationContext(context);
+  validateWalletToken(token, expectedAddress, "collaboration:console");
+  setSessionProof("Collaboration Console · wallet scoped");
+  return token;
+}
+
+/**
+ * Sign one exact backend-issued collaboration action challenge through the
+ * EOA/EIP-1271-capable authentication boundary. The caller must strictly
+ * validate the challenge binding before invoking this method.
+ */
+async function signWalletAuthorizationMessage(message: string): Promise<Hex> {
+  const context = await walletAuthorizationContext();
+  return signAuthorizationMessage(context, message);
+}
+
+/**
+ * The customer Tinker adapter intentionally reuses the exact short-lived
+ * `compute:console` wallet authority. It does not create a broader Tinker,
+ * provider, funding, or contract-write signature domain.
+ */
+async function authorizeTinkerCustomer(): Promise<ComputeWalletTokenResponse> {
+  const token = await authorizeComputeConsole();
+  setSessionProof("Tinker customer lifecycle · wallet scoped");
+  return token;
+}
+
 async function authorizeArenaProfile(
   challengeId: string,
   challengeVersion: string,
@@ -1054,9 +1128,9 @@ async function authorizeArenaProfile(
   }
   const expected = profile === "session"
     ? {
-      scope: "challenge:submit challenge:submissions:read",
-      statement: "Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.",
-      scopes: ["challenge:submit", "challenge:submissions:read"] as const,
+      scope: "challenge:submit challenge:submissions:read challenge:submissions:manage",
+      statement: "Authorize encrypted candidate submissions, read only your bounded submission status, cancel only before worker claim, and retry terminal ciphertext unlink for the specified challenge version during this short session. This request will not trigger a blockchain transaction.",
+      scopes: ["challenge:submit", "challenge:submissions:read", "challenge:submissions:manage"] as const,
     }
     : {
       scope: "challenge:agents:manage",
@@ -1084,7 +1158,7 @@ async function authorizeArenaProfile(
   assertWalletAuthorizationContext(context);
   validateWalletToken(token, expectedAddress, expected.scopes);
   if (token.challenge_id !== challengeId || token.challenge_version !== challengeVersion) throw new Error("Delegate returned a token for a different Arena challenge version");
-  setSessionProof(`${challengeId} ${challengeVersion} · ${profile === "session" ? "submit + my status" : "agent credential management"}`);
+  setSessionProof(`${challengeId} ${challengeVersion} · ${profile === "session" ? "submit + my status + pre-claim cancel" : "agent credential management"}`);
   return token;
 }
 
@@ -1151,9 +1225,12 @@ export const wallet = {
   switchToBase,
   authorizeDealUpload,
   authorizeComputeConsole,
+  authorizeCollaborationConsole,
+  authorizeTinkerCustomer,
   authorizeArenaSession,
   authorizeArenaAgentManagementSession,
   authorizeArenaSubmission: authorizeArenaSession,
+  signWalletAuthorizationMessage,
   signPersonalMessage,
   disconnect,
   clearError: () => setError(""),

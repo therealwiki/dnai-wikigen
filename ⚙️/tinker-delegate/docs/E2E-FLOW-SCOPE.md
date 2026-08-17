@@ -41,8 +41,10 @@
 - Production Deal evaluation is disabled: the historical remote SFT helper
   would send artifact-derived tokens outside the CVM. It is not a confidential
   evaluator simply because the caller runs in dstack.
-- Paid Compute provider dispatch is disabled until a provider adapter supplies
-  stable idempotency and exact crash/restart recovery semantics.
+- Paid Compute provider dispatch remains activation-gated. The compiled adapter
+  uses an at-most-once attempt checkpoint and terminal ambiguity hold; it makes
+  no upstream replay claim and requires the exact release pins, recipient
+  activation, and fresh authenticated worker heartbeat before dispatch.
 - `ComputeCreditVault` exact-asset capacity and off-chain non-transferable
   service credits are separate ledgers with no conversion. Provider-hosted card
   checkout and signed-webhook credit issuance remain roadmap-only.

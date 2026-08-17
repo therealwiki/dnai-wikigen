@@ -12,7 +12,7 @@ import {
   assertFreshCvmDescriptorRuntimeMaterials,
   createFreshCvmDescriptorRuntimeAuthority,
   readFreshCvmDescriptorRuntimeMaterials,
-} from "./cvm-descriptor-runtime-authority.mjs";
+} from "./cvm-descriptor-runtime-authority-v2.mjs";
 import {
   assertCryptographicallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt,
   phalaNonLiveBootstrapAuthorizationReceiptSha256,

@@ -11,7 +11,7 @@ import {
 import {
   canonicalCvmReleaseDescriptorSetReceiptText,
   normalizeCvmReleaseDescriptorSetReceipt,
-} from "./cvm-release-descriptor-set.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
 import {
   assertCompletedPhalaProductionExecutorRuntimeResult,
   readPhalaProductionExecutorRuntimeDependencies,
@@ -91,13 +91,15 @@ import {
   CEREMONY_AUTHORIZATION_CORE_STATUS,
   MAX_RELEASE_AUTHORITY_REVIEW_LIFETIME_MS,
   MIN_RELEASE_AUTHORITY_REVIEW_HEADROOM_MS,
-  assertFreshProductionCeremonyAuthorizationCore,
   canonicalCeremonyAuthorizationCoreArtifactText,
   ceremonyAuthorizationCoreSha256,
-  ceremonyAuthorizationReviewSigningPayloadForProduction,
   releaseAuthorityReviewSigningMessage,
   releaseAuthorityReviewSigningPayloadSha256,
 } from "./release-authority-stages.mjs";
+import {
+  assertFreshProductionCeremonyAuthorizationCore,
+  ceremonyAuthorizationReviewSigningPayloadForProduction,
+} from "./release-ceremony-authorization-production.mjs";
 import {
   phalaNonLiveBootstrapAuthorizationReceiptSha256,
 } from "./phala-nonlive-bootstrap-authorization.mjs";
@@ -481,6 +483,14 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
         { reviewerGenesis, statusHistory: reviewerRootStatusHistory },
       );
 
+    const descriptorRead = readCanonicalJson(
+      parsed.descriptorSetReceipt,
+      "CVM descriptor-set receipt",
+      canonicalCvmReleaseDescriptorSetReceiptText,
+    );
+    const descriptorSetReceipt = normalizeCvmReleaseDescriptorSetReceipt(
+      descriptorRead.value,
+    );
     const freshReceiptRead = parseJson(stableRead(
       parsed.freshContractDeploymentReceipt,
       "fresh contract deployment receipt",
@@ -490,6 +500,9 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
         dependencies.signed_a_receipt.deployment_intent_sha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         reviewerAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        descriptorSetReceipt
+          .tinker_account_binding_ceremony_receipt_sha256,
     };
     const freshContractDeploymentReceipt =
       normalizeFreshContractDeploymentReceipt(
@@ -517,15 +530,6 @@ export function preparePhalaProductionActivationEvidence(input = {}) {
       assertProductionReleaseManifestSigstoreVerificationReceipt(
         sigstoreRead.value,
       );
-    const descriptorRead = readCanonicalJson(
-      parsed.descriptorSetReceipt,
-      "CVM descriptor-set receipt",
-      canonicalCvmReleaseDescriptorSetReceiptText,
-    );
-    const descriptorSetReceipt = normalizeCvmReleaseDescriptorSetReceipt(
-      descriptorRead.value,
-    );
-
     const signedA = dependencies.signed_a_receipt;
     if (phalaQvlMeasurementPolicySetSha256(measurementPolicySet)
         !== signedA.qvl_measurement_policy_set_sha256

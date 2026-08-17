@@ -25,6 +25,7 @@ QVL_PROFILES = frozenset(
         "compute_metering",
         "compute_workload",
         "email_oracle_kms_restart",
+        "royalty_settlement",
     }
 )
 MAX_CHALLENGE_TTL_SECONDS = 120

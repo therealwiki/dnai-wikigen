@@ -12,7 +12,10 @@ import {
 } from "viem";
 import { BASE_SEPOLIA, computeVaultDeployment } from "../config";
 import type { ComputeVaultDeploymentConfig } from "./computeVaultConfig";
-import { computeDispatchIntentCommitment } from "./computeDispatchCommitment";
+import {
+  computeDispatchIntentV3Commitment,
+  computeStandaloneAuthorizationContextCommitment,
+} from "./computeDispatchCommitment";
 import { publicClient } from "./contract";
 import { wallet } from "./wallet";
 
@@ -34,6 +37,7 @@ export const computeCreditVaultAbi = [
   { type: "function", name: "pendingMeteringPolicySetHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "pendingMeteringBindingActivatesAt", stateMutability: "view", inputs: [], outputs: [{ type: "uint64" }] },
   { type: "function", name: "meteringBindingFrozen", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "developerFeeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint16" }] },
   { type: "function", name: "developerFeeFrozen", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "pendingDeveloperFeeActivatesAt", stateMutability: "view", inputs: [], outputs: [{ type: "uint64" }] },
   { type: "function", name: "composePolicyFrozen", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
@@ -315,6 +319,7 @@ export interface VaultChainSnapshot {
   pendingMeteringPolicySetHash?: Hex;
   pendingMeteringBindingActivatesAt?: bigint;
   meteringBindingFrozen?: boolean;
+  developerFeeBps?: number;
   developerFeeFrozen?: boolean;
   pendingDeveloperFeeActivatesAt?: bigint;
   composePolicyFrozen?: boolean;
@@ -437,6 +442,10 @@ export function assessComputeVaultReadiness(
   }
   if (!sameHex(snapshot.pendingMeteringPolicySetHash, zeroHash)) releaseReasons.push("metering binding has an unexpected pending policy set");
   if (snapshot.pendingMeteringBindingActivatesAt !== 0n) releaseReasons.push("metering binding has an unexpected pending activation");
+  if (
+    config.developerFeeBps === undefined
+    || snapshot.developerFeeBps !== config.developerFeeBps
+  ) releaseReasons.push("developer fee does not match release configuration");
   if (snapshot.developerFeeFrozen !== true) releaseReasons.push("developer fee is not verified frozen");
   if (snapshot.pendingDeveloperFeeActivatesAt !== 0n) releaseReasons.push("developer fee has an unexpected pending activation");
   if (snapshot.composePolicyFrozen !== true) releaseReasons.push("mandatory compose policy is not verified frozen");
@@ -456,6 +465,13 @@ export function assessComputeVaultReadiness(
   if (!snapshot.nativePolicy?.active || !sameAddress(snapshot.nativePolicy.asset, zeroAddress)) {
     releaseReasons.push("native exact-asset rate policy is not active");
   }
+  if (!sameAddress(snapshot.nativePolicy?.provider, config.nativeRatePolicyProvider)) {
+    releaseReasons.push("native rate-policy provider does not match release configuration");
+  }
+  if (
+    config.developerFeeBps === undefined
+    || snapshot.nativePolicy?.developerFeeBps !== config.developerFeeBps
+  ) releaseReasons.push("native rate-policy developer fee does not match release configuration");
 
   const fundingReasons = [...releaseReasons];
   if (!config.fundingEnabled) fundingReasons.push("vault funding is disabled by release configuration");
@@ -488,6 +504,17 @@ export function assessComputeVaultReadiness(
       || !snapshot.tokenPolicy?.active
       || !sameAddress(snapshot.tokenPolicy.asset, config.token.address))
   ) tokenReasons.push("ERC20 exact-asset rate policy is not active");
+  if (
+    config.token
+    && !sameAddress(snapshot.tokenPolicy?.provider, config.token.ratePolicyProvider)
+  ) tokenReasons.push("ERC20 rate-policy provider does not match release configuration");
+  if (
+    config.token
+    && (
+      config.developerFeeBps === undefined
+      || snapshot.tokenPolicy?.developerFeeBps !== config.developerFeeBps
+    )
+  ) tokenReasons.push("ERC20 rate-policy developer fee does not match release configuration");
   const tokenFundingReady = nativeFundingReady && Boolean(config.token) && tokenReasons.length === 0;
   const tokenAuthorizationReady = nativeAuthorizationReady && tokenReasons.length === 0;
 
@@ -790,6 +817,7 @@ export async function loadComputeVaultState(
     pendingMeteringPolicySetHash,
     pendingMeteringBindingActivatesAt,
     meteringBindingFrozen,
+    developerFeeBps,
     developerFeeFrozen,
     pendingDeveloperFeeActivatesAt,
     composePolicyFrozen,
@@ -818,6 +846,7 @@ export async function loadComputeVaultState(
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "pendingMeteringPolicySetHash", blockNumber }),
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "pendingMeteringBindingActivatesAt", blockNumber }),
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "meteringBindingFrozen", blockNumber }),
+    publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "developerFeeBps", blockNumber }),
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "developerFeeFrozen", blockNumber }),
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "pendingDeveloperFeeActivatesAt", blockNumber }),
     publicClient.readContract({ address: config.address, abi: computeCreditVaultAbi, functionName: "composePolicyFrozen", blockNumber }),
@@ -853,6 +882,7 @@ export async function loadComputeVaultState(
     pendingMeteringPolicySetHash,
     pendingMeteringBindingActivatesAt,
     meteringBindingFrozen,
+    developerFeeBps,
     developerFeeFrozen,
     pendingDeveloperFeeActivatesAt,
     composePolicyFrozen,
@@ -979,6 +1009,9 @@ export interface VaultWorkloadAuthorizationBinding {
   maxPrefillTokens: number;
   maxSampleTokens: number;
   maxTrainTokens: number;
+  sourceKind: "wallet" | "credential";
+  executionBindingCommitment: `sha256:${string}`;
+  recipientReleaseCommitment: `sha256:${string}`;
 }
 
 export function buildJobAuthorizationTypedData(
@@ -1286,6 +1319,19 @@ function validateWorkloadAuthorizationBinding(
   ) {
     throw new Error("Workload and manifest commitments must be exact nonzero bytes32 values");
   }
+  if (
+    !["wallet", "credential"].includes(binding.sourceKind)
+    || !/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(
+      binding.executionBindingCommitment,
+    )
+    || !/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(
+      binding.recipientReleaseCommitment,
+    )
+  ) {
+    throw new Error(
+      "Workload source, execution binding, and recipient release must match the sealed receipt",
+    );
+  }
   const limits = [binding.maxPrefillTokens, binding.maxSampleTokens, binding.maxTrainTokens];
   if (limits.some((value) => !Number.isSafeInteger(value) || value < 0 || value > 100_000_000)) {
     throw new Error("Workload authorization limits are outside the bounded release policy");
@@ -1345,18 +1391,43 @@ export async function authorizeVaultJob(input: {
   const block = await publicClient.getBlock({ blockTag: "latest" });
   const jobId = computeVaultJobId(input.jobReference);
   const expiry = block.timestamp + BigInt(input.lifetimeSeconds);
-  const dispatchIntentCommitment = computeDispatchIntentCommitment({
+  const normalizedProjectId = state.projectId.toLowerCase() as Hex;
+  const normalizedJobId = jobId.toLowerCase() as Hex;
+  const normalizedUser = account.toLowerCase() as Address;
+  const normalizedAsset = capacity.asset.toLowerCase() as Address;
+  const normalizedRatePolicy = policy.toLowerCase() as Hex;
+  const normalizedComposeHash = state.config.composeHash!.toLowerCase() as Hex;
+  const normalizedWorkloadCommitment = (
+    input.workload.workloadCommitment.toLowerCase() as Hex
+  );
+  const normalizedManifestCommitment = (
+    input.workload.manifestCommitment.toLowerCase() as Hex
+  );
+  const authorizationContextCommitment =
+    computeStandaloneAuthorizationContextCommitment({
+      projectId: normalizedProjectId,
+      jobId: normalizedJobId,
+      user: normalizedUser,
+      asset: normalizedAsset,
+      authorizationNonce: state.nextAuthorizationNonce,
+      maxAssetDebit: input.maxAssetDebit,
+      authorizationExpiry: Number(expiry),
+      ratePolicyCommitment: normalizedRatePolicy,
+      workloadCommitment: normalizedWorkloadCommitment,
+      manifestCommitment: normalizedManifestCommitment,
+    });
+  const dispatchIntentCommitment = computeDispatchIntentV3Commitment({
     projectReference: input.projectReference,
     jobReference: input.jobReference,
-    projectId: state.projectId,
-    jobId,
-    user: account,
-    asset: capacity.asset,
+    projectId: normalizedProjectId,
+    jobId: normalizedJobId,
+    user: normalizedUser,
+    asset: normalizedAsset,
     authorizationNonce: state.nextAuthorizationNonce,
     maxAssetDebit: input.maxAssetDebit,
     authorizationExpiry: Number(expiry),
-    ratePolicyCommitment: policy,
-    composeHash: state.config.composeHash!,
+    ratePolicyCommitment: normalizedRatePolicy,
+    composeHash: normalizedComposeHash,
     operation: input.workload.operation,
     model: input.workload.model,
     recipe: input.workload.recipe,
@@ -1366,8 +1437,17 @@ export async function authorizeVaultJob(input: {
     maxTrainTokens: input.workload.maxTrainTokens,
     workloadId: input.workload.workloadId,
     workloadSchema: input.workload.workloadSchema,
-    manifestCommitment: input.workload.manifestCommitment,
-    workloadCommitment: input.workload.workloadCommitment,
+    manifestCommitment: normalizedManifestCommitment,
+    workloadCommitment: normalizedWorkloadCommitment,
+    workloadSourceKind: input.workload.sourceKind,
+    workloadExecutionBindingCommitment: (
+      input.workload.executionBindingCommitment
+    ),
+    workloadRecipientReleaseCommitment: (
+      input.workload.recipientReleaseCommitment
+    ),
+    authorizationKind: "standalone",
+    authorizationContextCommitment,
   });
   const authorization: JobAuthorization = {
     projectId: state.projectId,

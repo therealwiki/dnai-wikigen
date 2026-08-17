@@ -26,7 +26,9 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const RESOURCE_ID = /^[A-Za-z0-9_.:/-]{1,160}$/;
 const REASON = /^[a-z0-9_]{1,96}$/;
 const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
+const EVALUATION_IDEMPOTENCY_KEY = /^sha256:[0-9a-f]{64}$/;
 const ZERO_DECISION_HASH = "0".repeat(64);
+const EVALUATION_IDEMPOTENCY_DOMAIN = "dnai-wikigen/execution-policy-evaluate-idempotency/v1";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -154,6 +156,12 @@ export interface ExecutionPolicyClientOptions {
   /** Required for Compute; sourced from a strictly parsed authoritative job. */
   executionContextHash?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Called immediately before and after every policy transport boundary. UI
+   * callers use this to fail closed if wallet, chain, release, or session
+   * authority changes while an exact signed intent is in flight.
+   */
+  assertAuthorityCurrent?: () => void;
 }
 
 export interface RunExecutionPolicyInput extends ExecutionPolicyClientOptions {
@@ -163,6 +171,70 @@ export interface RunExecutionPolicyInput extends ExecutionPolicyClientOptions {
   bundle: PolicyBundle;
   approverAddress: Address | string;
   personalSign: (message: string) => Promise<Hex | string>;
+  /**
+   * Receives the complete immutable, memory-only intent after signing and
+   * before `/policy/evaluate` is attempted. It must never be persisted or
+   * rendered because it contains the private bundle and signature.
+   */
+  onPreparedIntent?: (intent: PreparedExecutionPolicyIntent) => void;
+}
+
+export interface PreparedPolicyApproval extends PolicyApprovalSummary {
+  readonly surface: "execution_policy_approval_message";
+  readonly schema_version: 3;
+  readonly approval_message: string;
+  readonly raw_policy_egress: false;
+  readonly raw_resource_id_egress: false;
+}
+
+/**
+ * Opaque, memory-only recovery authority for one exact policy decision.
+ *
+ * This value contains the raw private bundle, resource reference, approval
+ * message, and wallet signature. Callers must keep it in component memory,
+ * never serialize it, and clear it only after exact status reconciliation.
+ */
+export interface PreparedExecutionPolicyIntent {
+  readonly schema: "dnai-wikigen/execution-policy-prepared-intent/v1";
+  readonly delegateBase: string;
+  readonly surface: ExecutionPolicySurface;
+  readonly resourceId: string;
+  readonly expiresAt: number;
+  readonly bundle: PolicyBundle;
+  readonly executionContextHash: string;
+  readonly approverAddress: Address;
+  readonly approvalSignature: string;
+  readonly evaluationIdempotencyKey: string;
+  readonly approval: PreparedPolicyApproval;
+  readonly commitments: PolicyCommitments;
+  readonly previousSequence: number;
+  readonly trust: {
+    readonly approvalDomainHash: string;
+    readonly approverRootHash: string;
+    readonly approvedApproverHashes: readonly string[];
+    readonly anchorRelease: ExecutionPolicyAnchorRelease;
+  };
+}
+
+export interface RecoverExecutionPolicyInput extends ExecutionPolicyClientOptions {
+  readonly intent: PreparedExecutionPolicyIntent;
+  readonly approverAddress: Address | string;
+  /** Test-only clock override; production callers leave this unset. */
+  readonly now?: number;
+}
+
+export class ExecutionPolicyRecoveryMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecutionPolicyRecoveryMismatchError";
+  }
+}
+
+export class ExecutionPolicyIntentExpiredError extends Error {
+  constructor(message = "The exact execution-policy intent expired before it could be safely submitted") {
+    super(message);
+    this.name = "ExecutionPolicyIntentExpiredError";
+  }
 }
 
 const REQUEST_FIELDS = new Set([
@@ -449,6 +521,7 @@ function approverAddress(value: string): Address {
 function responseError(status: number): Error {
   if (status === 401 || status === 403) return new Error("Delegate refused the runtime transport credential");
   if (status === 400) return new Error("Delegate rejected or could not persist the bounded policy decision");
+  if (status === 409) return new ExecutionPolicyRecoveryMismatchError("Delegate rejected a conflicting execution-policy idempotency replay");
   if (status === 503) return new Error("Execution-policy trust roots are unavailable");
   return new Error(`Delegate policy request failed with status ${status}`);
 }
@@ -491,8 +564,10 @@ async function post(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   const request = options.fetchImpl ?? fetch;
-  return responseJson(await request(`${endpointBase(options.delegateUrl)}${path}`, {
+  options.assertAuthorityCurrent?.();
+  const response = await request(`${endpointBase(options.delegateUrl)}${path}`, {
     method: "POST",
+    cache: "no-store",
     credentials: "omit",
     headers: {
       Accept: "application/json",
@@ -500,8 +575,25 @@ async function post(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    redirect: "error",
+    referrerPolicy: "no-referrer",
     signal: AbortSignal.timeout(12_000),
-  }));
+  });
+  try {
+    options.assertAuthorityCurrent?.();
+    const parsed = await responseJson(response);
+    options.assertAuthorityCurrent?.();
+    return parsed;
+  } catch (cause) {
+    if (response.body && !response.body.locked) {
+      try {
+        await response.body.cancel();
+      } catch {
+        // Preserve the policy or authority error; response cleanup is best effort.
+      }
+    }
+    throw cause;
+  }
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -572,6 +664,54 @@ export function executionPolicySignatureHash(signature: string): Promise<string>
     new Uint8Array([0]),
     signatureBytes(signature),
   ));
+}
+
+function rawHashBytes(value: string, label: string): Uint8Array {
+  const normalized = hash(value, label);
+  return Uint8Array.from(
+    normalized.match(/.{2}/g) ?? [],
+    (pair) => Number.parseInt(pair, 16),
+  );
+}
+
+export async function executionPolicyEvaluationIdempotencyKey(
+  approvalMessageHash: string,
+): Promise<string> {
+  const digest = await sha256HexBytes(concatBytes(
+    encoder.encode(EVALUATION_IDEMPOTENCY_DOMAIN),
+    new Uint8Array([0]),
+    rawHashBytes(approvalMessageHash, "Policy approval-message hash"),
+  ));
+  return `sha256:${digest}`;
+}
+
+function canonicalPolicyApprovalMessage(input: {
+  approvalDomainHash: string;
+  approverRootHash: string;
+  surface: ExecutionPolicySurface;
+  resourceHash: string;
+  previousDecisionHash: string;
+  decision: ExecutionPolicyDecision;
+  requestHash: string;
+  policyHash: string;
+  executionContextHash: string;
+  expiresAt: number;
+}): string {
+  const canonicalPayload: Record<string, string | number> = {
+    schema: "dnai-wikigen/execution-policy-approval/v3",
+    canonicalization_version: POLICY_CANONICALIZATION_VERSION,
+    approval_domain_hash: input.approvalDomainHash,
+    approver_root_hash: input.approverRootHash,
+    surface: input.surface,
+    resource_id_hash: input.resourceHash,
+    previous_decision_hash: input.previousDecisionHash,
+    decision: input.decision,
+    request_hash: input.requestHash,
+    policy_hash: input.policyHash,
+    execution_context_hash: input.executionContextHash,
+    expires_at: input.expiresAt,
+  };
+  return `DNAI Wikigen execution policy approval\n${pythonCanonicalJson(canonicalPayload)}`;
 }
 
 export async function executionPolicyDecisionHash(record: ExecutionPolicyRecord): Promise<string> {
@@ -678,21 +818,18 @@ async function parseApprovalMessage(
   ) {
     throw new Error("Delegate policy approval commitments do not match the browser evaluation");
   }
-  const canonicalPayload: Record<string, string | number> = {
-    schema: "dnai-wikigen/execution-policy-approval/v3",
-    canonicalization_version: POLICY_CANONICALIZATION_VERSION,
-    approval_domain_hash: approvalDomainHash,
-    approver_root_hash: approverRootHash,
+  const expectedMessage = canonicalPolicyApprovalMessage({
+    approvalDomainHash,
+    approverRootHash,
     surface: expectedSurface,
-    resource_id_hash: resourceHash,
-    previous_decision_hash: previousDecisionHash,
+    resourceHash,
+    previousDecisionHash,
     decision: parsedDecision,
-    request_hash: requestHash,
-    policy_hash: policyHash,
-    execution_context_hash: executionContextHash,
-    expires_at: expiresAt,
-  };
-  const expectedMessage = `DNAI Wikigen execution policy approval\n${pythonCanonicalJson(canonicalPayload)}`;
+    requestHash,
+    policyHash,
+    executionContextHash,
+    expiresAt,
+  });
   const approvalMessage = approvalMessageText(item.approval_message);
   if (approvalMessage !== expectedMessage) throw new Error("Delegate returned a non-canonical policy approval message");
   const approvalMessageHash = hash(item.approval_message_hash, "Policy approval-message hash");
@@ -1089,49 +1226,322 @@ export async function readExecutionPolicyStatus(input: ExecutionPolicyClientOpti
   return parsed;
 }
 
-/**
- * Evaluate and persist one decision. PASS cannot reach /policy/evaluate until
- * the connected EIP-1193 wallet has signed the delegate's exact hash-only
- * personal-sign message. The returned object contains no bearer, resource ID,
- * raw request, raw policy, approval message, or signature.
- */
-export async function runExecutionPolicyWorkflow(input: RunExecutionPolicyInput): Promise<ExecutionPolicyWorkflowResult> {
+function deepFreezeIntentValue<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    deepFreezeIntentValue(nested);
+  }
+  return Object.freeze(value);
+}
+
+function clonePrivatePolicyBundle(value: PolicyBundle): PolicyBundle {
+  // The strict parser both validates and creates a detached copy, preventing
+  // caller mutation from changing an intent after wallet approval.
+  return parsePolicyBundleText(JSON.stringify(value));
+}
+
+function exactIntentCoreRequest(intent: PreparedExecutionPolicyIntent): Record<string, unknown> {
+  if (intent.schema !== "dnai-wikigen/execution-policy-prepared-intent/v1") {
+    throw new ExecutionPolicyRecoveryMismatchError("Execution-policy recovery intent identity is invalid");
+  }
+  const expectedSurface = surface(intent.surface, "Prepared execution-policy surface");
+  const expectedResourceId = resourceId(intent.resourceId);
+  const expiresAt = integer(
+    intent.expiresAt,
+    "Prepared execution-policy expiry",
+    1,
+    4_102_444_800,
+  );
+  validateRequest(intent.bundle.request);
+  validatePolicy(intent.bundle.policy);
+  return {
+    surface: expectedSurface,
+    resource_id: expectedResourceId,
+    expires_at: expiresAt,
+    request: intent.bundle.request,
+    policy: intent.bundle.policy,
+  };
+}
+
+function approvalSummary(approval: PreparedPolicyApproval): PolicyApprovalSummary {
+  return {
+    decision: approval.decision,
+    canonicalization_version: approval.canonicalization_version,
+    request_hash: approval.request_hash,
+    policy_hash: approval.policy_hash,
+    execution_context_hash: approval.execution_context_hash,
+    resource_id_hash: approval.resource_id_hash,
+    previous_decision_hash: approval.previous_decision_hash,
+    approval_message_hash: approval.approval_message_hash,
+    approval_domain_hash: approval.approval_domain_hash,
+    approver_root_hash: approval.approver_root_hash,
+    expires_at: approval.expires_at,
+    wallet_signature_required: approval.wallet_signature_required,
+    rollback_anchor: approval.rollback_anchor,
+  };
+}
+
+async function assertPreparedIntentContext(
+  input: RecoverExecutionPolicyInput,
+): Promise<{
+  trust: Awaited<ReturnType<typeof configuredPolicyTrust>>;
+  expectedApproverHash: string;
+  expectedApprovalHash: string;
+}> {
+  const intent = input.intent;
+  const body = exactIntentCoreRequest(intent);
+  if (endpointBase(input.delegateUrl) !== intent.delegateBase) {
+    throw new ExecutionPolicyRecoveryMismatchError("Delegate release endpoint changed after policy approval");
+  }
+  const trust = await configuredPolicyTrust(input);
+  if (
+    trust.approvalDomainHash !== intent.trust.approvalDomainHash
+    || trust.approverRootHash !== intent.trust.approverRootHash
+    || pythonCanonicalJson(trust.approvedApproverHashes)
+      !== pythonCanonicalJson(intent.trust.approvedApproverHashes)
+    || pythonCanonicalJson(trust.anchorRelease)
+      !== pythonCanonicalJson(intent.trust.anchorRelease)
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError("Execution-policy release authority changed after approval");
+  }
+  const expectedApprover = approverAddress(input.approverAddress);
+  if (expectedApprover.toLowerCase() !== intent.approverAddress.toLowerCase()) {
+    throw new ExecutionPolicyRecoveryMismatchError("Connected approver changed after policy approval");
+  }
+  const expectedApproverHash = await executionPolicyApproverHash(expectedApprover);
+  if (!trust.approvedApproverHashes.includes(expectedApproverHash)) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared approver is no longer in the immutable signer set");
+  }
+  const expectedContextHash = expectedExecutionContextHash(
+    intent.surface,
+    input.executionContextHash,
+  );
+  if (expectedContextHash !== intent.executionContextHash) {
+    throw new ExecutionPolicyRecoveryMismatchError("Execution context changed after policy approval");
+  }
+  const commitments = await computePolicyCommitments(
+    intent.bundle,
+    intent.surface,
+    intent.resourceId,
+  );
+  if (pythonCanonicalJson(commitments) !== pythonCanonicalJson(intent.commitments)) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared private policy bundle changed after approval");
+  }
+  const approval = intent.approval;
+  if (
+    approval.surface !== "execution_policy_approval_message"
+    || approval.schema_version !== 3
+    || approval.expires_at !== intent.expiresAt
+    || approval.decision !== commitments.local_evaluation.decision
+    || approval.request_hash !== commitments.request_hash
+    || approval.policy_hash !== commitments.policy_hash
+    || approval.execution_context_hash !== intent.executionContextHash
+    || approval.resource_id_hash !== commitments.resource_id_hash
+    || approval.approval_domain_hash !== trust.approvalDomainHash
+    || approval.approver_root_hash !== trust.approverRootHash
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared approval commitments changed after wallet consent");
+  }
+  const expectedMessage = canonicalPolicyApprovalMessage({
+    approvalDomainHash: approval.approval_domain_hash,
+    approverRootHash: approval.approver_root_hash,
+    surface: intent.surface,
+    resourceHash: approval.resource_id_hash,
+    previousDecisionHash: approval.previous_decision_hash,
+    decision: approval.decision,
+    requestHash: approval.request_hash,
+    policyHash: approval.policy_hash,
+    executionContextHash: approval.execution_context_hash,
+    expiresAt: approval.expires_at,
+  });
+  if (
+    expectedMessage !== approval.approval_message
+    || await sha256Hex(expectedMessage) !== approval.approval_message_hash
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared approval message is not canonical");
+  }
+  const expectedIdempotencyKey = await executionPolicyEvaluationIdempotencyKey(
+    approval.approval_message_hash,
+  );
+  if (
+    !EVALUATION_IDEMPOTENCY_KEY.test(intent.evaluationIdempotencyKey)
+    || intent.evaluationIdempotencyKey !== expectedIdempotencyKey
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared policy idempotency commitment changed");
+  }
+  let expectedApprovalHash = "";
+  if (approval.decision === "pass") {
+    if (!SIGNATURE.test(intent.approvalSignature)) {
+      throw new ExecutionPolicyRecoveryMismatchError("Prepared wallet signature is invalid");
+    }
+    let recovered: Address;
+    try {
+      recovered = await recoverMessageAddress({
+        message: approval.approval_message,
+        signature: intent.approvalSignature as Hex,
+      });
+    } catch {
+      throw new ExecutionPolicyRecoveryMismatchError("Prepared wallet signature cannot be recovered");
+    }
+    if (recovered.toLowerCase() !== expectedApprover.toLowerCase()) {
+      throw new ExecutionPolicyRecoveryMismatchError("Prepared wallet signature belongs to another approver");
+    }
+    expectedApprovalHash = await executionPolicySignatureHash(intent.approvalSignature);
+  } else if (intent.approvalSignature) {
+    throw new ExecutionPolicyRecoveryMismatchError("A non-pass intent carries wallet approval evidence");
+  }
+  if (
+    body.expires_at !== approval.expires_at
+    || body.surface !== intent.surface
+    || body.resource_id !== intent.resourceId
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError("Prepared request body changed after approval");
+  }
+  input.assertAuthorityCurrent?.();
+  return { trust, expectedApproverHash, expectedApprovalHash };
+}
+
+async function statusMatchesPreparedIntent(
+  status: ExecutionPolicyStatus,
+  intent: PreparedExecutionPolicyIntent,
+  expectedApproverHash: string,
+  expectedApprovalHash: string,
+): Promise<boolean> {
+  const binding = status.record;
+  const local = intent.commitments.local_evaluation;
+  if (
+    !status.found
+    || !binding
+    || status.resource_id_hash !== intent.approval.resource_id_hash
+    || binding.surface !== intent.surface
+    || binding.resource_id_hash !== intent.approval.resource_id_hash
+    || binding.decision !== intent.approval.decision
+    || binding.reason_code !== local.reason_code
+    || binding.request_hash !== intent.approval.request_hash
+    || binding.policy_hash !== intent.approval.policy_hash
+    || binding.execution_context_hash !== intent.executionContextHash
+    || binding.expires_at !== intent.expiresAt
+    || binding.previous_decision_hash !== intent.approval.previous_decision_hash
+    || (binding.decision === "pass"
+      ? (
+        binding.approver_hash !== expectedApproverHash
+        || binding.approval_hash !== expectedApprovalHash
+        || binding.approval_domain_hash !== intent.trust.approvalDomainHash
+        || binding.approver_root_hash !== intent.trust.approverRootHash
+      )
+      : Boolean(
+        binding.approver_hash
+        || binding.approval_hash
+        || binding.approval_domain_hash
+        || binding.approver_root_hash,
+      ))
+  ) return false;
+  await verifyPolicyRecordDigest(binding);
+  return true;
+}
+
+function statusMatchesPreparedPrior(
+  status: ExecutionPolicyStatus,
+  intent: PreparedExecutionPolicyIntent,
+): boolean {
+  if (intent.approval.previous_decision_hash === ZERO_DECISION_HASH) {
+    return !status.found
+      && status.record === null
+      && status.rollback_anchor.resource_sequence === 0;
+  }
+  return Boolean(
+    status.found
+    && status.record
+    && status.record.decision_hash === intent.approval.previous_decision_hash
+    && status.record.sequence === intent.previousSequence,
+  );
+}
+
+function workflowFromReconciledStatus(
+  intent: PreparedExecutionPolicyIntent,
+  status: ExecutionPolicyStatus,
+): ExecutionPolicyWorkflowResult {
+  if (!status.record) {
+    throw new ExecutionPolicyRecoveryMismatchError("Reconciled policy status has no decision record");
+  }
+  const local = intent.commitments.local_evaluation;
+  return {
+    approval: approvalSummary(intent.approval),
+    evaluation: {
+      surface: "policy_kernel",
+      schema_version: 3,
+      canonicalization_version: POLICY_CANONICALIZATION_VERSION,
+      approval_domain_hash: intent.trust.approvalDomainHash,
+      approver_root_hash: intent.trust.approverRootHash,
+      decision: local.decision,
+      stage: local.stage,
+      reason_code: local.reason_code,
+      routed_role: local.routed_role,
+      request_hash: intent.commitments.request_hash,
+      policy_hash: intent.commitments.policy_hash,
+      execution_context_hash: intent.executionContextHash,
+      purpose_hash: intent.commitments.purpose_hash,
+      pipeline_hash: intent.commitments.pipeline_hash,
+      output_schema_hash: intent.commitments.output_schema_hash,
+      corpus_ref_hash: intent.commitments.corpus_ref_hash,
+      outcomes: local.outcomes,
+      raw_secret_egress: false,
+      raw_policy_egress: false,
+      execution_binding: status.record,
+    },
+    status,
+  };
+}
+
+export async function prepareExecutionPolicyIntent(
+  input: RunExecutionPolicyInput,
+): Promise<PreparedExecutionPolicyIntent> {
   const expectedApprover = approverAddress(input.approverAddress);
   const trust = await configuredPolicyTrust(input);
-  const expectedApprovalDomainHash = trust.approvalDomainHash;
   const expectedApproverHash = await executionPolicyApproverHash(expectedApprover);
   if (!trust.approvedApproverHashes.includes(expectedApproverHash)) {
     throw new Error("Connected policy approver is not part of this release's immutable signer set");
   }
-  if (typeof input.personalSign !== "function") throw new Error("Connected wallet personal_sign is required");
-  const body = coreRequest(input);
+  if (typeof input.personalSign !== "function") {
+    throw new Error("Connected wallet personal_sign is required");
+  }
+  const privateBundle = clonePrivatePolicyBundle(input.bundle);
+  const stableInput = { ...input, bundle: privateBundle };
+  const body = coreRequest(stableInput);
   const expiresAt = body.expires_at as number;
-  const commitments = await computePolicyCommitments(input.bundle, input.surface, input.resourceId);
-  const expectedContextHash = expectedExecutionContextHash(
+  const commitments = await computePolicyCommitments(
+    privateBundle,
+    input.surface,
+    input.resourceId,
+  );
+  const executionContextHash = expectedExecutionContextHash(
     input.surface,
     input.executionContextHash,
   );
-  const priorStatus = await readExecutionPolicyStatus(input);
-  const expectedPreviousDecisionHash = priorStatus.record?.decision_hash ?? ZERO_DECISION_HASH;
+  const priorStatus = await readExecutionPolicyStatus(stableInput);
+  const previousDecisionHash = priorStatus.record?.decision_hash ?? ZERO_DECISION_HASH;
   const approval = await parseApprovalMessage(
-    await post(input, "/policy/approval-message", body),
+    await post(stableInput, "/policy/approval-message", body),
     input.surface,
     expiresAt,
     commitments,
-    expectedContextHash,
-    expectedApprovalDomainHash,
+    executionContextHash,
+    trust.approvalDomainHash,
     trust.approverRootHash,
-    expectedPreviousDecisionHash,
+    previousDecisionHash,
     priorStatus.record?.sequence ?? 0,
     trust.anchorRelease,
     input.anchorObserver,
   );
 
   let signature = "";
-  let evaluationApprover = "";
   if (approval.decision === "pass") {
+    input.assertAuthorityCurrent?.();
     const signed = await input.personalSign(approval.approval_message);
-    if (typeof signed !== "string" || !SIGNATURE.test(signed)) throw new Error("Wallet returned an invalid personal_sign signature");
+    input.assertAuthorityCurrent?.();
+    if (typeof signed !== "string" || !SIGNATURE.test(signed)) {
+      throw new Error("Wallet returned an invalid personal_sign signature");
+    }
     let recovered: Address;
     try {
       recovered = await recoverMessageAddress({
@@ -1145,69 +1555,161 @@ export async function runExecutionPolicyWorkflow(input: RunExecutionPolicyInput)
       throw new Error("Wallet personal_sign signature does not match the connected approver");
     }
     signature = signed;
-    evaluationApprover = expectedApprover;
   }
+  const intent: PreparedExecutionPolicyIntent = {
+    schema: "dnai-wikigen/execution-policy-prepared-intent/v1",
+    delegateBase: endpointBase(input.delegateUrl),
+    surface: input.surface,
+    resourceId: input.resourceId,
+    expiresAt,
+    bundle: privateBundle,
+    executionContextHash,
+    approverAddress: expectedApprover,
+    approvalSignature: signature,
+    evaluationIdempotencyKey: await executionPolicyEvaluationIdempotencyKey(
+      approval.approval_message_hash,
+    ),
+    approval,
+    commitments,
+    previousSequence: priorStatus.record?.sequence ?? 0,
+    trust: {
+      approvalDomainHash: trust.approvalDomainHash,
+      approverRootHash: trust.approverRootHash,
+      approvedApproverHashes: [...trust.approvedApproverHashes],
+      anchorRelease: { ...trust.anchorRelease },
+    },
+  };
+  return deepFreezeIntentValue(intent);
+}
 
+export async function submitPreparedExecutionPolicyIntent(
+  input: RecoverExecutionPolicyInput,
+): Promise<ExecutionPolicyWorkflowResult> {
+  const { intent } = input;
+  const {
+    trust,
+    expectedApproverHash,
+    expectedApprovalHash,
+  } = await assertPreparedIntentContext(input);
+  const now = input.now ?? Math.floor(Date.now() / 1_000);
+  if (intent.expiresAt <= now) throw new ExecutionPolicyIntentExpiredError();
+  const body = exactIntentCoreRequest(intent);
   const evaluation = await parseEvaluation(
     await post(input, "/policy/evaluate", {
       ...body,
-      approver_address: evaluationApprover,
-      approval_signature: signature,
-      previous_decision_hash: expectedPreviousDecisionHash,
+      approver_address: intent.approval.decision === "pass"
+        ? intent.approverAddress
+        : "",
+      approval_signature: intent.approvalSignature,
+      previous_decision_hash: intent.approval.previous_decision_hash,
+      idempotency_key: intent.evaluationIdempotencyKey,
     }),
-    input.surface,
-    commitments,
-    expectedContextHash,
-    expectedApprovalDomainHash,
+    intent.surface,
+    intent.commitments,
+    intent.executionContextHash,
+    trust.approvalDomainHash,
     trust.approverRootHash,
     trust.approvedApproverHashes,
-    expiresAt,
-    expectedPreviousDecisionHash,
+    intent.expiresAt,
+    intent.approval.previous_decision_hash,
     trust.anchorRelease,
     input.anchorObserver,
   );
   await verifyPolicyRecordDigest(evaluation.execution_binding);
-  if (evaluation.decision === "pass") {
-    const expectedSignatureHash = await executionPolicySignatureHash(signature);
-    if (
+  if (
+    evaluation.decision === "pass"
+    && (
       evaluation.execution_binding.approver_hash !== expectedApproverHash
-      || evaluation.execution_binding.approval_hash !== expectedSignatureHash
-    ) {
-      throw new Error("Persisted execution-policy signer evidence does not match the wallet approval");
-    }
+      || evaluation.execution_binding.approval_hash !== expectedApprovalHash
+    )
+  ) {
+    throw new Error("Persisted execution-policy signer evidence does not match the wallet approval");
   }
   if (
-    evaluation.decision !== approval.decision
-    || evaluation.request_hash !== approval.request_hash
-    || evaluation.policy_hash !== approval.policy_hash
-    || evaluation.execution_context_hash !== approval.execution_context_hash
-    || evaluation.execution_binding.resource_id_hash !== approval.resource_id_hash
+    evaluation.decision !== intent.approval.decision
+    || evaluation.request_hash !== intent.approval.request_hash
+    || evaluation.policy_hash !== intent.approval.policy_hash
+    || evaluation.execution_context_hash !== intent.approval.execution_context_hash
+    || evaluation.execution_binding.resource_id_hash !== intent.approval.resource_id_hash
   ) throw new Error("Policy evaluation drifted from the wallet approval message");
-  const status = await readExecutionPolicyStatus(input);
+  const status = await readExecutionPolicyStatus({
+    ...input,
+    surface: intent.surface,
+    resourceId: intent.resourceId,
+  });
   if (
-    !status.found
-    || !status.record
-    || status.record.decision_hash !== evaluation.execution_binding.decision_hash
-    || status.current_pass !== (evaluation.decision === "pass")
-  ) throw new Error("Latest execution-policy status does not match the persisted decision");
+    !await statusMatchesPreparedIntent(
+      status,
+      intent,
+      expectedApproverHash,
+      expectedApprovalHash,
+    )
+    || status.record?.decision_hash !== evaluation.execution_binding.decision_hash
+  ) {
+    throw new ExecutionPolicyRecoveryMismatchError(
+      "Latest execution-policy status does not match the exact persisted intent",
+    );
+  }
+  return { approval: approvalSummary(intent.approval), evaluation, status };
+}
 
-  return {
-    approval: {
-      decision: approval.decision,
-      canonicalization_version: approval.canonicalization_version,
-      request_hash: approval.request_hash,
-      policy_hash: approval.policy_hash,
-      execution_context_hash: approval.execution_context_hash,
-      resource_id_hash: approval.resource_id_hash,
-      previous_decision_hash: approval.previous_decision_hash,
-      approval_message_hash: approval.approval_message_hash,
-      approval_domain_hash: approval.approval_domain_hash,
-      approver_root_hash: approval.approver_root_hash,
-      expires_at: approval.expires_at,
-      wallet_signature_required: approval.wallet_signature_required,
-      rollback_anchor: approval.rollback_anchor,
-    },
-    evaluation,
+/**
+ * Recover one ambiguous evaluation without generating a new approval, expiry,
+ * signature, previous-head binding, or idempotency commitment.
+ *
+ * Recovery reads the exact resource first. An exact committed record is
+ * reconstructed from the browser-verified deterministic commitments and the
+ * independently verified status. Only an unchanged prior head permits replay
+ * of the byte-identical mutation.
+ */
+export async function recoverExecutionPolicyWorkflow(
+  input: RecoverExecutionPolicyInput,
+): Promise<ExecutionPolicyWorkflowResult> {
+  const {
+    expectedApproverHash,
+    expectedApprovalHash,
+  } = await assertPreparedIntentContext(input);
+  const status = await readExecutionPolicyStatus({
+    ...input,
+    surface: input.intent.surface,
+    resourceId: input.intent.resourceId,
+  });
+  if (await statusMatchesPreparedIntent(
     status,
-  };
+    input.intent,
+    expectedApproverHash,
+    expectedApprovalHash,
+  )) {
+    return workflowFromReconciledStatus(input.intent, status);
+  }
+  if (!statusMatchesPreparedPrior(status, input.intent)) {
+    throw new ExecutionPolicyRecoveryMismatchError(
+      "The current execution-policy head matches neither the retained intent nor its exact prior head",
+    );
+  }
+  const now = input.now ?? Math.floor(Date.now() / 1_000);
+  if (input.intent.expiresAt <= now) throw new ExecutionPolicyIntentExpiredError();
+  return submitPreparedExecutionPolicyIntent(input);
+}
+
+/**
+ * Evaluate and persist one decision. PASS cannot reach `/policy/evaluate`
+ * until the connected EIP-1193 wallet has signed the delegate's exact hash-only
+ * personal-sign message. The prepared private intent is delivered to the
+ * caller before mutation so an ambiguous response can be reconciled exactly.
+ * The returned object contains no bearer, resource ID, raw request, raw policy,
+ * approval message, or signature.
+ */
+export async function runExecutionPolicyWorkflow(
+  input: RunExecutionPolicyInput,
+): Promise<ExecutionPolicyWorkflowResult> {
+  const intent = await prepareExecutionPolicyIntent(input);
+  input.assertAuthorityCurrent?.();
+  input.onPreparedIntent?.(intent);
+  input.assertAuthorityCurrent?.();
+  return submitPreparedExecutionPolicyIntent({
+    ...input,
+    intent,
+    approverAddress: input.approverAddress,
+  });
 }

@@ -15,14 +15,18 @@ import {
 import { IMAGE_NAMES } from "./build-tee-image-release.mjs";
 import {
   assertTrackedDescriptorMaterializationSources,
+  cvmReleaseDescriptorSetReceiptSha256,
   CVM_RELEASE_DESCRIPTOR_GENERATED_FILES,
   CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX,
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_DOMAIN,
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
   CVM_RELEASE_DESCRIPTOR_TRACKED_SOURCE_FILES,
   inspectTrackedDescriptorMaterializationSources,
   main,
+  normalizeCvmReleaseDescriptorSetReceipt,
   validateCanonicalGeneratedCvmDescriptorSet,
   verifyExactTrackedSourceDescriptorReproduction,
-} from "./cvm-release-descriptor-set.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
 
 const RELEASE_SHA = "a".repeat(40);
 const SOURCE_REF = "refs/heads/main";
@@ -98,7 +102,9 @@ function serviceImageName(domain, service) {
   if (domain.endsWith("_qvl_cvm")) return "attestation-qvl";
   if (domain === "independent_metering_cvm") return "compute-metering";
   if (service === "neko") return "neko-chrome";
-  if (service === "oracle") return "tee-email-oracle";
+  if (service === "oracle" || service === "mailbox-genesis") {
+    return "tee-email-oracle";
+  }
   return "tinker-delegate";
 }
 
@@ -107,6 +113,12 @@ function mainProfile(service) {
   if (service === "anchor-writer-evidence") return "anchor-writer-ceremony";
   if (service === "deal-runtime") return "deal-settlement";
   if (service === "compute-execution-worker") return "compute-execution";
+  if (service === "collaboration-execution-worker") {
+    return "collaboration-execution";
+  }
+  if (service === "review-operations") return "review-operations";
+  if (service === "mailbox-genesis") return "mailbox-genesis";
+  if (service === "tinker-account-genesis") return "tinker-account-genesis";
   return null;
 }
 
@@ -197,10 +209,24 @@ async function buildFixture() {
   const manifestSha = sha256(manifestText);
   const bundleText = '{"fixture":"attestation-bundle"}\n';
   const deploymentIntentText = '{"fixture":"deployment-intent"}\n';
+  const accountBindingCeremonyReceipt = {
+    schema: "dnai.tinker-account-binding-ceremony-receipt.v1",
+    tinker_account_binding_ceremony_receipt_sha256:
+      `sha256:${"a".repeat(64)}`,
+  };
+  const accountBindingCeremonyReceiptText =
+    `${JSON.stringify(accountBindingCeremonyReceipt, null, 2)}\n`;
   await Promise.all([
     writeFile(path.join(releaseDirectory, "dnai-tee-image-release.json"), manifestText),
     writeFile(path.join(releaseDirectory, "dnai-tee-image-release.bundle.json"), bundleText),
     writeFile(path.join(releaseDirectory, "dnai-deployment-intent-core.json"), deploymentIntentText),
+    writeFile(
+      path.join(
+        releaseDirectory,
+        "tinker-account-binding-ceremony.receipt.json",
+      ),
+      accountBindingCeremonyReceiptText,
+    ),
   ]);
   const documents = {};
   const descriptorBytes = {};
@@ -234,6 +260,16 @@ async function buildFixture() {
       file: "dnai-deployment-intent-core.json",
       sha256: sha256(deploymentIntentText),
       schema: "dnai.deployment-intent-core.v6",
+    },
+    tinkerAccountBindingCeremonyReceipt: {
+      file: "tinker-account-binding-ceremony.receipt.json",
+      sha256: sha256(accountBindingCeremonyReceiptText),
+      schema: "dnai.tinker-account-binding-ceremony-receipt.v1",
+      tinkerAccountBindingCeremonyReceiptSha256:
+        accountBindingCeremonyReceipt
+          .tinker_account_binding_ceremony_receipt_sha256,
+      validation:
+        "python_structural_and_domain_digest_binding_requires_node_ceremony_check_replay",
     },
     image_manifest: {
       file: "dnai-tee-image-release.json",
@@ -289,10 +325,48 @@ test("generated boundary names all seven exact canonical descriptor files", () =
     CVM_RELEASE_DESCRIPTOR_GENERATED_FILES.slice(0, 7),
     CVM_LAUNCH_DOMAINS.map((domain) => CVM_LAUNCH_DESCRIPTOR_FILES[domain]),
   );
-  assert.equal(CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX.main_runtime_cvm.includes("arena-worker"), true);
-  assert.equal(CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX.main_runtime_cvm.includes("deal-runtime"), true);
   assert.equal(
-    CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX.main_runtime_cvm.includes("compute-execution-worker"),
+    CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
+    "dnai.cvm-release-descriptor-set-validation.v3",
+  );
+  assert.equal(
+    CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_DOMAIN,
+    "dnai-wikigen/cvm-release-descriptor-set-validation/v3\0",
+  );
+  assert.deepEqual(CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX.main_runtime_cvm, [
+    "neko",
+    "oracle",
+    "delegate",
+    "diligence-policy-init",
+    "tinker-customer-authority-init",
+    "arena-policy-init",
+    "arena-worker",
+    "anchor-writer-evidence",
+    "deal-runtime",
+    "compute-execution-worker",
+    "collaboration-execution-worker",
+    "review-operations",
+    "mailbox-genesis",
+    "tinker-account-genesis",
+  ]);
+  assert.equal(
+    CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm.launch_settings.initial_services
+      .includes("mailbox-genesis"),
+    false,
+  );
+  assert.equal(
+    CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm.launch_settings.initial_services
+      .includes("tinker-account-genesis"),
+    false,
+  );
+  assert.equal(
+    CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm.launch_settings
+      .initially_disabled_profiles.includes("mailbox-genesis"),
+    true,
+  );
+  assert.equal(
+    CVM_LAUNCH_DESCRIPTOR_POLICY.main_runtime_cvm.launch_settings
+      .initially_disabled_profiles.includes("tinker-account-genesis"),
     true,
   );
 });
@@ -304,6 +378,7 @@ test("validator accepts one complete seven-domain secret-free release set and bi
       releaseDirectory: fixture.releaseDirectory,
       expectedReleaseSha: RELEASE_SHA,
     });
+    assert.equal(receipt.schema, CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA);
     assert.equal(receipt.status, "validated_rendered_not_deployed");
     assert.equal(receipt.invariants.all_seven_generated_files_present, true);
     assert.equal(receipt.invariants.exact_clean_ci_image_digests, true);
@@ -312,10 +387,38 @@ test("validator accepts one complete seven-domain secret-free release set and bi
       receipt.image_manifest_sigstore_bundle_sha256,
       `sha256:${sha256('{"fixture":"attestation-bundle"}\n')}`,
     );
+    assert.equal(
+      receipt.tinker_account_binding_ceremony_receipt_sha256,
+      fixture.topology.tinkerAccountBindingCeremonyReceipt
+        .tinkerAccountBindingCeremonyReceiptSha256,
+    );
     assert.equal(Object.keys(receipt.descriptor_sha256_by_domain).length, 7);
     assert.equal(new Set(Object.values(receipt.descriptor_sha256_by_domain)).size, 7);
     assert.equal(receipt.image_references.length, 5);
     assert.equal(JSON.stringify(receipt).includes("fixture requires"), false);
+    assert.deepEqual(
+      normalizeCvmReleaseDescriptorSetReceipt(receipt),
+      structuredClone(receipt),
+    );
+    assert.match(
+      cvmReleaseDescriptorSetReceiptSha256(receipt),
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    assert.throws(
+      () => normalizeCvmReleaseDescriptorSetReceipt({
+        ...structuredClone(receipt),
+        schema: "dnai.cvm-release-descriptor-set-validation.v2",
+      }),
+      /receipt authority is invalid/,
+    );
+    assert.throws(
+      () => normalizeCvmReleaseDescriptorSetReceipt({
+        ...structuredClone(receipt),
+        tinker_account_binding_ceremony_receipt_sha256:
+          `sha256:${"0".repeat(64)}`,
+      }),
+      /Tinker account-binding ceremony receipt must be a nonzero canonical SHA-256 digest/,
+    );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -355,6 +458,44 @@ test("validator rejects raw descriptor hash drift against topology", async () =>
   }
 });
 
+test("validator rejects account-binding receipt omission or topology substitution", async () => {
+  const missing = await buildFixture();
+  try {
+    await unlink(path.join(
+      missing.releaseDirectory,
+      "tinker-account-binding-ceremony.receipt.json",
+    ));
+    await assert.rejects(
+      validateCanonicalGeneratedCvmDescriptorSet({
+        releaseDirectory: missing.releaseDirectory,
+        expectedReleaseSha: RELEASE_SHA,
+      }),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(missing.root, { recursive: true, force: true });
+  }
+
+  const substituted = await buildFixture();
+  try {
+    substituted.topology.tinkerAccountBindingCeremonyReceipt.sha256 =
+      "f".repeat(64);
+    await writeFile(
+      path.join(substituted.releaseDirectory, "dnai-cvm-topology.json"),
+      canonical(substituted.topology),
+    );
+    await assert.rejects(
+      validateCanonicalGeneratedCvmDescriptorSet({
+        releaseDirectory: substituted.releaseDirectory,
+        expectedReleaseSha: RELEASE_SHA,
+      }),
+      /does not bind the exact Tinker account-binding ceremony receipt/,
+    );
+  } finally {
+    await rm(substituted.root, { recursive: true, force: true });
+  }
+});
+
 test("validator rejects foreign or mutable service image authority", async () => {
   const fixture = await buildFixture();
   try {
@@ -373,8 +514,15 @@ test("validator rejects foreign or mutable service image authority", async () =>
   }
 });
 
-test("validator rejects removal of Arena, Deal, or Compute runtime services", async () => {
-  for (const service of ["arena-worker", "deal-runtime", "compute-execution-worker"]) {
+test("validator rejects removal of Arena, Deal, Compute, Collaboration execution, or measured genesis services", async () => {
+  for (const service of [
+    "arena-worker",
+    "deal-runtime",
+    "compute-execution-worker",
+    "collaboration-execution-worker",
+    "mailbox-genesis",
+    "tinker-account-genesis",
+  ]) {
     const fixture = await buildFixture();
     try {
       await rewriteDescriptor(fixture, "main_runtime_cvm", (document) => {
@@ -474,7 +622,7 @@ test("validator rejects a release manifest for any other source SHA", async () =
   }
 });
 
-test("tracked-source reproduction requires byte-identical regeneration of all eleven files", async () => {
+test("tracked-source reproduction requires byte-identical regeneration of all twelve files", async () => {
   const fixture = await buildFixture();
   try {
     const copyingRunner = async ({ outputDirectory, releaseDirectory }) => {
@@ -492,8 +640,8 @@ test("tracked-source reproduction requires byte-identical regeneration of all el
       rendererRunner: copyingRunner,
     });
     assert.equal(receipt.status, "exact_tracked_source_reproduction");
-    assert.equal(receipt.generated_file_count, 11);
-    assert.equal(Object.keys(receipt.generated_file_sha256).length, 11);
+    assert.equal(receipt.generated_file_count, 12);
+    assert.equal(Object.keys(receipt.generated_file_sha256).length, 12);
 
     const foreignRoot = path.join(fixture.root, "foreign-repository");
     await mkdir(foreignRoot);

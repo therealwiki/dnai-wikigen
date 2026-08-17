@@ -8,6 +8,7 @@ from tinker_delegate.execution_policy_anchor import (
     AnchorProjectionRecord,
     ExecutionPolicyAnchorMismatch,
     ExecutionPolicyAnchorSnapshot,
+    ExecutionPolicyReleaseMarker,
     ZERO_ADDRESS,
     ZERO_BYTES32,
     compute_anchor_projection,
@@ -24,8 +25,18 @@ WRITER_RELEASE = "0x" + "e5" * 32
 class MemoryExecutionPolicyAnchorGateway:
     """Contract-state emulator; never selected by runtime configuration."""
 
-    def __init__(self, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        read_only: bool = False,
+        release_marker: ExecutionPolicyReleaseMarker | None = None,
+    ) -> None:
         self.read_only = read_only
+        # This class is test-only.  Absence of a marker explicitly opts tests
+        # into the historical zero-genesis model; production gateways never
+        # expose this escape hatch.
+        self.allow_zero_genesis_for_test = release_marker is None
+        self.release_marker = release_marker
         self.contract_address = ANCHOR_ADDRESS
         self.writer_address = WRITER_ADDRESS
         self.writer_release_commitment = WRITER_RELEASE
@@ -50,13 +61,20 @@ class MemoryExecutionPolicyAnchorGateway:
             contract_address=self.contract_address,
             writer_address=self.writer_address,
             writer_release_commitment=self.writer_release_commitment,
+            release_marker=self.release_marker,
         )
         resource = projection.resource_heads.get(
             resource_id_hash, (ZERO_BYTES32, 0)
         )
         decision_sequence = next(
             (
-                record.sequence
+                (
+                    record.chain_sequence
+                    or (
+                        (self.release_marker.sequence if self.release_marker else 0)
+                        + record.sequence
+                    )
+                )
                 for record in self.records
                 if record.decision_hash == decision_hash
             ),
@@ -114,8 +132,14 @@ class MemoryExecutionPolicyAnchorGateway:
             contract_address=self.contract_address,
             writer_address=self.writer_address,
             writer_release_commitment=self.writer_release_commitment,
+            release_marker=self.release_marker,
         )
-        if current != prefix or record.sequence != len(self.records) + 1:
+        target_sequence = prefix.sequence + 1
+        if (
+            current != prefix
+            or record.sequence != len(self.records) + 1
+            or record.chain_sequence not in (0, target_sequence)
+        ):
             raise ExecutionPolicyAnchorMismatch("fake anchor CAS mismatch")
         self.records.append(record)
         return self.finalized_snapshot(

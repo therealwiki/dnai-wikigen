@@ -46,7 +46,7 @@ import {
 import {
   normalizePhalaSevenCvmReleaseVerificationAuthority,
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 const CHAIN_ID = 84_532;
 const PLANS = new WeakMap();
 const PLAN_EXPECTATIONS = new WeakMap();

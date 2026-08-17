@@ -29,7 +29,68 @@ def is_utc_timestamp:
 def zero_address: "0x0000000000000000000000000000000000000000";
 def zero_bytes32: "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+def expected_phase_functions($releasePhase):
+  if $releasePhase == 1 then
+    [
+      "proposeComposeAndEvaluatorPolicySet(bytes32,bytes32[3])",
+      "proposeResultVerifier(address)",
+      "proposeAttestationBinding(address,bytes32)"
+    ]
+  elif $releasePhase == 2 then
+    [
+      "activateComposeAndEvaluatorPolicySet(bytes32,bytes32[3])",
+      "activateResultVerifier()",
+      "freezeResultVerifier()",
+      "activateAttestationBinding()",
+      "freezeAttestationBinding()",
+      "proposeTeeIdentity(address,bytes32)"
+    ]
+  elif $releasePhase == 3 then
+    [
+      "activateTeeIdentity(address)",
+      "freezeComposeAndEvaluatorPolicySets()",
+      "freezeTeeIdentityAdditions()",
+      "proposeDeveloper(address)"
+    ]
+  else []
+  end;
+
+def valid_recorded_operator_transactions($entry; $operator; $room):
+  if $entry.phase < 4 then
+    ($entry.operatorTransactions | type) == "array"
+    and ($entry.operatorTransactions | length)
+      == (expected_phase_functions($entry.phase) | length)
+    and $entry.operatorTransactionCount == ($entry.operatorTransactions | length)
+    and ($entry.operatorTransactionsSha256 | is_sha256_digest)
+    and ([$entry.operatorTransactions[].sequence]
+      == [range(0; ($entry.operatorTransactions | length))])
+    and ([$entry.operatorTransactions[].functionSignature]
+      == expected_phase_functions($entry.phase))
+    and ([$entry.operatorTransactions[].transactionHash] | unique | length)
+      == ($entry.operatorTransactions | length)
+    and all($entry.operatorTransactions[];
+      (.transactionHash | is_tx_hash)
+      and ((.sender // "") | ascii_downcase) == ($operator | ascii_downcase)
+      and ((.target // "") | ascii_downcase) == ($room | ascii_downcase)
+      and (.calldataSha256 | is_sha256_digest)
+      and .receiptStatus == "success"
+      and (.blockNumber | is_safe_uint)
+      and .blockNumber > 0
+      and (.blockHash | is_nonzero_bytes32)
+    )
+    and (($entry.operatorTransactions[-1].transactionHash // "") | ascii_downcase)
+      == (($entry.transactionHash // "") | ascii_downcase)
+    and $entry.operatorTransactions[-1].blockNumber == $entry.blockNumber
+  else
+    $entry.operatorTransactionCount == 0
+    and $entry.operatorTransactions == []
+    and $entry.operatorTransactionsSha256 == null
+  end;
+
 . as $root
+| (.freshDeployment.contractSuite.deploymentIntentSha256 // null) as $deploymentIntentSha256
+| (.contracts.diligenceRoom.deploymentTx // null) as $diligenceRoomDeploymentTx
+| (.diligenceReleaseHistory // []) as $releaseHistory
 | require(type == "object"; "deployment ledger must be a JSON object")
 | require((.network | type) == "object" and .network.chainId == $chainId;
     "deployment ledger chainId mismatch")
@@ -41,6 +102,12 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     "release chainId must be Base Sepolia")
 | require(($roomAddress | is_address) and ($roomAddress | ascii_downcase) != zero_address;
     "DiligenceRoom address is invalid")
+| require(($deploymentOperator | is_address)
+    and ($deploymentOperator | ascii_downcase) != zero_address;
+    "deployment operator is invalid")
+| require(($governanceController | is_address)
+    and ($governanceController | ascii_downcase) != zero_address;
+    "DiligenceRoom governance controller is invalid")
 | require(($runtimeCodeHash | is_nonzero_bytes32);
     "DiligenceRoom runtime code hash is invalid")
 | require(($sourceCommit | is_source_commit);
@@ -49,7 +116,33 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     "review envelope hash is invalid")
 | require(($finalAuthoritySha256 | is_sha256_digest);
     "final authority hash is invalid")
-| require(($phase | is_safe_uint) and ($phase == 1 or $phase == 2 or $phase == 3);
+| require(($deploymentIntentSha256 | is_sha256_digest);
+    "deployment intent lineage hash is invalid")
+| require(($deploymentIntentSha256Expected | is_sha256_digest)
+    and $deploymentIntentSha256 == $deploymentIntentSha256Expected;
+    "deployment ledger does not match the reviewed deployment intent")
+| require(($diligenceRoomDeploymentTx | is_tx_hash);
+    "DiligenceRoom deployment transaction lineage is invalid")
+| require(
+    (.freshDeployment.contractSuite.broadcastTransactions | type) == "array"
+    and ((.freshDeployment.contractSuite.broadcastTransactions[0].transactionHash // "")
+      | ascii_downcase) == ($diligenceRoomDeploymentTx | ascii_downcase)
+    and .freshDeployment.contractSuite.broadcastTransactions[0].sequence == 0
+    and .freshDeployment.contractSuite.broadcastTransactions[0].contractKey
+      == "diligenceRoom"
+    and .freshDeployment.contractSuite.broadcastTransactions[0].contractName
+      == "DiligenceRoom"
+    and .freshDeployment.contractSuite.broadcastTransactions[0].transactionType
+      == "CREATE"
+    and .freshDeployment.contractSuite.broadcastTransactions[0].functionSignature
+      == "constructor(bool,address)"
+    and ((.freshDeployment.contractSuite.broadcastTransactions[0].transactionFrom // "")
+      | ascii_downcase) == ($deploymentOperator | ascii_downcase)
+    and ((.freshDeployment.contractSuite.broadcastTransactions[0].receiptContractAddress // "")
+      | ascii_downcase) == ($roomAddress | ascii_downcase);
+    "DiligenceRoom deployment transaction is not cross-bound to fresh broadcast evidence")
+| require(($phase | is_safe_uint)
+    and ($phase == 1 or $phase == 2 or $phase == 3 or $phase == 4);
     "diligence release phase is invalid")
 | require(($tx | is_tx_hash); "release transaction hash is invalid")
 | require(($block | is_safe_uint) and $block > 0; "release block number is invalid")
@@ -79,11 +172,19 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     and ($resultVerifier | ascii_downcase) != ($teeIdentity | ascii_downcase)
     and ($attestationVerifier | ascii_downcase) != ($teeIdentity | ascii_downcase);
     "diligence signer and TEE roles must be distinct")
+| require(
+    ([$deploymentOperator, $governanceController, $roomAddress, $resultVerifier,
+      $attestationVerifier, $teeIdentity]
+      | map(ascii_downcase) | unique | length) == 6;
+    "diligence governance, operator, room, verifier, and TEE roles must be distinct")
 | require(($attestationPolicyHash | is_nonzero_bytes32);
     "diligence attestation policy hash is invalid")
 | require(($activeResultVerifier | is_address)
     and ($pendingResultVerifier | is_address);
     "result verifier post-state is invalid")
+| require(($activeDeveloper | is_address)
+    and ($pendingDeveloper | is_address);
+    "developer governance post-state is invalid")
 | require(($activeAttestationVerifier | is_address)
     and ($pendingAttestationVerifier | is_address);
     "attestation verifier post-state is invalid")
@@ -105,7 +206,10 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     and ($pendingResultVerifierActivatesAt | is_safe_uint)
     and ($pendingEvaluatorPolicy1ActivatesAt | is_safe_uint)
     and ($pendingEvaluatorPolicy2ActivatesAt | is_safe_uint)
-    and ($pendingEvaluatorPolicy3ActivatesAt | is_safe_uint);
+    and ($pendingEvaluatorPolicy3ActivatesAt | is_safe_uint)
+    and ($pendingDeveloperActivatesAt | is_safe_uint)
+    and ($developerTransferDelaySeconds | is_safe_uint)
+    and $developerTransferDelaySeconds == 172800;
     "numeric diligence post-state is invalid")
 | require(($composeFrozen | type) == "boolean"
     and ($teeFrozen | type) == "boolean"
@@ -120,11 +224,75 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     elif $phase == 2 then
       $status == "deployed_diligence_tee_identity_pending_timelock"
       and $policyState == "fail_closed_pending_tee_identity_timelock"
+    elif $phase == 3 then
+      $status == "deployed_exact_diligence_release_policy_frozen_pending_governance_timelock"
+      and $policyState == "fail_closed_exact_policy_pending_governance_acceptance"
     else
       $status == "deployed_exact_diligence_release_policy_frozen_active"
       and $policyState == "exact_timelocked_diligence_release_policy_frozen_active"
     end;
     "diligence release status does not match the phase")
+| require(
+    if $phase < 4 then
+      $governanceAcceptanceEvidenceMode == "not_applicable"
+      and $governanceAcceptanceEvidenceClaim == "operator_forge_broadcast_receipt"
+      and $finalizedThroughBlock == 0
+    elif $governanceAcceptanceEvidenceMode == "eoa_direct_call" then
+      $governanceAcceptanceEvidenceClaim
+        == "finalized_direct_eoa_call_event_and_state"
+      and ($finalizedThroughBlock | is_safe_uint)
+      and $finalizedThroughBlock >= $block
+    else
+      $governanceAcceptanceEvidenceMode == "contract_event_and_state"
+      and $governanceAcceptanceEvidenceClaim
+        == "finalized_contract_controller_event_and_state_no_trace_claim"
+      and ($finalizedThroughBlock | is_safe_uint)
+      and $finalizedThroughBlock >= $block
+    end;
+    "governance acceptance evidence mode, claim, or finality is invalid")
+| require(
+    if $phase < 4 then
+      ($operatorTransactions | type) == "array"
+      and ($operatorTransactions | length)
+        == (expected_phase_functions($phase) | length)
+      and ($operatorTransactionsSha256 | is_sha256_digest)
+      and ([$operatorTransactions[].sequence]
+        == [range(0; ($operatorTransactions | length))])
+      and ([$operatorTransactions[].functionSignature]
+        == expected_phase_functions($phase))
+      and ([$operatorTransactions[].transactionHash] | unique | length)
+        == ($operatorTransactions | length)
+      and all($operatorTransactions[];
+        (keys) == [
+          "blockHash",
+          "blockNumber",
+          "calldataSha256",
+          "functionSignature",
+          "receiptStatus",
+          "sender",
+          "sequence",
+          "target",
+          "transactionHash"
+        ]
+        and (.transactionHash | is_tx_hash)
+        and ((.sender // "") | ascii_downcase)
+          == ($deploymentOperator | ascii_downcase)
+        and ((.target // "") | ascii_downcase)
+          == ($roomAddress | ascii_downcase)
+        and (.calldataSha256 | is_sha256_digest)
+        and .receiptStatus == "success"
+        and (.blockNumber | is_safe_uint)
+        and .blockNumber > 0
+        and (.blockHash | is_nonzero_bytes32)
+      )
+      and ($operatorTransactions[-1].transactionHash | ascii_downcase)
+        == ($tx | ascii_downcase)
+      and $operatorTransactions[-1].blockNumber == $block
+    else
+      $operatorTransactions == []
+      and $operatorTransactionsSha256 == null
+    end;
+    "ordered operator transaction evidence is incomplete or inconsistent")
 | require((.contracts.diligenceRoom.address | type) == "string"
     and (.contracts.diligenceRoom.address | ascii_downcase) == ($roomAddress | ascii_downcase);
     "deployment ledger DiligenceRoom address mismatch")
@@ -134,22 +302,57 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
 | require(.contracts.diligenceRoom.sourceCommit == $sourceCommit
     and .freshDeployment.contractSuite.sourceCommit == $sourceCommit;
     "deployment ledger release source commit mismatch")
-| require((.diligenceReleaseHistory // []) | type == "array";
+| require((($root.contracts.diligenceRoom.initialDeveloper // "") | ascii_downcase)
+    == ($deploymentOperator | ascii_downcase);
+    "deployment ledger initial DiligenceRoom developer mismatch")
+| require((($root.contracts.diligenceRoom.releaseGovernanceController // "") | ascii_downcase)
+    == ($governanceController | ascii_downcase)
+    and (($root.contracts.diligenceRoom.protocolFeeRecipient // "") | ascii_downcase)
+      == ($governanceController | ascii_downcase);
+    "deployment ledger immutable DiligenceRoom controller or fee recipient mismatch")
+| require(($releaseHistory | type) == "array";
     "diligenceReleaseHistory must be an array")
-| [(.diligenceReleaseHistory // [])[]
-    | select(
-        .chainId == $chainId
-        and ((.diligenceRoomAddress // "") | ascii_downcase) == ($roomAddress | ascii_downcase)
-        and ((.runtimeCodeHash // "") | ascii_downcase) == ($runtimeCodeHash | ascii_downcase)
-        and .sourceCommit == $sourceCommit
-        and .reviewEnvelopeSha256 == $reviewEnvelopeSha256
-        and .finalAuthoritySha256 == $finalAuthoritySha256
-      )
-    | .phase] as $recordedPhases
-| require($recordedPhases == [range(1; $phase)];
+| require(($releaseHistory | length) == ($phase - 1)
+    and [$releaseHistory[].phase] == [range(1; $phase)];
     "diligence release history is missing, duplicated, or out of order")
+| require(all($releaseHistory[];
+    .kind == "diligence_exact_release_policy_phase"
+    and .chainId == $chainId
+    and ((.diligenceRoomAddress // "") | ascii_downcase)
+      == ($roomAddress | ascii_downcase)
+    and ((.runtimeCodeHash // "") | ascii_downcase)
+      == ($runtimeCodeHash | ascii_downcase)
+    and .sourceCommit == $sourceCommit
+    and (.reviewEnvelopeSha256 | is_sha256_digest)
+    and .finalAuthoritySha256 == $finalAuthoritySha256
+    and .deploymentIntentSha256 == $deploymentIntentSha256
+    and ((.diligenceRoomDeploymentTx // "") | ascii_downcase)
+      == ($diligenceRoomDeploymentTx | ascii_downcase)
+    and ((.deploymentOperator // "") | ascii_downcase)
+      == ($deploymentOperator | ascii_downcase)
+    and ((.governanceController // "") | ascii_downcase)
+      == ($governanceController | ascii_downcase)
+    and valid_recorded_operator_transactions(.; $deploymentOperator; $roomAddress)
+  ); "diligence release history immutable lineage mismatch")
 | require((.contracts.diligenceRoom.latestReleasePhase // 0) == ($phase - 1);
     "current DiligenceRoom release phase is out of order")
+| require(
+    if $phase == 1 or $phase == 2 then
+      ($activeDeveloper | ascii_downcase) == ($deploymentOperator | ascii_downcase)
+      and ($pendingDeveloper | ascii_downcase) == zero_address
+      and $pendingDeveloperActivatesAt == 0
+    elif $phase == 3 then
+      ($activeDeveloper | ascii_downcase) == ($deploymentOperator | ascii_downcase)
+      and ($pendingDeveloper | ascii_downcase) == ($governanceController | ascii_downcase)
+      and $pendingDeveloperActivatesAt == ($blockTimestamp + $developerTransferDelaySeconds)
+    else
+      ($activeDeveloper | ascii_downcase) == ($governanceController | ascii_downcase)
+      and ($pendingDeveloper | ascii_downcase) == zero_address
+      and $pendingDeveloperActivatesAt == 0
+      and (($root.diligenceReleaseHistory[-1].postState.pendingDeveloperActivatesAt // 0)
+        <= $blockTimestamp)
+    end;
+    "developer governance post-state is inconsistent with the release phase")
 | require(
     if $phase == 1 then
       $approvedComposeCount == 0 and $approvedTeeCount == 0
@@ -235,6 +438,23 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
       else [{teeIdentity: $teeIdentity, composeHash: $pendingTeeComposeHash, activatesAt: $pendingTeeActivatesAt}]
       end
     ),
+    developer: $activeDeveloper,
+    pendingDeveloper: $pendingDeveloper,
+    pendingDeveloperActivatesAt: $pendingDeveloperActivatesAt,
+    developerTransferDelaySeconds: $developerTransferDelaySeconds,
+    governanceController: $governanceController,
+    governanceHandoffStatus: (
+      if $phase < 3 then "not_staged"
+      elif $phase == 3 then "pending_delayed_acceptance_fail_closed"
+      else "accepted_complete"
+      end
+    ),
+    governanceAcceptanceEvidenceMode: $governanceAcceptanceEvidenceMode,
+    governanceAcceptanceEvidenceClaim: $governanceAcceptanceEvidenceClaim,
+    governanceAcceptanceFinalizedThroughBlock: $finalizedThroughBlock,
+    latestReleaseOperatorTransactionCount: ($operatorTransactions | length),
+    latestReleaseOperatorTransactionsSha256: $operatorTransactionsSha256,
+    currentOperatorControlled: ($phase < 4),
     resultVerifier: $activeResultVerifier,
     pendingResultVerifier: $pendingResultVerifier,
     pendingResultVerifierActivatesAt: $pendingResultVerifierActivatesAt,
@@ -279,6 +499,8 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     diligenceRoomAddress: $roomAddress,
     runtimeCodeHash: $runtimeCodeHash,
     sourceCommit: $sourceCommit,
+    deploymentIntentSha256: $deploymentIntentSha256,
+    diligenceRoomDeploymentTx: $diligenceRoomDeploymentTx,
     reviewEnvelopeSha256: $reviewEnvelopeSha256,
     finalAuthoritySha256: $finalAuthoritySha256,
     phase: $phase,
@@ -288,6 +510,14 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     recordedAt: $recordedAt,
     status: $status,
     policyState: $policyState,
+    governanceAcceptanceEvidenceMode: $governanceAcceptanceEvidenceMode,
+    governanceAcceptanceEvidenceClaim: $governanceAcceptanceEvidenceClaim,
+    governanceAcceptanceFinalizedThroughBlock: $finalizedThroughBlock,
+    operatorTransactionCount: ($operatorTransactions | length),
+    operatorTransactionsSha256: $operatorTransactionsSha256,
+    operatorTransactions: $operatorTransactions,
+    deploymentOperator: $deploymentOperator,
+    governanceController: $governanceController,
     teeIdentity: $teeIdentity,
     composeHash: $composeHash,
     resultVerifier: $resultVerifier,
@@ -296,6 +526,10 @@ def zero_bytes32: "0x00000000000000000000000000000000000000000000000000000000000
     attestationVerifier: $attestationVerifier,
     attestationReleasePolicyHash: $attestationPolicyHash,
     postState: {
+      developer: $activeDeveloper,
+      pendingDeveloper: $pendingDeveloper,
+      pendingDeveloperActivatesAt: $pendingDeveloperActivatesAt,
+      developerTransferDelaySeconds: $developerTransferDelaySeconds,
       approvedComposeCount: $approvedComposeCount,
       approvedTeeIdentityCount: $approvedTeeCount,
       pendingComposeCount: $pendingComposeCount,

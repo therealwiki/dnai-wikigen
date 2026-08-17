@@ -8,18 +8,35 @@ Endpoints:
   POST /auth/wallet/token         — exchange one-time signature for scoped token
   POST /auth/arena/challenge      — issue challenge-version-bound personal-sign challenge
   POST /auth/arena/token          — exchange signature for exact Arena session token
+  POST /auth/collaboration/challenge — issue Collaboration Console personal-sign challenge
+  POST /auth/collaboration/token  — exchange signature for collaboration-only wallet token
+  POST /collaboration/rooms       — create a durable commitment-only multi-owner room
+  GET  /collaboration/rooms       — list wallet-participant collaboration rooms
+  GET  /collaboration/rooms/{id}  — inspect one participant-scoped room
+  POST /collaboration/rooms/{id}/invitations/* — accept, decline, or cancel an invitation
+  POST /collaboration/rooms/{id}/consent-challenges — issue exact owner-role action
+  POST /collaboration/rooms/{id}/consents — verify and persist owner-role consent
+  POST /collaboration/rooms/{id}/query-proposals — replace the exact current query
+  POST /collaboration/rooms/{id}/query-grant-challenges — issue exact-query owner action
+  POST /collaboration/rooms/{id}/query-grants — verify and persist exact-query grant
+  POST /collaboration/rooms/{id}/runs — record a non-dispatched joint-consent snapshot
+  POST /collaboration/rooms/{id}/archive — archive a quiescent room for bounded retention
+  POST /auth/review/challenge     — issue release-bound reviewer decision challenge
   POST /arena/challenges/{id}/versions/{version}/agent-credentials — issue encrypted agent token
   GET  /arena/challenges/{id}/versions/{version}/agent-credentials — wallet-owned credential list
   GET  /arena/candidate-encryption-contract — current recipient + browser crypto contract
   GET  /arena/challenges          — immutable bounded challenge catalog
   GET  /arena/challenges/{id}/versions/{version} — exact public manifest
   POST /arena/challenges/{id}/versions/{version}/submissions — browser-ciphertext ingress
-  GET  /arena/challenges/{id}/versions/{version}/queue — modeled queue projection
+  GET  /arena/challenges/{id}/versions/{version}/queue — bounded per-row provenance projection
   GET  /arena/challenges/{id}/versions/{version}/leaderboard — bounded Ladder ranking
   GET  /arena/challenges/{id}/versions/{version}/submissions/mine — wallet-owned page
   GET  /arena/challenges/{id}/versions/{version}/worker-capability — bounded presence
   GET  /arena/submissions/{submission_id} — public bounded submission
   POST /compute/projects/{project_id}/dispatch-intents — exact-asset metadata-only intent
+  GET  /compute/projects/{project_id}/dispatch-intents/{job_reference} — bounded exact-asset status
+  POST /compute/projects/{project_id}/dispatch-intents/{job_reference}/cancel — pre-start journal cancellation
+  GET  /compute/projects/{project_id}/dispatch-intents/{job_reference}/usage-receipt — settled exact-asset evidence
   POST /compute/projects/{project_id}/jobs/{job_id}/cancel — cancel an undispatched queued job
   POST /auth/reauth               — bounded Tinker OTP re-auth, disabled unless explicitly enabled
   GET  /browser/readiness         — bounded browser-control readiness probe, disabled unless explicitly enabled
@@ -27,11 +44,12 @@ Endpoints:
   GET  /billing/balance           — authenticated bounded Tinker balance band
   GET  /billing/payment-method-status — bounded card-on-file status
   GET  /billing/account-access-status — bounded account access/billing-gate state
-  POST /retention/sweep              — destroy expired retained artifacts (bounded)
+  POST /retention/sweep              — expire retained ciphertext custody (bounded)
   GET  /source/grants                — bounded source-controller grant manifest
   POST /verify/reward-run            — verify a private-reward run packet (bounded verdict)
   POST /verify/reward-mechanism      — aggregate mechanism audit: run + dataset + canary (bounded)
   GET  /review/queue                 — bounded human-review queue (optional ?routed_role=)
+  POST /review/internal/enqueue      — runtime-authenticated bounded queue ingress
   POST /review/decide                — record a reviewer decision (fail-closed, persisted)
   POST /review/expire                — expire stale pending tickets (persisted sweep)
   GET  /billing/funding-policy    — bounded active funding mode
@@ -55,6 +73,15 @@ Endpoints:
   POST /tinker/proxy/token        — encrypted scoped proxy JWT issuance
   GET  /tinker/proxy/tokens       — bounded proxy token audit records
   POST /tinker/proxy/token/revoke — revoke proxy token by JWT-id hash
+  POST /tinker/customer/accounts/requests — request wallet-owned account binding
+  GET  /tinker/customer/accounts/current — recover wallet-owned account state
+  POST /tinker/customer/accounts/{id}/credentials — issue encrypted training authority
+  GET  /tinker/customer/accounts/{id}/credentials — page bounded credential metadata
+  POST /tinker/customer/accounts/{id}/credentials/{credential_id}/rotate — replace authority
+  POST /tinker/customer/accounts/{id}/credentials/{credential_id}/revoke — revoke authority
+  POST /tinker/customer/accounts/{id}/revoke — cancel/revoke wallet-owned account
+  POST /tinker/customer/reservations — metadata-only training authority reservation
+  POST /tinker/customer/train     — at-most-once customer-authorized training
   POST /tinker/smoke              — opt-in bounded real SDK smoke test
   POST /deal/chain-event       — bounded chain event audit marker (internal)
   POST /deal/{deal_id}/artifact/encrypted — upload seller's encrypted artifact
@@ -62,6 +89,7 @@ Endpoints:
   GET  /deal/{deal_id}/result     — get bounded evaluation result
   GET  /deals                     — list active deals
   POST /deal/{deal_id}/evaluate   — trigger evaluation (internal)
+  POST /deal/{deal_id}/chain-reorg — quarantine orphan-chain private state (internal)
   POST /deal/{deal_id}/resolve    — notify deal resolution (internal)
 """
 import hashlib
@@ -75,11 +103,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from cryptography.exceptions import InvalidTag
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from tinker_delegate.api_key_store import resolve_api_key
 from tinker_delegate.artifacts import (
@@ -158,6 +186,7 @@ from tinker_delegate.wallet_auth import (
 from tinker_delegate.arena_auth import (
     ARENA_AGENT_MANAGE_SCOPE,
     ARENA_AGENT_SCOPES,
+    ARENA_OWNER_MANAGE_SCOPE,
     ARENA_OWNER_READ_SCOPE,
     ARENA_SUBMIT_SCOPE,
     ArenaAuthError,
@@ -166,6 +195,7 @@ from tinker_delegate.arena_auth import (
     ArenaWalletAuthService,
     ArenaWalletChallengeStore,
     arena_agent_store_integrity_key,
+    arena_store_integrity_key,
     classify_arena_token,
     encrypt_arena_agent_credential_token,
     issue_arena_agent_credential_token,
@@ -185,10 +215,28 @@ from tinker_delegate.compute_auth import (
     normalize_compute_scopes,
     verify_compute_credential_token,
 )
+from tinker_delegate.collaboration_auth import (
+    COLLABORATION_CONSOLE_SCOPE,
+    CollaborationAuthError,
+    CollaborationAuthUnavailable,
+    CollaborationChallengeCapacityError,
+    CollaborationWalletAuthService,
+    CollaborationWalletChallengeStore,
+    collaboration_store_integrity_key,
+)
 from tinker_delegate.wallet_challenge_limiter import (
     WalletChallengeAdmissionLimiter,
     WalletChallengePeerPolicy,
     WalletChallengeRateLimited,
+)
+from tinker_delegate.review_authority import (
+    ReviewAuthorityError,
+    ReviewAuthorityService,
+    ReviewAuthorityUnavailable,
+    ReviewChallengeCapacityError,
+    ReviewChallengeStore,
+    ReviewQueueReadLimiter,
+    ReviewQueueReadRateLimited,
 )
 
 app = FastAPI(
@@ -221,6 +269,116 @@ async def _sanitized_request_validation_error(_request, exc: RequestValidationEr
     )
 
 settings = Settings()
+
+
+def _arena_legacy_internal_api_available() -> bool:
+    """Return true only for an explicit non-dstack development process."""
+
+    return (
+        getattr(settings, "arena_legacy_internal_api_enabled", False) is True
+        and not is_dstack_enabled()
+    )
+
+
+def _require_arena_legacy_internal_api() -> None:
+    if not _arena_legacy_internal_api_available():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found",
+        )
+
+
+@app.middleware("http")
+async def _arena_legacy_internal_api_gate(request: Request, call_next):
+    """Hide legacy HTTP queue mutation routes before body validation.
+
+    The production worker mutates the authenticated store directly while
+    holding its process lease. These compatibility routes exist solely for
+    explicit local-development tests and can never be enabled in dstack.
+    """
+
+    path = request.url.path
+    if (
+        (path == "/arena/internal" or path.startswith("/arena/internal/"))
+        and not _arena_legacy_internal_api_available()
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": "Not found"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _collaboration_feature_gate(request: Request, call_next):
+    """Close the whole Collaboration namespace before request validation.
+
+    Keeping this check at the ASGI boundary ensures a disabled deployment
+    cannot distinguish valid from invalid Collaboration payloads and cannot
+    reach auth, key resolution, store initialization, or route state.
+    """
+
+    path = request.url.path
+    collaboration_path = (
+        path == "/auth/collaboration"
+        or path.startswith("/auth/collaboration/")
+        or path == "/collaboration"
+        or path.startswith("/collaboration/")
+    )
+    if collaboration_path and settings.collaboration_enabled is not True:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "Collaboration backend is disabled"},
+            headers={"Cache-Control": "no-store"},
+        )
+    collaboration_execution_path = (
+        path == "/collaboration/execution-capability"
+        or
+        path == "/collaboration/execution-plans"
+        or path.startswith("/collaboration/execution-plans/")
+        or path == "/collaboration/executions"
+        or path.startswith("/collaboration/executions/")
+        or (
+            path.startswith("/collaboration/runs/")
+            and path.endswith("/execution-plans")
+        )
+    )
+    if (
+        collaboration_execution_path
+        and getattr(settings, "collaboration_execution_enabled", False)
+        is not True
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "Collaboration execution is disabled"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _tinker_customer_no_store(request: Request, call_next):
+    """Keep customer authority, capsules, and receipts out of shared caches."""
+
+    response = await call_next(request)
+    path = request.url.path
+    if (
+        path == "/tinker/customer"
+        or path.startswith("/tinker/customer/")
+        or path == "/tinker/internal/customer"
+        or path.startswith("/tinker/internal/customer/")
+    ):
+        # The body-limit boundary intentionally constructs minimal responses
+        # with immutable raw-header tuples.  Normalize that representation
+        # before applying this namespace-wide cache policy.
+        if isinstance(response.raw_headers, tuple):
+            response.raw_headers = list(response.raw_headers)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 configure_cors(app, settings)
 disable_core_dumps()
 
@@ -233,8 +391,19 @@ _arena_wallet_challenges = ArenaWalletChallengeStore(
 _compute_wallet_challenges = ComputeWalletChallengeStore(
     max_pending=max(1, int(settings.compute_wallet_auth_max_pending_challenges))
 )
+_collaboration_wallet_challenges = CollaborationWalletChallengeStore(
+    max_pending=max(
+        1,
+        int(settings.collaboration_wallet_auth_max_pending_challenges),
+    )
+)
+_review_challenges = ReviewChallengeStore(
+    max_pending=max(1, int(settings.review_authority_max_pending_challenges))
+)
 _wallet_challenge_limiter = WalletChallengeAdmissionLimiter.from_settings(settings)
 _wallet_challenge_peer_policy = WalletChallengePeerPolicy.from_settings(settings)
+_review_queue_read_limiter = ReviewQueueReadLimiter.from_settings(settings)
+_review_queue_repository_lock = threading.RLock()
 _arena_store_instance = None
 _arena_store_instance_path = ""
 _arena_agent_store_instance = None
@@ -247,6 +416,20 @@ _compute_dispatch_journal_instance = None
 _compute_dispatch_journal_instance_identity: tuple[str, str] | None = None
 _compute_workload_ingress_instance = None
 _compute_workload_ingress_instance_identity: tuple[str, ...] | None = None
+_collaboration_store_instance = None
+_collaboration_store_instance_identity: tuple[str, ...] | None = None
+_collaboration_execution_journal_instance = None
+_collaboration_execution_journal_instance_identity: tuple[str, str] | None = None
+_collaboration_execution_coordinator_instance = None
+_collaboration_execution_coordinator_identity: tuple[str, ...] | None = None
+_collaboration_royalty_settlement_store_instance = None
+_collaboration_royalty_settlement_store_instance_identity: tuple[str, str] | None = None
+_tinker_customer_adapter_instance = None
+_tinker_customer_adapter_identity: tuple[str, ...] | None = None
+_tinker_customer_adapter_lock = threading.RLock()
+# Tests may inject the complete adapter. There is deliberately no environment
+# or request field that can select this override in a deployed process.
+_tinker_customer_adapter_override = None
 _execution_policy_store_instance = None
 _execution_policy_store_instance_identity: tuple[str, str] | None = None
 _execution_policy_anchor_coordinator_instance = None
@@ -337,8 +520,646 @@ def _compute_wallet_auth_service() -> ComputeWalletAuthService:
     return ComputeWalletAuthService(settings, _compute_wallet_challenges)
 
 
+def _require_collaboration_enabled() -> None:
+    """Fail before any Collaboration key, store, auth, or state access."""
+
+    if settings.collaboration_enabled is not True:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration backend is disabled",
+        )
+
+
+def _collaboration_wallet_auth_service() -> CollaborationWalletAuthService:
+    _require_collaboration_enabled()
+    # A live surface must prove that its release-bound monotonic authority is
+    # readable before issuing even a wallet challenge. This prevents the auth
+    # UI from appearing healthy while every authority read/mutation is blocked.
+    if is_dstack_enabled():
+        try:
+            _get_collaboration_store().rollback_status()
+        except Exception as exc:
+            _raise_collaboration_store_error(exc)
+    return CollaborationWalletAuthService(
+        settings,
+        _collaboration_wallet_challenges,
+    )
+
+
+def _get_collaboration_store():
+    """Return local modeled state or the live release-anchored authority."""
+
+    _require_collaboration_enabled()
+    global _collaboration_store_instance
+    global _collaboration_store_instance_identity
+
+    from tinker_delegate.collaboration_store import (
+        CollaborationStore,
+        CollaborationStoreCorruptError,
+    )
+    from tinker_delegate.collaboration_anchor import (
+        AnchoredCollaborationStore,
+        CollaborationAnchorError,
+        CollaborationRollbackError,
+        ExecutionPolicyCollaborationAnchor,
+        collaboration_authority_context_hash,
+    )
+
+    path = str(settings.collaboration_store_path or "").strip()
+    if not path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration durable store is not configured",
+        )
+    try:
+        integrity_key = collaboration_store_integrity_key(settings)
+    except CollaborationAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration store integrity key is unavailable",
+        ) from exc
+    live = is_dstack_enabled()
+    rollback_anchor = None
+    authority_context_hash = ""
+    coordinator = None
+    if live:
+        try:
+            authority_context_hash = collaboration_authority_context_hash(
+                settings
+            )
+            coordinator = _get_execution_policy_anchor_coordinator()
+            rollback_anchor = ExecutionPolicyCollaborationAnchor(
+                coordinator,
+                authority_context_hash=authority_context_hash,
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Collaboration rollback witness is unavailable",
+            ) from exc
+        except (CollaborationAnchorError, OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Collaboration rollback witness is unavailable",
+            ) from exc
+    identity = (
+        path,
+        hashlib.sha256(integrity_key).hexdigest(),
+        "release_anchored" if live else "local_non_monotonic",
+        authority_context_hash,
+        str(id(coordinator)) if coordinator is not None else "",
+    )
+    if (
+        _collaboration_store_instance is None
+        or _collaboration_store_instance_identity != identity
+    ):
+        try:
+            if live:
+                instance = AnchoredCollaborationStore(
+                    path,
+                    integrity_key=integrity_key,
+                    authority_context_hash=authority_context_hash,
+                    rollback_anchor=rollback_anchor,
+                )
+            else:
+                instance = CollaborationStore(
+                    path,
+                    integrity_key=integrity_key,
+                )
+        except (
+            CollaborationAnchorError,
+            CollaborationRollbackError,
+            CollaborationStoreCorruptError,
+            OSError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Collaboration rollback witness is unavailable"
+                    if live
+                    else "Collaboration durable store is unavailable"
+                ),
+            ) from exc
+        _collaboration_store_instance = instance
+        _collaboration_store_instance_identity = identity
+    return _collaboration_store_instance
+
+
+def _raise_collaboration_store_error(exc: Exception) -> None:
+    """Map store failures without exposing persistence or verifier internals."""
+
+    from tinker_delegate.collaboration_store import (
+        CollaborationAuthorizationError,
+        CollaborationCapacityError,
+        CollaborationConflictError,
+        CollaborationNotFoundError,
+        CollaborationStoreCorruptError,
+        CollaborationStoreError,
+    )
+
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, (CollaborationStoreCorruptError, OSError)):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration durable store is unavailable",
+        ) from exc
+    if isinstance(exc, CollaborationAuthorizationError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, CollaborationNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collaboration resource was not found",
+        ) from exc
+    if isinstance(exc, CollaborationConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, CollaborationCapacityError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration durable store capacity is reached",
+        ) from exc
+    if isinstance(exc, CollaborationStoreError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Collaboration operation is unavailable",
+    ) from exc
+
+
+def _require_collaboration_execution_enabled() -> None:
+    """Keep coordination live while failing the execution surface closed."""
+
+    _require_collaboration_enabled()
+    if getattr(settings, "collaboration_execution_enabled", False) is not True:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration execution is disabled",
+        )
+
+
+def _get_collaboration_execution_journal():
+    global _collaboration_execution_journal_instance
+    global _collaboration_execution_journal_instance_identity
+
+    from tinker_delegate.collaboration_execution import (
+        CollaborationExecutionJournal,
+        CollaborationExecutionJournalError,
+    )
+    from tinker_delegate.collaboration_execution_service import (
+        CollaborationExecutionServiceUnavailable,
+        collaboration_execution_integrity_key,
+    )
+
+    _require_collaboration_execution_enabled()
+    path = str(
+        getattr(settings, "collaboration_execution_journal_path", "") or ""
+    ).strip()
+    if not path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration execution journal is not configured",
+        )
+    try:
+        key = collaboration_execution_integrity_key(settings)
+        identity = (path, hashlib.sha256(key).hexdigest())
+        if (
+            _collaboration_execution_journal_instance is None
+            or _collaboration_execution_journal_instance_identity != identity
+        ):
+            _collaboration_execution_journal_instance = (
+                CollaborationExecutionJournal(path, integrity_key=key)
+            )
+            _collaboration_execution_journal_instance_identity = identity
+        return _collaboration_execution_journal_instance
+    except (
+        CollaborationExecutionJournalError,
+        CollaborationExecutionServiceUnavailable,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration execution journal is unavailable",
+        ) from exc
+
+
+def _get_collaboration_execution_coordinator():
+    global _collaboration_execution_coordinator_instance
+    global _collaboration_execution_coordinator_identity
+
+    from tinker_delegate.collaboration_execution_service import (
+        CollaborationExecutionCoordinator,
+        collaboration_execution_integrity_key,
+    )
+    from tinker_delegate.wallet_signature_verifier import (
+        wallet_signature_verifier_from_settings,
+    )
+
+    _require_collaboration_execution_enabled()
+    journal = _get_collaboration_execution_journal()
+    store = _get_collaboration_store()
+    key = collaboration_execution_integrity_key(settings)
+    identity = (
+        str(id(journal)),
+        str(id(store)),
+        hashlib.sha256(key).hexdigest(),
+        str(getattr(settings, "collaboration_execution_release_git_sha", "")),
+        str(
+            getattr(
+                settings,
+                "collaboration_execution_release_verification_sha256",
+                "",
+            )
+        ),
+        str(getattr(settings, "main_runtime_cvm_id", "")),
+        str(getattr(settings, "compute_vault_address", "")),
+        str(getattr(settings, "compute_vault_runtime_code_hash", "")),
+        str(getattr(settings, "compute_vault_compose_hash", "")),
+    )
+    if (
+        _collaboration_execution_coordinator_instance is None
+        or _collaboration_execution_coordinator_identity != identity
+    ):
+        _collaboration_execution_coordinator_instance = (
+            CollaborationExecutionCoordinator(
+                settings=settings,
+                collaboration_store=store,
+                execution_journal=journal,
+                integrity_key=key,
+                signature_verifier=wallet_signature_verifier_from_settings(
+                    settings
+                ),
+            )
+        )
+        _collaboration_execution_coordinator_identity = identity
+    return _collaboration_execution_coordinator_instance
+
+
+def _get_collaboration_royalty_settlement_store():
+    """Return the authenticated sponsor settlement control-plane journal."""
+
+    global _collaboration_royalty_settlement_store_instance
+    global _collaboration_royalty_settlement_store_instance_identity
+
+    from tinker_delegate.collaboration_royalty_settlement import (
+        CollaborationRoyaltySettlementStore,
+        CollaborationRoyaltySettlementStoreError,
+        collaboration_royalty_settlement_integrity_key,
+    )
+
+    _require_collaboration_execution_enabled()
+    path = str(
+        getattr(
+            settings,
+            "collaboration_royalty_settlement_store_path",
+            "",
+        )
+        or ""
+    ).strip()
+    if not path:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration Royalty settlement store is not configured",
+        )
+    try:
+        key = collaboration_royalty_settlement_integrity_key(settings)
+        identity = (path, hashlib.sha256(key).hexdigest())
+        if (
+            _collaboration_royalty_settlement_store_instance is None
+            or _collaboration_royalty_settlement_store_instance_identity
+            != identity
+        ):
+            _collaboration_royalty_settlement_store_instance = (
+                CollaborationRoyaltySettlementStore(
+                    path,
+                    integrity_key=key,
+                )
+            )
+            _collaboration_royalty_settlement_store_instance_identity = identity
+        return _collaboration_royalty_settlement_store_instance
+    except (CollaborationRoyaltySettlementStoreError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration Royalty settlement store is unavailable",
+        ) from exc
+
+
+def _raise_collaboration_royalty_settlement_error(exc: Exception) -> None:
+    """Map settlement failures without reflecting chain or journal internals."""
+
+    from tinker_delegate.collaboration_royalty_settlement import (
+        CollaborationRoyaltySettlementConflict,
+        CollaborationRoyaltySettlementError,
+        CollaborationRoyaltySettlementStoreError,
+    )
+    from tinker_delegate.execution_policy_anchor import ExecutionPolicyAnchorError
+
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(
+        exc,
+        (
+            CollaborationRoyaltySettlementStoreError,
+            ExecutionPolicyAnchorError,
+            OSError,
+        ),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration Royalty settlement authority is unavailable",
+        ) from exc
+    if isinstance(exc, CollaborationRoyaltySettlementConflict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, CollaborationRoyaltySettlementError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    _raise_collaboration_execution_error(exc)
+
+
+def _collaboration_royalty_settlement_authority(
+    *,
+    execution_id: str,
+    requester_address: str,
+) -> dict[str, Any]:
+    """Bind sponsor access to an authenticated, result-ready execution."""
+
+    from tinker_delegate.collaboration_royalty_settlement import (
+        settlement_execution_authority,
+    )
+
+    execution = _get_collaboration_execution_journal().public_get(execution_id)
+    _get_collaboration_store().room_projection(
+        execution["room_id"],
+        requester_address,
+    )
+    authority = settlement_execution_authority(execution)
+    if authority["sponsor_address"] != requester_address:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the execution sponsor may manage Royalty settlement",
+        )
+    return authority
+
+
+def _collaboration_royalty_wallet_plan(
+    *,
+    record: dict[str, Any] | None,
+    now: int,
+) -> dict[str, Any] | None:
+    """Expose calldata only while the exact anchor remains finalized/current."""
+
+    if record is None or record["state"] != "plan_ready":
+        return None
+    expires_at = record["authorization_expires_at"]
+    if expires_at is None:
+        return None
+    if expires_at - now < 30:
+        return None
+    return _get_execution_policy_anchor_coordinator().finalized_royalty_wallet_plan(
+        plan_commitment=record["plan_commitment"],
+        now=now,
+    )
+
+
+def _raise_collaboration_execution_error(exc: Exception) -> None:
+    from tinker_delegate.collaboration_execution import (
+        CollaborationExecutionAuthorityInvalidated,
+        CollaborationExecutionAuthorityUnavailable,
+        CollaborationExecutionConflict,
+        CollaborationExecutionError,
+        CollaborationExecutionJournalError,
+        CollaborationExecutionNotFound,
+    )
+    from tinker_delegate.collaboration_execution_service import (
+        CollaborationExecutionServiceUnavailable,
+    )
+    from tinker_delegate.collaboration_store import CollaborationStoreError
+    from tinker_delegate.wallet_signature_verifier import (
+        WalletSignatureError,
+        WalletSignatureUnavailable,
+    )
+
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, WalletSignatureError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Collaboration execution wallet signature is invalid",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            WalletSignatureUnavailable,
+            CollaborationExecutionServiceUnavailable,
+            CollaborationExecutionAuthorityUnavailable,
+            CollaborationExecutionJournalError,
+            OSError,
+        ),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration execution authority is unavailable",
+        ) from exc
+    if isinstance(exc, CollaborationExecutionNotFound):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Collaboration execution was not found",
+        ) from exc
+    if isinstance(
+        exc,
+        (CollaborationExecutionConflict, CollaborationExecutionAuthorityInvalidated),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, CollaborationStoreError):
+        _raise_collaboration_store_error(exc)
+    if isinstance(exc, CollaborationExecutionError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Collaboration execution operation is unavailable",
+    ) from exc
+
+
+def _review_authority_service() -> ReviewAuthorityService:
+    anchor_coordinator = None
+    if is_dstack_enabled():
+        try:
+            anchor_coordinator = _get_execution_policy_anchor_coordinator()
+        except HTTPException as exc:
+            raise ReviewAuthorityUnavailable(
+                "review rollback anchor is unavailable"
+            ) from exc
+    return ReviewAuthorityService(
+        settings,
+        _review_challenges,
+        repository_lock=_review_queue_repository_lock,
+        anchor_coordinator=anchor_coordinator,
+    )
+
+
+def _get_tinker_customer_adapter():
+    """Return the exact release-pinned customer lifecycle authority."""
+
+    global _tinker_customer_adapter_instance
+    global _tinker_customer_adapter_identity
+
+    if _tinker_customer_adapter_override is not None:
+        return _tinker_customer_adapter_override
+
+    local_store_key = str(
+        getattr(settings, "tinker_customer_store_integrity_key", "") or ""
+    )
+    local_credential_key = str(
+        getattr(settings, "tinker_customer_credential_signing_key", "") or ""
+    )
+    local_settlement_key = str(
+        getattr(settings, "tinker_customer_settlement_signing_key", "") or ""
+    )
+    identity = tuple(
+        str(value)
+        for value in (
+            getattr(settings, "tinker_customer_enabled", False),
+            getattr(settings, "tinker_customer_authority_path", ""),
+            getattr(settings, "tinker_customer_authority_sha256", ""),
+            getattr(settings, "tinker_customer_store_path", ""),
+            getattr(settings, "tinker_customer_store_integrity_key_path", ""),
+            hashlib.sha256(local_store_key.encode("utf-8")).hexdigest(),
+            getattr(settings, "tinker_customer_credential_key_path", ""),
+            hashlib.sha256(local_credential_key.encode("utf-8")).hexdigest(),
+            getattr(settings, "tinker_customer_settlement_key_path", ""),
+            hashlib.sha256(local_settlement_key.encode("utf-8")).hexdigest(),
+            settings.wallet_auth_rpc_url,
+            settings.wallet_auth_rpc_url_secondary,
+            settings.execution_policy_anchor_rpc_url,
+            settings.execution_policy_anchor_address,
+            settings.execution_policy_anchor_runtime_code_hash,
+            settings.execution_policy_anchor_writer_address,
+            settings.execution_policy_anchor_writer_release_commitment,
+            settings.release_authority_sha256,
+        )
+    )
+    with _tinker_customer_adapter_lock:
+        if (
+            _tinker_customer_adapter_instance is None
+            or _tinker_customer_adapter_identity != identity
+        ):
+            try:
+                from tinker_delegate.tinker_customer_runtime import (
+                    build_tinker_customer_adapter,
+                )
+
+                adapter = build_tinker_customer_adapter(
+                    settings,
+                    wallet_verifier=_compute_wallet_auth_service(),
+                )
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Tinker customer lifecycle is unavailable",
+                ) from None
+            _tinker_customer_adapter_instance = adapter
+            _tinker_customer_adapter_identity = identity
+        return _tinker_customer_adapter_instance
+
+
+def _get_tinker_customer_training_service():
+    """Bind customer execution to the exact cached release authority."""
+
+    from tinker_delegate.tinker_customer_execution import (
+        TinkerCustomerTrainingService,
+    )
+
+    return TinkerCustomerTrainingService(
+        settings,
+        _get_tinker_customer_adapter(),
+    )
+
+
+def _tinker_customer_bearer(authorization: str) -> str:
+    scheme, separator, token = authorization.partition(" ")
+    if (
+        separator != " "
+        or scheme.lower() != "bearer"
+        or not token
+        or token != token.strip()
+        or len(token) > 8192
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tinker customer bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+
+def _raise_tinker_customer_error(exc: Exception) -> None:
+    """Map adapter failures without reflecting provider or submitted values."""
+
+    from tinker_delegate.tinker_customer_adapter import (
+        TinkerCustomerConflict,
+        TinkerCustomerError,
+        TinkerCustomerNotFound,
+        TinkerCustomerUnavailable,
+    )
+    from tinker_delegate.tinker_customer_execution import (
+        TinkerCustomerReconciliationRequired,
+    )
+
+    if isinstance(exc, TinkerCustomerReconciliationRequired):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.public_receipt(),
+        ) from None
+    if isinstance(exc, TinkerCustomerNotFound):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tinker customer resource was not found",
+        ) from None
+    if isinstance(exc, TinkerCustomerConflict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tinker customer request conflicts with current state",
+        ) from None
+    if isinstance(exc, TinkerCustomerUnavailable):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tinker customer lifecycle is unavailable",
+        ) from None
+    if isinstance(exc, TinkerCustomerError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tinker customer request is invalid",
+        ) from None
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Tinker customer lifecycle is unavailable",
+    ) from None
+
+
 def _admit_wallet_challenge(request: Request, address: str) -> None:
-    """Apply one shared, non-enumerating Deal/Arena/Compute admission gate."""
+    """Apply one shared, non-enumerating Deal/Arena/Compute/Review gate."""
 
     canonical_address = normalize_wallet_address(address)
     peer_source = _wallet_challenge_peer_policy.source(
@@ -770,8 +1591,10 @@ def _authorized_execution_policy_lease(
 def _get_arena_store():
     """Return the configured durable Arena store or fail closed.
 
-    The JSON store uses process-local locking, so deployed API containers must
-    run one worker until a shared transactional store replaces this slice.
+    API and worker processes may share this path on one host: ArenaStore uses a
+    same-directory ``flock`` and reloads authenticated state for every
+    operation. Evaluator ownership is a separate concern; the dedicated worker
+    still elects exactly one process through its lifetime worker lease.
     """
 
     global _arena_store_instance, _arena_store_instance_path
@@ -784,16 +1607,24 @@ def _get_arena_store():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Arena durable store is not configured",
         )
-    if _arena_store_instance is None or _arena_store_instance_path != path:
+    try:
+        integrity_key = arena_store_integrity_key(settings)
+    except ArenaAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Arena durable store integrity key is unavailable",
+        ) from exc
+    identity = (path, hashlib.sha256(integrity_key).hexdigest())
+    if _arena_store_instance is None or _arena_store_instance_path != identity:
         try:
-            instance = ArenaStore(path)
-        except (ArenaStoreCorruptError, OSError) as exc:
+            instance = ArenaStore(path, integrity_key=integrity_key)
+        except (ArenaStoreCorruptError, OSError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Arena durable store is unavailable",
             ) from exc
         _arena_store_instance = instance
-        _arena_store_instance_path = path
+        _arena_store_instance_path = identity
     return _arena_store_instance
 
 
@@ -893,6 +1724,46 @@ def _rollback_arena_ingress_or_503(ingress, ingress_result) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Arena coordinated persistence rollback failed",
         ) from exc
+
+
+def _cleanup_arena_submission_ciphertext(
+    store,
+    submission_id: str,
+    *,
+    occurred_at: int,
+):
+    """Best-effort unlink with durable, owner-visible retry evidence."""
+
+    from tinker_delegate.arena_ingress import ArenaIngressError
+    from tinker_delegate.arena_store import (
+        ArenaStoreError,
+        CiphertextEvidence,
+        CiphertextState,
+    )
+
+    current = store.get_submission(submission_id)
+    if current.ciphertext_state == CiphertextState.UNLINKED:
+        return current
+    try:
+        result = _get_arena_ingress().store.erase_envelope(
+            current.encrypted_reference
+        )
+        evidence = CiphertextEvidence(result.evidence)
+    except (ArenaIngressError, OSError, HTTPException):
+        evidence = CiphertextEvidence.UNLINK_FAILED
+    try:
+        return store.record_ciphertext_erasure(
+            submission_id,
+            evidence=evidence,
+            occurred_at=occurred_at,
+        )
+    except ArenaStoreError:
+        # A same-time idempotent replay may observe an already-finalized
+        # lifecycle after another process won the cleanup race.
+        refreshed = store.get_submission(submission_id)
+        if refreshed.ciphertext_state == CiphertextState.UNLINKED:
+            return refreshed
+        raise
 
 
 def _require_arena_challenge(challenge_id: str, challenge_version: str):
@@ -1148,6 +2019,33 @@ def _require_compute_wallet_auth(authorization: str):
         ) from exc
 
 
+def _require_collaboration_wallet_auth(authorization: str):
+    _require_collaboration_enabled()
+    token = _bearer_token(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Collaboration wallet bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return _collaboration_wallet_auth_service().verify_token(
+            token,
+            required_scope=COLLABORATION_CONSOLE_SCOPE,
+        )
+    except CollaborationAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration wallet authentication is unavailable",
+        ) from exc
+    except CollaborationAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
 def _require_compute_job_principal(authorization: str, *, required_scope: str):
     """Authenticate exactly one Compute wallet or device credential domain."""
 
@@ -1357,6 +2255,9 @@ def _get_control_plane():
         from tinker_delegate.retention_policy import build_retention_policy
         from tinker_delegate.sealed_retention import build_retention_store
         from tinker_delegate.source_controller import build_source_registry
+        from tinker_delegate.active_deal_recovery import (
+            build_dstack_active_deal_recovery_store,
+        )
         _control_plane = ControlPlane(
             api_key,
             run_metadata_store=build_run_metadata_store(settings),
@@ -1368,6 +2269,11 @@ def _get_control_plane():
                 None if deterministic_evaluator else build_source_registry(settings)
             ),
             enable_tinker_session=not deterministic_evaluator,
+            active_deal_store=(
+                build_dstack_active_deal_recovery_store()
+                if is_dstack_enabled()
+                else None
+            ),
         )
         # On-boot sweep: destroy any retained artifacts whose window expired while
         # the service was down, so nothing lingers past its retention deadline.
@@ -1559,6 +2465,256 @@ class ComputeWalletTokenResponse(BaseModel):
     expires_at: int
 
 
+class CollaborationWalletChallengeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=42, max_length=42)
+
+
+class CollaborationWalletChallengeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str
+    nonce: str
+    message: str
+    issued_at: int
+    expires_at: int
+    scope: Literal["collaboration:console"]
+    chain_id: Literal[84532]
+
+
+class CollaborationWalletTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nonce: str = Field(min_length=32, max_length=32)
+    signature: str = Field(min_length=2, max_length=8194)
+
+
+class CollaborationWalletTokenResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    access_token: str
+    token_type: Literal["Bearer"] = "Bearer"
+    address: str
+    scopes: list[Literal["collaboration:console"]]
+    issued_at: int
+    expires_at: int
+
+
+class CollaborationRoomCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    room_id: str = Field(pattern=r"^room_[0-9a-f]{32}$")
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+    member_addresses: list[str] = Field(min_length=1, max_length=16)
+    purpose_commitment: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    pipeline_commitment: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    corpus_policy_commitments: dict[str, str] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    owner_allocations_bps: dict[str, StrictInt] = Field(
+        min_length=1,
+        max_length=16,
+    )
+
+
+class CollaborationConsentChallengeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["activate", "revoke"]
+
+
+class CollaborationInvitationDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+
+
+class CollaborationInvitationCancelRequest(
+    CollaborationInvitationDecisionRequest
+):
+    invitee_address: str = Field(min_length=42, max_length=42)
+
+
+class CollaborationArchiveRequest(CollaborationInvitationDecisionRequest):
+    pass
+
+
+class CollaborationConsentRecordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: str = Field(pattern=r"^consent_[0-9a-f]{32}$")
+    decision: Literal["activate", "revoke"]
+    signature: str = Field(min_length=2, max_length=8194)
+
+
+class CollaborationQueryProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query_ref: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+
+
+class CollaborationQueryGrantChallengeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "revoke"]
+
+
+class CollaborationQueryGrantRecordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_id: str = Field(pattern=r"^qgrant_[0-9a-f]{32}$")
+    decision: Literal["approve", "revoke"]
+    signature: str = Field(min_length=2, max_length=8194)
+
+
+class CollaborationJointRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query_ref: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+
+
+class CollaborationExecutionPlanRequest(BaseModel):
+    """Bounded execution terms; all current authority is server-derived."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    compute_project_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
+    compute_job_id: str = Field(pattern=r"^0x[0-9a-f]{64}$")
+    compute_workload_id: str = Field(pattern=r"^wrk_[0-9a-f]{32}$")
+    compute_workload_commitment: str = Field(
+        pattern=r"^0x[0-9a-f]{64}$"
+    )
+    compute_manifest_commitment: str = Field(
+        pattern=r"^0x[0-9a-f]{64}$"
+    )
+    compute_rate_policy_commitment: str = Field(
+        pattern=r"^0x[0-9a-f]{64}$"
+    )
+    compute_workload_schema: Literal[
+        "dnai.compute.workload.inference.v1",
+        "dnai.compute.workload.sft-jsonl.v1",
+    ]
+    compute_workload_source_kind: Literal["wallet", "credential"]
+    compute_workload_execution_binding_commitment: str = Field(
+        pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    compute_workload_recipient_release_commitment: str = Field(
+        pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    compute_user_address: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    operation: Literal["inference", "training"]
+    model: Literal["qwen3_8b"]
+    recipe: Literal["qwen3_8b_bounded", "qwen3_8b_lora_r32"]
+    result_policy: Literal["bounded_summary_receipt", "score_band_hash"]
+    max_prefill_tokens: StrictInt = Field(ge=0, le=32_768)
+    max_sample_tokens: StrictInt = Field(ge=0, le=4_096)
+    max_train_tokens: StrictInt = Field(ge=0, le=10_000_000)
+    sponsor_address: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    asset: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    max_total_asset_debit: StrictInt = Field(ge=1, le=2**256 - 1)
+    max_compute_asset_debit: StrictInt = Field(ge=1, le=2**256 - 1)
+    authorization_nonce: StrictInt = Field(ge=0, le=2**256 - 1)
+    authorization_lifetime_seconds: StrictInt = Field(ge=60, le=3_600)
+    royalty_total: StrictInt = Field(ge=1, le=2**256 - 1)
+    @field_validator(
+        "compute_project_id",
+        "compute_job_id",
+        "compute_workload_commitment",
+        "compute_manifest_commitment",
+        "compute_rate_policy_commitment",
+        "compute_workload_execution_binding_commitment",
+        "compute_workload_recipient_release_commitment",
+    )
+    @classmethod
+    def reject_zero_execution_commitment(cls, value: str) -> str:
+        suffix = value.split(":", 1)[-1] if value.startswith("sha256:") else value[2:]
+        if suffix == "0" * 64:
+            raise ValueError("execution commitments must be nonzero")
+        return value
+
+
+class CollaborationExecutionGrantChallengeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    plan_token: str = Field(min_length=80, max_length=98_304)
+
+
+class CollaborationExecutionGrantSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    challenge_token: str = Field(min_length=80, max_length=32_768)
+    signature: str = Field(min_length=2, max_length=8_194)
+
+
+class CollaborationExecutionAuthorizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    plan_token: str = Field(min_length=80, max_length=98_304)
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+    grants: list[CollaborationExecutionGrantSubmission] = Field(
+        min_length=1,
+        max_length=16,
+    )
+
+
+class CollaborationRoyaltySettlementPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+    replace_expired: bool
+
+
+class CollaborationRoyaltySettlementBroadcastRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
+    )
+    plan_commitment: str = Field(
+        pattern=r"^0x[0-9a-f]{64}$"
+    )
+    transaction_hash: str = Field(
+        pattern=r"^0x[0-9a-f]{64}$"
+    )
+
+    @field_validator("plan_commitment", "transaction_hash")
+    @classmethod
+    def reject_zero_hash(cls, value: str) -> str:
+        if value == "0x" + "0" * 64:
+            raise ValueError("Royalty settlement hashes must be nonzero")
+        return value
+
+
 class ComputeProjectCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1594,6 +2750,81 @@ class ComputeCredentialRotateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expires_in_seconds: int = Field(ge=60, le=604800)
+
+
+class TinkerCustomerAccountRequest(BaseModel):
+    """No provider identifier, commitment, email, key, or funding input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["create", "link_existing"]
+
+
+class TinkerCustomerCredentialRequest(BaseModel):
+    """One lower-only proxy delegation encrypted to a device key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    recipient_public_key: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    operations: list[Literal["training"]] = Field(min_length=1, max_length=1)
+    ttl_seconds: int = Field(ge=60, le=3600, strict=True)
+    max_operation_policy_units: int = Field(
+        ge=1,
+        le=(1 << 256) - 1,
+        strict=True,
+    )
+
+
+class TinkerCustomerEmptyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class TinkerCustomerReservationRequest(BaseModel):
+    """Metadata-only authority reservation; no workload bytes are accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["training"]
+    amount_policy_units: int = Field(
+        ge=1,
+        le=(1 << 256) - 1,
+        strict=True,
+    )
+    workload_commitment: str = Field(
+        min_length=71,
+        max_length=71,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+    )
+
+    @field_validator("workload_commitment")
+    @classmethod
+    def _nonzero_workload_commitment(cls, value: str) -> str:
+        if value == "sha256:" + "0" * 64:
+            raise ValueError("workload commitment must be nonzero")
+        return value
+
+
+class TinkerCustomerTrainingRequestBody(BaseModel):
+    """Only bounded controls; examples, models, and provider fields are absent."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_usd_micros: int = Field(
+        ge=1,
+        le=5_000_000,
+        strict=True,
+    )
+    steps: int = Field(default=1, ge=1, le=50, strict=True)
+    ttl_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=3600,
+        strict=True,
+    )
 
 
 class ComputeJobCreateRequest(BaseModel):
@@ -1706,6 +2937,14 @@ class ComputeDispatchIntentRequest(BaseModel):
     def normalize_job_reference(cls, value: Any) -> Any:
         # Match the SolidJS canonical-ID helper, which trims before validating.
         return value.strip() if isinstance(value, str) else value
+
+
+class ComputeDispatchCancellationRequest(BaseModel):
+    """One fixed, non-reflective pre-provider cancellation intent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["user_requested_before_provider_start"]
 
 
 class ComputeGrantRequest(BaseModel):
@@ -1994,6 +3233,10 @@ class ChainEventNotification(BaseModel):
     event_name: str
     deal_id: str
     block_number: int | None = None
+    block_hash: str = Field(
+        default="",
+        pattern=r"^(?:|0x[0-9a-fA-F]{64})$",
+    )
     tx_hash: str = ""
     log_index: int | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
@@ -2105,11 +3348,92 @@ class PolicyEvaluateRequestBody(PolicyApprovalMessageRequestBody):
 
     approver_address: str = Field(default="", max_length=42)
     approval_signature: str = Field(default="", max_length=132)
+    idempotency_key: str = Field(
+        default="",
+        max_length=71,
+        pattern=r"^(?:|sha256:[0-9a-f]{64})$",
+    )
     previous_decision_hash: str = Field(
         min_length=64,
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
+
+
+_EXECUTION_POLICY_EVALUATE_IDEMPOTENCY_DOMAIN = (
+    b"dnai-wikigen/execution-policy-evaluate-idempotency/v1\0"
+)
+
+
+def _execution_policy_evaluate_idempotency_key(
+    approval_message_hash: str,
+) -> str:
+    """Derive the one retry key for an exact signed approval message."""
+
+    if not re.fullmatch(r"[0-9a-f]{64}", approval_message_hash):
+        raise ValueError("execution policy approval-message hash is invalid")
+    digest = hashlib.sha256(
+        _EXECUTION_POLICY_EVALUATE_IDEMPOTENCY_DOMAIN
+        + bytes.fromhex(approval_message_hash)
+    ).hexdigest()
+    return "sha256:" + digest
+
+
+def _execution_policy_replay_match(
+    *,
+    record: dict[str, Any] | None,
+    surface: str,
+    resource_id: str,
+    result: Any,
+    expires_at: int,
+    previous_decision_hash: str,
+    approver_hash: str,
+    approval_hash: str,
+    approval_domain_hash: str,
+    approver_root_hash: str,
+) -> tuple[bool, bool]:
+    """Return ``(same signed message, exact submitted approval)``.
+
+    The idempotency key is intentionally derived from the hash-only approval
+    message, which does not select one signer from the release allowlist.
+    Exact response replay additionally requires the same recovered approver and
+    signature commitment. This makes a second allowlisted signature under the
+    same key a conflict instead of silently treating it as the original write.
+    """
+
+    if record is None:
+        return False, False
+
+    from tinker_delegate.execution_policy_store import execution_resource_hash
+    from tinker_delegate.policy_kernel import POLICY_CANONICALIZATION_VERSION
+
+    same_signed_message = all(
+        (
+            record.get("surface") == surface,
+            record.get("resource_id_hash")
+            == execution_resource_hash(surface, resource_id),
+            record.get("decision") == result.decision.value,
+            record.get("request_hash") == result.request_hash,
+            record.get("policy_hash") == result.policy_hash,
+            record.get("execution_context_hash")
+            == result.execution_context_hash,
+            record.get("expires_at") == expires_at,
+            record.get("approval_domain_hash") == approval_domain_hash,
+            record.get("approver_root_hash") == approver_root_hash,
+            record.get("canonicalization_version")
+            == POLICY_CANONICALIZATION_VERSION,
+            record.get("previous_decision_hash")
+            == previous_decision_hash,
+        )
+    )
+    exact_approval = same_signed_message and all(
+        (
+            record.get("reason_code") == result.reason_code,
+            record.get("approver_hash") == approver_hash,
+            record.get("approval_hash") == approval_hash,
+        )
+    )
+    return same_signed_message, exact_approval
 
 
 class ExecutionPolicyStatusRequestBody(BaseModel):
@@ -2152,13 +3476,82 @@ class RewardMechanismVerifyRequestBody(BaseModel):
     require_provenance: bool = False
 
 
+class ReviewChallengeRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=42, max_length=42)
+    ticket_ref_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    decision: Literal["release", "deny"]
+
+
+class ReviewChallengeResponseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_name: Literal["dnai.review-authority-challenge.v1"] = Field(alias="schema")
+    ticket_ref_hash: str
+    ticket_state_hash: str
+    routed_role: str
+    decision: Literal["release", "deny"]
+    reviewer_ref_hash: str
+    authority_context_hash: str
+    policy_sha256: str
+    nonce: str
+    message: str
+    issued_at: int
+    expires_at: int
+    chain_id: Literal[84532]
+    raw_reviewer_identity_egress: Literal[False]
+
+
 class ReviewDecideRequestBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ticket_id: str
-    decision: str  # "release" | "deny"
-    reviewer_ref: str
-    blocked_reviewer_refs: list[str] = []
+    nonce: str = Field(min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
+    signature: str = Field(min_length=2, max_length=8194)
+
+
+class ReviewQueueHandoffRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticket_id: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9_.:/-]+$",
+    )
+    turn_id: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9_.:/-]+$",
+    )
+    corpus_ref: str = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z0-9_.:/-]+$",
+    )
+    routed_role: str = Field(
+        min_length=2,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9-]+$",
+    )
+    reason_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    submitter_ref: str = Field(
+        default="",
+        max_length=96,
+        pattern=r"^(?:[A-Za-z0-9_.:/-]{1,96})?$",
+    )
+
+
+class ReviewQueueEnqueueRequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tickets: list[ReviewQueueHandoffRequestBody] = Field(
+        min_length=1,
+        max_length=64,
+    )
 
 
 @app.get("/tinker/proxy/status")
@@ -2320,6 +3713,282 @@ def tinker_proxy_token_revoke(payload: TinkerProxyTokenRevokeRequestBody, author
         "record": record,
         "raw_secret_egress": False,
     }
+
+
+@app.post("/tinker/customer/accounts/requests")
+def tinker_customer_account_request(
+    payload: TinkerCustomerAccountRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Request a logical create/link binding without provider secret input."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().request_account(
+            wallet_token=wallet_token,
+            mode=payload.mode,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.get("/tinker/customer/accounts/current")
+def tinker_customer_current_account(
+    authorization: str = Header(default=""),
+):
+    """Recover the one immutable logical account owned by this wallet."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().current_account_status(
+            wallet_token=wallet_token,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.get("/tinker/customer/accounts/{account_id}")
+def tinker_customer_account_status(
+    account_id: str,
+    authorization: str = Header(default=""),
+):
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().account_status(
+            wallet_token=wallet_token,
+            account_id=account_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post("/tinker/customer/accounts/{account_id}/credentials")
+def tinker_customer_credential_issue(
+    account_id: str,
+    payload: TinkerCustomerCredentialRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Issue one lower-only proxy credential encrypted to its device."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().issue_credential(
+            wallet_token=wallet_token,
+            account_id=account_id,
+            recipient_public_key=payload.recipient_public_key,
+            operations=payload.operations,
+            ttl_seconds=payload.ttl_seconds,
+            max_operation_policy_units=payload.max_operation_policy_units,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.get("/tinker/customer/accounts/{account_id}/credentials")
+def tinker_customer_credentials(
+    account_id: str,
+    authorization: str = Header(default=""),
+    limit: int = Query(default=16, ge=1, le=64),
+    cursor: str | None = Query(default=None, max_length=1024),
+):
+    """Return one snapshot-bound metadata page; capsules are never replayed."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().list_credentials(
+            wallet_token=wallet_token,
+            account_id=account_id,
+            limit=limit,
+            cursor=cursor,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post(
+    "/tinker/customer/accounts/{account_id}/credentials/{credential_id}/rotate"
+)
+def tinker_customer_credential_rotate(
+    account_id: str,
+    credential_id: str,
+    payload: TinkerCustomerCredentialRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Revoke old authority first, then deliver one bounded replacement."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().rotate_credential(
+            wallet_token=wallet_token,
+            account_id=account_id,
+            credential_id=credential_id,
+            recipient_public_key=payload.recipient_public_key,
+            operations=payload.operations,
+            ttl_seconds=payload.ttl_seconds,
+            max_operation_policy_units=payload.max_operation_policy_units,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post(
+    "/tinker/customer/accounts/{account_id}/credentials/{credential_id}/revoke"
+)
+def tinker_customer_credential_revoke(
+    account_id: str,
+    credential_id: str,
+    _payload: TinkerCustomerEmptyRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().revoke_credential(
+            wallet_token=wallet_token,
+            account_id=account_id,
+            credential_id=credential_id,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post("/tinker/customer/accounts/{account_id}/revoke")
+def tinker_customer_account_revoke(
+    account_id: str,
+    _payload: TinkerCustomerEmptyRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Cancel a pending request or terminally revoke an active account."""
+
+    try:
+        wallet_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().revoke_account(
+            wallet_token=wallet_token,
+            account_id=account_id,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post("/tinker/customer/reservations")
+def tinker_customer_reservation(
+    payload: TinkerCustomerReservationRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Reserve authority only; this route never dispatches a provider."""
+
+    try:
+        credential_token = _tinker_customer_bearer(authorization)
+        return _get_tinker_customer_adapter().reserve_spend(
+            credential_token=credential_token,
+            operation=payload.operation,
+            amount_policy_units=payload.amount_policy_units,
+            workload_commitment=payload.workload_commitment,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post("/tinker/customer/train")
+def tinker_customer_train(
+    payload: TinkerCustomerTrainingRequestBody,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Execute a claimed customer reservation once through the sealed SDK."""
+
+    try:
+        credential_token = _tinker_customer_bearer(authorization)
+        from tinker_delegate.tinker_customer_execution import (
+            TinkerCustomerTrainingRequest,
+        )
+
+        return _get_tinker_customer_training_service().execute(
+            credential_token=credential_token,
+            request=TinkerCustomerTrainingRequest(
+                max_usd_micros=payload.max_usd_micros,
+                steps=payload.steps,
+                ttl_seconds=payload.ttl_seconds,
+            ),
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post("/tinker/internal/customer/accounts/{account_id}/activate")
+def tinker_internal_customer_account_activate(
+    account_id: str,
+    _payload: TinkerCustomerEmptyRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Consume independently signed provisioning evidence."""
+
+    _require_configured_runtime_auth(authorization)
+    try:
+        return _get_tinker_customer_adapter().activate_account(
+            account_id=account_id,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
+
+
+@app.post(
+    "/tinker/internal/customer/reservations/{reservation_id}/finalize"
+)
+def tinker_internal_customer_reservation_finalize(
+    reservation_id: str,
+    _payload: TinkerCustomerEmptyRequest,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Consume independently signed settlement evidence."""
+
+    _require_configured_runtime_auth(authorization)
+    try:
+        return _get_tinker_customer_adapter().finalize_reservation(
+            reservation_id=reservation_id,
+            idempotency_key=idempotency_key,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_tinker_customer_error(exc)
 
 
 @app.get("/health")
@@ -2824,6 +4493,991 @@ def compute_wallet_auth_token(
     )
 
 
+@app.post(
+    "/auth/collaboration/challenge",
+    response_model=CollaborationWalletChallengeResponse,
+)
+def collaboration_wallet_auth_challenge(
+    payload: CollaborationWalletChallengeRequest,
+    request: Request,
+) -> CollaborationWalletChallengeResponse:
+    """Issue a Base Sepolia challenge for the Collaboration Console only."""
+
+    _require_collaboration_enabled()
+    try:
+        _admit_wallet_challenge(request, payload.address)
+        challenge = _collaboration_wallet_auth_service().issue_challenge(
+            address=payload.address
+        )
+        return CollaborationWalletChallengeResponse.model_validate(
+            challenge.to_public_dict()
+        )
+    except WalletChallengeRateLimited as exc:
+        _raise_wallet_challenge_rate_limit(exc.retry_after, exc)
+    except CollaborationChallengeCapacityError as exc:
+        _raise_wallet_challenge_rate_limit(
+            _wallet_challenge_limiter.window_seconds,
+            exc,
+        )
+    except CollaborationAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration wallet authentication is unavailable",
+        ) from exc
+    except (CollaborationAuthError, WalletAuthError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/auth/collaboration/token",
+    response_model=CollaborationWalletTokenResponse,
+)
+def collaboration_wallet_auth_token(
+    payload: CollaborationWalletTokenRequest,
+) -> CollaborationWalletTokenResponse:
+    """Exchange one signature for a short-lived collaboration-only bearer."""
+
+    _require_collaboration_enabled()
+    try:
+        claims, token = _collaboration_wallet_auth_service().exchange_signature(
+            nonce=payload.nonce,
+            signature=payload.signature,
+        )
+    except CollaborationAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration wallet authentication is unavailable",
+        ) from exc
+    except CollaborationAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    return CollaborationWalletTokenResponse(
+        access_token=token,
+        address=claims.address,
+        scopes=list(claims.scopes),
+        issued_at=claims.issued_at,
+        expires_at=claims.expires_at,
+    )
+
+
+@app.post("/collaboration/rooms")
+def collaboration_create_room(
+    payload: CollaborationRoomCreateRequest,
+    authorization: str = Header(default=""),
+):
+    """Create one immutable, commitment-only multi-owner room."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        room = _get_collaboration_store().create_room(
+            room_id=payload.room_id,
+            idempotency_key=payload.idempotency_key,
+            creator_address=claims.address,
+            member_addresses=payload.member_addresses,
+            purpose_commitment=payload.purpose_commitment,
+            pipeline_commitment=payload.pipeline_commitment,
+            corpus_policy_commitments=payload.corpus_policy_commitments,
+            owner_allocations_bps=payload.owner_allocations_bps,
+            created_at=int(_time.time()),
+        )
+        return {
+            "surface": "collaboration_room_result",
+            "schema_version": 2,
+            "room": room,
+        }
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.get("/collaboration/rooms")
+def collaboration_list_rooms(
+    authorization: str = Header(default=""),
+    limit: int = Query(default=8, ge=1, le=16),
+    cursor: str | None = Query(default=None, max_length=1024),
+):
+    """Return one bounded accepted-or-invited room page."""
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().list_room_projections(
+            claims.address,
+            limit=limit,
+            cursor=cursor,
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.get("/collaboration/rooms/{room_id}")
+def collaboration_get_room(
+    room_id: str,
+    authorization: str = Header(default=""),
+):
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().room_projection(
+            room_id,
+            claims.address,
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/invitations/accept")
+def collaboration_accept_invitation(
+    room_id: str,
+    payload: CollaborationInvitationDecisionRequest,
+    authorization: str = Header(default=""),
+):
+    """Accept a creator declaration as this wallet's membership."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().respond_to_invitation(
+            room_id=room_id,
+            participant_address=claims.address,
+            decision="accept",
+            idempotency_key=payload.idempotency_key,
+            decided_at=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/invitations/decline")
+def collaboration_decline_invitation(
+    room_id: str,
+    payload: CollaborationInvitationDecisionRequest,
+    authorization: str = Header(default=""),
+):
+    """Decline an invitation and remove this wallet's future visibility."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().respond_to_invitation(
+            room_id=room_id,
+            participant_address=claims.address,
+            decision="decline",
+            idempotency_key=payload.idempotency_key,
+            decided_at=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/invitations/cancel")
+def collaboration_cancel_invitation(
+    room_id: str,
+    payload: CollaborationInvitationCancelRequest,
+    authorization: str = Header(default=""),
+):
+    """Let the creator explicitly cancel one still-pending invitation."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().cancel_invitation(
+            room_id=room_id,
+            creator_address=claims.address,
+            invitee_address=payload.invitee_address,
+            idempotency_key=payload.idempotency_key,
+            cancelled_at=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/archive")
+def collaboration_archive_room(
+    room_id: str,
+    payload: CollaborationArchiveRequest,
+    authorization: str = Header(default=""),
+):
+    """Explicitly archive a quiescent room before bounded reclamation."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        room = _get_collaboration_store().archive_room(
+            room_id=room_id,
+            creator_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+            archived_at=int(_time.time()),
+        )
+        return {
+            "surface": "collaboration_room_result",
+            "schema_version": 2,
+            "room": room,
+        }
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/consent-challenges")
+def collaboration_issue_consent_challenge(
+    room_id: str,
+    payload: CollaborationConsentChallengeRequest,
+    authorization: str = Header(default=""),
+):
+    """Issue an exact owner-role activate/revoke message."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    now = int(_time.time())
+    try:
+        ttl = int(settings.collaboration_consent_challenge_ttl_seconds)
+        if ttl < 60 or ttl > 900:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Collaboration consent challenge policy is unavailable",
+            )
+        return _get_collaboration_store().issue_consent_challenge(
+            room_id=room_id,
+            owner_address=claims.address,
+            decision=payload.decision,
+            issued_at=now,
+            expires_at=now + ttl,
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.get("/collaboration/consent-challenges/{challenge_id}")
+def collaboration_get_consent_challenge(
+    challenge_id: str,
+    authorization: str = Header(default=""),
+):
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().challenge_projection(
+            challenge_id,
+            claims.address,
+            now=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/consents")
+def collaboration_record_consent(
+    room_id: str,
+    payload: CollaborationConsentRecordRequest,
+    authorization: str = Header(default=""),
+):
+    """Verify an EOA/EIP-1271 signature, then persist only its commitment."""
+
+    import time as _time
+
+    from tinker_delegate.collaboration_store import (
+        CollaborationAuthorizationError,
+        CollaborationConflictError,
+    )
+    from tinker_delegate.wallet_signature_verifier import (
+        WalletSignatureError,
+        WalletSignatureUnavailable,
+        wallet_signature_verifier_from_settings,
+    )
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    store = _get_collaboration_store()
+    try:
+        now = int(_time.time())
+        challenge = store.challenge_projection(
+            payload.challenge_id,
+            claims.address,
+            now=now,
+        )
+        if challenge["room_id"] != room_id:
+            raise CollaborationAuthorizationError(
+                "Consent challenge is not bound to this collaboration room"
+            )
+        if challenge["owner_address"] != claims.address:
+            raise CollaborationAuthorizationError(
+                "Wallet is not the owner of this consent challenge"
+            )
+        if challenge["decision"] != payload.decision:
+            raise CollaborationAuthorizationError(
+                "Consent decision does not match the signed challenge"
+            )
+        if challenge["status"] not in {"pending", "consumed"}:
+            raise CollaborationConflictError(
+                "Consent challenge is not consumable"
+            )
+        verifier_kind = wallet_signature_verifier_from_settings(settings).verify(
+            address=claims.address,
+            message=challenge["message"],
+            signature=payload.signature,
+        )
+        if verifier_kind not in {"eoa", "eip1271"}:
+            raise WalletSignatureUnavailable(
+                "wallet signature verifier returned an unsupported result"
+            )
+        normalized_signature = (
+            payload.signature[2:]
+            if payload.signature.startswith(("0x", "0X"))
+            else payload.signature
+        )
+        try:
+            signature_bytes = bytes.fromhex(normalized_signature)
+        except ValueError as exc:
+            raise WalletSignatureError(
+                "wallet signature must be hex"
+            ) from exc
+        authorization_hash = (
+            "sha256:"
+            + hashlib.sha256(
+                b"dnai-wikigen/collaboration-role-consent-signature/v2\x00"
+                + signature_bytes
+            ).hexdigest()
+        )
+        room = store.consume_verified_consent(
+            challenge_id=payload.challenge_id,
+            owner_address=claims.address,
+            decision=payload.decision,
+            authorization_hash=authorization_hash,
+            verifier_confirmed=True,
+            consumed_at=int(_time.time()),
+        )
+        return {
+            "surface": "collaboration_role_consent_result",
+            "schema_version": 2,
+            "verifier_kind": verifier_kind,
+            "room": room,
+            "raw_signature_retained": False,
+        }
+    except WalletSignatureUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Collaboration wallet signature verification is unavailable",
+        ) from exc
+    except WalletSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Collaboration wallet signature is invalid",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/query-proposals")
+def collaboration_propose_query(
+    room_id: str,
+    payload: CollaborationQueryProposalRequest,
+    authorization: str = Header(default=""),
+):
+    """Replace the current exact query and invalidate prior query grants."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        query = _get_collaboration_store().propose_query(
+            room_id=room_id,
+            query_ref=payload.query_ref,
+            proposer_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+            proposed_at=int(_time.time()),
+        )
+        return {
+            "surface": "collaboration_query_proposal_result",
+            "schema_version": 2,
+            "query": query,
+        }
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/query-grant-challenges")
+def collaboration_issue_query_grant_challenge(
+    room_id: str,
+    payload: CollaborationQueryGrantChallengeRequest,
+    authorization: str = Header(default=""),
+):
+    """Issue one signature message bound to the exact current query."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    now = int(_time.time())
+    try:
+        ttl = int(settings.collaboration_consent_challenge_ttl_seconds)
+        if ttl < 60 or ttl > 900:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Collaboration consent challenge policy is unavailable",
+            )
+        return _get_collaboration_store().issue_query_grant_challenge(
+            room_id=room_id,
+            owner_address=claims.address,
+            decision=payload.decision,
+            issued_at=now,
+            expires_at=now + ttl,
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.get("/collaboration/query-grant-challenges/{challenge_id}")
+def collaboration_get_query_grant_challenge(
+    challenge_id: str,
+    authorization: str = Header(default=""),
+):
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().query_grant_challenge_projection(
+            challenge_id,
+            claims.address,
+            now=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/query-grants")
+def collaboration_record_query_grant(
+    room_id: str,
+    payload: CollaborationQueryGrantRecordRequest,
+    authorization: str = Header(default=""),
+):
+    """Verify and commit one exact-current-query owner signature."""
+
+    import time as _time
+
+    from tinker_delegate.collaboration_store import (
+        CollaborationAuthorizationError,
+        CollaborationConflictError,
+    )
+    from tinker_delegate.wallet_signature_verifier import (
+        WalletSignatureError,
+        WalletSignatureUnavailable,
+        wallet_signature_verifier_from_settings,
+    )
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    store = _get_collaboration_store()
+    try:
+        now = int(_time.time())
+        challenge = store.query_grant_challenge_projection(
+            payload.challenge_id,
+            claims.address,
+            now=now,
+        )
+        if challenge["room_id"] != room_id:
+            raise CollaborationAuthorizationError(
+                "Query-grant challenge is not bound to this room"
+            )
+        if challenge["owner_address"] != claims.address:
+            raise CollaborationAuthorizationError(
+                "Wallet is not the owner of this query-grant challenge"
+            )
+        if challenge["decision"] != payload.decision:
+            raise CollaborationAuthorizationError(
+                "Query-grant decision does not match the signed challenge"
+            )
+        if challenge["status"] not in {"pending", "consumed"}:
+            raise CollaborationConflictError(
+                "Query-grant challenge is not consumable"
+            )
+        verifier_kind = wallet_signature_verifier_from_settings(
+            settings
+        ).verify(
+            address=claims.address,
+            message=challenge["message"],
+            signature=payload.signature,
+        )
+        if verifier_kind not in {"eoa", "eip1271"}:
+            raise WalletSignatureUnavailable(
+                "wallet signature verifier returned an unsupported result"
+            )
+        normalized_signature = (
+            payload.signature[2:]
+            if payload.signature.startswith(("0x", "0X"))
+            else payload.signature
+        )
+        try:
+            signature_bytes = bytes.fromhex(normalized_signature)
+        except ValueError as exc:
+            raise WalletSignatureError(
+                "wallet signature must be hex"
+            ) from exc
+        authorization_hash = (
+            "sha256:"
+            + hashlib.sha256(
+                b"dnai-wikigen/collaboration-query-grant-signature/v2\x00"
+                + signature_bytes
+            ).hexdigest()
+        )
+        query = store.consume_verified_query_grant(
+            challenge_id=payload.challenge_id,
+            owner_address=claims.address,
+            decision=payload.decision,
+            authorization_hash=authorization_hash,
+            verifier_confirmed=True,
+            consumed_at=int(_time.time()),
+        )
+        return {
+            "surface": "collaboration_query_grant_result",
+            "schema_version": 2,
+            "verifier_kind": verifier_kind,
+            "query": query,
+            "raw_signature_retained": False,
+        }
+    except WalletSignatureUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Collaboration wallet signature verification is unavailable"
+            ),
+        ) from exc
+    except WalletSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Collaboration wallet signature is invalid",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.post("/collaboration/rooms/{room_id}/runs")
+def collaboration_authorize_joint_run(
+    room_id: str,
+    payload: CollaborationJointRunRequest,
+    authorization: str = Header(default=""),
+):
+    """Authorize metadata only; this route never dispatches provider work."""
+
+    import time as _time
+
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().authorize_joint_run(
+            room_id=room_id,
+            query_ref=payload.query_ref,
+            requester_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+            authorized_at=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+@app.get("/collaboration/runs/{run_id}")
+def collaboration_get_joint_run(
+    run_id: str,
+    authorization: str = Header(default=""),
+):
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_store().run_projection(
+            run_id,
+            claims.address,
+        )
+    except Exception as exc:
+        _raise_collaboration_store_error(exc)
+
+
+def _project_collaboration_execution_capability():
+    """Authenticate worker presence without accepting caller evidence."""
+
+    import time as _time
+
+    from tinker_delegate.collaboration_execution_evidence import (
+        CollaborationExecutionEvidenceError,
+        CollaborationExecutionWorkerHeartbeatStore,
+        collaboration_execution_worker_heartbeat_integrity_key,
+        collaboration_execution_worker_release_bindings,
+        project_collaboration_execution_worker_capability,
+    )
+
+    enabled = bool(
+        settings.collaboration_enabled
+        and settings.collaboration_execution_enabled
+    )
+    expected = None
+    heartbeat_store = None
+    if enabled:
+        try:
+            expected = collaboration_execution_worker_release_bindings(
+                settings
+            )
+        except Exception:
+            expected = None
+        if expected is not None:
+            try:
+                heartbeat_store = CollaborationExecutionWorkerHeartbeatStore(
+                    str(
+                        settings.collaboration_execution_worker_heartbeat_path
+                        or ""
+                    ).strip(),
+                    integrity_key=(
+                        collaboration_execution_worker_heartbeat_integrity_key(
+                            settings
+                        )
+                    ),
+                )
+            except CollaborationExecutionEvidenceError:
+                heartbeat_store = None
+    return project_collaboration_execution_worker_capability(
+        enabled=enabled,
+        expected_bindings=expected,
+        heartbeat_store=heartbeat_store,
+        now=int(_time.time()),
+        ttl_seconds=int(
+            settings.collaboration_execution_worker_heartbeat_ttl_seconds
+        ),
+    )
+
+
+@app.get("/collaboration/execution-capability")
+def collaboration_execution_capability(response: Response):
+    """Return fresh HMAC presence, explicitly not job TDX/QVL evidence."""
+
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    try:
+        return _project_collaboration_execution_capability()
+    except Exception:
+        from tinker_delegate.collaboration_execution_evidence import (
+            project_collaboration_execution_worker_capability,
+        )
+
+        return project_collaboration_execution_worker_capability(
+            enabled=False,
+            expected_bindings=None,
+            heartbeat_store=None,
+            now=1,
+            ttl_seconds=30,
+        )
+
+
+def _with_collaboration_execution_capability(
+    value: Any,
+    *,
+    resource_kind: str,
+):
+    """Return a versioned envelope and withhold every executable wallet field."""
+
+    import copy as _copy
+
+    projected = _copy.deepcopy(value)
+    capability = _project_collaboration_execution_capability()
+    ready = capability.get("onchain_reservation_ready") is True
+    if resource_kind not in {
+        "execution_plan",
+        "execution_authorization",
+        "execution_status",
+    }:
+        raise ValueError("collaboration execution resource kind is invalid")
+
+    def gate(reservation: Any) -> None:
+        if ready or not isinstance(reservation, dict):
+            return
+        transaction = reservation.get("transaction")
+        if not isinstance(transaction, dict):
+            return
+        reservation["transaction"] = {
+            "schema": "dnai.collaboration.royalty-funding-action-gated.v1",
+            "status": "gated_worker_presence_required",
+            "reason": (
+                "fresh_authenticated_worker_and_qvl_capability_required"
+            ),
+            "executable": False,
+            "wallet_transaction_included": False,
+            "erc20_approval_included": False,
+        }
+
+    gate(projected.get("royalty_reservation"))
+    execution = projected.get("execution")
+    if isinstance(execution, dict):
+        royalty = execution.get("royalty")
+        if isinstance(royalty, dict):
+            gate(royalty.get("funding_reservation"))
+    royalty = projected.get("royalty")
+    if isinstance(royalty, dict):
+        gate(royalty.get("funding_reservation"))
+    return {
+        "surface": "collaboration_execution_api_envelope",
+        "schema_version": 1,
+        "resource_kind": resource_kind,
+        "payload": projected,
+        "worker_capability": capability,
+        "queue_control": {
+            "queue_control_plane_available": capability.get(
+                "queue_control_plane_available"
+            )
+            is True,
+            "queued_not_executable": not ready,
+            "onchain_reservation_ready": ready,
+            "fresh_worker_presence_proven": ready,
+            "api_worker_wiring_claimed": ready,
+        },
+    }
+
+
+@app.post("/collaboration/runs/{run_id}/execution-plans")
+def collaboration_create_execution_plan(
+    run_id: str,
+    payload: CollaborationExecutionPlanRequest,
+    authorization: str = Header(default=""),
+):
+    """Create a server-authenticated plan from current commitment-only state."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        plan = _get_collaboration_execution_coordinator().create_plan(
+            run_id=run_id,
+            requester_address=claims.address,
+            request=payload.model_dump(),
+            now=int(_time.time()),
+        )
+        return _with_collaboration_execution_capability(
+            plan.to_public_dict(),
+            resource_kind="execution_plan",
+        )
+    except Exception as exc:
+        _raise_collaboration_execution_error(exc)
+
+
+@app.post("/collaboration/execution-plans/grant-challenges")
+def collaboration_issue_execution_grant_challenge(
+    payload: CollaborationExecutionGrantChallengeRequest,
+    authorization: str = Header(default=""),
+):
+    """Issue a fresh grant message distinct from every query grant."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        return _get_collaboration_execution_coordinator().issue_owner_grant_challenge(
+            plan_token=payload.plan_token,
+            owner_address=claims.address,
+            now=int(_time.time()),
+        )
+    except Exception as exc:
+        _raise_collaboration_execution_error(exc)
+
+
+@app.post("/collaboration/execution-plans/authorize")
+def collaboration_authorize_execution(
+    payload: CollaborationExecutionAuthorizeRequest,
+    authorization: str = Header(default=""),
+):
+    """Verify every fresh owner signature, persist hashes, and queue only."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        result = _get_collaboration_execution_coordinator().authorize(
+            plan_token=payload.plan_token,
+            requester_address=claims.address,
+            grant_submissions=[item.model_dump() for item in payload.grants],
+            idempotency_key=payload.idempotency_key,
+            now=int(_time.time()),
+        )
+        return _with_collaboration_execution_capability(
+            result,
+            resource_kind="execution_authorization",
+        )
+    except Exception as exc:
+        _raise_collaboration_execution_error(exc)
+
+
+@app.get("/collaboration/executions/{execution_id}")
+def collaboration_get_execution(
+    execution_id: str,
+    authorization: str = Header(default=""),
+):
+    """Return only a participant-visible, bounded execution projection."""
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        record = _get_collaboration_execution_journal().public_get(execution_id)
+        # Visibility is revalidated against the current authenticated room;
+        # the execution journal itself is not an access-control database.
+        _get_collaboration_store().room_projection(
+            record["room_id"],
+            claims.address,
+        )
+        compute_projection = record.get("compute_journal_projection")
+        if isinstance(compute_projection, dict):
+            compute_projection = {
+                **compute_projection,
+                "source_authentication_proven": True,
+                "source_authentication_boundary": (
+                    "authenticated_local_compute_journal_reader"
+                ),
+            }
+        return _with_collaboration_execution_capability(
+            {
+                **record,
+                "source_capable_core_only": False,
+                "compute_journal_projection": compute_projection,
+                "api_worker_wiring_available": True,
+                "client_supplied_vault_observation": False,
+                "client_supplied_compute_projection": False,
+            },
+            resource_kind="execution_status",
+        )
+    except Exception as exc:
+        _raise_collaboration_execution_error(exc)
+
+
+@app.post(
+    "/collaboration/executions/{execution_id}/royalty-settlement/prepare",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def collaboration_prepare_royalty_settlement(
+    execution_id: str,
+    payload: CollaborationRoyaltySettlementPrepareRequest,
+    authorization: str = Header(default=""),
+):
+    """Queue one sponsor-only, dual-release Royalty settlement plan."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        authority = _collaboration_royalty_settlement_authority(
+            execution_id=execution_id,
+            requester_address=claims.address,
+        )
+        result = _get_collaboration_royalty_settlement_store().request_prepare(
+            authority=authority,
+            sponsor_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+            replace_expired=payload.replace_expired,
+            requested_at=int(_time.time()),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=result,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    except Exception as exc:
+        _raise_collaboration_royalty_settlement_error(exc)
+
+
+@app.get(
+    "/collaboration/executions/{execution_id}/royalty-settlement",
+)
+def collaboration_get_royalty_settlement(
+    execution_id: str,
+    authorization: str = Header(default=""),
+):
+    """Return bounded status and only a current finalized-anchor wallet plan."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        now = int(_time.time())
+        authority = _collaboration_royalty_settlement_authority(
+            execution_id=execution_id,
+            requester_address=claims.address,
+        )
+        settlement_store = _get_collaboration_royalty_settlement_store()
+        record = settlement_store.record(execution_id)
+        wallet_plan = _collaboration_royalty_wallet_plan(
+            record=record,
+            now=now,
+        )
+        result = settlement_store.status(
+            authority=authority,
+            sponsor_address=claims.address,
+            wallet_plan=wallet_plan,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=result,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    except Exception as exc:
+        _raise_collaboration_royalty_settlement_error(exc)
+
+
+@app.post(
+    "/collaboration/executions/{execution_id}/royalty-settlement/broadcast",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def collaboration_report_royalty_settlement_broadcast(
+    execution_id: str,
+    payload: CollaborationRoyaltySettlementBroadcastRequest,
+    authorization: str = Header(default=""),
+):
+    """Record an advisory sponsor tx hash; finalized chain state stays authoritative."""
+
+    import time as _time
+
+    _require_collaboration_execution_enabled()
+    claims = _require_collaboration_wallet_auth(authorization)
+    try:
+        now = int(_time.time())
+        authority = _collaboration_royalty_settlement_authority(
+            execution_id=execution_id,
+            requester_address=claims.address,
+        )
+        settlement_store = _get_collaboration_royalty_settlement_store()
+        record = settlement_store.record(execution_id)
+        if (
+            record is None
+            or record["plan_commitment"] != payload.plan_commitment
+        ):
+            from tinker_delegate.collaboration_royalty_settlement import (
+                CollaborationRoyaltySettlementConflict,
+            )
+
+            raise CollaborationRoyaltySettlementConflict(
+                "settlement broadcast does not match a ready sponsor plan"
+            )
+        settlement_store.report_broadcast(
+            execution_id=execution_id,
+            sponsor_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+            plan_commitment=payload.plan_commitment,
+            transaction_hash=payload.transaction_hash,
+            reported_at=now,
+        )
+        result = settlement_store.status(
+            authority=authority,
+            sponsor_address=claims.address,
+            wallet_plan=None,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=result,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    except Exception as exc:
+        _raise_collaboration_royalty_settlement_error(exc)
+
+
 _COMPUTE_DISPATCH_MUTATION_ROUTE = (
     "/compute/projects/{project_id}/dispatch-intents"
 )
@@ -2832,44 +5486,160 @@ _COMPUTE_DISPATCH_STATUS_ROUTE_TEMPLATE = (
 )
 
 
+def _compute_dispatch_claim_for_intent(intent):
+    """Reconstruct the one exact local claim committed by intent v3."""
+
+    from tinker_delegate.compute_dispatch_admission import (
+        compute_dispatch_claim_for_intent,
+    )
+
+    return compute_dispatch_claim_for_intent(intent)
+
+
+def _recover_compute_dispatch_workload_claim(
+    *,
+    journal,
+    ingress,
+    intent,
+    updated_at: int,
+) -> tuple[dict[str, Any], Any, bool, bool]:
+    """Finish the exact pending claim after either API crash window.
+
+    Journal enqueue is committed first as non-actionable
+    ``workload_claim_pending``. The authenticated ingress index then moves the
+    exact ciphertext to ``dispatch_claimed``. Finally the journal records the
+    claim commitment and becomes actionable. Repeating this function after a
+    crash is exact at every boundary; any substituted tuple conflicts.
+    """
+
+    from tinker_delegate.compute_dispatch_admission import (
+        ComputeDispatchAdmissionService,
+    )
+
+    return ComputeDispatchAdmissionService(
+        journal,
+        ingress,
+    ).recover_workload_claim(intent, updated_at=updated_at)
+
+
 def _compute_dispatch_capability() -> dict[str, Any]:
     """Return the single reviewed release gate for exact-asset dispatch."""
 
+    try:
+        from tinker_delegate.compute_tinker_provider import (
+            compute_provider_public_capability,
+        )
+
+        provider = compute_provider_public_capability(settings)
+    except Exception:
+        provider = {
+            "schema": "dnai.compute.provider-capability.v1",
+            "source_present": True,
+            "release_configured": False,
+            "provider_dispatch": False,
+            "reason": "provider_capability_unavailable",
+        }
+    ready = provider.get("provider_dispatch") is True
     return {
-        "metadata_intent_creation": False,
-        "provider_dispatch": False,
-        "independent_metering": False,
-        "settlement": False,
+        "metadata_intent_creation": ready,
+        "provider_dispatch": ready,
+        "independent_metering": ready,
+        "settlement": ready,
+        "credential_workload_wallet_adoption": (
+            ready and settings.compute_workload_wallet_adoption_enabled
+        ),
+        "wallet_adoption_authority": "project_owner_admin_developer",
+        "wallet_source_transfer_supported": False,
+        "device_spending_authority": False,
         "exact_asset_only": True,
-        "mutation_route": None,
+        "mutation_route": _COMPUTE_DISPATCH_MUTATION_ROUTE if ready else None,
         "status_route_template": _COMPUTE_DISPATCH_STATUS_ROUTE_TEMPLATE,
-        "reason": "idempotent_tinker_provider_adapter_unavailable",
+        "status_recovery_by_job_reference": True,
+        "automatic_provider_redispatch": False,
+        "provider": provider,
+        "reason": (
+            "ready_at_most_once_terminal_ambiguity_hold"
+            if ready
+            else provider.get("reason", "provider_capability_unavailable")
+        ),
     }
 
 
 def _compute_dispatch_creation_enabled(capability: dict[str, Any]) -> bool:
     """Fail closed unless every independent release capability agrees."""
 
+    try:
+        from tinker_delegate.compute_provider_release import (
+            PINNED_TINKER_PROVIDER_RELEASE_SHA256,
+        )
+
+        provider = capability.get("provider")
+        runtime = provider.get("runtime") if isinstance(provider, dict) else None
+        adapter_contract = (
+            provider.get("adapter_contract")
+            if isinstance(provider, dict)
+            else None
+        )
+        runtime_guarantees = (
+            provider.get("runtime_guarantees")
+            if isinstance(provider, dict)
+            else None
+        )
+    except Exception:
+        return False
     return bool(
         capability.get("metadata_intent_creation") is True
         and capability.get("provider_dispatch") is True
         and capability.get("independent_metering") is True
         and capability.get("settlement") is True
+        and type(capability.get("credential_workload_wallet_adoption")) is bool
+        and capability.get("wallet_adoption_authority")
+        == "project_owner_admin_developer"
+        and capability.get("wallet_source_transfer_supported") is False
+        and capability.get("device_spending_authority") is False
         and capability.get("exact_asset_only") is True
         and capability.get("mutation_route") == _COMPUTE_DISPATCH_MUTATION_ROUTE
         and capability.get("status_route_template")
         == _COMPUTE_DISPATCH_STATUS_ROUTE_TEMPLATE
+        and capability.get("status_recovery_by_job_reference") is True
+        and capability.get("automatic_provider_redispatch") is False
+        and isinstance(provider, dict)
+        and provider.get("schema") == "dnai.compute.provider-capability.v1"
+        and provider.get("source_present") is True
+        and provider.get("release_configured") is True
+        and provider.get("provider_dispatch") is True
+        and provider.get("provider_release_sha256")
+        == PINNED_TINKER_PROVIDER_RELEASE_SHA256
+        and provider.get("idempotent_provider_replay_claimed") is False
+        and provider.get("automatic_provider_redispatch") is False
+        and provider.get("allowed_operations") == ["inference", "training"]
+        and provider.get("allowed_result_policies")
+        == ["bounded_summary_receipt"]
+        and isinstance(adapter_contract, dict)
+        and adapter_contract.get("at_most_once_attempt_checkpoint") is True
+        and adapter_contract.get("terminal_ambiguity_hold") is True
+        and adapter_contract.get("ambiguous_outcome_ciphertext_retained") is True
+        and isinstance(runtime_guarantees, dict)
+        and runtime_guarantees.get("at_most_once_attempt_checkpoint") is True
+        and runtime_guarantees.get("terminal_ambiguity_hold") is True
+        and runtime_guarantees.get("ambiguous_outcome_ciphertext_retained") is True
+        and isinstance(runtime, dict)
+        and runtime.get("authenticated") is True
+        and runtime.get("fresh") is True
+        and runtime.get("process_presence_only") is True
+        and runtime.get("tdx_evidence") is False
     )
 
 
 def _project_with_compute_dispatch_capability(
     project: dict[str, Any],
+    capability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project the same release gate onto every public project response."""
 
     result = dict(project)
     result["provider_dispatch_enabled"] = _compute_dispatch_creation_enabled(
-        _compute_dispatch_capability()
+        _compute_dispatch_capability() if capability is None else capability
     )
     return result
 
@@ -3496,8 +6266,10 @@ def compute_create_dispatch_intent(
     try:
         # Membership is read from the existing console directory only. No
         # balance, reservation, job, or ledger method is called on that store.
+        dispatch_capability = _compute_dispatch_capability()
         project = _project_with_compute_dispatch_capability(
-            _get_compute_store().project(project_id, claims.address)
+            _get_compute_store().project(project_id, claims.address),
+            dispatch_capability,
         )
         if project["role"] not in {"owner", "admin", "developer"}:
             raise HTTPException(403, "project role cannot create dispatch intents")
@@ -3505,6 +6277,18 @@ def compute_create_dispatch_intent(
             raise HTTPException(
                 503,
                 "Exact-asset dispatch intent creation is disabled by this release",
+            )
+        provider_capability = dispatch_capability.get("provider")
+        if (
+            not isinstance(provider_capability, dict)
+            or payload.operation
+            not in provider_capability.get("allowed_operations", ())
+            or payload.result_policy
+            not in provider_capability.get("allowed_result_policies", ())
+        ):
+            raise HTTPException(
+                400,
+                "operation or result policy is not supported by the provider release",
             )
         if (
             payload.authorization_expiry <= now
@@ -3530,14 +6314,30 @@ def compute_create_dispatch_intent(
         )
         workload_binding = stored_workload.binding
         workload_manifest = workload_binding.manifest
-        if (
-            workload_binding.recipient_key_id != workload_ingress.recipient.key_id
-            or workload_binding.activation_commitment
-            != current_activation.commitment
+        if workload_binding.actor_kind == "wallet" and not hmac.compare_digest(
+                workload_binding.actor_commitment,
+                workload_principal.actor_commitment,
+        ):
+            # Wallet-sourced ciphertext cannot be transferred to a different
+            # funding wallet without a separate signed transfer protocol.
+            raise HTTPException(404, "Compute workload was not found")
+        if workload_binding.actor_kind == "credential" and not bool(
+            settings.compute_workload_wallet_adoption_enabled
         ):
             raise HTTPException(
                 503,
-                "Compute workload recipient activation is no longer current",
+                "Credential workload wallet adoption is disabled by this release",
+            )
+        if workload_binding.actor_kind not in {"wallet", "credential"}:
+            raise HTTPException(404, "Compute workload was not found")
+        if (
+            workload_binding.recipient_key_id != workload_ingress.recipient.key_id
+            or workload_binding.recipient_release_commitment
+            != current_activation.recipient_release_commitment
+        ):
+            raise HTTPException(
+                503,
+                "Compute workload recipient release is no longer current",
             )
         if (
             workload_manifest.operation != payload.operation
@@ -3576,25 +6376,31 @@ def compute_create_dispatch_intent(
             workload_commitment=(
                 "0x" + workload_binding.workload_commitment.removeprefix("sha256:")
             ),
+            workload_source_kind=workload_binding.actor_kind,
+            workload_execution_binding_commitment=(
+                stored_workload.execution_binding_commitment
+            ),
+            workload_recipient_release_commitment=(
+                workload_binding.recipient_release_commitment
+            ),
+            # This public route is deliberately unable to mint a
+            # collaboration one-shot context. ComputeDispatchIntent derives
+            # the exact standalone context from these authenticated wallet
+            # and vault-authorization fields.
+            authorization_kind="standalone",
         )
-        record, created = _get_compute_dispatch_journal().enqueue(
+        from tinker_delegate.compute_dispatch_admission import (
+            ComputeDispatchAdmissionService,
+        )
+
+        return ComputeDispatchAdmissionService(
+            _get_compute_dispatch_journal(),
+            workload_ingress,
+        ).enqueue_standalone(
             intent,
             idempotency_key=idempotency_key,
             created_at=now,
         )
-        return {
-            "surface": "compute_dispatch_intent_result",
-            "schema_version": 2,
-            "created": created,
-            "idempotent_replay": not created,
-            "intent": record,
-            "legacy_credit_ledger_mutated": False,
-            "provider_dispatch_status": record["provider_dispatch_status"],
-            "provider_dispatch_may_have_occurred": record[
-                "provider_dispatch_may_have_occurred"
-            ],
-            "provider_authoritative": False,
-        }
     except HTTPException:
         raise
     except ComputeIntentConflict as exc:
@@ -3610,7 +6416,7 @@ def compute_create_dispatch_intent(
         )
 
         if isinstance(exc, (ComputeWorkloadIngressError, ComputeWorkloadIngressUnavailable)):
-            _raise_compute_workload_error(exc)
+            _raise_compute_workload_error(exc, missing_is_404=True)
         _raise_compute_store_error(exc)
 
 
@@ -3624,7 +6430,11 @@ def compute_get_dispatch_intent(
 ):
     """Return bounded exact-asset status; never provider IDs or private input."""
 
+    import time as _time
+
     from tinker_delegate.compute_runtime import (
+        ComputeDispatchIntent,
+        ComputeIntentConflict,
         ComputeIntentNotFound,
         ComputeRuntimePolicyError,
         ComputeRuntimeStateError,
@@ -3634,19 +6444,248 @@ def compute_get_dispatch_intent(
     claims = _require_compute_wallet_auth(authorization)
     try:
         _get_compute_store().project(project_id, claims.address)
-        record = _get_compute_dispatch_journal().public_get(
-            canonical_compute_job_id(job_reference)
-        )
-        if record["project_reference"] != project_id:
+        journal = _get_compute_dispatch_journal()
+        job_id = canonical_compute_job_id(job_reference)
+        internal = journal.get(job_id)
+        intent = ComputeDispatchIntent.from_dict(internal["intent"])
+        if intent.project_reference != project_id:
             raise ComputeIntentNotFound("dispatch intent not found")
+        if internal["stage"] == "workload_claim_pending":
+            record, _claim, _created, _confirmed = (
+                _recover_compute_dispatch_workload_claim(
+                    journal=journal,
+                    ingress=_get_compute_workload_ingress(),
+                    intent=intent,
+                    updated_at=int(_time.time()),
+                )
+            )
+        else:
+            record = journal.public_get(job_id)
         return record
     except ComputeIntentNotFound as exc:
         raise HTTPException(404, "Exact-asset dispatch intent not found") from exc
+    except ComputeIntentConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ComputeRuntimePolicyError as exc:
         raise HTTPException(400, str(exc)) from exc
     except ComputeRuntimeStateError as exc:
         raise HTTPException(503, "Exact-asset dispatch journal is unavailable") from exc
     except Exception as exc:
+        from tinker_delegate.compute_workload_ingress import (
+            ComputeWorkloadIngressError,
+            ComputeWorkloadIngressUnavailable,
+        )
+
+        if isinstance(
+            exc,
+            (ComputeWorkloadIngressError, ComputeWorkloadIngressUnavailable),
+        ):
+            _raise_compute_workload_error(exc)
+        _raise_compute_store_error(exc)
+
+
+@app.post(
+    "/compute/projects/{project_id}/dispatch-intents/{job_reference}/cancel"
+)
+def compute_cancel_dispatch_intent(
+    project_id: str,
+    job_reference: str,
+    payload: ComputeDispatchCancellationRequest,
+    response: Response,
+    authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
+    """Stop one unstarted worker intent and erase its sealed workload.
+
+    This route never submits ``cancelJob`` and never claims exact-asset
+    capacity was released. The owning wallet still performs and confirms that
+    Base Sepolia transaction directly against the release-pinned vault.
+    """
+
+    import time as _time
+
+    from tinker_delegate.compute_runtime import (
+        ComputeCancellationUnavailable,
+        ComputeDispatchIntent,
+        ComputeIntentConflict,
+        ComputeIntentNotFound,
+        ComputeRuntimePolicyError,
+        ComputeRuntimeStateError,
+        canonical_compute_job_id,
+    )
+    from tinker_delegate.compute_workload_ingress import (
+        ComputeWorkloadIngressError,
+        ComputeWorkloadIngressUnavailable,
+    )
+
+    del payload  # The literal reason is validated structurally by Pydantic.
+    response.headers["Cache-Control"] = "no-store"
+    claims = _require_compute_wallet_auth(authorization)
+    now = int(_time.time())
+    try:
+        project = _get_compute_store().project(project_id, claims.address)
+        if project["role"] not in {"owner", "admin", "developer"}:
+            raise HTTPException(
+                403,
+                "project role cannot cancel dispatch intents",
+            )
+        journal = _get_compute_dispatch_journal()
+        job_id = canonical_compute_job_id(job_reference)
+        current = journal.get(job_id)
+        intent = ComputeDispatchIntent.from_dict(current["intent"])
+        if (
+            intent.project_reference != project_id
+            or intent.user != claims.address.lower()
+        ):
+            raise ComputeIntentNotFound("dispatch intent not found")
+        if current["stage"] == "workload_claim_pending":
+            _record, claim, _claim_created, _claim_confirmed = (
+                _recover_compute_dispatch_workload_claim(
+                    journal=journal,
+                    ingress=_get_compute_workload_ingress(),
+                    intent=intent,
+                    updated_at=now,
+                )
+            )
+        else:
+            claim = _compute_dispatch_claim_for_intent(intent)
+        receipt, changed = journal.cancel_before_start(
+            job_id,
+            user=claims.address,
+            idempotency_key=idempotency_key,
+            canceled_at=now,
+        )
+        ingress = _get_compute_workload_ingress()
+        ingress.release_after_cancellation_checkpoint(
+            intent.workload_id,
+            project_id=project_id,
+            claim=claim,
+            cancellation_checkpoint_commitment=receipt[
+                "cancellation_checkpoint_commitment"
+            ],
+        )
+        receipt = journal.confirm_cancellation_workload_release(
+            job_id,
+            checkpoint_commitment=receipt[
+                "cancellation_checkpoint_commitment"
+            ],
+            updated_at=int(_time.time()),
+        )
+        return {
+            **receipt,
+            "changed": changed,
+            "idempotent_replay": not changed,
+        }
+    except HTTPException:
+        raise
+    except ComputeIntentNotFound as exc:
+        raise HTTPException(
+            404,
+            "Exact-asset dispatch intent not found",
+        ) from exc
+    except (ComputeIntentConflict, ComputeCancellationUnavailable) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ComputeRuntimePolicyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except ComputeRuntimeStateError as exc:
+        raise HTTPException(
+            503,
+            "Exact-asset dispatch journal is unavailable",
+        ) from exc
+    except (ComputeWorkloadIngressError, ComputeWorkloadIngressUnavailable) as exc:
+        # The journal cancellation commits first and remains terminal. An
+        # exact replay resumes the idempotent ciphertext cleanup.
+        raise HTTPException(
+            503,
+            "Dispatch cancellation committed; workload cleanup is pending",
+        ) from exc
+    except Exception as exc:
+        _raise_compute_store_error(exc)
+
+
+@app.get(
+    "/compute/projects/{project_id}/dispatch-intents/{job_reference}/usage-receipt"
+)
+def compute_get_dispatch_usage_receipt(
+    project_id: str,
+    job_reference: str,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Return signed bounded usage and settlement evidence to project members."""
+
+    import time as _time
+
+    from tinker_delegate.compute_runtime import (
+        ComputeDispatchIntent,
+        ComputeIntentConflict,
+        ComputeIntentNotFound,
+        ComputeRuntimePolicyError,
+        ComputeRuntimeStateError,
+        ComputeUsageReceiptNotReady,
+        canonical_compute_job_id,
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+    claims = _require_compute_wallet_auth(authorization)
+    try:
+        _get_compute_store().project(project_id, claims.address)
+        journal = _get_compute_dispatch_journal()
+        job_id = canonical_compute_job_id(job_reference)
+        internal = journal.get(job_id)
+        intent = ComputeDispatchIntent.from_dict(internal["intent"])
+        if intent.project_reference != project_id:
+            raise ComputeIntentNotFound("dispatch intent not found")
+        if internal["stage"] == "workload_claim_pending":
+            _recover_compute_dispatch_workload_claim(
+                journal=journal,
+                ingress=_get_compute_workload_ingress(),
+                intent=intent,
+                updated_at=int(_time.time()),
+            )
+        receipt = journal.public_usage_receipt(job_id)
+        return receipt
+    except ComputeIntentNotFound as exc:
+        raise HTTPException(
+            404,
+            "Exact-asset dispatch intent not found",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except ComputeUsageReceiptNotReady as exc:
+        raise HTTPException(
+            409,
+            "Settled exact-asset usage receipt is not available",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except ComputeIntentConflict as exc:
+        raise HTTPException(
+            409,
+            str(exc),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except ComputeRuntimePolicyError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except ComputeRuntimeStateError as exc:
+        raise HTTPException(
+            503,
+            "Exact-asset usage receipt is unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+    except Exception as exc:
+        from tinker_delegate.compute_workload_ingress import (
+            ComputeWorkloadIngressError,
+            ComputeWorkloadIngressUnavailable,
+        )
+
+        if isinstance(
+            exc,
+            (ComputeWorkloadIngressError, ComputeWorkloadIngressUnavailable),
+        ):
+            _raise_compute_workload_error(exc)
         _raise_compute_store_error(exc)
 
 
@@ -4112,6 +7151,11 @@ def arena_create_submission(
             manifest=manifest,
             idempotency_key=idempotency_key,
             submitted_at=int(_time.time()),
+            ciphertext_receipt={
+                "blob_sha256": ingress_result.blob_sha256,
+                "ciphertext_sha256": ingress_result.ciphertext_sha256,
+                "key_id": ingress_result.key_id,
+            },
         )
     except ArenaIdempotencyConflict as exc:
         _rollback_arena_ingress_or_503(ingress, ingress_result)
@@ -4159,9 +7203,10 @@ def arena_public_submission(submission_id: str):
 def arena_public_queue(
     challenge_id: str,
     challenge_version: str,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
 ):
-    """Return a bounded queue projection without encrypted object references."""
+    """Return one stable, bounded queue page without sealed references."""
 
     from tinker_delegate.arena_store import ArenaStoreError
 
@@ -4171,6 +7216,7 @@ def arena_public_queue(
             challenge_id,
             challenge_version,
             limit=limit,
+            cursor=cursor,
         )
     except ArenaStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4182,9 +7228,10 @@ def arena_public_queue(
 def arena_public_leaderboard(
     challenge_id: str,
     challenge_version: str,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
 ):
-    """Return accepted, quantized Ladder improvements only; no exact scores."""
+    """Return one stable Ladder page with no exact score or timing egress."""
 
     from tinker_delegate.arena_store import ArenaStoreError
 
@@ -4194,6 +7241,7 @@ def arena_public_leaderboard(
             challenge_id,
             challenge_version,
             limit=limit,
+            cursor=cursor,
         )
     except ArenaStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4232,6 +7280,173 @@ def arena_owner_submissions(
         )
     except ArenaStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}"
+    "/submissions/{submission_id}/cancel"
+)
+def arena_cancel_owner_submission(
+    challenge_id: str,
+    challenge_version: str,
+    submission_id: str,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Cancel only before the worker's durable claim, then attempt unlink."""
+
+    import time as _time
+
+    from tinker_delegate.arena_store import ArenaStoreError
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_OWNER_MANAGE_SCOPE,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    store = _get_arena_store()
+    now = int(_time.time())
+    try:
+        result = store.cancel_owner_submission(
+            submission_id,
+            wallet_address=claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+            occurred_at=now,
+        )
+        _cleanup_arena_submission_ciphertext(
+            store,
+            submission_id,
+            occurred_at=now,
+        )
+        owner = store.authenticated_owner_submission(
+            submission_id,
+            wallet_address=claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+        )
+    except ArenaStoreError as exc:
+        detail = str(exc)
+        if "unknown Arena" in detail:
+            raise HTTPException(
+                status_code=404,
+                detail="Unknown Arena owner submission",
+            ) from exc
+        raise HTTPException(status_code=409, detail=detail) from exc
+    except OSError as exc:
+        # The queue transition may already be durable. The client recovers by
+        # re-reading the owner row before offering a cleanup retry.
+        raise HTTPException(
+            status_code=503,
+            detail="Arena cancellation outcome requires owner-state recovery",
+        ) from exc
+    return {
+        "surface": "arena_owner_cancellation",
+        "schema_version": 1,
+        "changed": result.changed,
+        "idempotent_replay": not result.changed,
+        "submission": owner,
+        "ciphertext_lifecycle": owner["ciphertext_lifecycle"],
+        "worker_transition_authority": False,
+        "raw_candidate_egress": False,
+        "encrypted_reference_egress": False,
+        "physical_erasure_claimed": False,
+    }
+
+
+@app.post(
+    "/arena/challenges/{challenge_id}/versions/{challenge_version}"
+    "/submissions/{submission_id}/ciphertext-erasure/retry"
+)
+def arena_retry_owner_ciphertext_erasure(
+    challenge_id: str,
+    challenge_version: str,
+    submission_id: str,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Retry terminal unlink without granting any queue-transition authority."""
+
+    import time as _time
+
+    from tinker_delegate.arena_store import (
+        ArenaStoreError,
+        CiphertextState,
+    )
+
+    _require_arena_challenge(challenge_id, challenge_version)
+    claims = _require_arena_wallet_auth(
+        authorization,
+        challenge_id=challenge_id,
+        challenge_version=challenge_version,
+        required_scope=ARENA_OWNER_MANAGE_SCOPE,
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    store = _get_arena_store()
+    try:
+        store.authenticated_owner_submission(
+            submission_id,
+            wallet_address=claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+        )
+        before = store.get_submission(submission_id)
+        if before.state.value not in {
+            "completed",
+            "failed",
+            "withheld",
+            "cancelled",
+            "expired",
+            "dead_letter",
+        }:
+            raise ArenaStoreError(
+                "ciphertext erasure retry requires a terminal Arena submission"
+            )
+        updated = _cleanup_arena_submission_ciphertext(
+            store,
+            submission_id,
+            occurred_at=int(_time.time()),
+        )
+        owner = store.authenticated_owner_submission(
+            submission_id,
+            wallet_address=claims.address,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+        )
+    except ArenaStoreError as exc:
+        detail = str(exc)
+        if "unknown Arena" in detail:
+            raise HTTPException(
+                status_code=404,
+                detail="Unknown Arena owner submission",
+            ) from exc
+        raise HTTPException(status_code=409, detail=detail) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Arena ciphertext cleanup outcome requires owner-state recovery",
+        ) from exc
+    return {
+        "surface": "arena_ciphertext_erasure",
+        "schema_version": 1,
+        "submission_id": submission_id,
+        "state": updated.ciphertext_state.value,
+        "changed": (
+            before.ciphertext_state != CiphertextState.UNLINKED
+            and updated.ciphertext_state == CiphertextState.UNLINKED
+        ),
+        "idempotent_replay": (
+            before.ciphertext_state == CiphertextState.UNLINKED
+        ),
+        "ciphertext_lifecycle": owner["ciphertext_lifecycle"],
+        "worker_transition_authority": False,
+        "ciphertext_egress": False,
+        "encrypted_reference_egress": False,
+        "physical_erasure_claimed": False,
+    }
 
 
 def _project_arena_worker_capability(
@@ -4318,6 +7533,7 @@ def arena_internal_submission(
 
     from tinker_delegate.arena_store import ArenaStoreError
 
+    _require_arena_legacy_internal_api()
     _require_configured_runtime_auth(authorization)
     try:
         return _get_arena_store().worker_submission(submission_id)
@@ -4337,15 +7553,29 @@ def arena_internal_transition(
 
     from tinker_delegate.arena_store import ArenaStoreError
 
+    _require_arena_legacy_internal_api()
     _require_configured_runtime_auth(authorization)
     store = _get_arena_store()
     try:
-        store.transition_submission(
+        updated = store.transition_submission(
             submission_id,
             payload.to_state,
             reason=payload.reason,
             occurred_at=int(_time.time()),
         )
+        if updated.state.value in {
+            "completed",
+            "failed",
+            "withheld",
+            "cancelled",
+            "expired",
+            "dead_letter",
+        }:
+            _cleanup_arena_submission_ciphertext(
+                store,
+                submission_id,
+                occurred_at=updated.updated_at,
+            )
         return store.public_submission(submission_id)
     except ArenaStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -4366,6 +7596,7 @@ def arena_internal_ladder_release(
     from tinker_delegate.arena_store import ArenaStoreError
     from tinker_delegate.ladder_release import LadderRelease
 
+    _require_arena_legacy_internal_api()
     _require_configured_runtime_auth(authorization)
     store = _get_arena_store()
     try:
@@ -4652,98 +7883,159 @@ def verify_reward_mechanism_endpoint(
     )
 
 
-def _load_review_queue_state():
-    """Load the persisted review queue, or an empty state if unconfigured."""
-    from pathlib import Path
-
-    from tinker_delegate.review_queue import ReviewQueueState, load_review_queue
-
-    path = settings.review_queue_path
-    if not path or not Path(path).exists():
-        return ReviewQueueState.empty()
-    return load_review_queue(path)
-
-
 @app.get("/review/queue")
-def review_queue_status(routed_role: str = "", authorization: str = Header(default="")):
-    """Return the bounded human-review queue (operator-only).
+def review_queue_status(
+    request: Request,
+    response: Response,
+    routed_role: str = Query(default="", max_length=64),
+    cursor: str = Query(default="", max_length=64),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """Return one rate-limited page of the hash-only review queue.
 
-    Optional ``routed_role`` filters to pending tickets for that review role.
-    Bounded: ticket/reason/reviewer hashes and counts only — no raw hold reasons
-    or reviewer identities.
+    This endpoint intentionally needs no operator bearer. It exposes no raw
+    ticket, corpus, turn, reviewer, wallet-roster, signature, or policy bytes.
     """
-    _require_runtime_auth(authorization)
-    import time as _time
 
-    from tinker_delegate.review_queue import pending_tickets_for_role
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    try:
+        peer_source = _wallet_challenge_peer_policy.source(
+            direct_peer=request.client.host if request.client else "",
+            headers=request.headers,
+        )
+        _review_queue_read_limiter.admit(peer_source)
+        return _review_authority_service().read_public_queue(
+            routed_role=routed_role,
+            cursor=cursor,
+            limit=limit,
+        )
+    except ReviewQueueReadRateLimited as exc:
+        raise HTTPException(
+            429,
+            "Review queue reads are rate limited",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except ReviewAuthorityUnavailable as exc:
+        raise HTTPException(503, "Review authority is unavailable") from exc
+    except ReviewAuthorityError as exc:
+        raise HTTPException(400, "Review queue request is invalid") from exc
 
-    state = _load_review_queue_state()
-    if routed_role:
-        pending = pending_tickets_for_role(state, routed_role, now=int(_time.time()))
+
+@app.post("/review/internal/enqueue")
+def review_queue_enqueue(
+    payload: ReviewQueueEnqueueRequestBody,
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Commit bounded internal handoffs to the anchored hash-only queue."""
+
+    _require_configured_runtime_auth(authorization)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    try:
+        service = _review_authority_service()
+        _, created_count = service.enqueue_handoffs(tuple(payload.tickets))
         return {
-            "kind": "review_queue_pending",
-            "routed_role": routed_role,
-            "pending_count": len(pending),
-            "tickets": [ticket.to_public_dict() for ticket in pending],
-            "raw_secret_egress": False,
+            "surface": "human_review_queue_ingress",
+            "schema_version": 1,
+            "created_count": created_count,
+            "idempotent_count": len(payload.tickets) - created_count,
+            "queue": service.read_public_queue(limit=50),
+            "raw_ticket_egress": False,
+            "raw_corpus_egress": False,
+            "raw_submitter_egress": False,
         }
-    return state.to_public_dict()
+    except ReviewAuthorityUnavailable as exc:
+        raise HTTPException(503, "Review authority is unavailable") from exc
+    except ReviewAuthorityError as exc:
+        raise HTTPException(
+            409, "Review handoff could not be committed safely"
+        ) from exc
+
+
+@app.post(
+    "/auth/review/challenge",
+    response_model=ReviewChallengeResponseBody,
+)
+def review_auth_challenge(
+    payload: ReviewChallengeRequestBody,
+    request: Request,
+    response: Response,
+) -> ReviewChallengeResponseBody:
+    """Issue an allowlisted, exact-ticket-state reviewer challenge."""
+
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    try:
+        # Establish the complete authority first: missing policy/context/store or
+        # production RPC configuration is a 503 and never asks a wallet to sign.
+        service = _review_authority_service()
+        _admit_wallet_challenge(request, payload.address)
+        challenge = service.issue_challenge(
+            address=payload.address,
+            ticket_ref_hash_value=payload.ticket_ref_hash,
+            decision=payload.decision,
+        )
+        return ReviewChallengeResponseBody.model_validate(
+            challenge.to_public_dict()
+        )
+    except WalletChallengeRateLimited as exc:
+        _raise_wallet_challenge_rate_limit(exc.retry_after, exc)
+    except ReviewChallengeCapacityError as exc:
+        _raise_wallet_challenge_rate_limit(
+            _wallet_challenge_limiter.window_seconds, exc
+        )
+    except ReviewAuthorityUnavailable as exc:
+        raise HTTPException(503, "Review authority is unavailable") from exc
+    except ReviewAuthorityError as exc:
+        # One response for unknown ticket, role, roster membership, self-review,
+        # and duplicate approval prevents the endpoint becoming a roster oracle.
+        raise HTTPException(403, "Review authorization denied") from exc
 
 
 @app.post("/review/decide")
-def review_decide(payload: ReviewDecideRequestBody, authorization: str = Header(default="")):
-    """Record a reviewer decision on a queued ticket; persist and return the queue.
+def review_decide(payload: ReviewDecideRequestBody, response: Response):
+    """Consume one signed challenge and durably record its exact decision.
 
-    Fail-closed by construction (via `review_queue`): the submitter cannot
-    self-approve, M-of-N thresholds are honored, and a single deny denies. The
-    decision timestamp is server-side. Requires a configured `review_queue_path`.
+    No runtime bearer or caller-provided reviewer identity is accepted. The
+    process-local nonce is consumed once, and a changed ticket head requires a
+    fresh challenge.
     """
-    _require_runtime_auth(authorization)
-    import time as _time
 
-    from tinker_delegate.review_queue import (
-        ReviewQueueError,
-        decide_review_ticket,
-        save_review_queue,
-    )
-
-    if not settings.review_queue_path:
-        raise HTTPException(503, "review queue is not configured")
-    state = _load_review_queue_state()
+    response.headers["Cache-Control"] = "no-store, max-age=0"
     try:
-        state = decide_review_ticket(
-            state,
-            payload.ticket_id,
-            decision=payload.decision,
-            reviewer_ref=payload.reviewer_ref,
-            decided_at=int(_time.time()),
-            blocked_reviewer_refs=tuple(payload.blocked_reviewer_refs),
-        )
-    except ReviewQueueError as e:
-        raise HTTPException(409, redact_text(str(e))) from e
-    save_review_queue(settings.review_queue_path, state)
-    return state.to_public_dict()
+        service = _review_authority_service()
+        service.decide(nonce=payload.nonce, signature=payload.signature)
+        return service.read_public_queue(limit=50)
+    except ReviewAuthorityUnavailable as exc:
+        raise HTTPException(503, "Review authority is unavailable") from exc
+    except ReviewAuthorityError as exc:
+        # Invalid signature, used nonce, stale ticket head, or changed identity
+        # have one bounded response and reflect no submitted bytes.
+        raise HTTPException(
+            401,
+            "Review authorization is invalid or stale",
+            headers={"WWW-Authenticate": "Signature"},
+        ) from exc
 
 
 @app.post("/review/expire")
-def review_expire(authorization: str = Header(default="")):
-    """Expire stale pending tickets at server time, persist, and return the queue.
+def review_expire(
+    response: Response,
+    authorization: str = Header(default=""),
+):
+    """Operator-only conservative expiry; it can never release a ticket."""
 
-    On-demand expiry sweep (a deployed cron/worker can poll this): a pending
-    ticket past its TTL transitions to EXPIRED with an audit event and can no
-    longer be released — fail-closed. Requires a configured `review_queue_path`.
-    """
-    _require_runtime_auth(authorization)
-    import time as _time
-
-    from tinker_delegate.review_queue import expire_review_tickets, save_review_queue
-
-    if not settings.review_queue_path:
-        raise HTTPException(503, "review queue is not configured")
-    state = _load_review_queue_state()
-    state = expire_review_tickets(state, now=int(_time.time()))
-    save_review_queue(settings.review_queue_path, state)
-    return state.to_public_dict()
+    _require_configured_runtime_auth(authorization)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    try:
+        service = _review_authority_service()
+        service.expire()
+        return service.read_public_queue(limit=50)
+    except ReviewAuthorityUnavailable as exc:
+        raise HTTPException(503, "Review authority is unavailable") from exc
+    except ReviewAuthorityError as exc:
+        raise HTTPException(
+            409, "Review expiry could not be applied safely"
+        ) from exc
 
 
 @app.get("/billing/funding-policy")
@@ -4998,6 +8290,8 @@ def policy_evaluate(
     from tinker_delegate.execution_policy_store import (
         ExecutionPolicyStoreError,
         ExecutionPolicyStoreUnavailable,
+        execution_policy_approval_domain,
+        execution_policy_approval_message,
         execution_policy_trust_context,
         verify_execution_policy_approval,
     )
@@ -5009,6 +8303,12 @@ def policy_evaluate(
         gate_access_request_payload,
     )
 
+    now = int(_time.time())
+    if payload.expires_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Execution policy decision intent is expired",
+        )
     result = gate_access_request_payload(payload.request, payload.policy)
     try:
         _get_execution_policy_store()
@@ -5024,6 +8324,25 @@ def policy_evaluate(
             payload.resource_id,
             result,
         )
+        approval_message = execution_policy_approval_message(
+            surface=payload.surface,
+            resource_id=payload.resource_id,
+            result=result,
+            expires_at=payload.expires_at,
+            approval_domain=execution_policy_approval_domain(settings),
+            approver_root_hash=current_approver_root_hash,
+            previous_decision_hash=payload.previous_decision_hash,
+        )
+        idempotency_key = _execution_policy_evaluate_idempotency_key(
+            hashlib.sha256(approval_message.encode("utf-8")).hexdigest()
+        )
+        if payload.idempotency_key and not hmac.compare_digest(
+            payload.idempotency_key, idempotency_key
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Execution policy idempotency key conflicts with request",
+            )
         (
             approver_hash,
             approval_hash,
@@ -5039,18 +8358,64 @@ def policy_evaluate(
             approval_signature=payload.approval_signature,
             previous_decision_hash=payload.previous_decision_hash,
         )
-        decision_record = _get_execution_policy_anchor_coordinator().append_and_anchor(
-            surface=payload.surface,
-            resource_id=payload.resource_id,
-            result=result,
-            recorded_at=int(_time.time()),
-            expires_at=payload.expires_at,
-            expected_previous_decision_hash=payload.previous_decision_hash,
-            approver_hash=approver_hash,
-            approval_hash=approval_hash,
-            approval_domain_hash=approval_domain_hash,
-            approver_root_hash=approver_root_hash,
-        )
+        coordinator = _get_execution_policy_anchor_coordinator()
+        try:
+            decision_record = coordinator.append_and_anchor(
+                surface=payload.surface,
+                resource_id=payload.resource_id,
+                result=result,
+                recorded_at=now,
+                expires_at=payload.expires_at,
+                expected_previous_decision_hash=(
+                    payload.previous_decision_hash
+                ),
+                approver_hash=approver_hash,
+                approval_hash=approval_hash,
+                approval_domain_hash=approval_domain_hash,
+                approver_root_hash=approver_root_hash,
+                now=now,
+            )
+        except ExecutionPolicyStoreError:
+            # An exact retry reaches this branch after the first append has
+            # already advanced the per-resource head. ``latest`` also
+            # reconciles the sole permitted intermediate state: one durable
+            # local record awaiting its exact chain anchor.
+            existing, anchor_snapshot = coordinator.latest(
+                surface=payload.surface,
+                resource_id=payload.resource_id,
+                now=now,
+            )
+            same_signed_message, exact_approval = (
+                _execution_policy_replay_match(
+                    record=existing,
+                    surface=payload.surface,
+                    resource_id=payload.resource_id,
+                    result=result,
+                    expires_at=payload.expires_at,
+                    previous_decision_hash=(
+                        payload.previous_decision_hash
+                    ),
+                    approver_hash=approver_hash,
+                    approval_hash=approval_hash,
+                    approval_domain_hash=approval_domain_hash,
+                    approver_root_hash=approver_root_hash,
+                )
+            )
+            if exact_approval:
+                decision_record = {
+                    **existing,
+                    "rollback_anchor": anchor_snapshot.to_bounded_dict(),
+                }
+            elif payload.idempotency_key and same_signed_message:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Execution policy idempotency key was already used "
+                        "for a different approval"
+                    ),
+                ) from None
+            else:
+                raise
     except ExecutionPolicyStoreUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -5312,6 +8677,7 @@ async def deal_chain_event(
         notification.event_name,
         notification.deal_id,
         block_number=notification.block_number,
+        block_hash=notification.block_hash,
         tx_hash=notification.tx_hash,
         log_index=notification.log_index,
         fields=notification.fields,
@@ -5344,7 +8710,7 @@ async def deal_notify_funded(
 
 @app.post("/deal/{deal_id}/artifact")
 async def deal_upload_artifact(deal_id: str, upload: ArtifactUpload):
-    """Seller uploads artifact payload. Local dev only; held in memory only."""
+    """Seller uploads a local-dev artifact; dstack mode also seals active state."""
     if not _plaintext_artifact_endpoint_allowed():
         raise HTTPException(
             status_code=403,
@@ -5559,6 +8925,24 @@ async def deal_resolve(deal_id: str, authorization: str = Header(default="")):
     cp = _get_control_plane()
     cp.on_deal_resolved(deal_id)
     return {"deal_id": deal_id, "resolved": True}
+
+
+@app.post("/deal/{deal_id}/chain-reorg")
+async def deal_chain_reorg(
+    deal_id: str,
+    authorization: str = Header(default=""),
+):
+    """Quarantine private state whose chain ancestry is no longer canonical."""
+
+    _require_configured_runtime_auth(authorization)
+    cp = _get_control_plane()
+    cp.on_chain_reorg(deal_id)
+    return {
+        "deal_id": deal_id,
+        "quarantined": True,
+        "seller_reupload_required": True,
+        "raw_secret_egress": False,
+    }
 
 
 @app.get("/deals")

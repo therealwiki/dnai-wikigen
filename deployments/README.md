@@ -35,10 +35,20 @@ existing object. The merge:
   and TEE-identity gates are enabled, their requirements are irreversibly
   frozen, the active and pending compose/TEE counters are all zero, and both
   addition paths remain open only for the reviewed timelocked activation flow;
-- activates DiligenceRoom only through the separate three-phase, four-day
-  minimum `configure-diligence-release.sh` flow. The final release must contain
+- activates DiligenceRoom only through the separate four-phase, six-day minimum
+  `configure-diligence-release.sh` flow. Phase 3 closes the exact release policy
+  and proposes the deployment-intent and final-authority-reviewed permanent
+  governance controller already bound immutably by the room constructor as the
+  production fee recipient;
+  phase 4 can be accepted only by that controller after the fixed delay through
+  its own reviewed EOA or contract-wallet ceremony. The operator helper never
+  broadcasts phase 4 or replaces the encrypted `dev` account; it verifies a
+  finalized direct-call receipt for an EOA or explicitly bounded event+state
+  evidence with no trace claim for a Safe/contract controller. The final
+  release must contain
   exactly one active compose hash, exactly one active TEE identity bound to that
-  compose, zero pending proposals, and permanent freezes on both addition paths;
+  compose, zero pending proposals, permanent freezes on both addition paths,
+  developer equal to the reviewed controller, and no pending developer transfer;
   emergency revocation is fail-closed and cannot be followed by replacement
   admission at the same address;
 - replaces EmailOracleAuth with a same-operator, exact-runtime-checked instance

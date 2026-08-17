@@ -2,16 +2,22 @@ import { createComponent } from "solid-js";
 import { renderToString } from "solid-js/web";
 import { describe, expect, it } from "vitest";
 import type { ComputeProject } from "../lib/compute";
+import type { ComputeWorkloadMetadata } from "../lib/computeWorkload";
 import { buildComputeWorkloadDraft } from "../lib/computeWorkloadForm";
 import { parseComputeWorkloadConfig } from "../lib/computeWorkloadConfig";
+import computeConsoleApiDoc from "../../../docs/compute-console-api.md?raw";
 import panelSource from "./ComputeWorkloadPanel.tsx?raw";
 import {
   ComputeWorkloadPanel,
+  computeWorkloadCustodyOperationIsCurrent,
   computeWorkloadDraftMutationIsAllowed,
+  computeWorkloadMetadataMatchesAuthenticatedRelease,
+  computeWorkloadMetadataMatchesHandoff,
   computeWorkloadModeDefaults,
   computeWorkloadNewSealIsAllowed,
   computeWorkloadOperationContextIsCurrent,
   computeWorkloadPanelContextKey,
+  computeWorkloadRemoteEraseIsAllowed,
   type SealedComputeWorkloadHandoff,
 } from "./ComputeWorkloadPanel";
 
@@ -56,12 +62,16 @@ const liveEnv = {
 };
 
 const handoff: SealedComputeWorkloadHandoff = {
+  origin: "browser_upload",
   payloadSizeClass: "4k",
   authorization: {
     workloadId: `wrk_${"ab".repeat(16)}`,
     workloadSchema: "dnai.compute.workload.inference.v1",
     workloadCommitment: `0x${"8".repeat(64)}`,
     manifestCommitment: `0x${"9".repeat(64)}`,
+    sourceKind: "wallet",
+    executionBindingCommitment: `sha256:${"f".repeat(64)}`,
+    recipientReleaseCommitment: `sha256:${"e".repeat(64)}`,
     operation: "inference",
     model: "qwen3_8b",
     recipe: "qwen3_8b_bounded",
@@ -72,7 +82,7 @@ const handoff: SealedComputeWorkloadHandoff = {
   },
   receipt: {
     surface: "compute_workload_ingress_receipt",
-    schema_version: 1,
+    schema_version: 2,
     workload_id: `wrk_${"ab".repeat(16)}`,
     workload_schema: "dnai.compute.workload.inference.v1",
     workload_commitment: `sha256:${"8".repeat(64)}`,
@@ -82,6 +92,22 @@ const handoff: SealedComputeWorkloadHandoff = {
     key_id: `sha256:${"c".repeat(64)}`,
     activation_commitment: `sha256:${"d".repeat(64)}`,
     recipient_release_commitment: `sha256:${"e".repeat(64)}`,
+    execution_binding: {
+      schema: "dnai.compute.workload-execution-binding.v1",
+      commitment: `sha256:${"f".repeat(64)}`,
+      source_kind: "wallet",
+      wallet_adoption_required: false,
+      device_spending_authority: false,
+    },
+    dispatch_adoption: {
+      state: "available_for_wallet_dispatch",
+      wallet_adoption_eligible: true,
+      dispatch_claimed: false,
+      claim_commitment: null,
+      funding_authority: "wallet_required",
+      device_spending_authority: false,
+      direct_deletion_allowed: true,
+    },
     created: true,
     idempotent_replay: false,
     ciphertext_egress: false,
@@ -91,6 +117,36 @@ const handoff: SealedComputeWorkloadHandoff = {
     raw_output_egress: false,
     provider_dispatch_enabled: false,
   },
+};
+
+const metadata: ComputeWorkloadMetadata = {
+  surface: "compute_workload_metadata",
+  schema_version: 2,
+  workload_id: handoff.receipt!.workload_id,
+  workload_schema: handoff.receipt!.workload_schema,
+  operation: handoff.authorization.operation,
+  model: handoff.authorization.model,
+  recipe: handoff.authorization.recipe,
+  payload_size_class: handoff.payloadSizeClass,
+  example_count_class: "none",
+  resource_caps: {
+    max_prefill_tokens: handoff.authorization.maxPrefillTokens,
+    max_sample_tokens: handoff.authorization.maxSampleTokens,
+    max_train_tokens: handoff.authorization.maxTrainTokens,
+  },
+  manifest_commitment: handoff.receipt!.manifest_commitment,
+  workload_commitment: handoff.receipt!.workload_commitment,
+  recipient_key_id: handoff.receipt!.key_id,
+  activation_commitment: handoff.receipt!.activation_commitment,
+  recipient_release_commitment: handoff.receipt!.recipient_release_commitment,
+  execution_binding: handoff.receipt!.execution_binding,
+  dispatch_adoption: handoff.receipt!.dispatch_adoption,
+  ciphertext_egress: false,
+  raw_prompt_egress: false,
+  raw_examples_egress: false,
+  raw_dataset_egress: false,
+  raw_output_egress: false,
+  provider_dispatch_enabled: false,
 };
 
 function renderPanel(input: {
@@ -105,6 +161,7 @@ function renderPanel(input: {
     delegateUrl: input.liveReady ? "https://delegate.example" : "",
     liveReady: input.liveReady ?? false,
     config: input.config ?? parseComputeWorkloadConfig({}),
+    credentialWalletAdoptionEnabled: true,
     activeHandoff: input.activeHandoff,
     onWorkloadReady: () => undefined,
     onClearWorkload: () => undefined,
@@ -124,7 +181,7 @@ describe("Compute sealed workload panel", () => {
     expect(html).toContain('<fieldset class="workload-type-picker"');
     expect(html.match(/type="radio"/g)).toHaveLength(2);
     expect(html).toContain("Modeled locally");
-    expect(html).toContain("dispatch remains blocked");
+    expect(html).toContain("separate asset authorization");
     expect(html).toContain('id="compute-private-prompt"');
     expect(html).toContain('name="inference-prompt-private"');
     expect(html).toContain("Modeled · no upload");
@@ -150,12 +207,188 @@ describe("Compute sealed workload panel", () => {
     });
     expect(html).toContain("CIPHERTEXT-ONLY INGRESS RECEIPT");
     expect(html).toContain("LIVE INGRESS · NO EXECUTION");
-    expect(html).toContain(handoff.receipt.workload_id);
+    expect(html).toContain(handoff.receipt!.workload_id);
     expect(html).toContain("No inference or training has run");
     expect(html).toContain("Continue to asset authorization");
     expect(html).toContain("4 KiB");
     expect(html).toContain("cover class");
     expect(html).not.toContain("LIVE RECEIPT");
+  });
+
+  it("renders a credential workload as wallet-funded adoption without device spend", () => {
+    const credentialMetadata: ComputeWorkloadMetadata = {
+      ...metadata,
+      execution_binding: {
+        schema: "dnai.compute.workload-execution-binding.v1",
+        commitment: `sha256:${"1a".repeat(32)}`,
+        source_kind: "credential",
+        wallet_adoption_required: true,
+        device_spending_authority: false,
+      },
+      dispatch_adoption: {
+        state: "wallet_adoption_required",
+        wallet_adoption_eligible: true,
+        dispatch_claimed: false,
+        claim_commitment: null,
+        funding_authority: "wallet_required",
+        device_spending_authority: false,
+        direct_deletion_allowed: true,
+      },
+    };
+    const credentialHandoff: SealedComputeWorkloadHandoff = {
+      origin: "project_credential_adoption",
+      payloadSizeClass: "4k",
+      metadata: credentialMetadata,
+      authorization: {
+        ...handoff.authorization,
+        sourceKind: "credential",
+        executionBindingCommitment: `sha256:${"1a".repeat(32)}`,
+      },
+    };
+    const html = renderPanel({
+      config: parseComputeWorkloadConfig(liveEnv),
+      liveReady: true,
+      activeHandoff: credentialHandoff,
+    });
+    expect(html).toContain("PROJECT CREDENTIAL WORKLOAD · WALLET ADOPTION READY");
+    expect(html).toContain("Device upload selected for wallet funding");
+    expect(html).toContain("Device spending authority: no");
+    expect(html).toContain("Continue to wallet authorization");
+  });
+
+  it("separates local binding clear, live metadata recovery, and terminal server unlink", () => {
+    const html = renderPanel({
+      config: parseComputeWorkloadConfig(liveEnv),
+      liveReady: true,
+      activeHandoff: handoff,
+    });
+    expect(html).toContain('id="compute-workload-custody-title"');
+    expect(html).toContain("Inspect or terminally unlink sealed ciphertext");
+    expect(html).toContain("Clear local binding only");
+    expect(html).toContain("does not delete the server-side ciphertext");
+    expect(html).toContain("A consumed, released, already-deleted, cross-project, or unknown ciphertext cannot be terminally unlinked through this endpoint");
+    expect(html).toContain('id="compute-workload-custody-reference"');
+    expect(html).toContain(handoff.receipt!.workload_id);
+    expect(html).toContain("Inspect server");
+    expect(html).not.toContain("Unconsumed ciphertext durably erased");
+    expect(panelSource).toContain("LIVE SERVER METADATA · SEALED & UNCLAIMED");
+    expect(panelSource).toContain("Claimed · direct deletion closed");
+    expect(panelSource).toContain("no longer retrievable through this service");
+    expect(panelSource).toContain("not proof of physical-media sanitization");
+    expect(panelSource).toContain("EXACT TERMINAL SERVER-UNLINK RECEIPT");
+    expect(panelSource).toContain("RECOVERY LOOKUP · NO DELETION RECEIPT");
+    expect(panelSource).toContain("deleted=true");
+    expect(panelSource).toContain("ciphertext_egress=false");
+    expect(panelSource).toContain("Clear local binding");
+    expect(panelSource).toContain("ABSENT · CAUSE UNPROVEN");
+    expect(panelSource).not.toContain("Permanent erase destroys");
+    expect(panelSource).not.toContain("Review permanent erase");
+    expect(panelSource).not.toContain("Confirm remote erase");
+    expect(panelSource).not.toContain("Unconsumed ciphertext durably erased");
+  });
+
+  it("binds recovered metadata to the exact handoff and stable authenticated release", () => {
+    expect(computeWorkloadMetadataMatchesHandoff(metadata, handoff)).toBe(true);
+    expect(computeWorkloadMetadataMatchesAuthenticatedRelease(metadata, {
+      key_id: metadata.recipient_key_id,
+      recipient_release_commitment: metadata.recipient_release_commitment,
+    })).toBe(true);
+    expect(computeWorkloadMetadataMatchesHandoff({
+      ...metadata,
+      manifest_commitment: `sha256:${"f".repeat(64)}`,
+    }, handoff)).toBe(false);
+    expect(computeWorkloadMetadataMatchesAuthenticatedRelease(metadata, {
+      key_id: metadata.recipient_key_id,
+      recipient_release_commitment: `sha256:${"f".repeat(64)}`,
+    })).toBe(false);
+  });
+
+  it("permits terminal server unlink only for an exact write role and release-verified sealed record", () => {
+    for (const role of ["owner", "admin", "developer"] as const) {
+      expect(computeWorkloadRemoteEraseIsAllowed({
+        projectRole: role,
+        metadataAvailable: true,
+        releaseVerified: true,
+        directDeletionAllowed: true,
+        operationInFlight: false,
+      })).toBe(true);
+    }
+    expect(computeWorkloadRemoteEraseIsAllowed({
+      projectRole: "viewer",
+      metadataAvailable: true,
+      releaseVerified: true,
+      directDeletionAllowed: true,
+      operationInFlight: false,
+    })).toBe(false);
+    expect(computeWorkloadRemoteEraseIsAllowed({
+      projectRole: "owner",
+      metadataAvailable: false,
+      releaseVerified: true,
+      directDeletionAllowed: true,
+      operationInFlight: false,
+    })).toBe(false);
+    expect(computeWorkloadRemoteEraseIsAllowed({
+      projectRole: "owner",
+      metadataAvailable: true,
+      releaseVerified: false,
+      directDeletionAllowed: true,
+      operationInFlight: false,
+    })).toBe(false);
+    expect(computeWorkloadRemoteEraseIsAllowed({
+      projectRole: "owner",
+      metadataAvailable: true,
+      releaseVerified: true,
+      directDeletionAllowed: true,
+      operationInFlight: true,
+    })).toBe(false);
+    expect(computeWorkloadRemoteEraseIsAllowed({
+      projectRole: "owner",
+      metadataAvailable: true,
+      releaseVerified: true,
+      directDeletionAllowed: false,
+      operationInFlight: false,
+    })).toBe(false);
+  });
+
+  it("rejects deferred custody results after wallet, authority, or reference revision drift", () => {
+    const base = {
+      expectedContextKey: "wallet-project-release-a",
+      currentContextKey: "wallet-project-release-a",
+      expectedCustodyRevision: 4,
+      currentCustodyRevision: 4,
+      expectedAuthorizationVersion: 8,
+      currentAuthorizationVersion: 8,
+      expectedWallet: project.members[0].address,
+      currentWallet: project.members[0].address,
+      correctChain: true,
+    };
+    expect(computeWorkloadCustodyOperationIsCurrent(base)).toBe(true);
+    expect(computeWorkloadCustodyOperationIsCurrent({
+      ...base,
+      currentContextKey: "wallet-project-release-b",
+    })).toBe(false);
+    expect(computeWorkloadCustodyOperationIsCurrent({
+      ...base,
+      currentCustodyRevision: 5,
+    })).toBe(false);
+    expect(computeWorkloadCustodyOperationIsCurrent({
+      ...base,
+      currentAuthorizationVersion: 9,
+    })).toBe(false);
+    expect(computeWorkloadCustodyOperationIsCurrent({
+      ...base,
+      currentWallet: `0x${"f".repeat(40)}`,
+    })).toBe(false);
+    expect(computeWorkloadCustodyOperationIsCurrent({
+      ...base,
+      correctChain: false,
+    })).toBe(false);
+    expect(panelSource).toContain("fetchFreshCustodyMetadata(operation)");
+    expect(panelSource).toContain("fetchAuthenticatedComputeWorkloadContract");
+    expect(panelSource).toContain("fetchComputeWorkloadMetadata");
+    expect(panelSource).toContain("eraseUnconsumedComputeWorkload");
+    expect(panelSource).toContain("wallet.authorizationVersion()");
+    expect(panelSource).toContain("wallet.isCorrectChain()");
   });
 
   it("resets exact public caps across inference, training, and inference again", () => {
@@ -398,7 +631,7 @@ describe("Compute sealed workload panel", () => {
 
     // Editing, clearing, changing caps/mode, choosing a file, and a manual
     // recipient recheck all use this same guard. Even explicit discard cannot
-    // destroy retry material while the POST outcome is unresolved.
+    // remove retry material while the POST outcome is unresolved.
     expect(computeWorkloadDraftMutationIsAllowed({
       sealOperationInFlight,
       hasPendingCiphertext,
@@ -445,5 +678,18 @@ describe("Compute sealed workload panel", () => {
     expect(panelSource).toContain('setSftJsonl("")');
     expect(panelSource).toContain('setPrompt("")');
     expect(panelSource).not.toMatch(/localStorage|sessionStorage|indexedDB/);
+  });
+
+  it("documents terminal unlink as service-level non-retrievability, not media sanitization", () => {
+    expect(computeConsoleApiDoc).toMatch(/durable `deleting`\s+checkpoint\/tombstone/);
+    expect(computeConsoleApiDoc).toContain("`deleted: true`");
+    expect(computeConsoleApiDoc).toContain("`ciphertext_egress: false`");
+    expect(computeConsoleApiDoc).toContain("`raw_workload_egress: false`");
+    expect(computeConsoleApiDoc).toContain("`provider_dispatch_performed: false`");
+    expect(computeConsoleApiDoc).toContain("no longer retrievable through this service");
+    expect(computeConsoleApiDoc).toContain("proof of physical-media sanitization");
+    expect(computeConsoleApiDoc).toContain("Clear local binding only");
+    expect(computeConsoleApiDoc).toContain("sends no DELETE request");
+    expect(computeConsoleApiDoc).not.toMatch(/durably erase|permanent erase|physically erase|ciphertext destruction/i);
   });
 });

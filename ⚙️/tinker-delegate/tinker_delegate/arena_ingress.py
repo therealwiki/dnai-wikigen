@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import hmac
 import json
@@ -62,6 +63,7 @@ import re
 import stat
 import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -82,6 +84,8 @@ from tinker_delegate.crypto import TEEKeyPair
 
 
 INGRESS_SCHEMA_VERSION = 1
+INGRESS_INDEX_SCHEMA_VERSION = 2
+MIN_INGRESS_INDEX_SCHEMA_VERSION = 1
 INGRESS_ALGORITHM = "X25519-HKDF-SHA256-AES-256-GCM"
 INGRESS_ENCODING = "base64url-nopad"
 INGRESS_SERVICE = "dnai-wikigen"
@@ -132,6 +136,10 @@ class ArenaIngressCorruptError(ArenaIngressError):
 
 class ArenaIngressUnavailable(ArenaIngressError):
     """Raised when stable key custody or a storage root is unavailable."""
+
+
+class ArenaIngressErasureRetryable(ArenaIngressUnavailable):
+    """Raised after durable pending state is preserved for a later retry."""
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -1103,6 +1111,45 @@ class StoredArenaCandidateEnvelope:
 
 
 @dataclass(frozen=True)
+class ArenaIngressMetadata:
+    """Ciphertext-free index commitments used before the durable worker claim."""
+
+    sealed_reference: str = field(repr=False)
+    blob_sha256: str
+    ciphertext_sha256: str
+    aad_sha256: str
+    registry_authorization_sha256: str
+    key_id: str
+
+
+@dataclass(frozen=True)
+class ArenaIngressErasureResult:
+    """Evidence about one owned directory entry, never physical-media wiping."""
+
+    evidence: str
+    blob_sha256: str | None
+    ciphertext_sha256: str | None
+    key_id: str | None
+
+    def __post_init__(self) -> None:
+        if self.evidence not in {
+            "directory_entry_unlinked",
+            "directory_entry_absent",
+        }:
+            raise ArenaIngressError("Arena erasure evidence is unsupported")
+
+    def to_bounded_dict(self) -> dict[str, Any]:
+        return {
+            "evidence": self.evidence,
+            "blob_sha256": self.blob_sha256,
+            "ciphertext_sha256": self.ciphertext_sha256,
+            "key_id": self.key_id,
+            "ciphertext_egress": False,
+            "physical_erasure_claimed": False,
+        }
+
+
+@dataclass(frozen=True)
 class ArenaIngressResult:
     sealed_reference: str = field(repr=False)
     object_id: str = field(repr=False)
@@ -1143,8 +1190,10 @@ class _ArenaIngressIndexRecord:
     blob_sha256: str
     ciphertext_sha256: str
     aad_sha256: str
+    registry_authorization_sha256: str | None
     ciphertext_bytes: int
     key_id: str
+    storage_state: str = "retained"
 
     _FIELDS = frozenset(
         {
@@ -1155,9 +1204,14 @@ class _ArenaIngressIndexRecord:
             "blob_sha256",
             "ciphertext_sha256",
             "aad_sha256",
+            "registry_authorization_sha256",
             "ciphertext_bytes",
             "key_id",
+            "storage_state",
         }
+    )
+    _LEGACY_FIELDS = _FIELDS - frozenset(
+        {"registry_authorization_sha256", "storage_state"}
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1169,17 +1223,24 @@ class _ArenaIngressIndexRecord:
             "blob_sha256": self.blob_sha256,
             "ciphertext_sha256": self.ciphertext_sha256,
             "aad_sha256": self.aad_sha256,
+            "registry_authorization_sha256": self.registry_authorization_sha256,
             "ciphertext_bytes": self.ciphertext_bytes,
             "key_id": self.key_id,
+            "storage_state": self.storage_state,
         }
 
     @classmethod
     def from_mapping(
-        cls, payload: Mapping[str, Any]
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        legacy_schema: bool = False,
     ) -> "_ArenaIngressIndexRecord":
         try:
             _require_exact_keys(
-                payload, cls._FIELDS, label="Arena ingress index record"
+                payload,
+                cls._LEGACY_FIELDS if legacy_schema else cls._FIELDS,
+                label="Arena ingress index record",
             )
             ciphertext_bytes = _require_int(
                 payload["ciphertext_bytes"],
@@ -1215,9 +1276,28 @@ class _ArenaIngressIndexRecord:
                 aad_sha256=_require_string(
                     payload["aad_sha256"], label="aad_sha256", maximum=71
                 ),
+                registry_authorization_sha256=(
+                    None
+                    if legacy_schema
+                    or payload["registry_authorization_sha256"] is None
+                    else _require_string(
+                        payload["registry_authorization_sha256"],
+                        label="registry_authorization_sha256",
+                        maximum=71,
+                    )
+                ),
                 ciphertext_bytes=ciphertext_bytes,
                 key_id=_require_string(
                     payload["key_id"], label="key_id", maximum=71
+                ),
+                storage_state=(
+                    "retained"
+                    if legacy_schema
+                    else _require_string(
+                        payload["storage_state"],
+                        label="storage_state",
+                        maximum=32,
+                    )
                 ),
             )
         except ArenaIngressError as exc:
@@ -1236,6 +1316,17 @@ class _ArenaIngressIndexRecord:
                 raise ArenaIngressCorruptError(
                     "Arena ingress index contains a malformed hash"
                 )
+        if (
+            record.registry_authorization_sha256 is not None
+            and not _SHA256.fullmatch(record.registry_authorization_sha256)
+        ):
+            raise ArenaIngressCorruptError(
+                "Arena ingress registry authorization hash is malformed"
+            )
+        if record.storage_state not in {"retained", "unlink_pending"}:
+            raise ArenaIngressCorruptError(
+                "Arena ingress storage lifecycle is unsupported"
+            )
         if not _OBJECT_ID.fullmatch(record.object_id):
             raise ArenaIngressCorruptError("Arena ingress object id is malformed")
         if record.sealed_reference != f"sealed://arena/{record.object_id}":
@@ -1274,16 +1365,25 @@ class ArenaCandidateIngressStore:
         self.root_dir = Path(root_dir)
         self.blob_dir = self.root_dir / "envelopes"
         self.index_path = self.root_dir / "index.json"
+        self._lock_path = self.root_dir.with_name(f".{self.root_dir.name}.lock")
         self._lock = threading.RLock()
+        self._operation_depth = 0
+        self._operation_fd: int | None = None
+        self._loaded_index_schema_version = INGRESS_INDEX_SCHEMA_VERSION
         _secure_directory(self.root_dir)
         _secure_directory(self.blob_dir)
-        with self._lock:
+        with self._operation(refresh=False):
             if self.index_path.exists() or self.index_path.is_symlink():
                 self._records = self._load_index()
             else:
                 self._records: dict[str, _ArenaIngressIndexRecord] = {}
                 self._persist_index(self._records)
             self._verify_records(self._records)
+            if (
+                self._loaded_index_schema_version
+                < INGRESS_INDEX_SCHEMA_VERSION
+            ):
+                self._persist_index(self._records)
 
     def put(
         self,
@@ -1328,15 +1428,22 @@ class ArenaCandidateIngressStore:
             blob_sha256=blob_sha256,
             ciphertext_sha256=envelope.ciphertext_sha256,
             aad_sha256=envelope.aad_sha256,
+            registry_authorization_sha256=(
+                binding.registry_authorization_sha256
+            ),
             ciphertext_bytes=envelope.ciphertext_bytes,
             key_id=envelope.key_id,
         )
-        with self._lock:
+        with self._operation():
             existing = self._records.get(binding.idempotency_key_hash)
             if existing is not None:
                 if not hmac.compare_digest(existing.request_hash, request_hash):
                     raise ArenaIngressConflict(
                         "Arena Idempotency-Key was already used for a different envelope"
+                    )
+                if existing.storage_state != "retained":
+                    raise ArenaIngressConflict(
+                        "Arena ciphertext lifecycle no longer accepts ingress replay"
                     )
                 self._verify_blob(existing)
                 return self._result(existing, created=False)
@@ -1364,11 +1471,12 @@ class ArenaCandidateIngressStore:
         )
         if not _SEALED_REFERENCE.fullmatch(reference):
             raise ArenaIngressError("Arena sealed reference is malformed")
-        with self._lock:
+        with self._operation():
             matches = [
                 record
                 for record in self._records.values()
                 if hmac.compare_digest(record.sealed_reference, reference)
+                and record.storage_state == "retained"
             ]
             if len(matches) != 1:
                 raise ArenaIngressError("Unknown Arena sealed reference")
@@ -1379,27 +1487,237 @@ class ArenaCandidateIngressStore:
                 sealed_reference=reference,
             )
 
+    def describe_envelope(self, sealed_reference: str) -> ArenaIngressMetadata:
+        """Return only index commitments; never open or read the ciphertext blob."""
+
+        reference = _require_string(
+            sealed_reference,
+            label="Arena sealed reference",
+            maximum=96,
+        )
+        if not _SEALED_REFERENCE.fullmatch(reference):
+            raise ArenaIngressError("Arena sealed reference is malformed")
+        with self._operation():
+            matches = [
+                record
+                for record in self._records.values()
+                if hmac.compare_digest(record.sealed_reference, reference)
+                and record.storage_state == "retained"
+            ]
+            if len(matches) != 1:
+                raise ArenaIngressError("Unknown Arena sealed reference")
+            record = matches[0]
+            if record.registry_authorization_sha256 is None:
+                raise ArenaIngressUnavailable(
+                    "Arena legacy ingress metadata cannot authorize a worker claim"
+                )
+            return ArenaIngressMetadata(
+                sealed_reference=record.sealed_reference,
+                blob_sha256=record.blob_sha256,
+                ciphertext_sha256=record.ciphertext_sha256,
+                aad_sha256=record.aad_sha256,
+                registry_authorization_sha256=(
+                    record.registry_authorization_sha256
+                ),
+                key_id=record.key_id,
+            )
+
+    def erase_envelope(
+        self,
+        sealed_reference: str,
+    ) -> ArenaIngressErasureResult:
+        """Crash-retryable unlink using a validated directory-relative name.
+
+        The index first records ``unlink_pending``. A crash before unlink leaves
+        a retryable record and file; a crash after unlink leaves a retryable
+        record whose currently absent directory entry is finalized on retry.
+        No response claims overwriting or physical-media erasure.
+        """
+
+        reference = _require_string(
+            sealed_reference,
+            label="Arena sealed reference",
+            maximum=96,
+        )
+        if not _SEALED_REFERENCE.fullmatch(reference):
+            raise ArenaIngressError("Arena sealed reference is malformed")
+        object_id = reference.removeprefix("sealed://arena/")
+        if not _OBJECT_ID.fullmatch(object_id):
+            raise ArenaIngressError("Arena sealed reference is malformed")
+        with self._operation():
+            matches = [
+                (key, record)
+                for key, record in self._records.items()
+                if hmac.compare_digest(record.sealed_reference, reference)
+            ]
+            if len(matches) > 1:
+                raise ArenaIngressCorruptError(
+                    "Arena ingress sealed reference is not unique"
+                )
+            if not matches:
+                if self._blob_entry_exists(object_id):
+                    raise ArenaIngressCorruptError(
+                        "Arena ingress contains an unindexed ciphertext object"
+                    )
+                return ArenaIngressErasureResult(
+                    evidence="directory_entry_absent",
+                    blob_sha256=None,
+                    ciphertext_sha256=None,
+                    key_id=None,
+                )
+            key, record = matches[0]
+            if record.storage_state == "retained":
+                pending = _ArenaIngressIndexRecord(
+                    **{
+                        **record.__dict__,
+                        "storage_state": "unlink_pending",
+                    }
+                )
+                pending_records = dict(self._records)
+                pending_records[key] = pending
+                self._persist_index(pending_records)
+                self._records = pending_records
+                record = pending
+            try:
+                evidence = self._unlink_blob_entry(record.object_id)
+            except (ArenaIngressCorruptError, OSError) as exc:
+                raise ArenaIngressErasureRetryable(
+                    "Arena ciphertext unlink requires a bounded retry"
+                ) from exc
+            remaining = dict(self._records)
+            remaining.pop(key, None)
+            try:
+                self._persist_index(remaining)
+            except Exception as exc:
+                raise ArenaIngressErasureRetryable(
+                    "Arena ciphertext unlink evidence could not be finalized"
+                ) from exc
+            self._records = remaining
+            return ArenaIngressErasureResult(
+                evidence=evidence,
+                blob_sha256=record.blob_sha256,
+                ciphertext_sha256=record.ciphertext_sha256,
+                key_id=record.key_id,
+            )
+
     def rollback_created(self, result: ArenaIngressResult) -> None:
         """Roll back a same-request blob if Arena queue persistence then fails."""
 
         if not isinstance(result, ArenaIngressResult) or not result.created:
             return
+        self.erase_envelope(result.sealed_reference)
+
+    @contextmanager
+    def _operation(self, *, refresh: bool = True):
+        """Serialize index mutation across API and worker processes."""
+
         with self._lock:
-            record = self._records.get(result.idempotency_hash)
-            if record is None or not hmac.compare_digest(
-                record.request_hash, result.request_hash
-            ):
-                return
-            candidate_records = dict(self._records)
-            del candidate_records[result.idempotency_hash]
-            self._persist_index(candidate_records)
-            self._records = candidate_records
-            target = self.blob_dir / f"{record.object_id}.json"
+            outermost = self._operation_depth == 0
+            if outermost:
+                descriptor = self._acquire_file_lock()
+                self._operation_fd = descriptor
+                try:
+                    if refresh:
+                        if self.index_path.is_symlink():
+                            raise ArenaIngressCorruptError(
+                                "Arena ingress index path is unsafe"
+                            )
+                        self._records = self._load_index()
+                        self._verify_records(self._records)
+                except Exception:
+                    self._release_file_lock(descriptor)
+                    self._operation_fd = None
+                    raise
+            self._operation_depth += 1
             try:
-                target.unlink()
-                _fsync_directory(self.blob_dir)
+                yield
+            finally:
+                self._operation_depth -= 1
+                if outermost:
+                    descriptor = self._operation_fd
+                    self._operation_fd = None
+                    if descriptor is not None:
+                        self._release_file_lock(descriptor)
+
+    def _acquire_file_lock(self) -> int:
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(self._lock_path, flags, 0o600)
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            return descriptor
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise ArenaIngressUnavailable(
+                "Arena ingress durable lock is unavailable"
+            ) from exc
+
+    @staticmethod
+    def _release_file_lock(descriptor: int) -> None:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _blob_filename(object_id: str) -> str:
+        if not isinstance(object_id, str) or not _OBJECT_ID.fullmatch(object_id):
+            raise ArenaIngressCorruptError("Arena ingress object id is malformed")
+        return f"{object_id}.json"
+
+    def _open_blob_directory(self) -> int:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            return os.open(self.blob_dir, flags)
+        except OSError as exc:
+            raise ArenaIngressCorruptError(
+                "Arena candidate envelope directory is unsafe"
+            ) from exc
+
+    def _blob_entry_exists(self, object_id: str) -> bool:
+        filename = self._blob_filename(object_id)
+        directory_fd = self._open_blob_directory()
+        try:
+            try:
+                os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+                return True
             except FileNotFoundError:
+                return False
+        finally:
+            os.close(directory_fd)
+
+    def _unlink_blob_entry(self, object_id: str) -> str:
+        filename = self._blob_filename(object_id)
+        directory_fd = self._open_blob_directory()
+        try:
+            try:
+                metadata = os.stat(
+                    filename,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return "directory_entry_absent"
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope path is unsafe"
+                )
+            os.unlink(filename, dir_fd=directory_fd)
+            try:
+                os.fsync(directory_fd)
+            except OSError:
                 pass
+            return "directory_entry_unlinked"
+        finally:
+            os.close(directory_fd)
 
     def _result(
         self, record: _ArenaIngressIndexRecord, *, created: bool
@@ -1443,7 +1761,7 @@ class ArenaCandidateIngressStore:
     ) -> None:
         payload = {
             "surface": "arena_candidate_ingress_index",
-            "schema_version": INGRESS_SCHEMA_VERSION,
+            "schema_version": INGRESS_INDEX_SCHEMA_VERSION,
             "records": [
                 record.to_dict()
                 for record in sorted(
@@ -1505,17 +1823,14 @@ class ArenaCandidateIngressStore:
             schema_version = _require_int(
                 payload["schema_version"],
                 label="Arena ingress index schema_version",
-                minimum=1,
-                maximum=1,
+                minimum=MIN_INGRESS_INDEX_SCHEMA_VERSION,
+                maximum=INGRESS_INDEX_SCHEMA_VERSION,
             )
             if surface != "arena_candidate_ingress_index":
                 raise ArenaIngressCorruptError(
                     "Arena ingress index surface is unsupported"
                 )
-            if schema_version != INGRESS_SCHEMA_VERSION:
-                raise ArenaIngressCorruptError(
-                    "Arena ingress index schema is unsupported"
-                )
+            self._loaded_index_schema_version = schema_version
             if payload["raw_candidate_persisted"] is not False:
                 raise ArenaIngressCorruptError(
                     "Arena ingress raw-candidate marker is unsafe"
@@ -1529,7 +1844,12 @@ class ArenaCandidateIngressStore:
                     raise ArenaIngressCorruptError(
                         "Arena ingress record must be an object"
                     )
-                record = _ArenaIngressIndexRecord.from_mapping(item)
+                record = _ArenaIngressIndexRecord.from_mapping(
+                    item,
+                    legacy_schema=(
+                        schema_version < INGRESS_INDEX_SCHEMA_VERSION
+                    ),
+                )
                 if record.idempotency_hash in records:
                     raise ArenaIngressCorruptError(
                         "Arena ingress index has a duplicate idempotency hash"
@@ -1555,8 +1875,38 @@ class ArenaCandidateIngressStore:
                 )
             object_ids.add(record.object_id)
             references.add(record.sealed_reference)
-            self._verify_blob(record)
-        expected_files = {f"{object_id}.json" for object_id in object_ids}
+            target = self.blob_dir / self._blob_filename(record.object_id)
+            try:
+                metadata = target.lstat()
+            except FileNotFoundError:
+                if record.storage_state == "unlink_pending":
+                    continue
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope is missing"
+                ) from None
+            except OSError as exc:
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope is unavailable"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(
+                metadata.st_mode
+            ):
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope path is unsafe"
+                )
+            if stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope must have mode 0600"
+                )
+            if metadata.st_size <= 0 or metadata.st_size > MAX_BLOB_FILE_BYTES:
+                raise ArenaIngressCorruptError(
+                    "Arena candidate envelope is empty or oversized"
+                )
+        expected_files = {
+            self._blob_filename(record.object_id)
+            for record in records.values()
+            if self._blob_entry_exists(record.object_id)
+        }
         try:
             actual_files = {entry.name for entry in self.blob_dir.iterdir()}
         except OSError as exc:
@@ -1574,10 +1924,18 @@ class ArenaCandidateIngressStore:
     def _load_blob(
         self, record: _ArenaIngressIndexRecord
     ) -> tuple[ArenaCandidateBinding, ArenaCandidateEnvelope]:
-        target = self.blob_dir / f"{record.object_id}.json"
+        if record.storage_state != "retained":
+            raise ArenaIngressError("Arena ciphertext is pending unlink")
+        filename = self._blob_filename(record.object_id)
+        directory_fd = self._open_blob_directory()
+        descriptor: int | None = None
         try:
-            metadata = target.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(filename, flags, dir_fd=directory_fd)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
                 raise ArenaIngressCorruptError(
                     "Arena candidate envelope path is unsafe"
                 )
@@ -1589,7 +1947,19 @@ class ArenaCandidateIngressStore:
                 raise ArenaIngressCorruptError(
                     "Arena candidate envelope is empty or oversized"
                 )
-            encoded = target.read_bytes()
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = os.read(descriptor, min(65_536, MAX_BLOB_FILE_BYTES + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_BLOB_FILE_BYTES:
+                    raise ArenaIngressCorruptError(
+                        "Arena candidate envelope is empty or oversized"
+                    )
+                chunks.append(chunk)
+            encoded = b"".join(chunks)
         except FileNotFoundError as exc:
             raise ArenaIngressCorruptError(
                 "Arena candidate envelope is missing"
@@ -1598,6 +1968,10 @@ class ArenaCandidateIngressStore:
             raise ArenaIngressCorruptError(
                 "Arena candidate envelope is unavailable"
             ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(directory_fd)
         actual_blob_hash = _sha256_bytes(
             b"arena_candidate_ciphertext_envelope_v1\0" + encoded
         )
@@ -1657,6 +2031,16 @@ class ArenaCandidateIngressStore:
                 raise ArenaIngressCorruptError(
                     f"Arena candidate envelope {label} mismatch"
                 )
+        if (
+            record.registry_authorization_sha256 is not None
+            and not hmac.compare_digest(
+                record.registry_authorization_sha256,
+                binding.registry_authorization_sha256,
+            )
+        ):
+            raise ArenaIngressCorruptError(
+                "Arena candidate envelope registry authorization mismatch"
+            )
         if record.ciphertext_bytes != envelope.ciphertext_bytes:
             raise ArenaIngressCorruptError(
                 "Arena candidate envelope ciphertext size mismatch"

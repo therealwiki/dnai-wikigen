@@ -1,6 +1,6 @@
 # TODO: Full Latent Vision Roadmap
 
-Last updated: 2026-07-21
+Last updated: 2026-07-23
 Branch context: active working tree; deployment items require a clean reviewed release
 
 This is the build backlog for turning `dnai-wikigen` from the current prototype
@@ -54,9 +54,10 @@ The current repo already has meaningful pieces:
   fresh project-owned production topology.
 - `props-room` and `whatsapp-delegate` as source/controller/data-room stubs.
 - `ARCHITECTURE.md` with the complete current architecture.
-- A complete eleven-route SolidJS product under `web/`, with EIP-6963/injected
-  EIP-1193 wallet discovery, conditional WalletConnect, and explicit
-  live/modeled/roadmap states.
+- A complete twelve-route SolidJS product under `web/`, including the modeled,
+  no-health-data-intake Health Guide, EIP-6963/injected EIP-1193 wallet
+  discovery, conditional WalletConnect, and explicit live/modeled/roadmap
+  states.
 
 The honest current gap:
 
@@ -68,7 +69,9 @@ instance/CVM binding or production provider activation exists for this release.
 Bio/private reward: sealed synthetic environments and capability-free safe IR
 exist; general hostile code, clinical/wet-lab claims, and live workers do not.
 Compute: exact-asset vault and off-chain service-credit lanes exist separately;
-paid provider dispatch lacks sufficient idempotent restart semantics.
+the source implements release-gated at-most-once provider execution with a
+fresh authenticated process heartbeat and terminal ambiguous-outcome
+quarantine, while fresh provider/CVM activation remains open.
 DNAI settlement: source and local lifecycle proofs exist; the seven contracts,
 seven CVMs, five QVL roots, and multi-day ceremonies are not deployed.
 ```
@@ -95,9 +98,13 @@ rehearsals must never be labeled `tdx`.
 - [x] Rehearse the complete fresh seven-contract suite and representative deal,
       challenge, Compute, Tinker-release, and policy-anchor lifecycles on stopped
       ephemeral Anvil without raw key material.
-- [ ] Wire the deal runtime and Arena worker executables into a disabled-by-
+- [x] Wire the deal runtime and Arena worker executables into a disabled-by-
       default hardened CVM process overlay, then test startup failure and
-      healthy structural operation.
+      healthy structural operation. The release renderer now provisions both
+      as profile-gated services, fails closed on missing release/QVL authority,
+      and exercises their structural boundaries in compose-hardening and
+      release-renderer tests. Fresh deployment and post-measurement profile
+      activation remain separate open work below.
 - [ ] Provision an independent QVL operator/signing root, final policy approver
       wallets, and a deployment-unique approval domain derived from the fresh
       Base Sepolia suite plus reviewed compose commitment.
@@ -633,16 +640,14 @@ ordinary account provisioning.
             Bounded + persisted; `tests/test_review_queue.py` (+3) prove
             two-of-two release, duplicate-approver rejection, and single-deny
             blocks a 3-of-N ticket.
-      - [x] Surface the review queue over the operator API. Done 2026-07-12:
-            auth-gated `GET /review/queue` (optional `?routed_role=`) returns the
-            bounded queue/pending tickets, and `POST /review/decide` records a
-            reviewer decision at server time and persists it to a configured
-            `review_queue_path` (409 on fail-closed rejection e.g. self-approval /
-            expired / duplicate, 503 if unconfigured). `tests/test_api_review_queue.py`
-            (8) prove auth, bounded GET, role filter, release-persists,
-            submitter-self-approval-409, unconfigured-503, on-demand expiry sweep
-            (`POST /review/expire` transitions stale tickets to EXPIRED and
-            persists, so they can no longer be released), and expire auth/config.
+      - [x] Surface the review queue over the release-gated API. The initial
+            operator API landed 2026-07-12; the current source exposes
+            rate-limited public hash-only `GET /review/queue`, runtime-authenticated
+            internal enqueue/expiry, one-time allowlisted reviewer-wallet
+            challenges, and signed `POST /review/decide` without accepting a
+            caller-supplied reviewer identity. Tests cover bounded pagination,
+            role filters, persistence, self-review, duplicate approval,
+            M-of-N release, conservative expiry, and unavailable authority.
       - [x] Enforce non-self-approval ON-CHAIN for funding operations. Done
             2026-07-12: `TinkerAccountEncumbrance.authorizeOperation` now reverts
             `SelfApprovalNotAllowed` when `requester == msg.sender` — the
@@ -652,8 +657,10 @@ ordinary account provisioning.
             self-authorize funding). `test/TinkerAccountEncumbrance.t.sol`
             +1 (`test_AuthorizerCannotSelfApprove`, owner and manager both
             rejected); full Foundry suite 135 green.
-            Remaining (partial): distinct per-reviewer auth, email-oracle
-            notification, reviewer UI, a scheduled worker to poll `/review/expire`.
+            Remaining activation work: production reviewer roster/key custody,
+            email-oracle notification, a scheduled worker to poll
+            `/review/expire`, and the fresh deployed release. The wallet-specific
+            reviewer authorization path and SolidJS UI are implemented in source.
 - [ ] `P0` Coordination composes policies by intersection, never union.
       - [x] Add a pure coordination reducer that combines per-corpus gate
             results by strict intersection. Done 2026-07-09: any deny denies,
@@ -882,9 +889,11 @@ ordinary account provisioning.
             later `DealFunded` can still notify `/deal/notify-funded`; polling
             advances only after successful dispatch and only over
             confirmation-safe blocks.
-      Production note: deployment wiring, chain-lag alerting, and any stricter
-      deep-reorg rollback policy remain covered by later operations tasks, not
-      this local watcher P0.
+      Production note: deployment wiring, chain-lag alerting, and live
+      reorg/restart evidence remain covered by later operations tasks. The
+      production deal loop now adds canonical block-hash checkpoints,
+      conservative private-state quarantine/full rewind, and adversarial
+      restart coverage on top of this local watcher P0.
 - [ ] `P0` Implement TEE-to-chain transaction signing using a dstack-derived
       Ethereum key or equivalent TEE-held signer.
       Done when `submitResult()` can be broadcast from inside the CVM without raw
@@ -1190,55 +1199,45 @@ ordinary account provisioning.
       one conserving `RoyaltyMeter` per owner (single-owner corpora unchanged).
       `tests/test_coordination.py` (+2) prove a co-owned corpus settles into two
       conserving meters (700M/300M of 1e9) and that malformed weights raise.
-      On-chain rail added 2026-07-11: `RoyaltyDistributor.sol` is the on-chain
-      counterpart of `RoyaltyLedger` — `distributeNative` / `distributeERC20` take
-      a query ref plus the conserving per-owner split (from `split_royalty`),
-      credit each co-owner's `pending[token][owner]` claimable balance
-      (conservation enforced: native `msg.value` must equal the sum; ERC20 pulls
-      the sum via `transferFrom`), and `withdraw()` / `withdraw(address)` are the
-      pull payments (CEI, bool-checked transfers). Guards reject length mismatch,
-      empty/zero-owner/zero-amount, value mismatch, and nothing-to-withdraw.
-      `test/RoyaltyDistributor.t.sol` (12) cover native/ERC20 distribute+withdraw
-      lifecycles ending with the contract holding zero, accumulation across
-      distributions, every guard, a native conservation fuzz, and (added
-      2026-07-12) a reentrancy-drain test: a malicious co-owner re-entering
-      `withdraw()` during its native payout gets exactly its single credit and
-      cannot drain other owners (CEI defeats it). Contract-surface audit complete
-      2026-07-12 historical checkpoint: the then-current five-contract surface
-      was reviewed — DiligenceRoom (settlement
-      conservation/reentrancy/fee-lock), TinkerAccountEncumbrance (fixed an
-      on-chain self-approval gap), EmailOracleAuth (kill-switch/delivery, correct +
-      well-tested), and RoyaltyDistributor (inherent conservation, reentrancy now
-      pinned). Full contract suite: 136 tests. Proven end-to-end on ephemeral Anvil 2026-07-11:
-      `scripts/prove-royalty-distributor-anvil.py` deploys the contract (Anvil
-      unlocked accounts, no raw keys/dstack), distributes a 1 ETH native royalty
-      0.7/0.3 across two co-owners, verifies each `pending` credit and that the
-      contract holds the full total, has both owners withdraw, and asserts the
-      contract drains to exactly zero (strict conservation) — emitting a bounded
-      JSON summary. Guarded test `tests/test_royalty_distributor_proof.py` runs it
-      when `DNAI_RUN_ANVIL_PROOFS=1` (verified passing live this cycle).
-      Deploying it to Base Sepolia and wiring coordination settlement to it remain
-      follow-ups.
+      Advanced 2026-07-24 (superseding the historical direct-distribution-only
+      milestone): `RoyaltyDistributor.sol` v3 now provides deterministic,
+      intent-keyed native/ERC20 prefunding reservations. After the complete fresh
+      owner-grant set fixes the allocation, the sponsor escrows the exact asset
+      and amount under a request that binds the release, room/state, query,
+      grants, allocation, sorted owner/amount hash, settlement ID/nonce,
+      execution commitment, and refund deadline. Worker admission uses the
+      compact reservation getter at one RPC-reported finalized,
+      EIP-1898-pinned block; aggregate balance and allowance are not authority.
+      After bounded Compute, the exact decision is anchored on demand, the main
+      runtime and independent Royalty QVL authorize purpose-separated EIP-712
+      digests, the sponsor wallet broadcasts the generated zero-value
+      `settleReserved` transaction, and the worker reconciles the finalized
+      receipt with the permanent reservation-settlement getter. Reservation
+      consumption, replay markers, and all owner credits are atomic; expired
+      unused reservations are sponsor-refundable; `totalReserved + totalPending`
+      remains solvent per asset. Direct `distributeNative` /
+      `distributeERC20` are retained only for compatibility.
+
+      Current local proof: the full Foundry suite passes 444/444; the focused
+      Royalty run covers 55 unit tests and five invariant properties, including
+      native and ERC20 campaigns at 256 runs/128,000 calls each; the focused
+      Python checks pass 35 tests plus 5 subtests; and the guarded Anvil group
+      passes 3/3. The distribution-plan proof now executes reservation ->
+      zero-value `settleReserved` -> finalized permanent reconciliation ->
+      conserving pull-payment. These are source/local protocol proofs, not a
+      third-party audit, Base Sepolia deployment, Phala/TDX run, independent QVL
+      verdict, or live sponsor payment.
       - [x] Bridge the settled split to the on-chain rail as a bounded plan.
-            Done 2026-07-11: `tinker_delegate.royalty_distribution_plan` turns a
-            settled per-owner split into the exact `RoyaltyDistributor.distributeNative`
-            / `distributeERC20` call — bounded calldata plus a `cast` command
-            template using `--account dev` (keystore, never a raw key). It does not
-            broadcast (operator executes it), mirroring the governance plan. The
-            hand-rolled dynamic-array (`address[]`,`uint256[]`) ABI encoding is
-            verified byte-identical to `cast calldata` for both native and ERC20
-            (`tests/test_royalty_distribution_plan.py`, 8, incl. cast cross-checks
-            and zero-owner/zero-amount/empty/bad-query-ref rejection). Proven to
-            execute end-to-end on Anvil 2026-07-11:
-            `scripts/prove-royalty-distribution-plan-anvil.py` deploys the
-            distributor, builds a native plan with the Python builder, broadcasts
-            the plan's *exact calldata*, and asserts each owner is credited the
-            planned amount, the contract holds the total, and it drains to zero
-            after withdrawal. Guarded test
-            `tests/test_royalty_distribution_plan_proof.py`
-            (`DNAI_RUN_ANVIL_PROOFS=1`, passing live this cycle). Net: the royalty
-            path is now proven from Python split → bounded plan → executed on-chain
-            distribution → conserving pull-payment withdrawal.
+            Advanced 2026-07-24: `tinker_delegate.royalty_distribution_plan`
+            recomputes the owner/amount hash and encodes exact `settleReserved`
+            calldata for an already dual-authorized, prefunded settlement. The
+            strict persisted-plan parser rejects drift before wallet handoff. It
+            emits a `--account dev` keystore `cast` template, never a raw key, and
+            does not invent entitlement, sign, or broadcast. The authoritative
+            source/test sequence is fresh grants -> deterministic reservation ->
+            finalized admission -> bounded Compute -> exact anchor plus main/QVL
+            authorization -> sponsor-wallet settlement -> finalized
+            reconciliation -> conserving owner pull-payment.
 - [x] `P1` Add settlement conservation fuzz tests for multi-owner and ERC20
       paths.
       Done 2026-07-11 in `DiligenceRoom.t.sol` (64 tests total): added 6 fuzz
@@ -4756,28 +4755,62 @@ gate, bounded result schema, forbidden-output screen) with
       all-pass, one-deny, one-hold, restricted-deny, missing consent, revoke
       mid-turn, and delegate-exceeds-scope.
       Done 2026-07-09 in `tests/test_coordination.py`.
-- [ ] `P0` Implement human-review queue:
+- [x] `P0` Implement the source/release-gated Collaboration schema-v2 control
+      plane and browser UI.
+      Persistent authenticated rooms, wallet-owned invitation decisions,
+      membership and owner-role changes, exact-current-query grants,
+      snapshot-consistent pagination, idempotent ambiguity recovery,
+      joint-consent snapshots, and quiescent archive are implemented across
+      the delegate API and SolidJS client. Local HMAC mode is explicitly
+      non-monotonic. Live dstack mode now commits every exact schema-v2 state to
+      a release/project/domain-bound Base Sepolia `ExecutionPolicyAnchor` under
+      the explicit single-RPC reported-finalized model, recovers ambiguous
+      commits through a private pending document, and fails closed on witness
+      outage, regression, or mismatch before auth, reads, or mutations. This is
+      not RPC quorum or a consensus proof.
+      - [x] Implement the separate release-gated Collaboration execution and
+            Royalty continuation. The source derives the deterministic exact
+            funding reservation only after the complete fresh grant set, admits
+            its worker only after RPC-reported finalized EIP-1898 reads of that
+            reservation and the exact Compute job, runs the bounded one-shot
+            Compute path, anchors the exact settlement decision on demand,
+            obtains purpose-separated main/QVL authorizations, emits the exact
+            sponsor-wallet `settleReserved` plan, and reconciles finalized
+            permanent state. Direct distribute calls are compatibility-only.
+      - [ ] Activate and prove that path in the fresh release. Required evidence
+            remains a project-owned Base Sepolia deployment, seven measured Phala
+            CVMs, independent QVL roots/verdicts, real sponsor reservation,
+            provider execution, wallet settlement, finalized reconciliation, and
+            matching Cloudflare candidate. Local HMAC state, test signers, DTOs,
+            heartbeats, and RPC-reported finalized reads are not TDX/QVL or
+            consensus evidence.
+- [x] `P0` Implement the source/release-gated human-review queue:
       ticket creation, role routing, release/deny, reviewer identity, expiry,
       audit trail.
       - [x] Add source-modeled handoff tickets and reviewer decisions.
             The reducer creates hold tickets with role routing, records reviewer
             release/deny identity, and returns to `gating` after release so the
-            turn must be re-gated. Durable queue storage, expiry, email
-            notification, and reviewer UI remain open.
+            turn must be re-gated.
       - [x] Add a bounded source-level review queue with expiry and audit trail.
             Done 2026-07-09: `tinker_delegate.review_queue` can enqueue
             coordination `HandoffTicket`s, persist/load a bounded JSON queue,
             filter pending tickets by reviewer role, record release/deny
             decisions with reviewer hashes, expire stale pending tickets, and
             maintain an append-only bounded audit hash. Tests prove no raw
-            review reason or reviewer identity is emitted. tee-email-oracle
-            notification, reviewer UI, and production reviewer custody remain
-            open.
+            review reason or reviewer identity is emitted.
+      - [x] Expose the current release-bound reviewer API and SolidJS UI.
+            The public strict hash-only queue, internal enqueue/expiry routes,
+            one-time allowlisted reviewer-wallet challenge, signed release/deny
+            decision, private M-of-N resolution, self-review/duplicate-vote
+            rejection, and browser-rechecked Base Sepolia rollback witness are
+            implemented. Fresh production reviewer roster/key custody,
+            tee-email-oracle notification, scheduled expiry, and deployment
+            remain separate open activation work.
 - [x] `P0` Enforce that delegated agents cannot resolve their own holds.
       Done 2026-07-09: reviewer decisions from the turn issuer/requester fail
       closed as `self_approval_denied`; tests prove the agent cannot release
       its own ticket.
-- [ ] `P0` Implement consent grants:
+- [x] `P0` Implement source-level consent grants:
       purpose, pipeline, requester, expiry, revocation, quorum, and owner.
       - [x] Add source-modeled active consent matching for owner, corpus,
             purpose, pipeline, requester, and expiry. Missing consent leaves
@@ -4846,7 +4879,11 @@ gate, bounded result schema, forbidden-output screen) with
 - [x] `P1` Implement royalty metering for multi-owner surfaced turns.
       Done 2026-07-09: all-pass plus active consent produces per-corpus owner
       `RoyaltyMeter` records with amount bands and a joint royalty hash.
-- [ ] `P1` Implement M-of-N and two-person review for high-stakes routes.
+- [x] `P1` Implement source-level M-of-N and two-person review for high-stakes
+      routes. Distinct reviewer approvals accumulate privately to the
+      role-specific threshold, duplicate votes and self-review fail closed, and
+      any deny is terminal. Activating the production reviewer roster and key
+      custody remains open.
 - [ ] `P1` Add separation-of-duties enforcement:
       data owner, session custodian, reviewer, auditor, requester, sponsor.
 - [ ] `P2` Add governance templates:
@@ -4859,10 +4896,11 @@ gate, bounded result schema, forbidden-output screen) with
 ## Milestone 7: Frontend, Cloudflare, And User Product
 
 - [x] `P0` Replace the old mockup with the repository-root `web/` product.
-      The result is SolidJS, not React, and has eleven canonical routes:
-      Overview, Arena, Diligence Rooms, Release Review, Data Vaults, Compute,
-      Delegated Tinker Account, Safeguards, Capabilities, Verify, and
-      Collaborate.
+      The result is SolidJS, not React, and has twelve canonical routes:
+      Overview, Health Guide, Arena, Diligence Rooms, Release Review, Data
+      Vaults, Compute, Delegated Tinker Account, Safeguards, Capabilities,
+      Verify, and Collaborate. Health Guide is modeled, clears on reload, and
+      accepts no health data in this release.
 - [ ] `P0` Wire the frontend to real APIs instead of synthetic data:
       health, attestation, rooms, deals, gate verdicts, funding, evaluator status,
       and result verification. The client implementations and fail-closed gates
@@ -4870,16 +4908,21 @@ gate, bounded result schema, forbidden-output screen) with
 - [x] `P0` Add wallet connection and scoped service authentication.
       EIP-6963 and injected EIP-1193 wallets are supported; WalletConnect is
       conditional on its public project ID. Seller upload, Arena, and Compute
-      use separate Base-Sepolia-bound signature/token domains. Reviewer/auditor/
-      admin effect authorization remains deployment work.
+      use separate Base-Sepolia-bound signature/token domains. Reviewer-wallet
+      effect authorization is implemented behind the release gate; production
+      reviewer roster/custody activation and separate auditor/admin effect
+      authorization remain deployment work.
 - [x] `P0` Add the seller/controller interaction shape: create room, generate a
       salted recovery receipt, set reserve/policy, and encrypt artifact ingress.
       Mutation remains locked unless the fresh contract/CVM gates pass.
 - [x] `P0` Add the buyer/sponsor interaction shape: inspect rooms, verify the
       release, fund with a budget cap, and resolve bounded results. Writes remain
       locked unless the fresh chain release passes.
-- [ ] `P0` Add reviewer flow:
-      holds queue, policy context, release/deny, reviewer signature, audit record.
+- [x] `P0` Add the source/release-gated reviewer flow:
+      strict hash-only holds queue, release context and rollback witness,
+      wallet-signed release/deny, private M-of-N threshold, self-review
+      rejection, and bounded audit record. Production reviewer custody,
+      notifications, scheduled expiry, and deployment remain open.
 - [x] `P0` Add the Trust Center: all seven contract observations, image/compose/
       CVM pins, evidence ladder, bounded receipt classifier, and release gates.
       It never promotes a modeled receipt or producer envelope to Intel TDX.
@@ -5076,6 +5119,11 @@ vision Wiki is reaching for.
 - [ ] `P1` Add disaster tests:
       CVM restarts during evaluation, chain watcher misses event, Tinker outage,
       browser crash, cleanup failure.
+      - [x] Cover an interrupted evaluation restored from versioned
+            dstack-sealed active state, death after signed-transaction prepare,
+            exact-hash manual hold on restart, lease contention, canonical
+            block-hash reorg quarantine, and a second death between cursor
+            rewind and public-state compensation.
 - [ ] `P2` Add reproducibility test:
       clean checkout -> build images -> same digest/compose hash or explainable
       delta.
@@ -5456,7 +5504,7 @@ vision Wiki is reaching for.
 - [ ] `Deploy` Accept/reject/expire the deal and withdraw funds.
 - [ ] `Deploy` Confirm cleanup of artifact and checkpoints.
 - [x] `Deploy` Deploy frontend to Cloudflare Pages.
-      The current eleven-route source candidate is available only on the
+      The current twelve-route source candidate is available only on the
       explicit `modeled-preview` preview branch. The production branch and
       custom domains remain unchanged.
 - [x] `Deploy` Preserve the prior nine-route clean-browser smoke evidence.
@@ -5464,9 +5512,9 @@ vision Wiki is reaching for.
       dialog/focus behavior, 390x844 responsive navigation, overflow, and
       browser error logs passed. No injected wallet was present; the UI
       truthfully rendered WalletConnect as unavailable when no project ID was
-      configured. This does not validate the current eleven-route candidate.
+      configured. This does not validate the current twelve-route candidate.
 - [ ] `Deploy` Complete in-app-browser visual QA and a clean-browser smoke test
-      for all eleven current routes on the modeled preview before promoting any
+      for all twelve current routes on the modeled preview before promoting any
       production frontend release.
 - [ ] `Deploy` Archive deployment evidence:
       git SHA, image digests, compose hash, quote, tx hashes, screenshots, logs
@@ -5647,7 +5695,8 @@ vision Wiki is reaching for.
        through the public paid-workflow signatures; adopting it would also
        require a separate locked upgrade review. Compute dispatch stays
        disabled.
-13. [x] Replace the old frontend mockup with the eleven-route SolidJS product.
+13. [x] Replace the old frontend mockup with the twelve-route SolidJS product,
+       including the modeled no-health-data-intake Health Guide.
 14. [ ] Generate its live environment only after the fresh seven contracts,
        seven CVMs, five challenge-bound QVL roots, and every timelocked release
        state pass the release validator.

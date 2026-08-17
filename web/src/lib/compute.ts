@@ -1,15 +1,29 @@
 import { deployment } from "../config";
-import { sha256 } from "viem";
+import {
+  encodeAbiParameters,
+  hashTypedData,
+  keccak256,
+  recoverAddress,
+  recoverMessageAddress,
+  sha256,
+  stringToHex,
+  type Address,
+  type Hex,
+} from "viem";
 import { computeVaultJobId, computeVaultProjectId } from "./computeVault";
 import {
   canonicalComputeJson,
-  computeDispatchIntentCommitment,
+  computeDispatchIntentV3Commitment,
+  computeStandaloneAuthorizationContextCommitment,
 } from "./computeDispatchCommitment";
 import { publicErrorText } from "./errorText";
 
 export {
   computeDispatchIntentCommitment,
+  computeDispatchIntentV3Commitment,
+  computeStandaloneAuthorizationContextCommitment,
   type ComputeDispatchIntentCommitmentFields,
+  type ComputeDispatchIntentV3CommitmentFields,
 } from "./computeDispatchCommitment";
 
 const MAX_RESPONSE_BYTES = 512 * 1024;
@@ -17,16 +31,63 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const RESOURCE_ID = /^[a-z][a-z0-9_]{2,63}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const COMPUTE_PROJECT_ID = /^prj_[0-9a-f]{24}$/;
+const COMPUTE_JOB_ID = /^job_[0-9a-f]{24}$/;
+const COMPUTE_LEDGER_TRANSACTION_ID = /^txn_[0-9a-f]{24}$/;
+const COMPUTE_LEDGER_GENESIS_HASH = "0".repeat(64);
+const COMPUTE_LEDGER_MAX_SEQUENCE = 40_000;
+const COMPUTE_LEDGER_MAX_TIMESTAMP = 4_102_444_800;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const NONZERO_BYTES32 = /^0x(?!0{64}$)[0-9a-f]{64}$/;
+const CANONICAL_SIGNATURE = /^0x[0-9a-f]{130}$/;
 const COMPUTE_REFERENCE = /^(?:0x(?!0{64}$)[0-9a-fA-F]{64}|[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/;
 const DECIMAL_UINT256 = /^(?:0|[1-9][0-9]{0,77})$/;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
+const COMPUTE_JOB_PUBLIC_LABEL = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
 const WORKLOAD_ID = /^wrk_[0-9a-f]{32}$/;
 const DISPATCH_MUTATION_ROUTE = "/compute/projects/{project_id}/dispatch-intents";
 const DISPATCH_STATUS_ROUTE = "/compute/projects/{project_id}/dispatch-intents/{job_reference}";
+const COMPUTE_USAGE_COMMITMENT_DOMAIN = "dnai-wikigen/compute-usage/v1\0";
+const COMPUTE_CANCELLATION_CHECKPOINT_DOMAIN =
+  "dnai-wikigen/compute-dispatch-cancellation/v1\0";
+const COMPUTE_VAULT_EIP712_NAME = "DNAI Compute Credit Vault";
+const COMPUTE_VAULT_EIP712_VERSION = "2";
+const COMPUTE_VAULT_CHAIN_ID = 84_532;
+const COMPUTE_METERED_USAGE_TYPE = "ComputeMeteredUsage(uint256 chainId,address verifyingContract,bytes32 projectId,bytes32 jobId,address user,address asset,uint256 authorizationNonce,uint256 maxAssetDebit,uint256 actualAssetDebit,uint256 authorizationExpiry,bytes32 ratePolicyCommitment,bytes32 workloadCommitment,bytes32 manifestCommitment,bytes32 dispatchIntentCommitment,address teeIdentity,bytes32 composeHash,bytes32 startCommitment,uint256 billableComputeUnits,uint256 usageStartedAt,uint256 usageEndedAt,bytes32 meteringPolicySetHash,bytes32 attestationEvidenceHash)";
+const COMPUTE_METERING_RECEIPT_FIELDS = [
+  { name: "projectId", type: "bytes32" },
+  { name: "jobId", type: "bytes32" },
+  { name: "user", type: "address" },
+  { name: "asset", type: "address" },
+  { name: "authorizationNonce", type: "uint256" },
+  { name: "maxAssetDebit", type: "uint256" },
+  { name: "actualAssetDebit", type: "uint256" },
+  { name: "authorizationExpiry", type: "uint256" },
+  { name: "ratePolicyCommitment", type: "bytes32" },
+  { name: "workloadCommitment", type: "bytes32" },
+  { name: "manifestCommitment", type: "bytes32" },
+  { name: "dispatchIntentCommitment", type: "bytes32" },
+  { name: "teeIdentity", type: "address" },
+  { name: "composeHash", type: "bytes32" },
+  { name: "startCommitment", type: "bytes32" },
+  { name: "billableComputeUnits", type: "uint256" },
+  { name: "usageStartedAt", type: "uint256" },
+  { name: "usageEndedAt", type: "uint256" },
+  { name: "usageCommitment", type: "bytes32" },
+  { name: "meteringPolicySetHash", type: "bytes32" },
+  { name: "attestationEvidenceHash", type: "bytes32" },
+  { name: "receiptExpiry", type: "uint256" },
+] as const;
+const TINKER_PROVIDER_ADAPTER_ID = "tinker_sdk_0_22_7_at_most_once_v1";
+const TINKER_PROVIDER_SDK_VERSION = "0.22.7";
+const TINKER_PROVIDER_SDK_SOURCE_SHA256 = "sha256:3ab30e85f4d1ae21ab4a8b415d382e719decd3abb31e61f6e481e8e5296dac62";
+const TINKER_PROVIDER_REQUEST_CONTRACT_SHA256 = "sha256:15f112c2e285ba2463d36fe32a47f78eda40f7ca81d7b49f6d51dc4378feef0d";
+const TINKER_PROVIDER_BASE_URL_SHA256 = "sha256:e3ae09c22c856fa175bfbeded8819e1665f39c235869a15e3e0729bfb4f39533";
+const TINKER_PROVIDER_RELEASE_SHA256 = "sha256:4264a2226ac9c850d8f053c98ac90d0f6dcbc58702919899384a9b2442b35631";
+const TINKER_TOKENIZER_PATH = "/opt/dnai/qwen3-8b-tokenizer";
+const TINKER_TOKENIZER_RELEASE_SHA256 = "sha256:d933156af48aa90a117025537b4291c2e72b62ad14ddcfa7d77f3258928cd2e0";
 const COMPILED_RECIPE_POLICY_DOMAIN = "dnai-wikigen/compute-compiled-recipe/v1\0";
 const EXECUTION_POLICY_CONTEXT_DOMAIN = "dnai-wikigen/compute-execution-policy-context/v1\0";
 const SUPPORTED_SCOPES = new Set([
@@ -44,13 +105,17 @@ export type DeviceKind = "developer_device" | "ci_service" | "autonomous_agent";
 export type ComputeScope = "jobs:create" | "jobs:read" | "workloads:create" | "workloads:delete" | "challenge:submit" | "submissions:read" | "receipts:read";
 export const COMPUTE_PUBLIC_CREDENTIAL_SCOPES = ["jobs:create", "jobs:read", "workloads:create", "workloads:delete"] as const satisfies readonly ComputeScope[];
 export type ComputeJobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export const COMPUTE_JOB_ENVIRONMENT_MARKER = "env_v1" as const;
 export type ComputeDispatchStage =
   | "intent_created"
   | "start_prepared"
   | "start_broadcast"
   | "start_confirmed"
   | "provider_dispatching"
+  | "provider_attempt_checkpointed"
+  | "provider_outcome_ambiguous"
   | "usage_finalized"
+  | "workload_released"
   | "metering_pending"
   | "metering_decided"
   | "settlement_prepared"
@@ -58,14 +123,69 @@ export type ComputeDispatchStage =
   | "settled"
   | "blocked";
 
+export interface ComputeProviderRuntimePresence {
+  authenticated: true;
+  fresh: true;
+  process_presence_only: true;
+  tdx_evidence: false;
+  observed_at: number;
+}
+
+export interface ComputeProviderGuarantees {
+  at_most_once_attempt_checkpoint: boolean;
+  terminal_ambiguity_hold: boolean;
+  ambiguous_outcome_ciphertext_retained: boolean;
+}
+
+export interface ComputeProviderCapabilityRelease {
+  schema: "dnai.compute.provider-capability.v1";
+  source_present: true;
+  release_configured: boolean;
+  provider_dispatch: boolean;
+  allowed_operations: ["inference", "training"];
+  allowed_result_policies: ["bounded_summary_receipt"];
+  adapter_id: "tinker_sdk_0_22_7_at_most_once_v1";
+  sdk_version: "0.22.7";
+  sdk_source_sha256: string;
+  request_contract_sha256: string;
+  base_url_sha256: string;
+  provider_release_sha256: string;
+  idempotency_header_role: "request_commitment_only";
+  idempotent_provider_replay_claimed: false;
+  automatic_provider_redispatch: false;
+  adapter_contract: ComputeProviderGuarantees;
+  runtime_guarantees: ComputeProviderGuarantees;
+  runtime?: ComputeProviderRuntimePresence;
+  reason: string;
+}
+
+export interface ComputeProviderCapabilityUnavailable {
+  schema: "dnai.compute.provider-capability.v1";
+  source_present: true;
+  release_configured: false;
+  provider_dispatch: false;
+  reason: "provider_capability_unavailable";
+}
+
+export type ComputeProviderCapability =
+  | ComputeProviderCapabilityRelease
+  | ComputeProviderCapabilityUnavailable;
+
 export interface ComputeDispatchCapability {
   metadata_intent_creation: boolean;
   provider_dispatch: boolean;
   independent_metering: boolean;
   settlement: boolean;
+  credential_workload_wallet_adoption: boolean;
+  wallet_adoption_authority: "project_owner_admin_developer";
+  wallet_source_transfer_supported: false;
+  device_spending_authority: false;
   exact_asset_only: true;
   mutation_route: typeof DISPATCH_MUTATION_ROUTE | null;
   status_route_template: typeof DISPATCH_STATUS_ROUTE;
+  status_recovery_by_job_reference: true;
+  automatic_provider_redispatch: false;
+  provider: ComputeProviderCapability;
   reason: string;
 }
 
@@ -113,7 +233,7 @@ export interface ComputeProject {
 
 export interface ComputeDispatchIntentStatus {
   surface: "compute_dispatch_intent";
-  schema_version: 2;
+  schema_version: 3;
   project_reference: string;
   job_reference: string;
   project_id: `0x${string}`;
@@ -138,18 +258,65 @@ export interface ComputeDispatchIntentStatus {
   workload_schema: "dnai.compute.workload.inference.v1" | "dnai.compute.workload.sft-jsonl.v1";
   manifest_commitment: `0x${string}`;
   workload_commitment: `0x${string}`;
+  authorization: ComputeDispatchAuthorization;
+  workload_authority: ComputeDispatchWorkloadAuthority;
   intent_commitment: `0x${string}`;
   execution_policy_context_hash: string;
   stage: ComputeDispatchStage;
+  workload_claim_commitment: string;
+  workload_claim_confirmed: true;
   provider_authoritative: false;
   legacy_credit_ledger_mutated: false;
-  provider_dispatch_status: "not_started" | "may_have_started" | "usage_finalized";
+  provider_dispatch_status:
+    | "not_started"
+    | "prepared"
+    | "attempt_checkpointed"
+    | "outcome_ambiguous"
+    | "usage_finalized";
   provider_dispatch_may_have_occurred: boolean;
   provider_usage_finalized: boolean;
+  idempotent_provider_replay_claimed: false;
+  automatic_provider_redispatch: false;
+  ambiguous_outcome_hold: boolean;
+  bounded_result: ComputeBoundedResult | null;
+  workload_ciphertext_released: boolean;
+  workload_ciphertext_retained_for_reconciliation: boolean;
   raw_prompt_accepted: false;
   raw_examples_accepted: false;
   arbitrary_program_accepted: false;
   exact_timing_egress: false;
+}
+
+export interface ComputeDispatchAuthorization {
+  kind: "standalone" | "collaboration_one_shot";
+  context_commitment: string;
+  server_derived: boolean;
+}
+
+export interface ComputeDispatchWorkloadAuthority {
+  source_kind: "wallet" | "credential";
+  execution_binding_commitment: string;
+  recipient_release_commitment: string;
+  funding_authority: "onchain_wallet_job";
+  device_spending_authority: false;
+}
+
+export interface ComputeBoundedResult {
+  schema: "dnai.compute.bounded-result.v1";
+  result_policy: "bounded_summary_receipt" | "score_band_hash";
+  operation: "inference" | "training";
+  outcome: "succeeded" | "failed";
+  result_class:
+    | "completed_within_authorized_caps"
+    | "provider_failed_without_raw_detail";
+  result_commitment: `0x${string}`;
+  commitment_scheme: "hmac-sha256-dstack-v1-over-dispatch-bound-private-result-and-canonical-bounded-projection";
+  score_band_released: false;
+  raw_prompt_egress: false;
+  raw_examples_egress: false;
+  raw_output_egress: false;
+  provider_identifier_egress: false;
+  exception_detail_egress: false;
 }
 
 export interface ComputeDispatchIntentInput {
@@ -171,7 +338,222 @@ export interface ComputeDispatchIntentInput {
 export interface ComputeDispatchIntentResult {
   created: boolean;
   idempotentReplay: boolean;
+  workloadClaimCreated: boolean;
+  workloadClaimConfirmed: true;
+  workloadClaimRecovered: boolean;
+  workloadClaimCommitment: string;
   intent: ComputeDispatchIntentStatus;
+}
+
+export interface ComputeDispatchCancellationReceipt {
+  surface: "compute_dispatch_cancellation";
+  schema_version: 2;
+  project_reference: string;
+  job_reference: string;
+  project_id: `0x${string}`;
+  job_id: `0x${string}`;
+  intent_commitment: `0x${string}`;
+  authorization: Omit<ComputeDispatchAuthorization, "server_derived">;
+  workload_authority: ComputeDispatchWorkloadAuthority & { funding_wallet: Address };
+  workload_claim_commitment: string;
+  workload_claim_confirmed: true;
+  cancellation_checkpoint_commitment: string;
+  canceled_at: number;
+  journal_execution_prevented: true;
+  provider_dispatch_performed: false;
+  provider_dispatch_may_have_occurred: false;
+  workload_ciphertext_released: true;
+  vault_authorization_released: false;
+  onchain_cancel_required: true;
+  exact_asset_capacity_released: false;
+  provider_authoritative: false;
+  legacy_credit_ledger_mutated: false;
+  raw_secret_egress: false;
+  changed: boolean;
+  idempotent_replay: boolean;
+}
+
+export interface ComputeDispatchCancellationAttempt {
+  schema: "dnai.compute.browser-dispatch-cancellation-attempt.v1";
+  schema_version: 1;
+  project_reference: string;
+  job_reference: string;
+  project_id: `0x${string}`;
+  job_id: `0x${string}`;
+  user: Address;
+  wallet_address: Address;
+  intent_commitment: `0x${string}`;
+  workload_id: string;
+  workload_commitment: `0x${string}`;
+  authorization: ComputeDispatchAuthorization;
+  workload_authority: ComputeDispatchWorkloadAuthority;
+  workload_claim_commitment: string;
+  idempotency_key: string;
+}
+
+type ComputeDispatchCancellationBinding = Pick<
+  ComputeDispatchCancellationAttempt,
+  | "project_reference"
+  | "job_reference"
+  | "project_id"
+  | "job_id"
+  | "user"
+  | "intent_commitment"
+  | "workload_id"
+  | "workload_commitment"
+  | "authorization"
+  | "workload_authority"
+  | "workload_claim_commitment"
+>;
+
+export interface ComputeTinkerProviderRelease {
+  schema: "dnai.compute.tinker-provider-release.v1";
+  adapter_id: "tinker_sdk_0_22_7_at_most_once_v1";
+  sdk_version: "0.22.7";
+  sdk_source_sha256: string;
+  request_contract_sha256: string;
+  base_url_sha256: string;
+  tokenizer_path: "/opt/dnai/qwen3-8b-tokenizer";
+  tokenizer_release_sha256: string;
+  idempotency_header_role: "request_commitment_only";
+  idempotent_provider_replay_claimed: false;
+  automatic_provider_redispatch: false;
+  at_most_once_attempt_checkpoint: true;
+  terminal_ambiguity_hold: true;
+  ambiguous_outcome_ciphertext_retained: true;
+  provider_authoritative_invoice: false;
+  raw_secret_egress: false;
+}
+
+export interface ComputeProviderUsageEvidence {
+  outcome: "succeeded" | "failed";
+  prefill_tokens: number;
+  sample_tokens: number;
+  training_tokens: number;
+  result_commitment: `0x${string}`;
+  provider_authoritative_invoice: false;
+}
+
+export interface ComputeSignedUsageEvidence {
+  schema: "dnai.compute-metering-request.v2";
+  block: {
+    number: number;
+    hash: `0x${string}`;
+  };
+  usage: {
+    schema: "dnai.compute-usage-envelope.v2";
+    job_id: `0x${string}`;
+    project_id: `0x${string}`;
+    user: Address;
+    asset: Address;
+    authorization_nonce: string;
+    max_asset_debit: string;
+    authorization_expiry: number;
+    rate_policy_commitment: `0x${string}`;
+    workload_commitment: `0x${string}`;
+    manifest_commitment: `0x${string}`;
+    dispatch_intent_commitment: `0x${string}`;
+    tee_identity: Address;
+    compose_hash: `0x${string}`;
+    start_commitment: `0x${string}`;
+    model: "qwen3_8b";
+    recipe: "qwen3_8b_bounded" | "qwen3_8b_lora_r32";
+    outcome: "succeeded" | "failed";
+    prefill_tokens: string;
+    sample_tokens: string;
+    training_tokens: string;
+    usage_started_at: number;
+    usage_observed_at: number;
+    raw_secret_egress: false;
+    usage_commitment: `0x${string}`;
+    tee_signature: Hex;
+  };
+}
+
+export interface ComputeIndependentMeteringEvidence {
+  schema: "dnai.compute-metering-decision.v2";
+  classification: "attested_dual_verified_metering";
+  provider_authoritative_invoice: false;
+  chain_id: 84_532;
+  vault_address: Address;
+  pinned_block_number: number;
+  pinned_block_hash: `0x${string}`;
+  policy_set_hash: `0x${string}`;
+  rate_policy_commitment: `0x${string}`;
+  workload_commitment: `0x${string}`;
+  manifest_commitment: `0x${string}`;
+  dispatch_intent_commitment: `0x${string}`;
+  asset: Address;
+  job_id: `0x${string}`;
+  usage_commitment: `0x${string}`;
+  onchain_usage_commitment: `0x${string}`;
+  actual_asset_debit: bigint;
+  billable_compute_units: bigint;
+  usage_started_at: number;
+  usage_ended_at: number;
+  attestation_evidence_hash: `0x${string}`;
+  receipt_expiry: number;
+  metering_receipt_digest: `0x${string}`;
+  metering_qvl_receipt_digest: `0x${string}`;
+  metering_verifier: Address;
+  metering_qvl_verifier: Address;
+  tee_identity: Address;
+  compose_hash: `0x${string}`;
+  raw_secret_egress: false;
+  verifier_signature: Hex;
+  qvl_signature: Hex;
+}
+
+export interface ComputeExactAssetUsageReceipt {
+  surface: "compute_exact_asset_usage_receipt";
+  schema_version: 2;
+  access: "wallet_authenticated_project_member";
+  project_reference: string;
+  job_reference: string;
+  project_id: `0x${string}`;
+  job_id: `0x${string}`;
+  intent_commitment: `0x${string}`;
+  authorization: Omit<ComputeDispatchAuthorization, "server_derived">;
+  workload_authority: ComputeDispatchWorkloadAuthority & { funding_wallet: Address };
+  workload_claim_commitment: string;
+  workload_claim_confirmed: true;
+  execution_policy_context_hash: string;
+  provider_release_sha256: string;
+  provider_release: ComputeTinkerProviderRelease;
+  provider_usage: ComputeProviderUsageEvidence;
+  bounded_result: ComputeBoundedResult;
+  signed_usage: ComputeSignedUsageEvidence;
+  independent_metering: ComputeIndependentMeteringEvidence;
+  settlement: {
+    confirmed: true;
+    chain_id: 84_532;
+    vault_address: Address;
+    transaction_hash: `0x${string}`;
+    onchain_usage_commitment: `0x${string}`;
+    actual_asset_debit: bigint;
+    billable_compute_units: bigint;
+    attestation_evidence_hash: `0x${string}`;
+    receipt_expiry: number;
+  };
+  provider_authoritative_invoice: false;
+  exact_asset_only: true;
+  legacy_credit_ledger_mutated: false;
+  raw_prompt_egress: false;
+  raw_examples_egress: false;
+  raw_output_egress: false;
+  provider_identifier_egress: false;
+  raw_transaction_egress: false;
+  browser_verification: {
+    usage_commitment_rederived: true;
+    tee_signature_recovered: true;
+    onchain_usage_commitment_rederived: true;
+    metering_receipt_digest_rederived: true;
+    metering_qvl_receipt_digest_rederived: true;
+    metering_eoa_signature_recovered: true;
+    metering_qvl_eoa_signature_recovered: true;
+    erc1271_contract_signature_checked: false;
+    release_state_anchored_in_browser: false;
+  };
 }
 
 export interface ComputeExecutionPolicyTarget {
@@ -226,17 +608,39 @@ export interface ComputeBalance {
   onchain_token: false;
 }
 
+export type ComputeLedgerKind =
+  | "testnet_grant"
+  | "job_reserve"
+  | "job_settle"
+  | "job_release"
+  | "job_cancel";
+
+export type ComputeLedgerAuthority =
+  | "operator_runtime"
+  | "wallet"
+  | "credential"
+  | "project_wallet_owner"
+  | "project_wallet_admin"
+  | "project_wallet_developer";
+
+export type ComputeLedgerSettlementStatus =
+  | "operator_testnet_only"
+  | "reserved"
+  | "provisional_internal_metering"
+  | "released_without_service_settlement"
+  | "user_canceled_before_dispatch";
+
 export interface ComputeLedgerTransaction {
   transaction_id: string;
   sequence: number;
-  kind: "testnet_grant" | "operator_grant" | "job_reserve" | "job_settle" | "job_release" | "job_cancel";
+  kind: ComputeLedgerKind;
   project_id: string;
   job_id: string | null;
   amount_credits: number;
   postings: { account: string; delta: number }[];
-  authority: string;
+  authority: ComputeLedgerAuthority;
   created_at: number;
-  settlement_status: string;
+  settlement_status: ComputeLedgerSettlementStatus;
   transaction_hash: string;
   previous_hash: string;
 }
@@ -252,6 +656,30 @@ export interface ComputeLedger {
   currency: "service_credit";
   transferable: false;
   redeemable: false;
+}
+
+export type ComputeLedgerAdjacencyState =
+  | "genesis"
+  | "visible_link"
+  | "interleaved_global"
+  | "outside_view"
+  | "invalid";
+
+export function computeLedgerAdjacency(
+  newer: ComputeLedgerTransaction,
+  older?: ComputeLedgerTransaction,
+): ComputeLedgerAdjacencyState {
+  if (newer.sequence === 1) {
+    return older === undefined && newer.previous_hash === COMPUTE_LEDGER_GENESIS_HASH
+      ? "genesis"
+      : "invalid";
+  }
+  if (newer.previous_hash === COMPUTE_LEDGER_GENESIS_HASH) return "invalid";
+  if (older === undefined) return "outside_view";
+  if (newer.sequence === older.sequence + 1) {
+    return newer.previous_hash === older.transaction_hash ? "visible_link" : "invalid";
+  }
+  return newer.sequence > older.sequence + 1 ? "interleaved_global" : "invalid";
 }
 
 export interface ComputeJob {
@@ -280,6 +708,20 @@ export interface ComputeJob {
   provider_authoritative_settlement: false;
   raw_input_persisted: false;
   raw_output_persisted: false;
+}
+
+export interface ComputeJobCreateInput {
+  name: string;
+  operation: "inference" | "training";
+  maxCredits: number;
+  resultPolicy: "bounded_summary_receipt" | "score_band_hash";
+  environmentVersion: typeof COMPUTE_JOB_ENVIRONMENT_MARKER;
+}
+
+export interface ComputeJobCreateResult {
+  created: boolean;
+  idempotentReplay: boolean;
+  job: ComputeJob;
 }
 
 export interface ComputeJobCancellationReceipt {
@@ -556,6 +998,8 @@ async function request(
   const response = await fetch(`${baseUrl()}${path}`, {
     method: options.method ?? "GET",
     credentials: "omit",
+    cache: "no-store",
+    redirect: "error",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: AbortSignal.timeout(options.timeout ?? 12_000),
@@ -631,9 +1075,24 @@ function assertCredential(value: unknown): asserts value is ComputeCredential {
 
 function assertBalance(value: unknown, projectId?: string): asserts value is ComputeBalance {
   const balance = record(value, "Compute balance");
+  exactKeys(balance, "Compute balance", [
+    "surface",
+    "schema_version",
+    "project_id",
+    "available_credits",
+    "reserved_credits",
+    "total_service_credits",
+    "unit",
+    "nominal_usd_cents_per_credit",
+    "transferable",
+    "redeemable",
+    "onchain_token",
+  ]);
   if (
     balance.surface !== "compute_credit_balance"
     || balance.schema_version !== 1
+    || typeof balance.project_id !== "string"
+    || !COMPUTE_PROJECT_ID.test(balance.project_id)
     || (projectId !== undefined && balance.project_id !== projectId)
     || balance.unit !== "service_credit"
     || balance.nominal_usd_cents_per_credit !== 1
@@ -641,31 +1100,439 @@ function assertBalance(value: unknown, projectId?: string): asserts value is Com
     || balance.redeemable !== false
     || balance.onchain_token !== false
   ) throw new Error("Compute balance failed its bounded schema checks");
-  const available = integer(balance.available_credits, "available credits", 0, 1_000_000);
-  const reserved = integer(balance.reserved_credits, "reserved credits", 0, 1_000_000);
-  if (integer(balance.total_service_credits, "total credits", 0, 1_000_000) !== available + reserved) {
+  const available = integer(balance.available_credits, "available credits", 0, 10_000_000);
+  const reserved = integer(balance.reserved_credits, "reserved credits", 0, 10_000_000);
+  if (integer(balance.total_service_credits, "total credits", 0, 10_000_000) !== available + reserved) {
     throw new Error("Compute balance does not reconcile");
   }
 }
 
+function parseComputeLedgerPostings(
+  value: unknown,
+  projectId: string,
+): { account: string; delta: number }[] {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 3) {
+    throw new Error("Compute ledger postings are malformed");
+  }
+  const supportedAccounts = new Set([
+    `project:${projectId}:available`,
+    `project:${projectId}:reserved`,
+    "system:testnet_grant_pool",
+    "system:service_revenue",
+  ]);
+  const seenAccounts = new Set<string>();
+  const postings = value.map((item) => {
+    const posting = record(item, "Compute ledger posting");
+    exactKeys(posting, "Compute ledger posting", ["account", "delta"]);
+    const account = text(posting.account, "Compute ledger account", 96);
+    if (!supportedAccounts.has(account) || seenAccounts.has(account)) {
+      throw new Error("Compute ledger account is unsupported or duplicated");
+    }
+    seenAccounts.add(account);
+    return {
+      account,
+      delta: integer(posting.delta, "Compute ledger posting delta", -10_000_000, 10_000_000),
+    };
+  });
+  if (postings.reduce((sum, posting) => sum + posting.delta, 0) !== 0) {
+    throw new Error("Compute ledger transaction does not balance");
+  }
+  return postings;
+}
+
+function ledgerPostingDelta(
+  postings: readonly { account: string; delta: number }[],
+  account: string,
+): number | undefined {
+  return postings.find((posting) => posting.account === account)?.delta;
+}
+
+function assertComputeLedgerTransactionSemantics(transaction: ComputeLedgerTransaction): void {
+  const availableAccount = `project:${transaction.project_id}:available`;
+  const reservedAccount = `project:${transaction.project_id}:reserved`;
+  const available = ledgerPostingDelta(transaction.postings, availableAccount);
+  const reserved = ledgerPostingDelta(transaction.postings, reservedAccount);
+  const grantPool = ledgerPostingDelta(transaction.postings, "system:testnet_grant_pool");
+  const serviceRevenue = ledgerPostingDelta(transaction.postings, "system:service_revenue");
+
+  if (transaction.kind === "testnet_grant") {
+    if (
+      transaction.job_id !== null
+      || transaction.authority !== "operator_runtime"
+      || transaction.settlement_status !== "operator_testnet_only"
+      || transaction.amount_credits < 1
+      || transaction.amount_credits > 1_000_000
+      || transaction.postings.length !== 2
+      || available !== transaction.amount_credits
+      || grantPool !== -transaction.amount_credits
+    ) throw new Error("Compute testnet grant transaction is inconsistent");
+    return;
+  }
+
+  if (transaction.job_id === null || !COMPUTE_JOB_ID.test(transaction.job_id)) {
+    throw new Error("Compute ledger job reference is malformed");
+  }
+
+  if (transaction.kind === "job_reserve") {
+    if (
+      !["wallet", "credential"].includes(transaction.authority)
+      || transaction.settlement_status !== "reserved"
+      || transaction.amount_credits < 1
+      || transaction.amount_credits > 500
+      || transaction.postings.length !== 2
+      || available !== -transaction.amount_credits
+      || reserved !== transaction.amount_credits
+    ) throw new Error("Compute reservation transaction is inconsistent");
+    return;
+  }
+
+  if (transaction.kind === "job_settle") {
+    const reservedDebit = reserved === undefined ? 0 : -reserved;
+    if (
+      transaction.authority !== "operator_runtime"
+      || transaction.settlement_status !== "provisional_internal_metering"
+      || transaction.amount_credits < 0
+      || transaction.amount_credits > 500
+      || transaction.postings.length !== 3
+      || reservedDebit < 1
+      || reservedDebit > 500
+      || serviceRevenue !== transaction.amount_credits
+      || available === undefined
+      || available < 0
+      || available > 500
+      || reservedDebit !== transaction.amount_credits + available
+    ) throw new Error("Compute settlement transaction is inconsistent");
+    return;
+  }
+
+  const expectedStatus = transaction.kind === "job_release"
+    ? "released_without_service_settlement"
+    : "user_canceled_before_dispatch";
+  const expectedAuthorities: readonly ComputeLedgerAuthority[] = transaction.kind === "job_release"
+    ? ["operator_runtime"]
+    : ["project_wallet_owner", "project_wallet_admin", "project_wallet_developer"];
+  if (
+    !expectedAuthorities.includes(transaction.authority)
+    || transaction.settlement_status !== expectedStatus
+    || transaction.amount_credits < 1
+    || transaction.amount_credits > 500
+    || transaction.postings.length !== 2
+    || reserved !== -transaction.amount_credits
+    || available !== transaction.amount_credits
+  ) throw new Error("Compute release transaction is inconsistent");
+}
+
+function parseComputeLedgerTransaction(
+  value: unknown,
+  projectId: string,
+): ComputeLedgerTransaction {
+  const transaction = record(value, "Compute ledger transaction");
+  exactKeys(transaction, "Compute ledger transaction", [
+    "transaction_id",
+    "sequence",
+    "kind",
+    "project_id",
+    "job_id",
+    "amount_credits",
+    "postings",
+    "authority",
+    "created_at",
+    "settlement_status",
+    "transaction_hash",
+    "previous_hash",
+  ]);
+
+  const transactionId = text(transaction.transaction_id, "Compute ledger transaction ID", 64);
+  const kindValue = text(transaction.kind, "Compute ledger transaction kind", 64);
+  const authorityValue = text(transaction.authority, "Compute ledger transaction authority", 64);
+  const settlementStatusValue = text(transaction.settlement_status, "Compute ledger settlement status", 64);
+  const transactionHash = text(transaction.transaction_hash, "Compute ledger transaction hash", 64);
+  const previousHash = text(transaction.previous_hash, "Compute ledger previous hash", 64);
+  const kinds: readonly ComputeLedgerKind[] = [
+    "testnet_grant",
+    "job_reserve",
+    "job_settle",
+    "job_release",
+    "job_cancel",
+  ];
+  const authorities: readonly ComputeLedgerAuthority[] = [
+    "operator_runtime",
+    "wallet",
+    "credential",
+    "project_wallet_owner",
+    "project_wallet_admin",
+    "project_wallet_developer",
+  ];
+  const settlementStatuses: readonly ComputeLedgerSettlementStatus[] = [
+    "operator_testnet_only",
+    "reserved",
+    "provisional_internal_metering",
+    "released_without_service_settlement",
+    "user_canceled_before_dispatch",
+  ];
+  if (
+    !COMPUTE_LEDGER_TRANSACTION_ID.test(transactionId)
+    || !kinds.includes(kindValue as ComputeLedgerKind)
+    || transaction.project_id !== projectId
+    || (transaction.job_id !== null && (
+      typeof transaction.job_id !== "string"
+      || !COMPUTE_JOB_ID.test(transaction.job_id)
+    ))
+    || !authorities.includes(authorityValue as ComputeLedgerAuthority)
+    || !settlementStatuses.includes(settlementStatusValue as ComputeLedgerSettlementStatus)
+    || !HEX_64.test(transactionHash)
+    || !HEX_64.test(previousHash)
+    || transactionHash === previousHash
+  ) throw new Error("Compute ledger transaction failed its bounded schema checks");
+
+  const parsed: ComputeLedgerTransaction = {
+    transaction_id: transactionId,
+    sequence: integer(
+      transaction.sequence,
+      "Compute ledger sequence",
+      1,
+      COMPUTE_LEDGER_MAX_SEQUENCE,
+    ),
+    kind: kindValue as ComputeLedgerKind,
+    project_id: projectId,
+    job_id: transaction.job_id,
+    amount_credits: integer(transaction.amount_credits, "Compute ledger amount", 0, 1_000_000),
+    postings: parseComputeLedgerPostings(transaction.postings, projectId),
+    authority: authorityValue as ComputeLedgerAuthority,
+    created_at: integer(
+      transaction.created_at,
+      "Compute ledger timestamp",
+      0,
+      COMPUTE_LEDGER_MAX_TIMESTAMP,
+    ),
+    settlement_status: settlementStatusValue as ComputeLedgerSettlementStatus,
+    transaction_hash: transactionHash,
+    previous_hash: previousHash,
+  };
+  assertComputeLedgerTransactionSemantics(parsed);
+  return parsed;
+}
+
+export function parseComputeLedger(value: unknown, projectId: string): ComputeLedger {
+  if (!COMPUTE_PROJECT_ID.test(projectId)) {
+    throw new Error("Compute ledger project binding is malformed");
+  }
+  const result = record(value, "Compute ledger");
+  exactKeys(result, "Compute ledger", [
+    "surface",
+    "schema_version",
+    "project_id",
+    "balance",
+    "transactions",
+    "append_only",
+    "double_entry",
+    "currency",
+    "transferable",
+    "redeemable",
+  ]);
+  if (
+    result.surface !== "compute_ledger"
+    || result.schema_version !== 1
+    || result.project_id !== projectId
+    || result.append_only !== true
+    || result.double_entry !== true
+    || result.currency !== "service_credit"
+    || result.transferable !== false
+    || result.redeemable !== false
+    || !Array.isArray(result.transactions)
+    || result.transactions.length > 100
+  ) throw new Error("Compute ledger failed its bounded schema checks");
+
+  const balanceValue = result.balance;
+  assertBalance(balanceValue, projectId);
+  const transactions = result.transactions.map((item) => parseComputeLedgerTransaction(item, projectId));
+  const transactionIds = new Set<string>();
+  const transactionHashes = new Set<string>();
+  for (let index = 0; index < transactions.length; index += 1) {
+    const transaction = transactions[index];
+    const older = transactions[index + 1];
+    if (
+      transactionIds.has(transaction.transaction_id)
+      || transactionHashes.has(transaction.transaction_hash)
+      || (older !== undefined && transaction.sequence <= older.sequence)
+      || computeLedgerAdjacency(transaction, older) === "invalid"
+    ) throw new Error("Compute ledger ordering or visible hash chain is inconsistent");
+    transactionIds.add(transaction.transaction_id);
+    transactionHashes.add(transaction.transaction_hash);
+  }
+
+  return {
+    surface: "compute_ledger",
+    schema_version: 1,
+    project_id: projectId,
+    balance: balanceValue,
+    transactions,
+    append_only: true,
+    double_entry: true,
+    currency: "service_credit",
+    transferable: false,
+    redeemable: false,
+  };
+}
+
 function assertJob(value: unknown, projectId?: string): asserts value is ComputeJob {
   const job = record(value, "Compute job");
+  exactKeys(job, "Compute job", [
+    "job_id", "project_id", "name", "operation", "model", "recipe",
+    "max_credits", "actual_credits", "released_credits", "result_policy",
+    "environment_version", "status", "dispatch_status", "backend_capability",
+    "credential_id", "created_at", "updated_at", "started_at", "completed_at",
+    "metering_source", "usage_receipt_hash", "settlement_authority",
+    "provider_authoritative_settlement", "raw_input_persisted", "raw_output_persisted",
+  ]);
+  const operation = String(job.operation);
   if (
     !RESOURCE_ID.test(String(job.job_id))
     || !RESOURCE_ID.test(String(job.project_id))
     || (projectId !== undefined && job.project_id !== projectId)
-    || !["inference", "training"].includes(String(job.operation))
+    || !["inference", "training"].includes(operation)
+    || !COMPUTE_JOB_PUBLIC_LABEL.test(String(job.name))
     || job.model !== "qwen3_8b"
-    || !["qwen3_8b_bounded", "qwen3_8b_lora_r32"].includes(String(job.recipe))
+    || job.recipe !== (operation === "training" ? "qwen3_8b_lora_r32" : "qwen3_8b_bounded")
+    || !["bounded_summary_receipt", "score_band_hash"].includes(String(job.result_policy))
+    || !COMPUTE_JOB_PUBLIC_LABEL.test(String(job.environment_version))
     || !["queued", "running", "succeeded", "failed", "canceled"].includes(String(job.status))
     || job.dispatch_status !== "not_dispatched"
-    || !["existing_tinker_training_proxy", "future_inference_proxy"].includes(String(job.backend_capability))
+    || job.backend_capability !== (operation === "training" ? "existing_tinker_training_proxy" : "future_inference_proxy")
     || job.provider_authoritative_settlement !== false
     || job.raw_input_persisted !== false
     || job.raw_output_persisted !== false
   ) throw new Error("Compute job failed its bounded schema checks");
   integer(job.max_credits, "job reservation", 1, 500);
   if (job.usage_receipt_hash !== null && !SHA256.test(String(job.usage_receipt_hash))) throw new Error("Compute receipt hash is malformed");
+}
+
+function assertProviderGuarantees(
+  value: unknown,
+  label: string,
+  expected: boolean,
+): asserts value is ComputeProviderGuarantees {
+  const guarantees = record(value, label);
+  exactKeys(guarantees, label, [
+    "at_most_once_attempt_checkpoint",
+    "terminal_ambiguity_hold",
+    "ambiguous_outcome_ciphertext_retained",
+  ]);
+  if (
+    boolean(guarantees.at_most_once_attempt_checkpoint, `${label} attempt checkpoint`) !== expected
+    || boolean(guarantees.terminal_ambiguity_hold, `${label} ambiguity hold`) !== expected
+    || boolean(
+      guarantees.ambiguous_outcome_ciphertext_retained,
+      `${label} ciphertext retention`,
+    ) !== expected
+  ) throw new Error(`${label} made an unsupported guarantee`);
+}
+
+function assertProviderCapability(value: unknown): asserts value is ComputeProviderCapability {
+  const provider = record(value, "Compute provider capability");
+  if (!Object.prototype.hasOwnProperty.call(provider, "allowed_operations")) {
+    exactKeys(provider, "Compute provider capability fallback", [
+      "schema",
+      "source_present",
+      "release_configured",
+      "provider_dispatch",
+      "reason",
+    ]);
+    if (
+      provider.schema !== "dnai.compute.provider-capability.v1"
+      || provider.source_present !== true
+      || provider.release_configured !== false
+      || provider.provider_dispatch !== false
+      || provider.reason !== "provider_capability_unavailable"
+    ) throw new Error("Compute provider capability fallback is contradictory");
+    return;
+  }
+
+  const hasRuntime = Object.prototype.hasOwnProperty.call(provider, "runtime");
+  exactKeys(provider, "Compute provider capability", [
+    "schema",
+    "source_present",
+    "release_configured",
+    "provider_dispatch",
+    "allowed_operations",
+    "allowed_result_policies",
+    "adapter_id",
+    "sdk_version",
+    "sdk_source_sha256",
+    "request_contract_sha256",
+    "base_url_sha256",
+    "provider_release_sha256",
+    "idempotency_header_role",
+    "idempotent_provider_replay_claimed",
+    "automatic_provider_redispatch",
+    "adapter_contract",
+    "runtime_guarantees",
+    ...(hasRuntime ? ["runtime"] : []),
+    "reason",
+  ]);
+  const releaseConfigured = boolean(
+    provider.release_configured,
+    "provider release configuration",
+  );
+  const providerDispatch = boolean(
+    provider.provider_dispatch,
+    "provider dispatch capability",
+  );
+  const allowedOperations = provider.allowed_operations;
+  const allowedResultPolicies = provider.allowed_result_policies;
+  const reason = text(provider.reason, "provider capability reason", 96);
+  assertProviderGuarantees(
+    provider.adapter_contract,
+    "Compute provider adapter contract",
+    true,
+  );
+  assertProviderGuarantees(
+    provider.runtime_guarantees,
+    "Compute provider runtime guarantees",
+    providerDispatch,
+  );
+
+  if (hasRuntime) {
+    const runtime = record(provider.runtime, "Compute provider runtime presence");
+    exactKeys(runtime, "Compute provider runtime presence", [
+      "authenticated",
+      "fresh",
+      "process_presence_only",
+      "tdx_evidence",
+      "observed_at",
+    ]);
+    if (
+      runtime.authenticated !== true
+      || runtime.fresh !== true
+      || runtime.process_presence_only !== true
+      || runtime.tdx_evidence !== false
+    ) throw new Error("Compute provider runtime presence is contradictory");
+    integer(runtime.observed_at, "provider runtime observation", 1, 4_102_444_800);
+  }
+
+  if (
+    provider.schema !== "dnai.compute.provider-capability.v1"
+    || provider.source_present !== true
+    || !Array.isArray(allowedOperations)
+    || allowedOperations.length !== 2
+    || allowedOperations[0] !== "inference"
+    || allowedOperations[1] !== "training"
+    || !Array.isArray(allowedResultPolicies)
+    || allowedResultPolicies.length !== 1
+    || allowedResultPolicies[0] !== "bounded_summary_receipt"
+    || provider.adapter_id !== TINKER_PROVIDER_ADAPTER_ID
+    || provider.sdk_version !== TINKER_PROVIDER_SDK_VERSION
+    || provider.sdk_source_sha256 !== TINKER_PROVIDER_SDK_SOURCE_SHA256
+    || provider.request_contract_sha256 !== TINKER_PROVIDER_REQUEST_CONTRACT_SHA256
+    || provider.base_url_sha256 !== TINKER_PROVIDER_BASE_URL_SHA256
+    || provider.provider_release_sha256 !== TINKER_PROVIDER_RELEASE_SHA256
+    || provider.idempotency_header_role !== "request_commitment_only"
+    || provider.idempotent_provider_replay_claimed !== false
+    || provider.automatic_provider_redispatch !== false
+    || !/^[a-z][a-z0-9_]{2,95}$/.test(reason)
+    || (providerDispatch && !releaseConfigured)
+    || hasRuntime !== providerDispatch
+  ) throw new Error("Compute provider capability is contradictory");
 }
 
 function assertDispatchCapability(value: unknown): asserts value is ComputeDispatchCapability {
@@ -675,24 +1542,49 @@ function assertDispatchCapability(value: unknown): asserts value is ComputeDispa
     "provider_dispatch",
     "independent_metering",
     "settlement",
+    "credential_workload_wallet_adoption",
+    "wallet_adoption_authority",
+    "wallet_source_transfer_supported",
+    "device_spending_authority",
     "exact_asset_only",
     "mutation_route",
     "status_route_template",
+    "status_recovery_by_job_reference",
+    "automatic_provider_redispatch",
+    "provider",
     "reason",
   ]);
   const metadata = boolean(capability.metadata_intent_creation, "metadata intent creation capability");
   const provider = boolean(capability.provider_dispatch, "provider dispatch capability");
   const metering = boolean(capability.independent_metering, "independent metering capability");
   const settlement = boolean(capability.settlement, "settlement capability");
+  const credentialAdoption = boolean(
+    capability.credential_workload_wallet_adoption,
+    "credential workload wallet-adoption capability",
+  );
   const reason = text(capability.reason, "dispatch capability reason", 96);
+  assertProviderCapability(capability.provider);
+  const providerCapability = capability.provider;
   if (
     capability.exact_asset_only !== true
+    || capability.wallet_adoption_authority !== "project_owner_admin_developer"
+    || capability.wallet_source_transfer_supported !== false
+    || capability.device_spending_authority !== false
     || capability.status_route_template !== DISPATCH_STATUS_ROUTE
+    || capability.status_recovery_by_job_reference !== true
+    || capability.automatic_provider_redispatch !== false
     || !/^[a-z][a-z0-9_]{2,95}$/.test(reason)
     || (metadata ? capability.mutation_route !== DISPATCH_MUTATION_ROUTE : capability.mutation_route !== null)
     || (provider && !metadata)
+    || (credentialAdoption && !provider)
     || (metering && !provider)
     || (settlement && !metering)
+    || provider !== providerCapability.provider_dispatch
+    || (
+      provider
+        ? reason !== "ready_at_most_once_terminal_ambiguity_hold"
+        : reason !== providerCapability.reason
+    )
   ) throw new Error("Compute dispatch-intent capability is contradictory");
 }
 
@@ -887,31 +1779,10 @@ export async function fetchBalance(token: string, projectId: string): Promise<Co
 }
 
 export async function fetchLedger(token: string, projectId: string): Promise<ComputeLedger> {
-  const result = record(await request(`/compute/projects/${encodeURIComponent(projectId)}/ledger?limit=100`, { token }), "Compute ledger");
-  if (
-    result.surface !== "compute_ledger"
-    || result.schema_version !== 1
-    || result.project_id !== projectId
-    || result.append_only !== true
-    || result.double_entry !== true
-    || result.currency !== "service_credit"
-    || result.transferable !== false
-    || result.redeemable !== false
-    || !Array.isArray(result.transactions)
-    || result.transactions.length > 100
-  ) throw new Error("Compute ledger failed its bounded schema checks");
-  assertBalance(result.balance, projectId);
-  for (const item of result.transactions) {
-    const transaction = record(item, "Compute ledger transaction");
-    if (!RESOURCE_ID.test(String(transaction.transaction_id)) || !HEX_64.test(String(transaction.transaction_hash)) || !HEX_64.test(String(transaction.previous_hash))) {
-      throw new Error("Compute ledger transaction is malformed");
-    }
-    const postings = transaction.postings;
-    if (!Array.isArray(postings) || postings.length < 2 || postings.length > 3 || postings.reduce((sum, posting) => sum + integer(record(posting, "ledger posting").delta, "posting delta", -1_000_000, 1_000_000), 0) !== 0) {
-      throw new Error("Compute ledger transaction does not balance");
-    }
-  }
-  return result as unknown as ComputeLedger;
+  return parseComputeLedger(
+    await request(`/compute/projects/${encodeURIComponent(projectId)}/ledger?limit=100`, { token }),
+    projectId,
+  );
 }
 
 export async function listJobs(token: string, projectId: string): Promise<ComputeJob[]> {
@@ -927,7 +1798,10 @@ const DISPATCH_STAGES = new Set<ComputeDispatchStage>([
   "start_broadcast",
   "start_confirmed",
   "provider_dispatching",
+  "provider_attempt_checkpointed",
+  "provider_outcome_ambiguous",
   "usage_finalized",
+  "workload_released",
   "metering_pending",
   "metering_decided",
   "settlement_prepared",
@@ -939,7 +1813,11 @@ const PRE_PROVIDER_STAGES = new Set<ComputeDispatchStage>([
   "intent_created", "start_prepared", "start_broadcast", "start_confirmed",
 ]);
 const USAGE_FINALIZED_STAGES = new Set<ComputeDispatchStage>([
-  "usage_finalized", "metering_pending", "metering_decided",
+  "usage_finalized", "workload_released", "metering_pending", "metering_decided",
+  "settlement_prepared", "settlement_broadcast", "settled",
+]);
+const CIPHERTEXT_RELEASED_STAGES = new Set<ComputeDispatchStage>([
+  "workload_released", "metering_pending", "metering_decided",
   "settlement_prepared", "settlement_broadcast", "settled",
 ]);
 
@@ -963,6 +1841,178 @@ function nonzeroBytes32(value: unknown, label: string): `0x${string}` {
   return normalized as `0x${string}`;
 }
 
+function nonzeroSha256(value: unknown, label: string): string {
+  const normalized = typeof value === "string" ? value.toLowerCase() : "";
+  if (!/^sha256:(?!0{64}$)[0-9a-f]{64}$/.test(normalized)) {
+    throw new Error(`${label} is malformed`);
+  }
+  return normalized;
+}
+
+function parseComputeDispatchAuthorization(
+  value: unknown,
+  includeServerDerived: true,
+): ComputeDispatchAuthorization;
+function parseComputeDispatchAuthorization(
+  value: unknown,
+  includeServerDerived: false,
+): Omit<ComputeDispatchAuthorization, "server_derived">;
+function parseComputeDispatchAuthorization(
+  value: unknown,
+  includeServerDerived: boolean,
+): ComputeDispatchAuthorization | Omit<ComputeDispatchAuthorization, "server_derived"> {
+  const authorization = record(value, "Compute dispatch authorization");
+  exactKeys(
+    authorization,
+    "Compute dispatch authorization",
+    includeServerDerived
+      ? ["kind", "context_commitment", "server_derived"]
+      : ["kind", "context_commitment"],
+  );
+  const kind = String(authorization.kind);
+  if (kind !== "standalone" && kind !== "collaboration_one_shot") {
+    throw new Error("Compute dispatch authorization kind is malformed");
+  }
+  const parsed = {
+    kind,
+    context_commitment: nonzeroSha256(
+      authorization.context_commitment,
+      "dispatch authorization context",
+    ),
+    ...(includeServerDerived
+      ? {
+        server_derived: boolean(
+          authorization.server_derived,
+          "dispatch authorization server-derived flag",
+        ),
+      }
+      : {}),
+  };
+  if (
+    includeServerDerived
+    && "server_derived" in parsed
+    && parsed.server_derived !== (kind === "standalone")
+  ) {
+    throw new Error("Compute dispatch authorization derivation is contradictory");
+  }
+  return parsed as ComputeDispatchAuthorization | Omit<ComputeDispatchAuthorization, "server_derived">;
+}
+
+function parseComputeDispatchWorkloadAuthority(
+  value: unknown,
+  includeFundingWallet: true,
+): ComputeDispatchWorkloadAuthority & { funding_wallet: Address };
+function parseComputeDispatchWorkloadAuthority(
+  value: unknown,
+  includeFundingWallet: false,
+): ComputeDispatchWorkloadAuthority;
+function parseComputeDispatchWorkloadAuthority(
+  value: unknown,
+  includeFundingWallet: boolean,
+): ComputeDispatchWorkloadAuthority | (ComputeDispatchWorkloadAuthority & { funding_wallet: Address }) {
+  const authority = record(value, "Compute dispatch workload authority");
+  exactKeys(
+    authority,
+    "Compute dispatch workload authority",
+    [
+      "source_kind", "execution_binding_commitment",
+      "recipient_release_commitment", "funding_authority",
+      ...(includeFundingWallet ? ["funding_wallet"] : []),
+      "device_spending_authority",
+    ],
+  );
+  const sourceKind = String(authority.source_kind);
+  if (sourceKind !== "wallet" && sourceKind !== "credential") {
+    throw new Error("Compute workload source kind is malformed");
+  }
+  if (
+    authority.funding_authority !== "onchain_wallet_job"
+    || authority.device_spending_authority !== false
+  ) {
+    throw new Error("Compute workload funding authority is contradictory");
+  }
+  return {
+    source_kind: sourceKind,
+    execution_binding_commitment: nonzeroSha256(
+      authority.execution_binding_commitment,
+      "workload execution-binding commitment",
+    ),
+    recipient_release_commitment: nonzeroSha256(
+      authority.recipient_release_commitment,
+      "workload recipient release commitment",
+    ),
+    funding_authority: "onchain_wallet_job",
+    ...(includeFundingWallet
+      ? {
+        funding_wallet: lowerAddress(
+          authority.funding_wallet,
+          "workload funding wallet",
+          false,
+        ),
+      }
+      : {}),
+    device_spending_authority: false,
+  } as ComputeDispatchWorkloadAuthority | (ComputeDispatchWorkloadAuthority & { funding_wallet: Address });
+}
+
+function canonicalSignature(value: unknown, label: string): Hex {
+  const normalized = typeof value === "string" ? value.toLowerCase() : "";
+  if (!CANONICAL_SIGNATURE.test(normalized)) throw new Error(`${label} is malformed`);
+  return normalized as Hex;
+}
+
+function parseComputeBoundedResult(
+  value: unknown,
+  expected: {
+    operation: string;
+    resultPolicy: string;
+  },
+): ComputeBoundedResult {
+  const result = record(value, "Compute bounded provider result");
+  exactKeys(result, "Compute bounded provider result", [
+    "schema",
+    "result_policy",
+    "operation",
+    "outcome",
+    "result_class",
+    "result_commitment",
+    "commitment_scheme",
+    "score_band_released",
+    "raw_prompt_egress",
+    "raw_examples_egress",
+    "raw_output_egress",
+    "provider_identifier_egress",
+    "exception_detail_egress",
+  ]);
+  const outcome = String(result.outcome);
+  const expectedClass = outcome === "succeeded"
+    ? "completed_within_authorized_caps"
+    : "provider_failed_without_raw_detail";
+  const parsed = {
+    ...result,
+    result_commitment: nonzeroBytes32(
+      result.result_commitment,
+      "bounded result commitment",
+    ),
+  };
+  if (
+    result.schema !== "dnai.compute.bounded-result.v1"
+    || result.result_policy !== expected.resultPolicy
+    || result.operation !== expected.operation
+    || !["succeeded", "failed"].includes(outcome)
+    || result.result_class !== expectedClass
+    || result.commitment_scheme
+      !== "hmac-sha256-dstack-v1-over-dispatch-bound-private-result-and-canonical-bounded-projection"
+    || result.score_band_released !== false
+    || result.raw_prompt_egress !== false
+    || result.raw_examples_egress !== false
+    || result.raw_output_egress !== false
+    || result.provider_identifier_egress !== false
+    || result.exception_detail_egress !== false
+  ) throw new Error("Compute bounded provider result failed its bounded schema checks");
+  return parsed as ComputeBoundedResult;
+}
+
 export function parseComputeDispatchIntent(
   value: unknown,
   expected?: { projectReference?: string; jobReference?: string },
@@ -974,9 +2024,14 @@ export function parseComputeDispatchIntent(
     "user", "asset", "authorization_nonce", "max_asset_debit", "authorization_expiry",
     "rate_policy_commitment", "compose_hash", "operation", "model", "recipe", "result_policy",
     "resource_limits", "workload_id", "workload_schema", "manifest_commitment", "workload_commitment",
-    "intent_commitment", "execution_policy_context_hash", "stage", "provider_authoritative",
+    "authorization", "workload_authority", "intent_commitment",
+    "execution_policy_context_hash", "stage", "workload_claim_commitment",
+    "workload_claim_confirmed", "provider_authoritative",
     "legacy_credit_ledger_mutated", "provider_dispatch_status",
-    "provider_dispatch_may_have_occurred", "provider_usage_finalized", "raw_prompt_accepted",
+    "provider_dispatch_may_have_occurred", "provider_usage_finalized",
+    "idempotent_provider_replay_claimed", "automatic_provider_redispatch",
+    "ambiguous_outcome_hold", "bounded_result", "workload_ciphertext_released",
+    "workload_ciphertext_retained_for_reconciliation", "raw_prompt_accepted",
     "raw_examples_accepted", "arbitrary_program_accepted", "exact_timing_egress",
   ]);
   const limits = record(intent.resource_limits, "Compute dispatch resource limits");
@@ -991,7 +2046,28 @@ export function parseComputeDispatchIntent(
   const providerStatus = String(intent.provider_dispatch_status);
   const providerMayHaveStarted = boolean(intent.provider_dispatch_may_have_occurred, "provider dispatch ambiguity flag");
   const usageFinalized = boolean(intent.provider_usage_finalized, "provider usage finalization flag");
+  const idempotentReplayClaimed = boolean(
+    intent.idempotent_provider_replay_claimed,
+    "provider replay claim",
+  );
+  const automaticRedispatch = boolean(
+    intent.automatic_provider_redispatch,
+    "automatic provider redispatch",
+  );
+  const ambiguousOutcomeHold = boolean(
+    intent.ambiguous_outcome_hold,
+    "provider ambiguity hold",
+  );
+  const workloadCiphertextReleased = boolean(
+    intent.workload_ciphertext_released,
+    "workload ciphertext release",
+  );
+  const workloadCiphertextRetained = boolean(
+    intent.workload_ciphertext_retained_for_reconciliation,
+    "workload ciphertext reconciliation retention",
+  );
   const operation = String(intent.operation);
+  const resultPolicy = String(intent.result_policy);
   const recipe = String(intent.recipe);
   const maxPrefill = integer(limits.max_prefill_tokens, "maximum prefill tokens", 0, 100_000_000);
   const maxSample = integer(limits.max_sample_tokens, "maximum sample tokens", 0, 100_000_000);
@@ -1007,7 +2083,23 @@ export function parseComputeDispatchIntent(
   const workloadSchema = String(intent.workload_schema);
   const manifestCommitment = nonzeroBytes32(intent.manifest_commitment, "manifest commitment");
   const workloadCommitment = nonzeroBytes32(intent.workload_commitment, "workload commitment");
+  const authorization = parseComputeDispatchAuthorization(intent.authorization, true);
+  const workloadAuthority = parseComputeDispatchWorkloadAuthority(
+    intent.workload_authority,
+    false,
+  );
+  const workloadClaimCommitment = nonzeroSha256(
+    intent.workload_claim_commitment,
+    "workload dispatch-claim commitment",
+  );
+  const workloadClaimConfirmed = boolean(
+    intent.workload_claim_confirmed,
+    "workload dispatch-claim confirmation",
+  );
   const intentCommitment = nonzeroBytes32(intent.intent_commitment, "intent commitment");
+  const boundedResult = intent.bounded_result === null
+    ? null
+    : parseComputeBoundedResult(intent.bounded_result, { operation, resultPolicy });
   const executionPolicyContextHash = typeof intent.execution_policy_context_hash === "string"
     && HEX_64.test(intent.execution_policy_context_hash)
     ? intent.execution_policy_context_hash
@@ -1021,33 +2113,56 @@ export function parseComputeDispatchIntent(
 
   if (
     intent.surface !== "compute_dispatch_intent"
-    || intent.schema_version !== 2
+    || intent.schema_version !== 3
     || projectId !== computeVaultProjectId(projectReference)
     || jobId !== computeVaultJobId(jobReference)
     || (expectedProject !== undefined && projectReference !== expectedProject)
     || (expectedJob !== undefined && jobReference !== expectedJob)
     || maxAssetDebit === 0n
     || !DISPATCH_STAGES.has(stage)
-    || !["not_started", "may_have_started", "usage_finalized"].includes(providerStatus)
+    || ![
+      "not_started",
+      "prepared",
+      "attempt_checkpointed",
+      "outcome_ambiguous",
+      "usage_finalized",
+    ].includes(providerStatus)
     || intent.provider_authoritative !== false
     || intent.legacy_credit_ledger_mutated !== false
+    || !workloadClaimConfirmed
+    || idempotentReplayClaimed
+    || automaticRedispatch
     || intent.raw_prompt_accepted !== false
     || intent.raw_examples_accepted !== false
     || intent.arbitrary_program_accepted !== false
     || intent.exact_timing_egress !== false
     || (providerStatus === "not_started" && (providerMayHaveStarted || usageFinalized))
-    || (providerStatus === "may_have_started" && (!providerMayHaveStarted || usageFinalized))
+    || (providerStatus === "prepared" && (providerMayHaveStarted || usageFinalized))
+    || (providerStatus === "attempt_checkpointed" && (!providerMayHaveStarted || usageFinalized))
+    || (providerStatus === "outcome_ambiguous" && (!providerMayHaveStarted || usageFinalized))
     || (providerStatus === "usage_finalized" && (!providerMayHaveStarted || !usageFinalized))
     || (stage !== "blocked" && PRE_PROVIDER_STAGES.has(stage) && providerStatus !== "not_started")
-    || (stage === "provider_dispatching" && providerStatus !== "may_have_started")
+    || (stage === "provider_dispatching" && providerStatus !== "prepared")
+    || (stage === "provider_attempt_checkpointed" && providerStatus !== "attempt_checkpointed")
+    || (stage === "provider_outcome_ambiguous" && providerStatus !== "outcome_ambiguous")
     || (stage !== "blocked" && USAGE_FINALIZED_STAGES.has(stage) && providerStatus !== "usage_finalized")
+    || (
+      stage === "blocked"
+      && ["attempt_checkpointed", "outcome_ambiguous"].includes(providerStatus)
+    )
+    || ambiguousOutcomeHold !== (stage === "provider_outcome_ambiguous")
+    || usageFinalized !== (boundedResult !== null)
+    || workloadCiphertextRetained
+      !== (stage === "provider_outcome_ambiguous" && !workloadCiphertextReleased)
+    || (stage !== "blocked" && CIPHERTEXT_RELEASED_STAGES.has(stage) && !workloadCiphertextReleased)
+    || (stage !== "blocked" && !CIPHERTEXT_RELEASED_STAGES.has(stage) && workloadCiphertextReleased)
     || !["inference", "training"].includes(operation)
     || !WORKLOAD_ID.test(workloadId)
     || workloadSchema !== (operation === "inference"
       ? "dnai.compute.workload.inference.v1"
       : "dnai.compute.workload.sft-jsonl.v1")
     || intent.model !== "qwen3_8b"
-    || !["bounded_summary_receipt", "score_band_hash"].includes(String(intent.result_policy))
+    || !["bounded_summary_receipt", "score_band_hash"].includes(resultPolicy)
     || (operation === "inference" && (
       recipe !== "qwen3_8b_bounded" || maxPrefill < 1 || maxPrefill > 32_768
       || maxSample < 1 || maxSample > 4_096 || maxTrain !== 0
@@ -1058,7 +2173,24 @@ export function parseComputeDispatchIntent(
     ))
   ) throw new Error("Compute dispatch intent failed its bounded schema checks");
 
-  const expectedCommitment = computeDispatchIntentCommitment({
+  const expectedAuthorizationContext = authorization.kind === "standalone"
+    ? computeStandaloneAuthorizationContextCommitment({
+      projectId,
+      jobId,
+      user,
+      asset,
+      authorizationNonce,
+      maxAssetDebit,
+      authorizationExpiry,
+      ratePolicyCommitment,
+      workloadCommitment,
+      manifestCommitment,
+    })
+    : authorization.context_commitment;
+  if (authorization.context_commitment !== expectedAuthorizationContext) {
+    throw new Error("Compute standalone authorization context does not match its canonical vault tuple");
+  }
+  const expectedCommitment = computeDispatchIntentV3Commitment({
     projectReference,
     jobReference,
     projectId,
@@ -1073,7 +2205,7 @@ export function parseComputeDispatchIntent(
     operation,
     model: String(intent.model),
     recipe,
-    resultPolicy: String(intent.result_policy),
+    resultPolicy,
     maxPrefillTokens: maxPrefill,
     maxSampleTokens: maxSample,
     maxTrainTokens: maxTrain,
@@ -1081,6 +2213,17 @@ export function parseComputeDispatchIntent(
     workloadSchema,
     manifestCommitment,
     workloadCommitment,
+    workloadSourceKind: workloadAuthority.source_kind,
+    workloadExecutionBindingCommitment: (
+      workloadAuthority.execution_binding_commitment as `sha256:${string}`
+    ),
+    workloadRecipientReleaseCommitment: (
+      workloadAuthority.recipient_release_commitment as `sha256:${string}`
+    ),
+    authorizationKind: authorization.kind,
+    authorizationContextCommitment: (
+      authorization.context_commitment as `sha256:${string}`
+    ),
   });
   if (intentCommitment !== expectedCommitment) {
     throw new Error("Compute dispatch intent commitment does not match its canonical metadata");
@@ -1113,6 +2256,8 @@ export function parseComputeDispatchIntent(
     workload_schema: workloadSchema,
     manifest_commitment: manifestCommitment,
     workload_commitment: workloadCommitment,
+    authorization,
+    workload_authority: workloadAuthority,
     operation,
     recipe,
     resource_limits: {
@@ -1123,7 +2268,10 @@ export function parseComputeDispatchIntent(
     intent_commitment: intentCommitment,
     execution_policy_context_hash: executionPolicyContextHash,
     stage,
+    workload_claim_commitment: workloadClaimCommitment,
+    workload_claim_confirmed: true,
     provider_dispatch_status: providerStatus,
+    bounded_result: boundedResult,
   };
   return parsed as ComputeDispatchIntentStatus;
 }
@@ -1140,9 +2288,25 @@ export function canCreateComputeDispatchIntent(
     && capability.provider_dispatch === true
     && capability.independent_metering === true
     && capability.settlement === true
+    && capability.wallet_adoption_authority === "project_owner_admin_developer"
+    && capability.wallet_source_transfer_supported === false
+    && capability.device_spending_authority === false
     && capability.exact_asset_only === true
     && capability.mutation_route === DISPATCH_MUTATION_ROUTE
     && capability.status_route_template === DISPATCH_STATUS_ROUTE
+    && capability.status_recovery_by_job_reference === true
+    && capability.automatic_provider_redispatch === false
+    && capability.provider.release_configured === true
+    && capability.provider.provider_dispatch === true
+    && "runtime_guarantees" in capability.provider
+    && capability.provider.runtime_guarantees.at_most_once_attempt_checkpoint === true
+    && capability.provider.runtime_guarantees.terminal_ambiguity_hold === true
+    && capability.provider.runtime_guarantees.ambiguous_outcome_ciphertext_retained === true
+    && capability.provider.idempotent_provider_replay_claimed === false
+    && capability.provider.automatic_provider_redispatch === false
+    && "runtime" in capability.provider
+    && capability.provider.runtime?.authenticated === true
+    && capability.provider.runtime.fresh === true
   );
 }
 
@@ -1197,6 +2361,1062 @@ export async function fetchComputeDispatchIntent(
     { token },
   );
   return parseComputeDispatchIntent(result, { projectReference: project, jobReference: job });
+}
+
+export function canCancelComputeDispatchIntent(
+  status: ComputeDispatchIntentStatus | undefined,
+  project?: ComputeProject,
+  walletAddress?: string,
+): boolean {
+  if (!status) return false;
+  const normalizedWallet = walletAddress?.toLowerCase();
+  return status.stage === "intent_created"
+    && status.provider_dispatch_status === "not_started"
+    && status.provider_dispatch_may_have_occurred === false
+    && status.provider_usage_finalized === false
+    && status.bounded_result === null
+    && status.workload_ciphertext_released === false
+    && status.workload_ciphertext_retained_for_reconciliation === false
+    && (
+      project === undefined
+      || (
+        project.project_id === status.project_reference
+        && ["owner", "admin", "developer"].includes(project.role)
+      )
+    )
+    && (normalizedWallet === undefined || normalizedWallet === status.user);
+}
+
+function dispatchCancellationBindingMatches(
+  attempt: ComputeDispatchCancellationAttempt,
+  status: ComputeDispatchIntentStatus,
+  project: ComputeProject,
+  walletAddress: string,
+): boolean {
+  const wallet = walletAddress.toLowerCase();
+  return ["owner", "admin", "developer"].includes(project.role)
+    && project.project_id === status.project_reference
+    && attempt.project_reference === status.project_reference
+    && attempt.job_reference === status.job_reference
+    && attempt.project_id === status.project_id
+    && attempt.job_id === status.job_id
+    && attempt.user === status.user
+    && attempt.wallet_address === wallet
+    && status.user === wallet
+    && attempt.intent_commitment === status.intent_commitment
+    && attempt.workload_id === status.workload_id
+    && attempt.workload_commitment === status.workload_commitment
+    && attempt.authorization.kind === status.authorization.kind
+    && attempt.authorization.context_commitment
+      === status.authorization.context_commitment
+    && attempt.authorization.server_derived
+      === status.authorization.server_derived
+    && attempt.workload_authority.source_kind
+      === status.workload_authority.source_kind
+    && attempt.workload_authority.execution_binding_commitment
+      === status.workload_authority.execution_binding_commitment
+    && attempt.workload_authority.recipient_release_commitment
+      === status.workload_authority.recipient_release_commitment
+    && attempt.workload_claim_commitment
+      === status.workload_claim_commitment;
+}
+
+export function createComputeDispatchCancellationAttempt(
+  status: ComputeDispatchIntentStatus,
+  project: ComputeProject,
+  walletAddress: string,
+  idempotencyKey: string,
+): ComputeDispatchCancellationAttempt {
+  if (!canCancelComputeDispatchIntent(status, project, walletAddress)) {
+    throw new Error("Dispatch cancellation is available only before provider start");
+  }
+  if (!IDEMPOTENCY_KEY.test(idempotencyKey)) {
+    throw new Error("Dispatch cancellation idempotency key is malformed");
+  }
+  return {
+    schema: "dnai.compute.browser-dispatch-cancellation-attempt.v1",
+    schema_version: 1,
+    project_reference: status.project_reference,
+    job_reference: status.job_reference,
+    project_id: status.project_id,
+    job_id: status.job_id,
+    user: status.user,
+    wallet_address: lowerAddress(walletAddress, "dispatch cancellation wallet", false),
+    intent_commitment: status.intent_commitment,
+    workload_id: status.workload_id,
+    workload_commitment: status.workload_commitment,
+    authorization: status.authorization,
+    workload_authority: status.workload_authority,
+    workload_claim_commitment: status.workload_claim_commitment,
+    idempotency_key: idempotencyKey,
+  };
+}
+
+export function parseComputeDispatchCancellationAttempt(
+  value: unknown,
+): ComputeDispatchCancellationAttempt {
+  const attempt = record(value, "Persisted dispatch cancellation attempt");
+  exactKeys(attempt, "Persisted dispatch cancellation attempt", [
+    "schema", "schema_version", "project_reference", "job_reference",
+    "project_id", "job_id", "user", "wallet_address", "intent_commitment",
+    "workload_id", "workload_commitment", "authorization",
+    "workload_authority", "workload_claim_commitment", "idempotency_key",
+  ]);
+  const parsed: ComputeDispatchCancellationAttempt = {
+    schema: attempt.schema as ComputeDispatchCancellationAttempt["schema"],
+    schema_version: attempt.schema_version as 1,
+    project_reference: boundedReference(
+      attempt.project_reference,
+      "persisted cancellation project reference",
+    ),
+    job_reference: boundedReference(
+      attempt.job_reference,
+      "persisted cancellation job reference",
+    ),
+    project_id: nonzeroBytes32(
+      attempt.project_id,
+      "persisted cancellation project ID",
+    ),
+    job_id: nonzeroBytes32(attempt.job_id, "persisted cancellation job ID"),
+    user: lowerAddress(attempt.user, "persisted cancellation user", false),
+    wallet_address: lowerAddress(
+      attempt.wallet_address,
+      "persisted cancellation wallet",
+      false,
+    ),
+    intent_commitment: nonzeroBytes32(
+      attempt.intent_commitment,
+      "persisted cancellation intent commitment",
+    ),
+    workload_id: text(attempt.workload_id, "persisted cancellation workload ID", 36),
+    workload_commitment: nonzeroBytes32(
+      attempt.workload_commitment,
+      "persisted cancellation workload commitment",
+    ),
+    authorization: parseComputeDispatchAuthorization(
+      attempt.authorization,
+      true,
+    ),
+    workload_authority: parseComputeDispatchWorkloadAuthority(
+      attempt.workload_authority,
+      false,
+    ),
+    workload_claim_commitment: nonzeroSha256(
+      attempt.workload_claim_commitment,
+      "persisted cancellation workload-claim commitment",
+    ),
+    idempotency_key: text(
+      attempt.idempotency_key,
+      "persisted cancellation idempotency key",
+      128,
+    ),
+  };
+  if (
+    parsed.schema !== "dnai.compute.browser-dispatch-cancellation-attempt.v1"
+    || parsed.schema_version !== 1
+    || !RESOURCE_ID.test(parsed.project_reference)
+    || !WORKLOAD_ID.test(parsed.workload_id)
+    || parsed.wallet_address !== parsed.user
+    || !IDEMPOTENCY_KEY.test(parsed.idempotency_key)
+  ) {
+    throw new Error("Persisted dispatch cancellation attempt is malformed");
+  }
+  return parsed;
+}
+
+export function canReplayComputeDispatchCancellationAttempt(
+  status: ComputeDispatchIntentStatus | undefined,
+  project: ComputeProject | undefined,
+  walletAddress: string | undefined,
+  attempt: ComputeDispatchCancellationAttempt | undefined,
+): boolean {
+  if (!status || !project || !walletAddress || !attempt) return false;
+  return status.stage === "blocked"
+    && status.provider_dispatch_status === "not_started"
+    && status.provider_dispatch_may_have_occurred === false
+    && status.provider_usage_finalized === false
+    && status.bounded_result === null
+    && status.workload_ciphertext_retained_for_reconciliation === false
+    && dispatchCancellationBindingMatches(attempt, status, project, walletAddress);
+}
+
+export function computeDispatchCancellationCheckpointCommitment(
+  status: ComputeDispatchCancellationBinding,
+  canceledAt: number,
+): string {
+  const timestamp = integer(
+    canceledAt,
+    "dispatch cancellation time",
+    1,
+    4_102_444_800,
+  );
+  const payload = {
+    schema: "dnai.compute.dispatch-cancellation.v1",
+    job_id: status.job_id,
+    project_id: status.project_id,
+    user: status.user,
+    intent_commitment: status.intent_commitment,
+    workload_id: status.workload_id,
+    workload_commitment: status.workload_commitment,
+    canceled_at: timestamp,
+    provider_dispatch_performed: false,
+    vault_authorization_released: false,
+    raw_secret_egress: false,
+  };
+  return `sha256:${sha256(encoder.encode(
+    `${COMPUTE_CANCELLATION_CHECKPOINT_DOMAIN}${canonicalComputeJson(payload)}`,
+  )).slice(2)}`;
+}
+
+export function parseComputeDispatchCancellation(
+  value: unknown,
+  expected: ComputeDispatchCancellationBinding,
+): ComputeDispatchCancellationReceipt {
+  assertNoSensitiveFields(value);
+  const receipt = record(value, "Compute dispatch cancellation");
+  exactKeys(receipt, "Compute dispatch cancellation", [
+    "surface", "schema_version", "project_reference", "job_reference",
+    "project_id", "job_id", "intent_commitment", "authorization",
+    "workload_authority", "workload_claim_commitment",
+    "workload_claim_confirmed",
+    "cancellation_checkpoint_commitment", "canceled_at",
+    "journal_execution_prevented", "provider_dispatch_performed",
+    "provider_dispatch_may_have_occurred", "workload_ciphertext_released",
+    "vault_authorization_released", "onchain_cancel_required",
+    "exact_asset_capacity_released", "provider_authoritative",
+    "legacy_credit_ledger_mutated", "raw_secret_egress", "changed",
+    "idempotent_replay",
+  ]);
+  const changed = boolean(receipt.changed, "dispatch cancellation changed state");
+  const replay = boolean(receipt.idempotent_replay, "dispatch cancellation replay state");
+  const authorization = parseComputeDispatchAuthorization(
+    receipt.authorization,
+    false,
+  );
+  const workloadAuthority = parseComputeDispatchWorkloadAuthority(
+    receipt.workload_authority,
+    true,
+  );
+  const parsed: ComputeDispatchCancellationReceipt = {
+    surface: receipt.surface as ComputeDispatchCancellationReceipt["surface"],
+    schema_version: receipt.schema_version as 2,
+    project_reference: boundedReference(
+      receipt.project_reference,
+      "canceled dispatch project reference",
+    ),
+    job_reference: boundedReference(
+      receipt.job_reference,
+      "canceled dispatch job reference",
+    ),
+    project_id: nonzeroBytes32(receipt.project_id, "canceled dispatch project ID"),
+    job_id: nonzeroBytes32(receipt.job_id, "canceled dispatch job ID"),
+    intent_commitment: nonzeroBytes32(
+      receipt.intent_commitment,
+      "canceled dispatch intent commitment",
+    ),
+    authorization,
+    workload_authority: workloadAuthority,
+    workload_claim_commitment: nonzeroSha256(
+      receipt.workload_claim_commitment,
+      "canceled workload dispatch-claim commitment",
+    ),
+    workload_claim_confirmed: receipt.workload_claim_confirmed as true,
+    cancellation_checkpoint_commitment: nonzeroSha256(
+      receipt.cancellation_checkpoint_commitment,
+      "dispatch cancellation checkpoint",
+    ),
+    canceled_at: integer(receipt.canceled_at, "dispatch cancellation time", 1, 4_102_444_800),
+    journal_execution_prevented: receipt.journal_execution_prevented as true,
+    provider_dispatch_performed: receipt.provider_dispatch_performed as false,
+    provider_dispatch_may_have_occurred: receipt.provider_dispatch_may_have_occurred as false,
+    workload_ciphertext_released: receipt.workload_ciphertext_released as true,
+    vault_authorization_released: receipt.vault_authorization_released as false,
+    onchain_cancel_required: receipt.onchain_cancel_required as true,
+    exact_asset_capacity_released: receipt.exact_asset_capacity_released as false,
+    provider_authoritative: receipt.provider_authoritative as false,
+    legacy_credit_ledger_mutated: receipt.legacy_credit_ledger_mutated as false,
+    raw_secret_egress: receipt.raw_secret_egress as false,
+    changed,
+    idempotent_replay: replay,
+  };
+  if (
+    parsed.surface !== "compute_dispatch_cancellation"
+    || parsed.schema_version !== 2
+    || parsed.project_reference !== expected.project_reference
+    || parsed.job_reference !== expected.job_reference
+    || parsed.project_id !== expected.project_id
+    || parsed.job_id !== expected.job_id
+    || parsed.intent_commitment !== expected.intent_commitment
+    || parsed.authorization.kind !== expected.authorization.kind
+    || parsed.authorization.context_commitment
+      !== expected.authorization.context_commitment
+    || parsed.workload_authority.source_kind
+      !== expected.workload_authority.source_kind
+    || parsed.workload_authority.execution_binding_commitment
+      !== expected.workload_authority.execution_binding_commitment
+    || parsed.workload_authority.recipient_release_commitment
+      !== expected.workload_authority.recipient_release_commitment
+    || parsed.workload_authority.funding_wallet !== expected.user
+    || parsed.workload_claim_commitment
+      !== expected.workload_claim_commitment
+    || parsed.workload_claim_confirmed !== true
+    || parsed.cancellation_checkpoint_commitment
+      !== computeDispatchCancellationCheckpointCommitment(expected, parsed.canceled_at)
+    || parsed.journal_execution_prevented !== true
+    || parsed.provider_dispatch_performed !== false
+    || parsed.provider_dispatch_may_have_occurred !== false
+    || parsed.workload_ciphertext_released !== true
+    || parsed.vault_authorization_released !== false
+    || parsed.onchain_cancel_required !== true
+    || parsed.exact_asset_capacity_released !== false
+    || parsed.provider_authoritative !== false
+    || parsed.legacy_credit_ledger_mutated !== false
+    || parsed.raw_secret_egress !== false
+    || changed === replay
+  ) throw new Error("Compute dispatch cancellation failed its bounded schema checks");
+  return parsed;
+}
+
+export async function cancelComputeDispatchIntent(
+  token: string,
+  project: ComputeProject,
+  status: ComputeDispatchIntentStatus,
+  expectedWalletAddress: string,
+  attempt: ComputeDispatchCancellationAttempt,
+): Promise<ComputeDispatchCancellationReceipt> {
+  const boundAttempt = parseComputeDispatchCancellationAttempt(attempt);
+  const initial = canCancelComputeDispatchIntent(
+    status,
+    project,
+    expectedWalletAddress,
+  );
+  const replay = canReplayComputeDispatchCancellationAttempt(
+    status,
+    project,
+    expectedWalletAddress,
+    boundAttempt,
+  );
+  if (
+    (!initial && !replay)
+    || !dispatchCancellationBindingMatches(
+      boundAttempt,
+      status,
+      project,
+      expectedWalletAddress,
+    )
+  ) {
+    throw new Error("Dispatch cancellation is available only before provider start");
+  }
+  const result = await request(
+    `/compute/projects/${encodeURIComponent(project.project_id)}/dispatch-intents/${encodeURIComponent(status.job_reference)}/cancel`,
+    {
+      method: "POST",
+      token,
+      idempotencyKey: boundAttempt.idempotency_key,
+      body: { reason: "user_requested_before_provider_start" },
+      timeout: 15_000,
+    },
+  );
+  return parseComputeDispatchCancellation(result, boundAttempt);
+}
+
+function parseTinkerProviderRelease(value: unknown): ComputeTinkerProviderRelease {
+  const release = record(value, "Compute provider release");
+  exactKeys(release, "Compute provider release", [
+    "schema", "adapter_id", "sdk_version", "sdk_source_sha256",
+    "request_contract_sha256", "base_url_sha256", "tokenizer_path",
+    "tokenizer_release_sha256", "idempotency_header_role",
+    "idempotent_provider_replay_claimed", "automatic_provider_redispatch",
+    "at_most_once_attempt_checkpoint", "terminal_ambiguity_hold",
+    "ambiguous_outcome_ciphertext_retained", "provider_authoritative_invoice",
+    "raw_secret_egress",
+  ]);
+  const parsed = {
+    ...release,
+    sdk_source_sha256: nonzeroSha256(release.sdk_source_sha256, "provider SDK source"),
+    request_contract_sha256: nonzeroSha256(
+      release.request_contract_sha256,
+      "provider request contract",
+    ),
+    base_url_sha256: nonzeroSha256(release.base_url_sha256, "provider base URL"),
+    tokenizer_release_sha256: nonzeroSha256(
+      release.tokenizer_release_sha256,
+      "provider tokenizer release",
+    ),
+  } as unknown as ComputeTinkerProviderRelease;
+  if (
+    parsed.schema !== "dnai.compute.tinker-provider-release.v1"
+    || parsed.adapter_id !== TINKER_PROVIDER_ADAPTER_ID
+    || parsed.sdk_version !== TINKER_PROVIDER_SDK_VERSION
+    || parsed.sdk_source_sha256 !== TINKER_PROVIDER_SDK_SOURCE_SHA256
+    || parsed.request_contract_sha256 !== TINKER_PROVIDER_REQUEST_CONTRACT_SHA256
+    || parsed.base_url_sha256 !== TINKER_PROVIDER_BASE_URL_SHA256
+    || parsed.tokenizer_path !== TINKER_TOKENIZER_PATH
+    || parsed.tokenizer_release_sha256 !== TINKER_TOKENIZER_RELEASE_SHA256
+    || parsed.idempotency_header_role !== "request_commitment_only"
+    || parsed.idempotent_provider_replay_claimed !== false
+    || parsed.automatic_provider_redispatch !== false
+    || parsed.at_most_once_attempt_checkpoint !== true
+    || parsed.terminal_ambiguity_hold !== true
+    || parsed.ambiguous_outcome_ciphertext_retained !== true
+    || parsed.provider_authoritative_invoice !== false
+    || parsed.raw_secret_egress !== false
+  ) throw new Error("Compute provider release failed its pinned schema checks");
+  return parsed;
+}
+
+function parseProviderUsageEvidence(
+  value: unknown,
+  expected: ComputeDispatchIntentStatus,
+): ComputeProviderUsageEvidence {
+  const usage = record(value, "Compute provider usage");
+  exactKeys(usage, "Compute provider usage", [
+    "outcome", "prefill_tokens", "sample_tokens", "training_tokens",
+    "result_commitment", "provider_authoritative_invoice",
+  ]);
+  const parsed: ComputeProviderUsageEvidence = {
+    outcome: String(usage.outcome) as ComputeProviderUsageEvidence["outcome"],
+    prefill_tokens: integer(usage.prefill_tokens, "provider prefill tokens", 0, 100_000_000),
+    sample_tokens: integer(usage.sample_tokens, "provider sample tokens", 0, 100_000_000),
+    training_tokens: integer(usage.training_tokens, "provider training tokens", 0, 100_000_000),
+    result_commitment: nonzeroBytes32(usage.result_commitment, "provider result commitment"),
+    provider_authoritative_invoice: usage.provider_authoritative_invoice as false,
+  };
+  if (
+    !["succeeded", "failed"].includes(parsed.outcome)
+    || parsed.prefill_tokens > expected.resource_limits.max_prefill_tokens
+    || parsed.sample_tokens > expected.resource_limits.max_sample_tokens
+    || parsed.training_tokens > expected.resource_limits.max_train_tokens
+    || (parsed.outcome === "succeeded"
+      && parsed.prefill_tokens + parsed.sample_tokens + parsed.training_tokens === 0)
+    || parsed.provider_authoritative_invoice !== false
+  ) throw new Error("Compute provider usage failed its bounded schema checks");
+  return parsed;
+}
+
+function parseSignedUsageEvidence(
+  value: unknown,
+  expected: ComputeDispatchIntentStatus,
+  providerUsage: ComputeProviderUsageEvidence,
+): ComputeSignedUsageEvidence {
+  const signed = record(value, "Compute signed usage request");
+  exactKeys(signed, "Compute signed usage request", ["schema", "block", "usage"]);
+  const block = record(signed.block, "Compute signed usage block");
+  exactKeys(block, "Compute signed usage block", ["number", "hash"]);
+  const usage = record(signed.usage, "Compute signed usage envelope");
+  exactKeys(usage, "Compute signed usage envelope", [
+    "schema", "job_id", "project_id", "user", "asset",
+    "authorization_nonce", "max_asset_debit", "authorization_expiry",
+    "rate_policy_commitment", "workload_commitment", "manifest_commitment",
+    "dispatch_intent_commitment", "tee_identity", "compose_hash",
+    "start_commitment", "model", "recipe", "outcome", "prefill_tokens",
+    "sample_tokens", "training_tokens", "usage_started_at",
+    "usage_observed_at", "raw_secret_egress", "usage_commitment",
+    "tee_signature",
+  ]);
+  const authorizationNonce = parseDispatchUint256(
+    usage.authorization_nonce,
+    "signed usage authorization nonce",
+  );
+  const maxAssetDebit = parseDispatchUint256(
+    usage.max_asset_debit,
+    "signed usage maximum asset debit",
+  );
+  const prefill = parseDispatchUint256(usage.prefill_tokens, "signed usage prefill tokens");
+  const sample = parseDispatchUint256(usage.sample_tokens, "signed usage sample tokens");
+  const training = parseDispatchUint256(usage.training_tokens, "signed usage training tokens");
+  const usageStartedAt = integer(usage.usage_started_at, "signed usage start time", 1, 4_102_444_800);
+  const usageObservedAt = integer(usage.usage_observed_at, "signed usage observation time", 1, 4_102_444_800);
+  const parsed: ComputeSignedUsageEvidence = {
+    schema: signed.schema as ComputeSignedUsageEvidence["schema"],
+    block: {
+      number: integer(block.number, "signed usage block number", 1, Number.MAX_SAFE_INTEGER),
+      hash: nonzeroBytes32(block.hash, "signed usage block hash"),
+    },
+    usage: {
+      schema: usage.schema as ComputeSignedUsageEvidence["usage"]["schema"],
+      job_id: nonzeroBytes32(usage.job_id, "signed usage job ID"),
+      project_id: nonzeroBytes32(usage.project_id, "signed usage project ID"),
+      user: lowerAddress(usage.user, "signed usage user", false),
+      asset: lowerAddress(usage.asset, "signed usage asset", true),
+      authorization_nonce: authorizationNonce.toString(),
+      max_asset_debit: maxAssetDebit.toString(),
+      authorization_expiry: integer(
+        usage.authorization_expiry,
+        "signed usage authorization expiry",
+        1,
+        4_102_444_800,
+      ),
+      rate_policy_commitment: nonzeroBytes32(
+        usage.rate_policy_commitment,
+        "signed usage rate-policy commitment",
+      ),
+      workload_commitment: nonzeroBytes32(
+        usage.workload_commitment,
+        "signed usage workload commitment",
+      ),
+      manifest_commitment: nonzeroBytes32(
+        usage.manifest_commitment,
+        "signed usage manifest commitment",
+      ),
+      dispatch_intent_commitment: nonzeroBytes32(
+        usage.dispatch_intent_commitment,
+        "signed usage dispatch intent commitment",
+      ),
+      tee_identity: lowerAddress(usage.tee_identity, "signed usage TEE identity", false),
+      compose_hash: nonzeroBytes32(usage.compose_hash, "signed usage compose hash"),
+      start_commitment: nonzeroBytes32(
+        usage.start_commitment,
+        "signed usage start commitment",
+      ),
+      model: usage.model as ComputeSignedUsageEvidence["usage"]["model"],
+      recipe: usage.recipe as ComputeSignedUsageEvidence["usage"]["recipe"],
+      outcome: usage.outcome as ComputeSignedUsageEvidence["usage"]["outcome"],
+      prefill_tokens: prefill.toString(),
+      sample_tokens: sample.toString(),
+      training_tokens: training.toString(),
+      usage_started_at: usageStartedAt,
+      usage_observed_at: usageObservedAt,
+      raw_secret_egress: usage.raw_secret_egress as false,
+      usage_commitment: nonzeroBytes32(
+        usage.usage_commitment,
+        "signed usage commitment",
+      ),
+      tee_signature: canonicalSignature(usage.tee_signature, "signed usage TEE signature"),
+    },
+  };
+  if (
+    parsed.schema !== "dnai.compute-metering-request.v2"
+    || parsed.usage.schema !== "dnai.compute-usage-envelope.v2"
+    || parsed.usage.job_id !== expected.job_id
+    || parsed.usage.project_id !== expected.project_id
+    || parsed.usage.user !== expected.user
+    || parsed.usage.asset !== expected.asset
+    || authorizationNonce !== expected.authorization_nonce
+    || maxAssetDebit !== expected.max_asset_debit
+    || parsed.usage.authorization_expiry !== expected.authorization_expiry
+    || parsed.usage.rate_policy_commitment !== expected.rate_policy_commitment
+    || parsed.usage.workload_commitment !== expected.workload_commitment
+    || parsed.usage.manifest_commitment !== expected.manifest_commitment
+    || parsed.usage.dispatch_intent_commitment !== expected.intent_commitment
+    || parsed.usage.compose_hash !== expected.compose_hash
+    || parsed.usage.model !== expected.model
+    || parsed.usage.recipe !== expected.recipe
+    || parsed.usage.outcome !== providerUsage.outcome
+    || prefill !== BigInt(providerUsage.prefill_tokens)
+    || sample !== BigInt(providerUsage.sample_tokens)
+    || training !== BigInt(providerUsage.training_tokens)
+    || prefill > BigInt(expected.resource_limits.max_prefill_tokens)
+    || sample > BigInt(expected.resource_limits.max_sample_tokens)
+    || training > BigInt(expected.resource_limits.max_train_tokens)
+    || usageObservedAt < usageStartedAt
+    || usageObservedAt > expected.authorization_expiry
+    || parsed.usage.raw_secret_egress !== false
+  ) throw new Error("Compute signed usage failed its dispatch binding checks");
+  const commitmentClaims = { ...parsed.usage } as Record<string, unknown>;
+  delete commitmentClaims.usage_commitment;
+  delete commitmentClaims.tee_signature;
+  const derivedCommitment = sha256(encoder.encode(
+    `${COMPUTE_USAGE_COMMITMENT_DOMAIN}${canonicalComputeJson(commitmentClaims)}`,
+  ));
+  if (derivedCommitment !== parsed.usage.usage_commitment) {
+    throw new Error("Compute signed usage commitment does not match its canonical claims");
+  }
+  return parsed;
+}
+
+function parseIndependentMeteringEvidence(
+  value: unknown,
+  expected: ComputeDispatchIntentStatus,
+  signedUsage: ComputeSignedUsageEvidence,
+): ComputeIndependentMeteringEvidence {
+  const decision = record(value, "Compute independent metering decision");
+  exactKeys(decision, "Compute independent metering decision", [
+    "schema", "classification", "provider_authoritative_invoice", "chain_id",
+    "vault_address", "pinned_block_number", "pinned_block_hash",
+    "policy_set_hash", "rate_policy_commitment", "workload_commitment",
+    "manifest_commitment", "dispatch_intent_commitment", "asset", "job_id",
+    "usage_commitment", "onchain_usage_commitment", "actual_asset_debit",
+    "billable_compute_units", "usage_started_at", "usage_ended_at",
+    "attestation_evidence_hash", "receipt_expiry", "metering_receipt_digest",
+    "metering_qvl_receipt_digest", "metering_verifier",
+    "metering_qvl_verifier", "tee_identity", "compose_hash",
+    "raw_secret_egress", "verifier_signature", "qvl_signature",
+  ]);
+  const parsed: ComputeIndependentMeteringEvidence = {
+    schema: decision.schema as ComputeIndependentMeteringEvidence["schema"],
+    classification: decision.classification as ComputeIndependentMeteringEvidence["classification"],
+    provider_authoritative_invoice: decision.provider_authoritative_invoice as false,
+    chain_id: decision.chain_id as 84_532,
+    vault_address: lowerAddress(decision.vault_address, "metering vault address", false),
+    pinned_block_number: integer(
+      decision.pinned_block_number,
+      "metering pinned block number",
+      1,
+      Number.MAX_SAFE_INTEGER,
+    ),
+    pinned_block_hash: nonzeroBytes32(decision.pinned_block_hash, "metering pinned block hash"),
+    policy_set_hash: nonzeroBytes32(decision.policy_set_hash, "metering policy-set hash"),
+    rate_policy_commitment: nonzeroBytes32(
+      decision.rate_policy_commitment,
+      "metering rate-policy commitment",
+    ),
+    workload_commitment: nonzeroBytes32(
+      decision.workload_commitment,
+      "metering workload commitment",
+    ),
+    manifest_commitment: nonzeroBytes32(
+      decision.manifest_commitment,
+      "metering manifest commitment",
+    ),
+    dispatch_intent_commitment: nonzeroBytes32(
+      decision.dispatch_intent_commitment,
+      "metering dispatch intent commitment",
+    ),
+    asset: lowerAddress(decision.asset, "metering asset", true),
+    job_id: nonzeroBytes32(decision.job_id, "metering job ID"),
+    usage_commitment: nonzeroBytes32(decision.usage_commitment, "metering usage commitment"),
+    onchain_usage_commitment: nonzeroBytes32(
+      decision.onchain_usage_commitment,
+      "onchain usage commitment",
+    ),
+    actual_asset_debit: parseDispatchUint256(
+      decision.actual_asset_debit,
+      "metered actual asset debit",
+    ),
+    billable_compute_units: parseDispatchUint256(
+      decision.billable_compute_units,
+      "metered billable compute units",
+    ),
+    usage_started_at: integer(decision.usage_started_at, "metering start time", 1, 4_102_444_800),
+    usage_ended_at: integer(decision.usage_ended_at, "metering end time", 1, 4_102_444_800),
+    attestation_evidence_hash: nonzeroBytes32(
+      decision.attestation_evidence_hash,
+      "metering attestation evidence hash",
+    ),
+    receipt_expiry: integer(decision.receipt_expiry, "metering receipt expiry", 1, 4_102_444_800),
+    metering_receipt_digest: nonzeroBytes32(
+      decision.metering_receipt_digest,
+      "metering receipt digest",
+    ),
+    metering_qvl_receipt_digest: nonzeroBytes32(
+      decision.metering_qvl_receipt_digest,
+      "metering QVL receipt digest",
+    ),
+    metering_verifier: lowerAddress(decision.metering_verifier, "metering verifier", false),
+    metering_qvl_verifier: lowerAddress(
+      decision.metering_qvl_verifier,
+      "metering QVL verifier",
+      false,
+    ),
+    tee_identity: lowerAddress(decision.tee_identity, "metering TEE identity", false),
+    compose_hash: nonzeroBytes32(decision.compose_hash, "metering compose hash"),
+    raw_secret_egress: decision.raw_secret_egress as false,
+    verifier_signature: canonicalSignature(
+      decision.verifier_signature,
+      "metering verifier signature",
+    ),
+    qvl_signature: canonicalSignature(decision.qvl_signature, "metering QVL signature"),
+  };
+  if (
+    parsed.schema !== "dnai.compute-metering-decision.v2"
+    || parsed.classification !== "attested_dual_verified_metering"
+    || parsed.provider_authoritative_invoice !== false
+    || parsed.chain_id !== 84_532
+    || parsed.pinned_block_number !== signedUsage.block.number
+    || parsed.pinned_block_hash !== signedUsage.block.hash
+    || parsed.rate_policy_commitment !== expected.rate_policy_commitment
+    || parsed.workload_commitment !== expected.workload_commitment
+    || parsed.manifest_commitment !== expected.manifest_commitment
+    || parsed.dispatch_intent_commitment !== expected.intent_commitment
+    || parsed.asset !== expected.asset
+    || parsed.job_id !== expected.job_id
+    || parsed.usage_commitment !== signedUsage.usage.usage_commitment
+    || parsed.actual_asset_debit > expected.max_asset_debit
+    || parsed.billable_compute_units <= 0n
+    || parsed.usage_started_at !== signedUsage.usage.usage_started_at
+    || parsed.usage_ended_at !== signedUsage.usage.usage_observed_at
+    || parsed.usage_ended_at < parsed.usage_started_at
+    || parsed.receipt_expiry < parsed.usage_ended_at
+    || parsed.receipt_expiry - parsed.usage_ended_at > 600
+    || parsed.receipt_expiry > expected.authorization_expiry
+    || parsed.tee_identity !== signedUsage.usage.tee_identity
+    || parsed.compose_hash !== expected.compose_hash
+    || parsed.metering_verifier === parsed.metering_qvl_verifier
+    || parsed.metering_verifier === parsed.tee_identity
+    || parsed.metering_qvl_verifier === parsed.tee_identity
+    || parsed.raw_secret_egress !== false
+  ) throw new Error("Compute independent metering failed its dispatch binding checks");
+  return parsed;
+}
+
+function computeVaultUsageCommitment(
+  expected: ComputeDispatchIntentStatus,
+  signedUsage: ComputeSignedUsageEvidence,
+  metering: ComputeIndependentMeteringEvidence,
+): Hex {
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "address" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "address" },
+      { type: "address" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "address" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+    ],
+    [
+      keccak256(stringToHex(COMPUTE_METERED_USAGE_TYPE)),
+      BigInt(COMPUTE_VAULT_CHAIN_ID),
+      metering.vault_address,
+      expected.project_id,
+      expected.job_id,
+      expected.user,
+      expected.asset,
+      expected.authorization_nonce,
+      expected.max_asset_debit,
+      metering.actual_asset_debit,
+      BigInt(expected.authorization_expiry),
+      expected.rate_policy_commitment,
+      expected.workload_commitment,
+      expected.manifest_commitment,
+      expected.intent_commitment,
+      signedUsage.usage.tee_identity,
+      expected.compose_hash,
+      signedUsage.usage.start_commitment,
+      metering.billable_compute_units,
+      BigInt(metering.usage_started_at),
+      BigInt(metering.usage_ended_at),
+      metering.policy_set_hash,
+      metering.attestation_evidence_hash,
+    ],
+  ));
+}
+
+function computeVaultMeteringReceiptDigest(
+  kind: "meter" | "qvl",
+  expected: ComputeDispatchIntentStatus,
+  signedUsage: ComputeSignedUsageEvidence,
+  metering: ComputeIndependentMeteringEvidence,
+  onchainUsageCommitment: Hex,
+): Hex {
+  const domain = {
+    name: COMPUTE_VAULT_EIP712_NAME,
+    version: COMPUTE_VAULT_EIP712_VERSION,
+    chainId: COMPUTE_VAULT_CHAIN_ID,
+    verifyingContract: metering.vault_address,
+  } as const;
+  const message = {
+    projectId: expected.project_id,
+    jobId: expected.job_id,
+    user: expected.user,
+    asset: expected.asset,
+    authorizationNonce: expected.authorization_nonce,
+    maxAssetDebit: expected.max_asset_debit,
+    actualAssetDebit: metering.actual_asset_debit,
+    authorizationExpiry: BigInt(expected.authorization_expiry),
+    ratePolicyCommitment: expected.rate_policy_commitment,
+    workloadCommitment: expected.workload_commitment,
+    manifestCommitment: expected.manifest_commitment,
+    dispatchIntentCommitment: expected.intent_commitment,
+    teeIdentity: signedUsage.usage.tee_identity,
+    composeHash: expected.compose_hash,
+    startCommitment: signedUsage.usage.start_commitment,
+    billableComputeUnits: metering.billable_compute_units,
+    usageStartedAt: BigInt(metering.usage_started_at),
+    usageEndedAt: BigInt(metering.usage_ended_at),
+    usageCommitment: onchainUsageCommitment,
+    meteringPolicySetHash: metering.policy_set_hash,
+    attestationEvidenceHash: metering.attestation_evidence_hash,
+    receiptExpiry: BigInt(metering.receipt_expiry),
+  } as const;
+  if (kind === "meter") {
+    return hashTypedData({
+      domain,
+      types: { ComputeMeteringReceipt: COMPUTE_METERING_RECEIPT_FIELDS },
+      primaryType: "ComputeMeteringReceipt",
+      message,
+    });
+  }
+  return hashTypedData({
+    domain,
+    types: { ComputeMeteringQvlReceipt: COMPUTE_METERING_RECEIPT_FIELDS },
+    primaryType: "ComputeMeteringQvlReceipt",
+    message,
+  });
+}
+
+export async function parseComputeExactAssetUsageReceipt(
+  value: unknown,
+  expected: ComputeDispatchIntentStatus,
+): Promise<ComputeExactAssetUsageReceipt> {
+  assertNoSensitiveFields(value);
+  if (expected.stage !== "settled" || !expected.bounded_result) {
+    throw new Error("Signed usage evidence is available only after settlement");
+  }
+  const receipt = record(value, "Compute exact-asset usage receipt");
+  exactKeys(receipt, "Compute exact-asset usage receipt", [
+    "surface", "schema_version", "access", "project_reference",
+    "job_reference", "project_id", "job_id", "intent_commitment",
+    "authorization", "workload_authority", "workload_claim_commitment",
+    "workload_claim_confirmed",
+    "execution_policy_context_hash", "provider_release_sha256",
+    "provider_release", "provider_usage", "bounded_result", "signed_usage",
+    "independent_metering", "settlement", "provider_authoritative_invoice",
+    "exact_asset_only", "legacy_credit_ledger_mutated", "raw_prompt_egress",
+    "raw_examples_egress", "raw_output_egress", "provider_identifier_egress",
+    "raw_transaction_egress",
+  ]);
+  const providerRelease = parseTinkerProviderRelease(receipt.provider_release);
+  const authorization = parseComputeDispatchAuthorization(
+    receipt.authorization,
+    false,
+  );
+  const workloadAuthority = parseComputeDispatchWorkloadAuthority(
+    receipt.workload_authority,
+    true,
+  );
+  const workloadClaimCommitment = nonzeroSha256(
+    receipt.workload_claim_commitment,
+    "usage receipt workload dispatch-claim commitment",
+  );
+  const providerReleaseSha = nonzeroSha256(
+    receipt.provider_release_sha256,
+    "provider release digest",
+  );
+  const rederivedReleaseSha = `sha256:${sha256(
+    encoder.encode(canonicalComputeJson(providerRelease)),
+  ).slice(2)}`;
+  const providerUsage = parseProviderUsageEvidence(receipt.provider_usage, expected);
+  const boundedResult = parseComputeBoundedResult(receipt.bounded_result, {
+    operation: expected.operation,
+    resultPolicy: expected.result_policy,
+  });
+  const signedUsage = parseSignedUsageEvidence(
+    receipt.signed_usage,
+    expected,
+    providerUsage,
+  );
+  const metering = parseIndependentMeteringEvidence(
+    receipt.independent_metering,
+    expected,
+    signedUsage,
+  );
+  const derivedOnchainUsageCommitment = computeVaultUsageCommitment(
+    expected,
+    signedUsage,
+    metering,
+  );
+  const derivedMeteringReceiptDigest = computeVaultMeteringReceiptDigest(
+    "meter",
+    expected,
+    signedUsage,
+    metering,
+    derivedOnchainUsageCommitment,
+  );
+  const derivedMeteringQvlReceiptDigest = computeVaultMeteringReceiptDigest(
+    "qvl",
+    expected,
+    signedUsage,
+    metering,
+    derivedOnchainUsageCommitment,
+  );
+  if (
+    metering.onchain_usage_commitment !== derivedOnchainUsageCommitment
+    || metering.metering_receipt_digest !== derivedMeteringReceiptDigest
+    || metering.metering_qvl_receipt_digest !== derivedMeteringQvlReceiptDigest
+  ) {
+    throw new Error(
+      "Compute exact-asset usage receipt failed its local ComputeCreditVault digest derivation",
+    );
+  }
+  const settlement = record(receipt.settlement, "Compute exact-asset settlement");
+  exactKeys(settlement, "Compute exact-asset settlement", [
+    "confirmed", "chain_id", "vault_address", "transaction_hash",
+    "onchain_usage_commitment", "actual_asset_debit",
+    "billable_compute_units", "attestation_evidence_hash", "receipt_expiry",
+  ]);
+  const parsedSettlement: ComputeExactAssetUsageReceipt["settlement"] = {
+    confirmed: settlement.confirmed as true,
+    chain_id: settlement.chain_id as 84_532,
+    vault_address: lowerAddress(settlement.vault_address, "settlement vault address", false),
+    transaction_hash: nonzeroBytes32(settlement.transaction_hash, "settlement transaction hash"),
+    onchain_usage_commitment: nonzeroBytes32(
+      settlement.onchain_usage_commitment,
+      "settlement usage commitment",
+    ),
+    actual_asset_debit: parseDispatchUint256(
+      settlement.actual_asset_debit,
+      "settlement actual asset debit",
+    ),
+    billable_compute_units: parseDispatchUint256(
+      settlement.billable_compute_units,
+      "settlement billable compute units",
+    ),
+    attestation_evidence_hash: nonzeroBytes32(
+      settlement.attestation_evidence_hash,
+      "settlement attestation evidence hash",
+    ),
+    receipt_expiry: integer(
+      settlement.receipt_expiry,
+      "settlement receipt expiry",
+      1,
+      4_102_444_800,
+    ),
+  };
+  const parsed: ComputeExactAssetUsageReceipt = {
+    surface: receipt.surface as ComputeExactAssetUsageReceipt["surface"],
+    schema_version: receipt.schema_version as 2,
+    access: receipt.access as ComputeExactAssetUsageReceipt["access"],
+    project_reference: boundedReference(
+      receipt.project_reference,
+      "usage receipt project reference",
+    ),
+    job_reference: boundedReference(receipt.job_reference, "usage receipt job reference"),
+    project_id: nonzeroBytes32(receipt.project_id, "usage receipt project ID"),
+    job_id: nonzeroBytes32(receipt.job_id, "usage receipt job ID"),
+    intent_commitment: nonzeroBytes32(
+      receipt.intent_commitment,
+      "usage receipt intent commitment",
+    ),
+    authorization,
+    workload_authority: workloadAuthority,
+    workload_claim_commitment: workloadClaimCommitment,
+    workload_claim_confirmed: receipt.workload_claim_confirmed as true,
+    execution_policy_context_hash:
+      typeof receipt.execution_policy_context_hash === "string"
+      && HEX_64.test(receipt.execution_policy_context_hash)
+        ? receipt.execution_policy_context_hash
+        : "",
+    provider_release_sha256: providerReleaseSha,
+    provider_release: providerRelease,
+    provider_usage: providerUsage,
+    bounded_result: boundedResult,
+    signed_usage: signedUsage,
+    independent_metering: metering,
+    settlement: parsedSettlement,
+    provider_authoritative_invoice: receipt.provider_authoritative_invoice as false,
+    exact_asset_only: receipt.exact_asset_only as true,
+    legacy_credit_ledger_mutated: receipt.legacy_credit_ledger_mutated as false,
+    raw_prompt_egress: receipt.raw_prompt_egress as false,
+    raw_examples_egress: receipt.raw_examples_egress as false,
+    raw_output_egress: receipt.raw_output_egress as false,
+    provider_identifier_egress: receipt.provider_identifier_egress as false,
+    raw_transaction_egress: receipt.raw_transaction_egress as false,
+    browser_verification: {
+      usage_commitment_rederived: true,
+      tee_signature_recovered: true,
+      onchain_usage_commitment_rederived: true,
+      metering_receipt_digest_rederived: true,
+      metering_qvl_receipt_digest_rederived: true,
+      metering_eoa_signature_recovered: true,
+      metering_qvl_eoa_signature_recovered: true,
+      erc1271_contract_signature_checked: false,
+      release_state_anchored_in_browser: false,
+    },
+  };
+  if (
+    parsed.surface !== "compute_exact_asset_usage_receipt"
+    || parsed.schema_version !== 2
+    || parsed.access !== "wallet_authenticated_project_member"
+    || parsed.project_reference !== expected.project_reference
+    || parsed.job_reference !== expected.job_reference
+    || parsed.project_id !== expected.project_id
+    || parsed.job_id !== expected.job_id
+    || parsed.intent_commitment !== expected.intent_commitment
+    || parsed.authorization.kind !== expected.authorization.kind
+    || parsed.authorization.context_commitment
+      !== expected.authorization.context_commitment
+    || parsed.workload_authority.source_kind
+      !== expected.workload_authority.source_kind
+    || parsed.workload_authority.execution_binding_commitment
+      !== expected.workload_authority.execution_binding_commitment
+    || parsed.workload_authority.recipient_release_commitment
+      !== expected.workload_authority.recipient_release_commitment
+    || parsed.workload_authority.funding_wallet !== expected.user
+    || parsed.workload_claim_commitment
+      !== expected.workload_claim_commitment
+    || parsed.workload_claim_confirmed !== true
+    || parsed.execution_policy_context_hash !== expected.execution_policy_context_hash
+    || providerReleaseSha !== TINKER_PROVIDER_RELEASE_SHA256
+    || rederivedReleaseSha !== providerReleaseSha
+    || providerUsage.outcome !== boundedResult.outcome
+    || providerUsage.result_commitment !== boundedResult.result_commitment
+    || boundedResult.result_commitment !== expected.bounded_result.result_commitment
+    || boundedResult.outcome !== expected.bounded_result.outcome
+    || parsedSettlement.confirmed !== true
+    || parsedSettlement.chain_id !== 84_532
+    || parsedSettlement.vault_address !== metering.vault_address
+    || parsedSettlement.onchain_usage_commitment !== metering.onchain_usage_commitment
+    || parsedSettlement.actual_asset_debit !== metering.actual_asset_debit
+    || parsedSettlement.billable_compute_units !== metering.billable_compute_units
+    || parsedSettlement.attestation_evidence_hash !== metering.attestation_evidence_hash
+    || parsedSettlement.receipt_expiry !== metering.receipt_expiry
+    || parsed.provider_authoritative_invoice !== false
+    || parsed.exact_asset_only !== true
+    || parsed.legacy_credit_ledger_mutated !== false
+    || parsed.raw_prompt_egress !== false
+    || parsed.raw_examples_egress !== false
+    || parsed.raw_output_egress !== false
+    || parsed.provider_identifier_egress !== false
+    || parsed.raw_transaction_egress !== false
+  ) throw new Error("Compute exact-asset usage receipt failed its settlement binding checks");
+  try {
+    const [teeSigner, meterSigner, qvlSigner] = await Promise.all([
+      recoverMessageAddress({
+        message: { raw: signedUsage.usage.usage_commitment },
+        signature: signedUsage.usage.tee_signature,
+      }),
+      recoverAddress({
+        hash: metering.metering_receipt_digest,
+        signature: metering.verifier_signature,
+      }),
+      recoverAddress({
+        hash: metering.metering_qvl_receipt_digest,
+        signature: metering.qvl_signature,
+      }),
+    ]);
+    if (
+      teeSigner.toLowerCase() !== signedUsage.usage.tee_identity
+      || meterSigner.toLowerCase() !== metering.metering_verifier
+      || qvlSigner.toLowerCase() !== metering.metering_qvl_verifier
+    ) throw new Error("signature signer mismatch");
+  } catch {
+    throw new Error(
+      "Compute exact-asset usage signatures could not be authenticated by browser EOA recovery; ERC-1271 contract signatures require a pinned onchain check",
+    );
+  }
+  return parsed;
+}
+
+export async function fetchComputeDispatchUsageReceipt(
+  token: string,
+  status: ComputeDispatchIntentStatus,
+): Promise<ComputeExactAssetUsageReceipt> {
+  if (status.stage !== "settled") {
+    throw new Error("Signed usage evidence is available only after settlement");
+  }
+  const result = await request(
+    `/compute/projects/${encodeURIComponent(status.project_reference)}/dispatch-intents/${encodeURIComponent(status.job_reference)}/usage-receipt`,
+    { token, timeout: 15_000 },
+  );
+  return parseComputeExactAssetUsageReceipt(result, status);
 }
 
 /**
@@ -1254,6 +3474,17 @@ export async function createComputeDispatchIntent(
   if (!canCreateComputeDispatchIntent(project, capability)) {
     throw new Error("Exact-asset dispatch-intent creation is not enabled by this release");
   }
+  if (
+    !("allowed_result_policies" in capability.provider)
+    || !capability.provider.allowed_operations.includes(input.operation)
+    || !capability.provider.allowed_result_policies.includes(
+      input.resultPolicy as "bounded_summary_receipt",
+    )
+  ) {
+    throw new Error(
+      "Operation or result policy is not supported by the provider release",
+    );
+  }
   if (!IDEMPOTENCY_KEY.test(idempotencyKey)) throw new Error("Compute dispatch idempotency key is malformed");
   const body = normalizeDispatchInput(input);
   const result = record(await request(
@@ -1262,50 +3493,150 @@ export async function createComputeDispatchIntent(
   ), "Compute dispatch-intent result");
   exactKeys(result, "Compute dispatch-intent result", [
     "surface", "schema_version", "created", "idempotent_replay", "intent",
+    "workload_claim_created", "workload_claim_confirmed",
+    "workload_claim_recovered", "workload_claim_commitment",
     "legacy_credit_ledger_mutated", "provider_dispatch_status",
     "provider_dispatch_may_have_occurred", "provider_authoritative",
   ]);
   const created = boolean(result.created, "dispatch-intent created flag");
   const replay = boolean(result.idempotent_replay, "dispatch-intent replay flag");
+  const claimCreated = boolean(
+    result.workload_claim_created,
+    "dispatch workload-claim created flag",
+  );
+  const claimConfirmed = boolean(
+    result.workload_claim_confirmed,
+    "dispatch workload-claim confirmation",
+  );
+  const claimRecovered = boolean(
+    result.workload_claim_recovered,
+    "dispatch workload-claim recovery flag",
+  );
+  const claimCommitment = nonzeroSha256(
+    result.workload_claim_commitment,
+    "dispatch workload-claim commitment",
+  );
   const intent = parseComputeDispatchIntent(result.intent, {
     projectReference: project.project_id,
     jobReference: String(body.job_reference),
   });
   if (
     result.surface !== "compute_dispatch_intent_result"
-    || result.schema_version !== 2
+    || result.schema_version !== 3
     || created === replay
+    || !claimConfirmed
+    || claimCommitment !== intent.workload_claim_commitment
+    || (created && claimRecovered)
+    || (claimRecovered && !replay)
     || result.legacy_credit_ledger_mutated !== false
     || result.provider_authoritative !== false
     || result.provider_dispatch_status !== intent.provider_dispatch_status
     || result.provider_dispatch_may_have_occurred !== intent.provider_dispatch_may_have_occurred
   ) throw new Error("Compute dispatch-intent result is contradictory");
-  return { created, idempotentReplay: replay, intent };
+  return {
+    created,
+    idempotentReplay: replay,
+    workloadClaimCreated: claimCreated,
+    workloadClaimConfirmed: true,
+    workloadClaimRecovered: claimRecovered,
+    workloadClaimCommitment: claimCommitment,
+    intent,
+  };
+}
+
+export function normalizeComputeJobCreateInput(
+  project: ComputeProject,
+  input: ComputeJobCreateInput,
+): ComputeJobCreateInput {
+  assertProject(project);
+  const candidate = record(input, "Compute job create input");
+  exactKeys(candidate, "Compute job create input", [
+    "name", "operation", "maxCredits", "resultPolicy", "environmentVersion",
+  ]);
+  const name = text(candidate.name, "public job label", 64).trim();
+  const operation = candidate.operation;
+  const resultPolicy = candidate.resultPolicy;
+  const maxCredits = integer(candidate.maxCredits, "job reservation", 1, 500);
+  if (
+    !COMPUTE_JOB_PUBLIC_LABEL.test(name)
+    || !["owner", "admin", "developer"].includes(project.role)
+    || !["inference", "training"].includes(String(operation))
+    || !project.policy.allowed_operations.map(String).includes(String(operation))
+    || !["bounded_summary_receipt", "score_band_hash"].includes(String(resultPolicy))
+    || candidate.environmentVersion !== COMPUTE_JOB_ENVIRONMENT_MARKER
+    || maxCredits > project.policy.per_job_max_credits
+  ) throw new Error("Compute job request is outside the release-bounded project policy");
+  return {
+    name,
+    operation: operation as ComputeJobCreateInput["operation"],
+    maxCredits,
+    resultPolicy: resultPolicy as ComputeJobCreateInput["resultPolicy"],
+    environmentVersion: COMPUTE_JOB_ENVIRONMENT_MARKER,
+  };
+}
+
+export function parseComputeJobCreateResult(
+  value: unknown,
+  projectId: string,
+  expected: ComputeJobCreateInput,
+): ComputeJobCreateResult {
+  assertNoSensitiveFields(value);
+  const result = record(value, "Compute job result");
+  exactKeys(result, "Compute job result", [
+    "surface", "created", "idempotent_replay", "job", "provider_dispatch_performed",
+  ]);
+  const created = boolean(result.created, "job created flag");
+  const replay = boolean(result.idempotent_replay, "job replay flag");
+  assertJob(result.job, projectId);
+  const job = result.job;
+  const expectedRecipe = expected.operation === "training" ? "qwen3_8b_lora_r32" : "qwen3_8b_bounded";
+  if (
+    result.surface !== "compute_job_result"
+    || created === replay
+    || result.provider_dispatch_performed !== false
+    || job.name !== expected.name
+    || job.operation !== expected.operation
+    || job.recipe !== expectedRecipe
+    || job.max_credits !== expected.maxCredits
+    || job.result_policy !== expected.resultPolicy
+    || job.environment_version !== expected.environmentVersion
+    || (created && (
+      job.status !== "queued"
+      || job.actual_credits !== null
+      || job.released_credits !== null
+      || job.started_at !== null
+      || job.completed_at !== null
+      || job.metering_source !== null
+      || job.usage_receipt_hash !== null
+      || job.settlement_authority !== null
+    ))
+  ) throw new Error("Compute job result is contradictory or outside the requested reservation");
+  return { created, idempotentReplay: replay, job };
 }
 
 export async function createJob(
   token: string,
-  projectId: string,
-  input: { name: string; operation: "inference" | "training"; maxCredits: number; resultPolicy: "bounded_summary_receipt" | "score_band_hash"; environmentVersion: string },
+  project: ComputeProject,
+  input: ComputeJobCreateInput,
   idempotencyKey: string,
-): Promise<ComputeJob> {
-  const result = record(await request(`/compute/projects/${encodeURIComponent(projectId)}/jobs`, {
+): Promise<ComputeJobCreateResult> {
+  if (!IDEMPOTENCY_KEY.test(idempotencyKey)) throw new Error("Compute job idempotency key is malformed");
+  const normalized = normalizeComputeJobCreateInput(project, input);
+  const result = await request(`/compute/projects/${encodeURIComponent(project.project_id)}/jobs`, {
     method: "POST",
     token,
     idempotencyKey,
     body: {
-      name: input.name,
-      operation: input.operation,
+      name: normalized.name,
+      operation: normalized.operation,
       model: "qwen3_8b",
-      recipe: input.operation === "training" ? "qwen3_8b_lora_r32" : "qwen3_8b_bounded",
-      max_credits: input.maxCredits,
-      result_policy: input.resultPolicy,
-      environment_version: input.environmentVersion,
+      recipe: normalized.operation === "training" ? "qwen3_8b_lora_r32" : "qwen3_8b_bounded",
+      max_credits: normalized.maxCredits,
+      result_policy: normalized.resultPolicy,
+      environment_version: normalized.environmentVersion,
     },
-  }), "Compute job result");
-  if (result.surface !== "compute_job_result" || result.provider_dispatch_performed !== false) throw new Error("Compute job result made an unsupported dispatch claim");
-  assertJob(result.job, projectId);
-  return result.job;
+  });
+  return parseComputeJobCreateResult(result, project.project_id, normalized);
 }
 
 export function canCancelComputeJob(job: ComputeJob, role: ProjectRole | undefined): boolean {

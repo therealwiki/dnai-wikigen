@@ -26,6 +26,7 @@ import {
   FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
   FRONTEND_BUILD_RAW_PRIVATE_INPUT_FLAGS,
   FRONTEND_BUILD_RAW_INPUT_PROJECTION,
+  FRONTEND_BUILD_ROYALTY_RELEASE_HISTORY_FIELDS,
   FRONTEND_BUILD_SEMANTIC_LINEAGE_FIELDS,
   assertFrontendBuildCandidateLineage,
   canonicalFrontendBuildInputManifestText,
@@ -87,6 +88,18 @@ function preDPrivateInputs() {
   });
 }
 
+function royaltyReleaseHistoryBinding(inputs = preDPrivateInputs()) {
+  const historyReceipt = inputs.find(
+    ({ flag }) => flag === "--royalty-release-history-receipt",
+  );
+  assert.ok(historyReceipt);
+  return {
+    history_receipt_raw_sha256: historyReceipt.sha256,
+    history_sha256: LINEAGE.royalty_release_history_sha256,
+    receipt_sha256: LINEAGE.royalty_release_history_receipt_sha256,
+  };
+}
+
 function buildControls() {
   return CLOUDFLARE_D_BUILD_CONTROL_PATHS.map((controlPath, index) => ({
     path: controlPath,
@@ -133,12 +146,14 @@ function externalBuildClosure() {
 }
 
 function manifest() {
+  const inputs = preDPrivateInputs();
   return createFrontendBuildInputManifest({
     releaseSha: RELEASE_SHA,
     gitTreeOid: `sha1:${"b".repeat(40)}`,
     sourceFingerprintSha256: pin(150),
-    preDPrivateInputs: preDPrivateInputs(),
+    preDPrivateInputs: inputs,
     semanticLineage: LINEAGE,
+    royaltyReleaseHistoryBinding: royaltyReleaseHistoryBinding(inputs),
     serializedEnv: SERIALIZED_ENV,
     primaryRpcUrl: "https://sepolia.base.org",
     secondaryRpcUrl: "https://base-sepolia-rpc.publicnode.com",
@@ -162,7 +177,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   const value = manifest();
   assert.equal(value.schema, FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA);
   assert.equal(value.truth_status, FRONTEND_BUILD_INPUT_MANIFEST_TRUTH_STATUS);
-  assert.equal(value.pre_D_private_inputs.length, 35);
+  assert.equal(value.pre_D_private_inputs.length, 36);
   assert.deepEqual(
     value.pre_D_private_inputs.map(({ flag }) => flag),
     FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
@@ -187,6 +202,10 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   );
   assert.deepEqual(Object.keys(value.semantic_lineage),
     FRONTEND_BUILD_SEMANTIC_LINEAGE_FIELDS);
+  assert.deepEqual(Object.keys(value.royalty_release_history),
+    FRONTEND_BUILD_ROYALTY_RELEASE_HISTORY_FIELDS);
+  assert.deepEqual(value.royalty_release_history,
+    royaltyReleaseHistoryBinding(value.pre_D_private_inputs));
   assert.deepEqual(Object.keys(value.authority_roots),
     FRONTEND_BUILD_AUTHORITY_ROOT_FIELDS);
   assert.equal(value.projected_env_sha256,
@@ -200,7 +219,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   // producer/validator recipe drift.
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:46c6df9b1871b3683b502429d58120c1b3e73c2be6f47a033d5fdb95f04cf9b7",
+    "sha256:421ea1a794b17587b522106143bfcbd281ea271ffe5b9a80ed76ec97e7db0f52",
   );
 });
 
@@ -217,6 +236,8 @@ test("D receipt is hash-only, nonauthorizing, and independently reprojectable", 
     "release_inputs_sha256",
     "release_sha",
     "reviewer_authority_genesis_acceptance_sha256",
+    "royalty_release_history_receipt_sha256",
+    "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256",
     "schema",
     "status",
@@ -230,6 +251,10 @@ test("D receipt is hash-only, nonauthorizing, and independently reprojectable", 
     frontendBuildInputManifestSha256(manifest()));
   assert.equal(value.release_env_sha256,
     frontendBuildProjectedEnvSha256(SERIALIZED_ENV));
+  assert.equal(value.royalty_release_history_sha256,
+    manifest().royalty_release_history.history_sha256);
+  assert.equal(value.royalty_release_history_receipt_sha256,
+    manifest().royalty_release_history.receipt_sha256);
   assert.match(frontendBuildCandidateReceiptSha256(value), /^sha256:[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(value).includes("VITE_"), false);
   assert.equal(JSON.stringify(value).includes("/Users/"), false);
@@ -253,6 +278,8 @@ test("D manifest rejects omission, substitution, reordering, extras, and cyclic 
     (copy) => { copy.pre_D_private_inputs[0].projection = FRONTEND_BUILD_RAW_INPUT_PROJECTION; },
     (copy) => { copy.pre_D_private_inputs[1].projection = FRONTEND_BUILD_LIVE_CANDIDATE_PROJECTION; },
     (copy) => { copy.pre_D_private_inputs[2].sha256 = copy.pre_D_private_inputs[1].sha256; },
+    (copy) => { delete copy.royalty_release_history; },
+    (copy) => { copy.royalty_release_history.unreviewed = pin(253); },
     (copy) => { copy.build_controls.pop(); },
     (copy) => { copy.build_controls[0].path = "web/dist/index.html"; },
     (copy) => { copy.build_controls.reverse(); },
@@ -274,6 +301,32 @@ test("D manifest rejects omission, substitution, reordering, extras, and cyclic 
     const copy = structuredClone(base);
     mutate(copy);
     assert.throws(() => normalizeFrontendBuildInputManifest(copy));
+  }
+});
+
+test("D rejects independent Royalty H raw, history, and receipt mismatches", () => {
+  const mutations = [
+    (copy) => { copy.royalty_release_history.history_receipt_raw_sha256 = pin(241); },
+    (copy) => { copy.royalty_release_history.history_sha256 = pin(242); },
+    (copy) => { copy.royalty_release_history.receipt_sha256 = pin(243); },
+    (copy) => {
+      const historyReceipt = copy.pre_D_private_inputs.find(
+        ({ flag }) => flag === "--royalty-release-history-receipt",
+      );
+      historyReceipt.sha256 = pin(244);
+    },
+    (copy) => { copy.semantic_lineage.royalty_release_history_sha256 = pin(245); },
+    (copy) => {
+      copy.semantic_lineage.royalty_release_history_receipt_sha256 = pin(246);
+    },
+  ];
+  for (const mutate of mutations) {
+    const copy = structuredClone(manifest());
+    mutate(copy);
+    assert.throws(
+      () => normalizeFrontendBuildInputManifest(copy),
+      /Royalty H raw bytes, receipt digest, and history digest are not exact-bound/,
+    );
   }
 });
 
@@ -360,7 +413,12 @@ test("every exact private input, build control, external file, and lineage pin c
 
   for (let index = 0; index < base.pre_D_private_inputs.length; index += 1) {
     assertMutationChangesD((copy) => {
-      copy.pre_D_private_inputs[index].sha256 = labeledPin(`private:${index}`);
+      const replacement = labeledPin(`private:${index}`);
+      copy.pre_D_private_inputs[index].sha256 = replacement;
+      if (copy.pre_D_private_inputs[index].flag
+        === "--royalty-release-history-receipt") {
+        copy.royalty_release_history.history_receipt_raw_sha256 = replacement;
+      }
     }, `private input ${index}`);
   }
   for (let index = 0; index < base.build_controls.length; index += 1) {
@@ -387,6 +445,12 @@ test("every exact private input, build control, external file, and lineage pin c
       copy.semantic_lineage[field] = replacement;
       const authorityField = authorityForLineage.get(field);
       if (authorityField) copy.authority_roots[authorityField] = replacement;
+      if (field === "royalty_release_history_sha256") {
+        copy.royalty_release_history.history_sha256 = replacement;
+      }
+      if (field === "royalty_release_history_receipt_sha256") {
+        copy.royalty_release_history.receipt_sha256 = replacement;
+      }
     }, `semantic lineage ${field}`);
   }
 });

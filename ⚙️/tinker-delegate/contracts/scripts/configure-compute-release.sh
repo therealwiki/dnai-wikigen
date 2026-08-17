@@ -9,8 +9,9 @@ BASE_SEPOLIA_USDC=0x036CbD53842c5426634e7929541eC2318f3dCF7e
 ZERO_BYTES32=0x0000000000000000000000000000000000000000000000000000000000000000
 ZERO_ADDRESS=0x0000000000000000000000000000000000000000
 MAX_SAFE_JSON_INTEGER=9007199254740991
-MANIFEST_PATH="${DEPLOYMENT_MANIFEST_PATH:-$ROOT_DIR/deployments/base-sepolia.json}"
 MANIFEST_FILTER="$CONTRACTS_DIR/scripts/update-compute-release-manifest.jq"
+USDC_AUTHORITY_VERIFIER="$CONTRACTS_DIR/scripts/verify-base-sepolia-usdc-release.sh"
+CANONICAL_USDC_FINALIZED_AUTHORITY_RECEIPT=''
 
 if [ -f "$ROOT_DIR/.env" ]; then
   set -a
@@ -18,6 +19,12 @@ if [ -f "$ROOT_DIR/.env" ]; then
   . "$ROOT_DIR/.env"
   set +a
 fi
+
+# DEPLOYMENT_MANIFEST_PATH and RELEASE_CEREMONY_LEDGER_PATH are resolved only
+# after .env; repository history is never a ceremony fallback.
+# shellcheck disable=SC1091
+. "$CONTRACTS_DIR/scripts/release-ceremony-paths.sh"
+operator_policy_resolve_release_ceremony_paths
 
 # shellcheck disable=SC1091
 . "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"
@@ -155,6 +162,54 @@ check_release_provenance() {
   fi
 }
 
+verify_canonical_usdc_finalized_authority() {
+  local receipt
+  if ! receipt="$(
+    BASE_SEPOLIA_RPC_URL="$BASE_SEPOLIA_RPC_URL" \
+    BASE_SEPOLIA_SECONDARY_RPC_URL="$BASE_SEPOLIA_SECONDARY_RPC_URL" \
+    COMPUTE_VAULT_ERC20_ASSET_ADDRESS="$COMPUTE_VAULT_ERC20_ASSET_ADDRESS" \
+    COMPUTE_VAULT_ERC20_ASSET_CODE_HASH="$COMPUTE_VAULT_ERC20_ASSET_CODE_HASH" \
+    COMPUTE_VAULT_ERC20_ASSET_SYMBOL="$COMPUTE_VAULT_ERC20_ASSET_SYMBOL" \
+    COMPUTE_VAULT_ERC20_ASSET_DECIMALS="$COMPUTE_VAULT_ERC20_ASSET_DECIMALS" \
+      bash "$USDC_AUTHORITY_VERIFIER"
+  )"; then
+    echo "Canonical Base Sepolia USDC did not satisfy the signed dual-RPC finalized authority." >&2
+    exit 1
+  fi
+  if [ "${#receipt}" -gt 8192 ] || ! jq -e \
+    --arg address "$(normalize_address "$COMPUTE_VAULT_ERC20_ASSET_ADDRESS")" \
+    --arg codeHash "$(printf '%s' "$COMPUTE_VAULT_ERC20_ASSET_CODE_HASH" | tr '[:upper:]' '[:lower:]')" \
+    --arg symbol "$COMPUTE_VAULT_ERC20_ASSET_SYMBOL" \
+    --argjson decimals "$COMPUTE_VAULT_ERC20_ASSET_DECIMALS" '
+      keys == [
+        "assetAddress",
+        "chainId",
+        "decimals",
+        "finalizedBlockHash",
+        "finalizedBlockNumber",
+        "proof",
+        "runtimeCodeHash",
+        "schema",
+        "symbol"
+      ]
+      and .schema == "dnai.base-sepolia-usdc-finalized-authority.v1"
+      and .chainId == 84532
+      and .assetAddress == $address
+      and .runtimeCodeHash == $codeHash
+      and .symbol == $symbol
+      and .decimals == $decimals
+      and (.finalizedBlockNumber | type == "number" and . > 0
+        and . <= 9007199254740991 and floor == .)
+      and (.finalizedBlockHash | type == "string"
+        and test("^0x[0-9a-f]{64}$") and . != ("0x" + ("0" * 64)))
+      and .proof == "two_distinct_https_rpcs_exact_finalized_numeric_block_eth_getCode_and_eth_call_agreement"
+    ' <<<"$receipt" >/dev/null; then
+    echo "Canonical Base Sepolia USDC verifier returned a malformed authority receipt." >&2
+    exit 1
+  fi
+  CANONICAL_USDC_FINALIZED_AUTHORITY_RECEIPT="$receipt"
+}
+
 for required in forge cast git jq node; do
   if ! command -v "$required" >/dev/null 2>&1; then
     echo "$required is required." >&2
@@ -164,6 +219,7 @@ done
 
 for name in \
   BASE_SEPOLIA_RPC_URL \
+  BASE_SEPOLIA_SECONDARY_RPC_URL \
   DEPLOYMENT_OPERATOR \
   COMPUTE_VAULT_DEVELOPER \
   COMPUTE_VAULT_DEVELOPER_FEE_BPS \
@@ -178,6 +234,10 @@ for name in \
   COMPUTE_VAULT_METERING_VERIFIER \
   COMPUTE_VAULT_METERING_QVL_VERIFIER \
   COMPUTE_METERING_POLICY_SET_HASH \
+  COMPUTE_VAULT_ERC20_ASSET_ADDRESS \
+  COMPUTE_VAULT_ERC20_ASSET_CODE_HASH \
+  COMPUTE_VAULT_ERC20_ASSET_SYMBOL \
+  COMPUTE_VAULT_ERC20_ASSET_DECIMALS \
   OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256 \
   OPERATOR_POLICY_FINAL_AUTHORITY_SHA256 \
   COMPUTE_RELEASE_PHASE; do
@@ -198,7 +258,8 @@ for name in \
   COMPUTE_VAULT_NATIVE_PROVIDER \
   COMPUTE_VAULT_ERC20_PROVIDER \
   COMPUTE_VAULT_METERING_VERIFIER \
-  COMPUTE_VAULT_METERING_QVL_VERIFIER; do
+  COMPUTE_VAULT_METERING_QVL_VERIFIER \
+  COMPUTE_VAULT_ERC20_ASSET_ADDRESS; do
   validate_address "$name" "${!name}"
 done
 for name in \
@@ -209,9 +270,17 @@ for name in \
   validate_bytes32 "$name" "${!name}"
 done
 validate_bytes32 COMPUTE_VAULT_RUNTIME_CODE_HASH "$COMPUTE_VAULT_RUNTIME_CODE_HASH"
+validate_bytes32 COMPUTE_VAULT_ERC20_ASSET_CODE_HASH "$COMPUTE_VAULT_ERC20_ASSET_CODE_HASH"
 validate_safe_uint COMPUTE_VAULT_DEVELOPER_FEE_BPS "$COMPUTE_VAULT_DEVELOPER_FEE_BPS"
+validate_safe_uint COMPUTE_VAULT_ERC20_ASSET_DECIMALS "$COMPUTE_VAULT_ERC20_ASSET_DECIMALS"
 validate_sha256_digest OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256 "$OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256"
 validate_sha256_digest OPERATOR_POLICY_FINAL_AUTHORITY_SHA256 "$OPERATOR_POLICY_FINAL_AUTHORITY_SHA256"
+if [ "$(normalize_address "$COMPUTE_VAULT_ERC20_ASSET_ADDRESS")" != "$(normalize_address "$BASE_SEPOLIA_USDC")" ] \
+  || [ "$COMPUTE_VAULT_ERC20_ASSET_SYMBOL" != "USDC" ] \
+  || [ "$COMPUTE_VAULT_ERC20_ASSET_DECIMALS" != "6" ]; then
+  echo "Reviewed Compute ERC-20 authority must be canonical Base Sepolia USDC with exact metadata." >&2
+  exit 1
+fi
 if [ "$COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT" = "$COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT" ]; then
   echo "Native and USDC rate-policy commitments must differ." >&2
   exit 1
@@ -226,6 +295,10 @@ operator_policy_assert_public_env contractEnv COMPUTE_VAULT_DEVELOPER
 operator_policy_assert_public_env contractEnv COMPUTE_VAULT_DEVELOPER_FEE_BPS
 operator_policy_assert_public_env contractEnv COMPUTE_VAULT_METERING_VERIFIER
 operator_policy_assert_public_env contractEnv COMPUTE_VAULT_METERING_QVL_VERIFIER
+operator_policy_assert_public_env postDeployEnv COMPUTE_VAULT_ERC20_ASSET_ADDRESS
+operator_policy_assert_public_env postDeployEnv COMPUTE_VAULT_ERC20_ASSET_CODE_HASH
+operator_policy_assert_public_env postDeployEnv COMPUTE_VAULT_ERC20_ASSET_SYMBOL
+operator_policy_assert_public_env postDeployEnv COMPUTE_VAULT_ERC20_ASSET_DECIMALS
 for policy_env_name in \
   COMPUTE_VAULT_TEE_IDENTITY \
   COMPUTE_VAULT_COMPOSE_HASH \
@@ -236,6 +309,11 @@ for policy_env_name in \
   COMPUTE_METERING_POLICY_SET_HASH; do
   operator_policy_assert_public_env postDeployEnv "$policy_env_name"
 done
+
+# This proof runs before wallet access and simulation. Broadcast runs repeat it
+# immediately after signer/source/ledger revalidation so a long dry run cannot
+# carry stale asset authority across the transaction boundary.
+verify_canonical_usdc_finalized_authority
 
 if [ "$BROADCAST" = "true" ]; then
   # Refuse an irreversible governance transaction when its append-only
@@ -294,6 +372,8 @@ echo "Vault:             $COMPUTE_VAULT_ADDRESS"
 echo "Metering verifier: $COMPUTE_VAULT_METERING_VERIFIER"
 echo "Metering QVL:      $COMPUTE_VAULT_METERING_QVL_VERIFIER"
 echo "Policy-set hash:    $COMPUTE_METERING_POLICY_SET_HASH"
+echo "USDC authority:     finalized block $(jq -r '.finalizedBlockNumber' <<<"$CANONICAL_USDC_FINALIZED_AUTHORITY_RECEIPT")"
+echo "USDC runtime hash:  $(jq -r '.runtimeCodeHash' <<<"$CANONICAL_USDC_FINALIZED_AUTHORITY_RECEIPT")"
 echo "Broadcast:         $BROADCAST"
 
 cd "$CONTRACTS_DIR"
@@ -326,6 +406,10 @@ fi
 # Refuse source or ledger drift between unlock and signing.
 check_release_provenance
 validate_existing_deployment_ledger
+
+# Re-prove exact numeric-block state through both independent providers after
+# unlock and immediately before the first irreversible governance transaction.
+verify_canonical_usdc_finalized_authority
 
 echo
 echo "== Broadcast exact timelocked phase =="
@@ -629,6 +713,10 @@ if ! jq -e \
   --arg meteringQvlVerifierExpected "$COMPUTE_VAULT_METERING_QVL_VERIFIER" \
   --arg meteringPolicySetHashExpected "$COMPUTE_METERING_POLICY_SET_HASH" \
   --arg baseSepoliaUsdc "$BASE_SEPOLIA_USDC" \
+  --arg baseSepoliaUsdcCodeHash "$COMPUTE_VAULT_ERC20_ASSET_CODE_HASH" \
+  --arg baseSepoliaUsdcSymbol "$COMPUTE_VAULT_ERC20_ASSET_SYMBOL" \
+  --argjson baseSepoliaUsdcDecimals "$COMPUTE_VAULT_ERC20_ASSET_DECIMALS" \
+  --argjson usdcFinalizedAuthority "$CANONICAL_USDC_FINALIZED_AUTHORITY_RECEIPT" \
   --argjson developerFeeBps "$developer_fee_bps" \
   --argjson developerFeeFrozen "$developer_fee_frozen" \
   --arg meteringVerifier "$metering_verifier" \

@@ -9,6 +9,7 @@ import { privateKeyToAccount } from "../web/node_modules/viem/_esm/accounts/inde
 
 import {
   acquireReleaseCeremonyLock,
+  CURRENT_RELEASE_CEREMONY_WRITERS,
   createReleaseCeremonyLockRecoverySigningPayload,
   inspectReleaseCeremonyLock,
   recoverReleaseCeremonyLock,
@@ -325,10 +326,25 @@ async function recoveryAuthority(ownerSha256, authorityFixture, {
 
 test("one release-wide lock excludes every pair of different ceremony writers", (t) => {
   const f = fixture(t);
-  for (let firstIndex = 0; firstIndex < RELEASE_CEREMONY_WRITERS.length; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < RELEASE_CEREMONY_WRITERS.length; secondIndex += 1) {
-      const firstWriter = RELEASE_CEREMONY_WRITERS[firstIndex];
-      const secondWriter = RELEASE_CEREMONY_WRITERS[secondIndex];
+  assert.deepEqual(RELEASE_CEREMONY_WRITERS, [
+    "ceremony_ledger_finalization",
+    "ceremony_ledger_initialization",
+    "ceremony_ledger_recovery",
+    "challenge_registry_release",
+    "compute_release",
+    "diligence_release",
+    "email_oracle_release",
+    "execution_policy_anchor_release",
+    "tinker_release",
+  ]);
+  assert.deepEqual(CURRENT_RELEASE_CEREMONY_WRITERS, [
+    ...RELEASE_CEREMONY_WRITERS,
+    "royalty_release",
+  ]);
+  for (let firstIndex = 0; firstIndex < CURRENT_RELEASE_CEREMONY_WRITERS.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < CURRENT_RELEASE_CEREMONY_WRITERS.length; secondIndex += 1) {
+      const firstWriter = CURRENT_RELEASE_CEREMONY_WRITERS[firstIndex];
+      const secondWriter = CURRENT_RELEASE_CEREMONY_WRITERS[secondIndex];
       const token = firstIndex.toString(16).padStart(2, "0").repeat(32);
       const acquired = acquireReleaseCeremonyLock(context(f, firstWriter, token));
       assert.equal(acquired.protocol, RELEASE_CEREMONY_LOCK_PROTOCOL);

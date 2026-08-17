@@ -13,9 +13,11 @@ Each cycle performs these steps in order:
 2. Deliver every decoded event to the runtime-authenticated internal API. A
    `DealFunded` notification recreates the in-TEE `DealContext`; resolution
    notifications trigger cleanup.
-3. Persist the bounded deal journal, then advance the chain cursor. This write
-   order means a crash can replay idempotent notifications but cannot advance a
-   cursor past a funded deal that was never scheduled.
+3. Read and bind the canonical hashes for the scan endpoints and every event
+   block. Persist the bounded deal journal plus a versioned block-hash
+   checkpoint, then advance the chain cursor. This write order means a crash
+   can replay idempotent notifications but cannot advance a cursor past a
+   funded deal that was never scheduled.
 4. For each confirmed funded deal, call authenticated `POST /policy/status`
    with `surface=deal_evaluation`. The response's exact resource hash, current
    pass, and raw-egress flags are verified. A missing, expired, held, denied, or
@@ -42,19 +44,39 @@ Each cycle performs these steps in order:
    The returned strict `intel_tdx_dcap_qvl` verdict is authenticated against the
    explicitly configured verifier-address allowlist and exact quote, report
    data, compose, app, OS, signer, chain, and contract bindings.
-9. Mint the short-lived exact result authorization, then call
-   `DiligenceRoom.submitResult` through the dstack-derived signer. There is no
-   private-key CLI option or environment-key signing fallback.
-10. Observe `EvaluationSubmitted` and resolution events on confirmed blocks.
-    An ambiguous broadcast is never resent automatically; the journal remains
-    `submission_uncertain` until chain observation or explicit operator
-    reconciliation.
+9. Mint the short-lived exact result authorization and sign
+   `DiligenceRoom.submitResult` through the dstack-derived signer. Before the
+   raw transaction is sent to any RPC, persist its locally derived Keccak
+   transaction hash, exact signer nonce, bounded result hash, and preparation
+   time. There is no private-key CLI option or environment-key signing
+   fallback, and the raw signed transaction is not written to the public
+   journal.
+10. Reconcile the exact prepared hash through its receipt, pending transaction,
+    signer `latest` nonce, and signer `pending` nonce. A success receipt is
+    accepted only after its block is confirmation-safe, its block hash remains
+    canonical, and the contract reports submitted or resolved. Missing,
+    replaced, reverted, inconsistent, and transport-ambiguous cases never
+    trigger automatic signing or rebroadcast.
+11. Observe `EvaluationSubmitted` and resolution events on confirmed blocks.
+    Any block-checkpoint or accepted-receipt hash divergence quarantines active
+    private state, clears bounded projections, rewinds to the original scan
+    anchor, and rebuilds from canonical logs.
 
 Cycle output contains only counts, scanned block bounds, the fixed reorg policy,
 and `raw_secret_egress=false`. The `0600` journal contains public chain hashes
-and the same bounded evaluation projection. It never stores artifacts, raw
-quotes, runtime/QVL bearer tokens, Tinker credentials, dstack key material,
-private evaluator metrics, or verifier private keys.
+and the same bounded evaluation projection, prepared nonce/hash metadata,
+receipt checkpoint, and canonical block-hash checkpoints. It never stores
+artifacts, raw signed transactions, raw quotes, runtime/QVL bearer tokens,
+Tinker credentials, dstack key material, private evaluator metrics, or verifier
+private keys.
+
+The API CVM separately maintains
+`/data/deal_active_recovery.v1.sealed`. That file is a versioned AES-256-GCM
+snapshot encrypted under the purpose-separated dstack key path
+`tinker/diligence_active_deal_recovery_v1`. It has strict authenticated schema
+validation, a bounded deal/artifact count, mode `0600`, atomic replacement, and
+file-plus-directory fsync. There is no deployed plaintext key-file fallback;
+the explicit-key constructor exists only for tests.
 
 ## Production invocation shape
 
@@ -148,20 +170,45 @@ Intel TDX verification.
 - Event delivery is replay-safe. `on_deal_funded` accepts an identical immutable
   funded context and rejects conflicting context. Resolution cleanup is
   idempotent.
+- The deal runtime holds a nonblocking kernel `flock` lease on the state-bound
+  mode-`0600` lock file for its complete process lifetime. A second writer
+  fails before scanning or signing. This is an exact single-CVM writer lease,
+  not a claim of a cross-host consensus service.
 - The cursor is bound to one contract. Restarting with another address fails;
   lowering the confirmation depth after a cursor has advanced also fails.
+- Active public context, the artifact, its commitment secret, and a completed
+  bounded result survive an ordinary API process restart only through the
+  authenticated dstack-sealed private snapshot. Raw evaluator metrics and live
+  provider sessions are never serialized.
+- A crash while evaluator code was running is not presented as a resumed run.
+  Recovery demotes that state to a fresh explicit evaluation using the
+  commitment-verified sealed artifact. A Tinker-backed recipe creates a new
+  authorized isolated session at that point.
+- If there is no private snapshot for a funded deal, the runtime rereads seller,
+  buyer, reserve, budget, and artifact commitment from `DiligenceRoom` and
+  replays `notify-funded`; the seller must verify the current attestation and
+  upload fresh ciphertext. A malformed, wrongly keyed, tampered, or unsafe-mode
+  snapshot fails API initialization closed instead of silently falling back to
+  empty memory.
+- A detected chain reorg deliberately destroys the affected process-private and
+  sealed active state before canonical replay. Even when the canonical chain
+  still contains the deal, the seller must verify the current attestation and
+  upload fresh ciphertext; orphan-chain private authority is never reused.
 - The bounded result is fetched before every evaluation attempt. If evaluation
-  completed but its HTTP response was lost, the process recovers the existing
+  completed but its HTTP response was lost, the process recovers the sealed
   result instead of repeating evaluator work.
-- If the API process restarted and lost its in-memory deal dictionary, a 404
-  causes the runtime to reread seller, buyer, reserve, budget, and artifact
-  commitment from `DiligenceRoom` and replay `notify-funded`. The seller must
-  then upload a new ciphertext to the new attested ingress key.
 - QVL transport failure is retryable but makes no submission claim. Invalid
   signatures, policy mismatches, unapproved compose measurements, non-policy
   compute cost, wrong signer, or wrong contract state fail closed.
-- An ambiguous transaction broadcast is not automatically retried. The worker
-  only marks it submitted after an on-chain state/event observation.
+- A signed transaction attempt is journaled before broadcast. After a crash or
+  connection loss, restart queries only that exact hash and nonce. Exact
+  pending transactions wait; a consumed/replaced nonce, absent hash, inconsistent
+  RPC views, or reverted receipt remains a bounded manual hold/rejection. No
+  ambiguity branch automatically resends.
+- Scan endpoint hashes and confirmed receipt hashes are rechecked before each
+  cycle. Divergence performs a conservative all-deal quarantine and full rewind
+  to the original scan anchor rather than attempting an unsafe semantic inverse
+  of the contract state machine.
 
 ## Remaining production gaps
 
@@ -172,31 +219,10 @@ repository a live settlement deployment by itself:
    authentication are implemented, but an independently operated Intel
    DCAP/QVL service, its HTTPS endpoint, trusted signing identity, collateral
    refresh/TCB policy, monitoring, and key-rotation process are not deployed.
-2. **Private crash recovery:** the control plane keeps active artifacts,
-   commitment secrets, evaluator sessions, and bounded results in process
-   memory. Public funded context can be reconstructed from chain, but private
-   bytes cannot and should not be placed in the public runtime journal. After a
-   CVM/API restart, the seller must verify the fresh quote and re-upload the
-   artifact. Seamless recovery requires a separately designed dstack-sealed,
-   versioned, integrity-protected active-deal store with explicit destruction
-   and migration semantics.
-3. **Pending transaction recovery:** the submitter returns a hash after JSON-RPC
-   acceptance, but there is no durable nonce/receipt state machine that can
-   prove whether a connection-lost broadcast entered the mempool. The runtime
-   safely stops automatic resubmission; an operator must reconcile an uncertain
-   nonce until a receipt/confirmed event observer is added.
-4. **Deep reorg rollback:** the watcher preserves the existing
-   confirmed-blocks-only policy and blocks confirmation downgrades. It does not
-   retain block hashes or reverse internal notifications after a reorg deeper
-   than the configured confirmation window. A production indexer needs durable
-   block-hash checkpoints plus compensating state transitions.
-5. **Single-writer coordination:** cursor and journal writes are atomic for one
-   process but have no distributed lease. Run exactly one deal-runtime replica
-   until a dstack-sealed leader lease or transactional shared store is added.
-6. **Artifact upload wake-up:** the worker polls bounded deal state; there is no
+2. **Artifact upload wake-up:** the worker polls bounded deal state; there is no
    durable internal artifact-ready event. Polling is safe but adds latency. A
    future queue must carry only deal IDs/commitments, never artifact bytes.
-7. **Deployment evidence:** the deterministic evaluator and its networkless
+3. **Deployment evidence:** the deterministic evaluator and its networkless
    manifest initializer are wired into the release compose, but the checked-in
    historical image is not release-eligible. A clean reproducible image, fresh
    Phala deployment, exact release-core/manifest projection, contract

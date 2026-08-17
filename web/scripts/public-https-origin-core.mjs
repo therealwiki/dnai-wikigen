@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { URL as NodeURL } from "node:url";
 
 const PRIVATE_DNS_SUFFIXES = Object.freeze([
   "localhost",
@@ -133,7 +134,7 @@ export function parseExactPublicHttpsUrl(value, label = "URL") {
   }
   let parsed;
   try {
-    parsed = new URL(raw);
+    parsed = new NodeURL(raw);
   } catch {
     throw new Error(`${label} must be an exact public HTTPS origin or endpoint`);
   }
@@ -195,7 +196,7 @@ export function exactDistinctPublicHttpsEndpoints(
   const secondary = exactPublicHttpsEndpoint(secondaryValue, secondaryLabel);
   if (
     primary === secondary
-    || new URL(primary).origin.toLowerCase() === new URL(secondary).origin.toLowerCase()
+    || new NodeURL(primary).origin.toLowerCase() === new NodeURL(secondary).origin.toLowerCase()
   ) {
     throw new Error(`${secondaryLabel} must use a different public provider origin`);
   }

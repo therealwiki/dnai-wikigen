@@ -12,6 +12,8 @@ const FAULT_STAGES = new Set([
   "complete-write",
   "file-fsync",
   "publish",
+  "after-link",
+  "after-temp-unlink",
   "directory-fsync",
 ]);
 const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
@@ -25,6 +27,22 @@ function failAt(actual, expected) {
 
 function sameInode(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameDirectoryBinding(left, right) {
+  // Directory entry mutations legitimately change link counts, sizes, and
+  // timestamps. The retained authority must nevertheless stay bound to the
+  // same owned directory inode with the same type and permission posture.
+  return ["dev", "ino", "mode", "uid", "gid", "birthtimeMs"]
+    .every((field) => left[field] === right[field]);
+}
+
+export class DurableJsonPublicationIndeterminateError extends Error {
+  constructor() {
+    super("durable JSON publication is indeterminate");
+    this.name = "DurableJsonPublicationIndeterminateError";
+    this.code = "durable_json_publication_indeterminate";
+  }
 }
 
 function assertLexicallyCanonicalAbsolute(filePath, label) {
@@ -151,9 +169,16 @@ function openTrustedOutputDirectory(directoryPath) {
   }
 }
 
-function assertDirectoryStillBound(directoryPath, expected) {
+function assertDirectoryStillBound(directoryPath, directory) {
   const current = fs.lstatSync(directoryPath);
-  if (current.isSymbolicLink() || !current.isDirectory() || !sameInode(current, expected)) {
+  const retained = fs.fstatSync(directory.fd);
+  if (
+    current.isSymbolicLink()
+    || !current.isDirectory()
+    || !retained.isDirectory()
+    || !sameDirectoryBinding(directory.stat, retained)
+    || !sameDirectoryBinding(retained, current)
+  ) {
     throw new Error("durable JSON output directory changed before publication");
   }
   if (fs.realpathSync.native(directoryPath) !== directoryPath) {
@@ -190,9 +215,17 @@ function writeAll(fd, bytes, faultStage) {
   }
 }
 
-function fsyncDirectoryChain(directoryPath, faultStage) {
+function fsyncDirectoryChain(directoryPath, directory, faultStage) {
   failAt(faultStage, "directory-fsync");
-  let current = directoryPath;
+
+  // The output binding is the transaction commit point. Synchronize the exact
+  // directory descriptor authenticated before any write, rather than resolving
+  // its mutable pathname again after publication.
+  assertDirectoryStillBound(directoryPath, directory);
+  fs.fsyncSync(directory.fd);
+  assertDirectoryStillBound(directoryPath, directory);
+
+  let current = path.dirname(directoryPath);
   while (true) {
     assertCanonicalExistingPath(current, "durable JSON fsync directory");
     const directoryFd = fs.openSync(
@@ -207,10 +240,15 @@ function fsyncDirectoryChain(directoryPath, faultStage) {
     } finally {
       fs.closeSync(directoryFd);
     }
+    // A parent-chain sync must never hide replacement of the retained output
+    // directory. Revalidate both its open descriptor and live pathname after
+    // every ancestor commit.
+    assertDirectoryStillBound(directoryPath, directory);
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
   }
+  assertDirectoryStillBound(directoryPath, directory);
 }
 
 function safeRemoveOwnedTemporary(temporaryPath, temporaryStat) {
@@ -245,6 +283,9 @@ export function durablyPublishJson({
   // Deliberately not exposed by the CLI. It exists only to exercise the
   // pre-publish identity recheck in deterministic adversarial tests.
   testHookBeforePublish = null,
+  // Deliberately test-only: exercises the post-publication/pre-commit directory
+  // binding check which otherwise has too small a deterministic race window.
+  testHookBeforeDirectoryFsync = null,
 }) {
   assertLexicallyCanonicalAbsolute(sourcePath, "durable JSON source path");
   assertLexicallyCanonicalAbsolute(outputPath, "durable JSON output path");
@@ -262,6 +303,18 @@ export function durablyPublishJson({
   }
   if (testHookBeforePublish !== null && typeof testHookBeforePublish !== "function") {
     throw new Error("durable JSON test hook must be a function when supplied");
+  }
+  if (
+    testHookBeforeDirectoryFsync !== null
+    && typeof testHookBeforeDirectoryFsync !== "function"
+  ) {
+    throw new Error("durable JSON directory-fsync test hook must be a function when supplied");
+  }
+  if (
+    publishMode !== "create"
+    && (faultStage === "after-link" || faultStage === "after-temp-unlink")
+  ) {
+    throw new Error("durable JSON hard-link fault stages require create mode");
   }
 
   const source = readStableJsonFile(sourcePath, "durable JSON source");
@@ -301,8 +354,9 @@ export function durablyPublishJson({
     let temporaryFd;
     let temporaryStat;
     let published = false;
+    let targetMutated = false;
     try {
-      assertDirectoryStillBound(outputDirectory, directory.stat);
+      assertDirectoryStillBound(outputDirectory, directory);
       temporaryFd = fs.openSync(
         temporaryPath,
         fs.constants.O_WRONLY
@@ -336,7 +390,7 @@ export function durablyPublishJson({
       }
       failAt(faultStage, "publish");
       if (testHookBeforePublish) testHookBeforePublish();
-      assertDirectoryStillBound(outputDirectory, directory.stat);
+      assertDirectoryStillBound(outputDirectory, directory);
 
       if (publishMode === "create") {
         try {
@@ -347,10 +401,14 @@ export function durablyPublishJson({
         }
         // A hard link gives create-if-absent semantics without a rename race.
         fs.linkSync(temporaryPath, outputPath);
+        targetMutated = true;
+        failAt(faultStage, "after-link");
         fs.unlinkSync(temporaryPath);
+        failAt(faultStage, "after-temp-unlink");
       } else {
         assertReplacementTargetUnchanged(outputPath, targetStat);
         fs.renameSync(temporaryPath, outputPath);
+        targetMutated = true;
       }
       published = true;
 
@@ -361,8 +419,14 @@ export function durablyPublishJson({
       if ((result.stat.mode & 0o777) !== fileMode) {
         throw new Error("durable JSON published file mode differs from the requested mode");
       }
-      fsyncDirectoryChain(outputDirectory, faultStage);
+      if (testHookBeforeDirectoryFsync) testHookBeforeDirectoryFsync();
+      fsyncDirectoryChain(outputDirectory, directory, faultStage);
       return { bytes: bytes.length, outputPath, publishMode };
+    } catch (error) {
+      if (targetMutated) {
+        throw new DurableJsonPublicationIndeterminateError();
+      }
+      throw error;
     } finally {
       if (temporaryFd !== undefined) {
         try {
@@ -416,10 +480,10 @@ export function durablyRemoveJson({
       throw new Error("durable JSON removal target mode does not match the reviewed mode");
     }
     if (testHookBeforeRemove) testHookBeforeRemove();
-    assertDirectoryStillBound(directoryPath, directory.stat);
+    assertDirectoryStillBound(directoryPath, directory);
     assertReplacementTargetUnchanged(filePath, opened.stat);
     fs.unlinkSync(filePath);
-    fsyncDirectoryChain(directoryPath, faultStage);
+    fsyncDirectoryChain(directoryPath, directory, faultStage);
     return { bytes: opened.bytes.length, filePath, removedSha256: digest };
   } finally {
     fs.closeSync(directory.fd);

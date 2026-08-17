@@ -7,7 +7,18 @@ import {
   freshContractDeploymentReceiptDigest,
   projectFreshContractDeploymentReceipt,
 } from "./cvm-launch-intent-core.mjs";
-import { FINAL_RELEASE_AUTHORITY_CORE_SCHEMA } from "./execution-policy-release-core.mjs";
+import {
+  CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX,
+} from "./cvm-release-descriptor-set-constants-v3.mjs";
+import {
+  DILIGENCE_RELEASE_ACTIVATION_GATE_SCHEMA,
+  DILIGENCE_RELEASE_ACTIVATION_GATE_STATUS,
+  DILIGENCE_RELEASE_ACTIVATION_GATE_TRUTH_STATUS,
+} from "./diligence-release-activation-gate.mjs";
+import {
+  EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY,
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+} from "./execution-policy-release-core.mjs";
 import {
   DEPLOYMENT_INTENT_CORE_SCHEMA,
   TINKER_MAX_POLICY_UNITS_PER_OPERATION,
@@ -23,15 +34,16 @@ export {
   PHALA_RELEASE_MANIFEST_SIGSTORE_VERIFICATION_MISSING,
 } from "./phala-production-execution-policy.mjs";
 
-export const PREFLIGHT_SCHEMA = "dnai.activation-preflight.v3";
+export const PREFLIGHT_SCHEMA = "dnai.activation-preflight.v4";
 export const PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA =
   "dnai.activation-preflight-root-causes.v1";
+export const PREFLIGHT_EXACT_CHECK_COUNT = 110;
 export const SEMANTIC_VALIDATION_SCHEMA =
-  "dnai.semantic-live-activation-validation.v3";
+  "dnai.semantic-live-activation-validation.v4";
 export const SEMANTIC_VALIDATION_STATUS =
   "live_activation_authority_validated";
 export const SEMANTIC_VALIDATION_TRUTH_STATUS =
-  "verified_signed_post_ceremony_C_revalidated_private_O_exact_env_D_and_dist_manifest_lineage";
+  "verified_signed_post_ceremony_C_revalidated_private_H_O_exact_env_D_and_dist_manifest_lineage";
 export const LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA =
   "dnai.live-activation-authority-evidence.v1";
 export const PRE_LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA =
@@ -44,6 +56,10 @@ export const EXPECTED_GITHUB_WORKFLOW =
 export const IMAGE_RELEASE_SCHEMA = "dnai.tee-image-release.v1";
 export const CVM_TOPOLOGY_SCHEMA = "dnai.cvm-topology.v6";
 export const CVM_COMPOSE_PHASE_GATE_SCHEMA = "dnai.cvm-compose-phase-gate.v1";
+export const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA =
+  "dnai.tinker-account-binding-ceremony-receipt.v1";
+export const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_TOPOLOGY_VALIDATION =
+  "python_structural_and_domain_digest_binding_requires_node_ceremony_check_replay";
 export const RELEASE_MANIFEST_PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 export const EXPECTED_PLATFORM = "linux/amd64";
 export const CANONICAL_SEVEN_CVM_AUTHORITY_VALIDATION_SOURCE =
@@ -92,17 +108,8 @@ const CONSTRUCTOR_STAGE_ROLE_KEYS = Object.freeze([
   "COMPUTE_VAULT_DEVELOPER",
 ]);
 
-export const REQUIRED_PRODUCTION_SERVICES = Object.freeze([
-  "neko",
-  "oracle",
-  "delegate",
-  "diligence-policy-init",
-  "arena-policy-init",
-  "arena-worker",
-  "anchor-writer-evidence",
-  "deal-runtime",
-  "compute-execution-worker",
-]);
+export const REQUIRED_PRODUCTION_SERVICES =
+  CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX.main_runtime_cvm;
 
 export const REQUIRED_QVL_SERVICES = Object.freeze(["policy-init", "qvl"]);
 export const REQUIRED_METERING_SERVICES = Object.freeze([
@@ -123,12 +130,17 @@ const EXPECTED_SERVICE_IMAGE_SUFFIX = Object.freeze({
   neko: "neko-chrome",
   oracle: "tee-email-oracle",
   "diligence-policy-init": "tinker-delegate",
+  "tinker-customer-authority-init": "tinker-delegate",
   delegate: "tinker-delegate",
   "arena-policy-init": "tinker-delegate",
   "arena-worker": "tinker-delegate",
   "anchor-writer-evidence": "tinker-delegate",
   "deal-runtime": "tinker-delegate",
   "compute-execution-worker": "tinker-delegate",
+  "collaboration-execution-worker": "tinker-delegate",
+  "review-operations": "tinker-delegate",
+  "mailbox-genesis": "tee-email-oracle",
+  "tinker-account-genesis": "tinker-delegate",
 });
 
 export const QVL_DOMAINS = Object.freeze({
@@ -214,11 +226,14 @@ export const BROADCAST_TRANSACTION_PROVENANCE_BOOLEAN_FIELDS = Object.freeze([
   "providerObservationsMatch",
 ]);
 
-export const CONTRACT_STATELESS_POSTSTATE_EXCEPTION = "RoyaltyDistributor";
 export const ACTIVATION_READINESS_SNAPSHOT_SCHEMA =
-  "dnai.activation-readiness-snapshot.v3";
+  "dnai.activation-readiness-snapshot.v5";
 export const ACTIVATION_READINESS_SNAPSHOT_DOMAIN =
-  "dnai-wikigen/activation-readiness-snapshot/v3\0";
+  "dnai-wikigen/activation-readiness-snapshot/v5\0";
+export const ACTIVATION_READINESS_ANCHOR_WRITER_GAS_SCHEMA =
+  "dnai.activation-readiness-anchor-writer-gas.v1";
+export const ACTIVATION_READINESS_ANCHOR_WRITER_GAS_CLAIM =
+  "bounded_reserve_for_one_release_marker_and_32_subsequent_anchors_not_indefinite_funding";
 export const ACTIVATION_READINESS_MAX_LIFETIME_MS = 120_000;
 export const ACTIVATION_READINESS_TRUTH_STATUS =
   "read_only_readiness_evidence_not_standalone_authority_or_mutation";
@@ -307,6 +322,7 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
     ],
     DiligenceRoom: [
       "developer_matches_operator",
+      "developer_transfer_unstaged_and_delayed",
       "constructor_bound_production_posture",
       "result_verifier_unset",
       "pending_result_verifier_unset",
@@ -320,6 +336,14 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
       "active_admission_counts_zero",
       "pending_admission_counts_zero",
       "admission_additions_open",
+    ],
+    RoyaltyDistributor: [
+      "owner_matches_operator",
+      "pending_owner_unset",
+      "paused",
+      "active_authority_empty",
+      "pending_authority_empty",
+      "authority_history_empty",
     ],
     EmailOracleAuth: [
       "owner_matches_operator",
@@ -345,12 +369,24 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
     TinkerAccountEncumbrance: [
       "owner_matches_operator",
       "pending_owner_unset",
+      "opaque_account_binding_domain_is_exact",
       "deployment_policy_matches_intent",
       "emergency_halted",
       "active_authority_empty",
       "pending_authority_empty",
       "release_authority_empty",
       "release_policy_not_frozen",
+    ],
+  }),
+  royalty_phase_one_pending: freezeAssertionMap({
+    RoyaltyDistributor: [
+      "owner_matches_release_authority",
+      "pending_owner_unset",
+      "paused",
+      "active_authority_empty",
+      "pending_authority_matches_release_authority",
+      "release_policy_recomputes_exactly",
+      "authority_history_empty",
     ],
   }),
   final_active_frozen: freezeAssertionMap({
@@ -380,6 +416,7 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
     ],
     DiligenceRoom: [
       "developer_matches_final_authority",
+      "developer_transfer_complete_and_delayed",
       "constructor_bound_production_posture",
       "result_verifier_matches_final_authority",
       "result_verifier_frozen",
@@ -389,6 +426,16 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
       "release_admission_matches_final_authority",
       "release_admission_additions_frozen",
       "no_pending_authority",
+    ],
+    RoyaltyDistributor: [
+      "release_authority_matches_v3_anchor",
+      "owner_matches_release_authority",
+      "pending_owner_unset",
+      "unpaused",
+      "active_authority_matches_release_authority",
+      "release_policy_recomputes_exactly",
+      "pending_authority_empty",
+      "authority_history_matches_release_authority",
     ],
     EmailOracleAuth: [
       "owner_matches_final_authority",
@@ -409,12 +456,16 @@ export const CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE = Object.freeze({
       "writer_rotations_frozen",
       "unpaused",
       "no_pending_writer",
-      "global_sequence_at_least_one",
-      "global_head_matches_final_authority_digest",
+      "anchor_typehash_matches_release_protocol",
+      "release_authority_marker_is_exact_first_state",
+      "release_authority_marker_keccak_head_matches",
+      "release_authority_marker_indexes_match",
+      "release_authority_marker_receipt_and_event_finalized",
     ],
     TinkerAccountEncumbrance: [
       "owner_matches_final_authority",
       "pending_owner_unset",
+      "opaque_account_binding_domain_is_exact",
       "active_policy_matches_final_authority",
       "release_policy_matches_final_authority",
       "release_policy_frozen",
@@ -638,6 +689,17 @@ function isUnsignedInteger(value) {
   return /^[0-9]+$/.test(clean(value));
 }
 
+function isCanonicalUint256Decimal(value) {
+  const normalized = clean(value);
+  if (!/^(?:0|[1-9][0-9]*)$/.test(normalized)) return false;
+  try {
+    const parsed = BigInt(normalized);
+    return parsed >= 0n && parsed < (1n << 256n);
+  } catch {
+    return false;
+  }
+}
+
 function check(id, status, message, action = "") {
   if (!["pass", "warn", "fail"].includes(status)) {
     throw new Error(`invalid preflight status for ${id}`);
@@ -659,7 +721,7 @@ const PREFLIGHT_AUTHORITY_STAGES = Object.freeze([
   "live_activation",
 ]);
 
-// These 28 checks are one reviewed remediation family: they are all derived
+// These 31 checks are one reviewed remediation family: they are all derived
 // from the same exact clean-main five-image release, its attestations, and the
 // seven compositions rendered from those immutable subjects. The raw checks
 // remain authoritative and are never suppressed. No other checks are
@@ -674,11 +736,14 @@ export const PREFLIGHT_CLEAN_CI_RELEASE_CHECK_IDS = Object.freeze([
   "phala.service.oracle",
   "phala.service.delegate",
   "phala.service.diligence-policy-init",
+  "phala.service.tinker-customer-authority-init",
   "phala.service.arena-policy-init",
   "phala.service.arena-worker",
   "phala.service.anchor-writer-evidence",
   "phala.service.deal-runtime",
   "phala.service.compute-execution-worker",
+  "phala.service.collaboration-execution-worker",
+  "phala.service.review-operations",
   "phala.diligence_qvl_cvm",
   "phala.arena_qvl_cvm",
   "phala.anchor_writer_qvl_cvm",
@@ -742,7 +807,7 @@ function singletonRootCauseClassification(checkId) {
  * Additive, non-authorizing diagnosis for a completed preflight check set.
  *
  * Every raw failure is retained exactly once in `blocked_by`. The frozen
- * 28-check clean-CI family is coalesced only when all 28 checks fail together;
+ * 30-check clean-CI family is coalesced only when all 30 checks fail together;
  * every partial or unrelated failure remains a singleton so this projection
  * cannot disguise independent drift behind a prerequisite.
  */
@@ -755,8 +820,10 @@ export function projectPreflightRootCauses(checks, authorityStage) {
     maximumDepth: 4,
     maximumNodes: 1_000,
   });
-  if (checks.length > 103) {
-    throw new TypeError("preflight root-cause projection requires at most 103 checks");
+  if (checks.length > PREFLIGHT_EXACT_CHECK_COUNT) {
+    throw new TypeError(
+      `preflight root-cause projection requires at most ${PREFLIGHT_EXACT_CHECK_COUNT} checks`,
+    );
   }
   if (checks.some((item) => (
     !item || typeof item !== "object" || Array.isArray(item)
@@ -828,8 +895,12 @@ export function projectPreflightRootCauses(checks, authorityStage) {
     && new Set(mappedFailureIds).size === failedChecks.length
     && mappedFailureIds.every((id, index) => id === failedChecks[index].id)
     && rootCauses.flatMap((root) => root.failed_check_ids).length === failedChecks.length;
-  if (!mappingComplete || rootCauses.length > 103 || blockedBy.length > 103
-    || rootCauses.some((root) => root.failed_check_ids.length > 103)) {
+  if (!mappingComplete
+    || rootCauses.length > PREFLIGHT_EXACT_CHECK_COUNT
+    || blockedBy.length > PREFLIGHT_EXACT_CHECK_COUNT
+    || rootCauses.some(
+      (root) => root.failed_check_ids.length > PREFLIGHT_EXACT_CHECK_COUNT,
+    )) {
     throw new TypeError("preflight root-cause projection is incomplete or out of bounds");
   }
 
@@ -962,7 +1033,9 @@ const ACTIVATION_READINESS_PROVENANCE_DOMAIN =
 const ACTIVATION_READINESS_BROADCAST_PROVENANCE_DOMAIN =
   "dnai-wikigen/activation-readiness-broadcast-provenance/v2\0";
 const ACTIVATION_READINESS_POSTSTATES_DOMAIN =
-  "dnai-wikigen/activation-readiness-poststates/v1\0";
+  "dnai-wikigen/activation-readiness-poststates/v2\0";
+const ACTIVATION_READINESS_ANCHOR_WRITER_GAS_OBSERVATION_DOMAIN =
+  "dnai-wikigen/activation-readiness-anchor-writer-gas-observation/v1\0";
 
 function domainSeparatedSha256(domain, value) {
   return `sha256:${createHash("sha256")
@@ -1025,8 +1098,9 @@ function normalizedReadinessBroadcastProvenance(value) {
 
 function normalizedReadinessPoststates(value, mode) {
   const expectedEntries = Object.entries(CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE[mode] || {});
-  if (!Array.isArray(value) || value.length !== 6 || expectedEntries.length !== 6) {
-    throw new Error("readiness poststates must contain exactly six stateful contracts");
+  if (!Array.isArray(value) || expectedEntries.length === 0
+    || value.length !== expectedEntries.length) {
+    throw new Error("readiness poststates must contain the exact stateful contract set");
   }
   return value.map((entry, index) => {
     const [expectedName, expectedAssertions] = expectedEntries[index];
@@ -1107,6 +1181,124 @@ export function activationReadinessPoststatesDigest(value, mode) {
   );
 }
 
+export function activationReadinessAnchorWriterGasObservationDigest(value) {
+  if (!exactObject(value, [
+    "rpc_method",
+    "writer_address",
+    "balance_wei",
+    "block_number",
+    "block_hash",
+  ])
+    || value.rpc_method !== "eth_getBalance"
+    || !isNonzeroAddress(value.writer_address)
+    || value.writer_address !== clean(value.writer_address).toLowerCase()
+    || !isCanonicalUint256Decimal(value.balance_wei)
+    || !Number.isSafeInteger(value.block_number)
+    || value.block_number < 1
+    || !isNonzeroBytes32(value.block_hash)
+    || value.block_hash !== clean(value.block_hash).toLowerCase()) {
+    throw new Error("anchor-writer gas observation is invalid");
+  }
+  return domainSeparatedSha256(
+    ACTIVATION_READINESS_ANCHOR_WRITER_GAS_OBSERVATION_DOMAIN,
+    canonicalJson(value),
+  );
+}
+
+function normalizeActivationReadinessAnchorWriterGas(value, {
+  required,
+  snapshotBlockNumber,
+  snapshotBlockHash,
+} = {}) {
+  if (!required) {
+    if (value !== null) {
+      throw new Error("anchor-writer gas readiness must be null before measured authority");
+    }
+    return null;
+  }
+  const policy = EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY;
+  const fields = [
+    "schema",
+    "rpc_method",
+    "writer_address",
+    "primary_balance_wei",
+    "secondary_balance_wei",
+    "canonical_balance_wei",
+    "minimum_reserve_wei",
+    "release_marker_transaction_count",
+    "expected_subsequent_anchor_count",
+    "maximum_gas_per_transaction",
+    "reviewed_max_fee_per_gas_wei",
+    "balance_block_number",
+    "balance_block_hash",
+    "primary_observation_sha256",
+    "secondary_observation_sha256",
+    "dual_rpc_agreement",
+    "reserve_satisfied",
+    "readiness_claim",
+  ];
+  if (!exactObject(value, fields)
+    || value.schema !== ACTIVATION_READINESS_ANCHOR_WRITER_GAS_SCHEMA
+    || value.rpc_method !== "eth_getBalance"
+    || !isNonzeroAddress(value.writer_address)
+    || value.writer_address !== clean(value.writer_address).toLowerCase()
+    || !isCanonicalUint256Decimal(value.primary_balance_wei)
+    || !isCanonicalUint256Decimal(value.secondary_balance_wei)
+    || !isCanonicalUint256Decimal(value.canonical_balance_wei)
+    || value.primary_balance_wei !== value.secondary_balance_wei
+    || value.primary_balance_wei !== value.canonical_balance_wei
+    || value.minimum_reserve_wei !== policy.minimum_reserve_wei
+    || value.release_marker_transaction_count
+      !== policy.release_marker_transaction_count
+    || value.expected_subsequent_anchor_count
+      !== policy.expected_subsequent_anchor_count
+    || value.maximum_gas_per_transaction
+      !== policy.maximum_gas_per_transaction
+    || value.reviewed_max_fee_per_gas_wei
+      !== policy.reviewed_max_fee_per_gas_wei
+    || value.balance_block_number !== snapshotBlockNumber
+    || value.balance_block_hash !== snapshotBlockHash
+    || value.dual_rpc_agreement !== true
+    || value.reserve_satisfied !== true
+    || value.readiness_claim !== ACTIVATION_READINESS_ANCHOR_WRITER_GAS_CLAIM
+    || BigInt(value.canonical_balance_wei) < BigInt(value.minimum_reserve_wei)) {
+    throw new Error("anchor-writer gas readiness semantics are invalid");
+  }
+  const observation = {
+    rpc_method: "eth_getBalance",
+    writer_address: value.writer_address,
+    balance_wei: value.canonical_balance_wei,
+    block_number: value.balance_block_number,
+    block_hash: value.balance_block_hash,
+  };
+  const observationSha256 =
+    activationReadinessAnchorWriterGasObservationDigest(observation);
+  if (value.primary_observation_sha256 !== observationSha256
+    || value.secondary_observation_sha256 !== observationSha256) {
+    throw new Error("anchor-writer gas observation digests do not agree");
+  }
+  return {
+    schema: ACTIVATION_READINESS_ANCHOR_WRITER_GAS_SCHEMA,
+    rpc_method: "eth_getBalance",
+    writer_address: value.writer_address,
+    primary_balance_wei: value.primary_balance_wei,
+    secondary_balance_wei: value.secondary_balance_wei,
+    canonical_balance_wei: value.canonical_balance_wei,
+    minimum_reserve_wei: policy.minimum_reserve_wei,
+    release_marker_transaction_count: policy.release_marker_transaction_count,
+    expected_subsequent_anchor_count: policy.expected_subsequent_anchor_count,
+    maximum_gas_per_transaction: policy.maximum_gas_per_transaction,
+    reviewed_max_fee_per_gas_wei: policy.reviewed_max_fee_per_gas_wei,
+    balance_block_number: value.balance_block_number,
+    balance_block_hash: value.balance_block_hash,
+    primary_observation_sha256: observationSha256,
+    secondary_observation_sha256: observationSha256,
+    dual_rpc_agreement: true,
+    reserve_satisfied: true,
+    readiness_claim: ACTIVATION_READINESS_ANCHOR_WRITER_GAS_CLAIM,
+  };
+}
+
 export function normalizeActivationReadinessSnapshot(value) {
   if (!exactObject(value, [
     "schema",
@@ -1125,6 +1317,7 @@ export function normalizeActivationReadinessSnapshot(value) {
     "contract_deployment_receipt_sha256",
     "cvm_launch_intent_sha256",
     "final_authority_sha256",
+    "anchor_writer_gas_readiness",
     "snapshot_block_number",
     "snapshot_block_hash",
     "snapshot_finality",
@@ -1143,7 +1336,6 @@ export function normalizeActivationReadinessSnapshot(value) {
     "poststates_sha256",
     "primary_poststate_observations_sha256",
     "secondary_poststate_observations_sha256",
-    "stateless_poststate_exception",
     "descriptor_raw_bytes_sha256_by_domain",
     "checked_at",
     "expires_at",
@@ -1161,6 +1353,9 @@ export function normalizeActivationReadinessSnapshot(value) {
   const expectedPoststateMode = stage === "live_activation"
     ? "final_active_frozen"
     : "fresh_fail_closed";
+  const expectedPoststateContractCount = Object.keys(
+    CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE[expectedPoststateMode],
+  ).length;
   if (value.schema !== ACTIVATION_READINESS_SNAPSHOT_SCHEMA
     || value.truth_status !== ACTIVATION_READINESS_TRUTH_STATUS
     || !actions
@@ -1203,18 +1398,26 @@ export function normalizeActivationReadinessSnapshot(value) {
       !== value.secondary_broadcast_transaction_observations_sha256
     || !isNonzeroSha256(value.independent_reconstruction_sha256)
     || value.poststate_mode !== expectedPoststateMode
-    || value.poststate_contract_count !== 6
+    || value.poststate_contract_count !== expectedPoststateContractCount
     || !isNonzeroSha256(value.poststates_sha256)
     || !isNonzeroSha256(value.primary_poststate_observations_sha256)
     || !isNonzeroSha256(value.secondary_poststate_observations_sha256)
     || value.primary_poststate_observations_sha256
       !== value.secondary_poststate_observations_sha256
-    || value.stateless_poststate_exception !== CONTRACT_STATELESS_POSTSTATE_EXCEPTION
     || value.read_only !== true
     || value.remote_state_mutated !== false
     || value.raw_secret_egress !== false) {
     throw new Error("activation readiness snapshot semantics are invalid");
   }
+  const anchorWriterGasReadiness =
+    normalizeActivationReadinessAnchorWriterGas(
+      value.anchor_writer_gas_readiness,
+      {
+        required: stage !== "cvm_launch",
+        snapshotBlockNumber: value.snapshot_block_number,
+        snapshotBlockHash: value.snapshot_block_hash,
+      },
+    );
   if (!exactObject(
     value.descriptor_raw_bytes_sha256_by_domain,
     CVM_TOPOLOGY_DOMAINS,
@@ -1274,6 +1477,7 @@ export function normalizeActivationReadinessSnapshot(value) {
     contract_deployment_receipt_sha256: value.contract_deployment_receipt_sha256,
     cvm_launch_intent_sha256: value.cvm_launch_intent_sha256,
     final_authority_sha256: value.final_authority_sha256,
+    anchor_writer_gas_readiness: anchorWriterGasReadiness,
     snapshot_block_number: value.snapshot_block_number,
     snapshot_block_hash: value.snapshot_block_hash,
     snapshot_finality: "rpc_finalized",
@@ -1291,13 +1495,12 @@ export function normalizeActivationReadinessSnapshot(value) {
       value.secondary_broadcast_transaction_observations_sha256,
     independent_reconstruction_sha256: value.independent_reconstruction_sha256,
     poststate_mode: expectedPoststateMode,
-    poststate_contract_count: 6,
+    poststate_contract_count: expectedPoststateContractCount,
     poststates_sha256: value.poststates_sha256,
     primary_poststate_observations_sha256:
       value.primary_poststate_observations_sha256,
     secondary_poststate_observations_sha256:
       value.secondary_poststate_observations_sha256,
-    stateless_poststate_exception: CONTRACT_STATELESS_POSTSTATE_EXCEPTION,
     descriptor_raw_bytes_sha256_by_domain: Object.fromEntries(
       CVM_TOPOLOGY_DOMAINS.map((domain) => [
         domain,
@@ -1358,6 +1561,7 @@ export function createActivationReadinessSnapshot({
     contract_deployment_receipt_sha256: contractDeploymentReceiptSha256,
     cvm_launch_intent_sha256: cvmLaunchIntentSha256,
     final_authority_sha256: finalAuthoritySha256,
+    anchor_writer_gas_readiness: chainEvidence?.anchorWriterGasReadiness,
     snapshot_block_number: chainEvidence?.snapshotBlockNumber,
     snapshot_block_hash: chainEvidence?.snapshotBlockHash,
     snapshot_finality: chainEvidence?.snapshotFinality,
@@ -1381,7 +1585,9 @@ export function createActivationReadinessSnapshot({
     independent_reconstruction_sha256:
       chainEvidence?.independentReconstructionSha256,
     poststate_mode: chainEvidence?.poststateMode,
-    poststate_contract_count: 6,
+    poststate_contract_count: Object.keys(
+      CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE[chainEvidence?.poststateMode] || {},
+    ).length,
     poststates_sha256: activationReadinessPoststatesDigest(
       chainEvidence?.poststates,
       chainEvidence?.poststateMode,
@@ -1390,7 +1596,6 @@ export function createActivationReadinessSnapshot({
       chainEvidence?.primaryPoststateObservationsSha256,
     secondary_poststate_observations_sha256:
       chainEvidence?.secondaryPoststateObservationsSha256,
-    stateless_poststate_exception: CONTRACT_STATELESS_POSTSTATE_EXCEPTION,
     descriptor_raw_bytes_sha256_by_domain: { ...descriptorSha256ByDomain },
     checked_at: checkedAt,
     expires_at: expiresAt,
@@ -1437,6 +1642,8 @@ export function validateActivationReadinessSnapshot(value, expected, {
       !== expected.contractDeploymentReceiptSha256
     || normalized.cvm_launch_intent_sha256 !== expected.cvmLaunchIntentSha256
     || normalized.final_authority_sha256 !== expectedFinalAuthority
+    || canonicalJson(normalized.anchor_writer_gas_readiness)
+      !== canonicalJson(expected.chainEvidence?.anchorWriterGasReadiness)
     || normalized.snapshot_block_number !== expected.chainEvidence?.snapshotBlockNumber
     || normalized.snapshot_block_hash !== expected.chainEvidence?.snapshotBlockHash
     || normalized.snapshot_finality !== expected.chainEvidence?.snapshotFinality
@@ -1512,6 +1719,8 @@ function semanticLiveActivationReceiptValid(receipt, {
     "release_inputs_sha256",
     "release_sha",
     "reviewer_authority_genesis_acceptance_sha256",
+    "royalty_release_history_receipt_sha256",
+    "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256",
     "schema",
     "status",
@@ -1532,6 +1741,8 @@ function semanticLiveActivationReceiptValid(receipt, {
     && [
       receipt.deployment_intent_sha256,
       receipt.reviewer_authority_genesis_acceptance_sha256,
+      receipt.royalty_release_history_sha256,
+      receipt.royalty_release_history_receipt_sha256,
       receipt.ceremony_authorization_sha256,
       receipt.live_activation_authority_sha256,
       receipt.runtime_authority_dependency_sha256,
@@ -1542,6 +1753,8 @@ function semanticLiveActivationReceiptValid(receipt, {
       receipt.release_env_sha256,
       receipt.frontend_build_sha256,
     ].every(isNonzeroSha256)
+    && receipt.royalty_release_history_sha256
+      !== receipt.royalty_release_history_receipt_sha256
     && receipt.raw_secret_egress === false;
 }
 
@@ -1788,6 +2001,7 @@ export function inspectCvmTopology(value) {
     "generated_at",
     "deploymentIntentSha256",
     "deploymentIntent",
+    "tinkerAccountBindingCeremonyReceipt",
     "image_manifest",
     "image_manifest_attestation",
     "trust_domains",
@@ -1810,6 +2024,30 @@ export function inspectCvmTopology(value) {
     || !/^[0-9a-f]{64}$/.test(value.deploymentIntent.sha256)
     || value.deploymentIntent.schema !== DEPLOYMENT_INTENT_CORE_SCHEMA
     || value.deploymentIntentSha256 !== `sha256:${value.deploymentIntent.sha256}`
+  ) return invalid;
+  if (!exactObject(value.tinkerAccountBindingCeremonyReceipt, [
+    "file",
+    "sha256",
+    "schema",
+    "tinkerAccountBindingCeremonyReceiptSha256",
+    "validation",
+  ])) return invalid;
+  const tinkerAccountBindingCeremonyReceipt =
+    value.tinkerAccountBindingCeremonyReceipt;
+  if (
+    tinkerAccountBindingCeremonyReceipt.file
+      !== "tinker-account-binding-ceremony.receipt.json"
+    || !/^(?!0{64}$)[0-9a-f]{64}$/.test(
+      tinkerAccountBindingCeremonyReceipt.sha256,
+    )
+    || tinkerAccountBindingCeremonyReceipt.schema
+      !== TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA
+    || !isNonzeroSha256(
+      tinkerAccountBindingCeremonyReceipt
+        .tinkerAccountBindingCeremonyReceiptSha256,
+    )
+    || tinkerAccountBindingCeremonyReceipt.validation
+      !== TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_TOPOLOGY_VALIDATION
   ) return invalid;
   if (!exactObject(value.image_manifest, ["file", "sha256", "schema"])) return invalid;
   if (
@@ -1905,7 +2143,7 @@ export function inspectCvmTopology(value) {
   if (new Set(descriptorHashes).size !== descriptorHashes.length) return invalid;
   if (
     value.trust_domains.main_runtime_cvm.compute_execution
-    !== "disabled_provider_contract_unavailable"
+    !== "release_pinned_provider_runtime_gated"
     || value.trust_domains.main_runtime_cvm.deal_settlement
       !== "release_pinned_deterministic_evaluator"
     || value.trust_domains.main_runtime_cvm.email_oracle_consumer_policy
@@ -1942,6 +2180,7 @@ export function inspectCvmTopology(value) {
     deploymentIntentSha256: value.deploymentIntentSha256,
     manifestSha256: value.image_manifest.sha256,
     manifestAttestationSha256: value.image_manifest_attestation.sha256,
+    tinkerAccountBindingCeremonyReceipt,
     domains: value.trust_domains,
   };
 }
@@ -2163,18 +2402,62 @@ export function buildPreflightReport(snapshot) {
   const reviewerAuthorityGenesisAcceptanceSha256 = clean(
     releaseAuthority.reviewerAuthorityGenesisAcceptanceSha256,
   );
+  const tinkerBindingCeremony =
+    releaseAuthority.tinkerAccountBindingCeremony || {};
+  const expectedBindingMode = freshDeployment
+    ? "fresh_current_two_reviewer_ceremony"
+    : "authenticated_historical_two_reviewer_replay";
+  const expectedBindingTruth = freshDeployment
+    ? "opaque_attested_account_binding_handle_not_provider_identifier_proof_requires_later_measured_provider_binding"
+    : "historical_signature_replay_proves_the_signed_declared_ceremony_timestamp_was_inside_the_authenticated_status_window_not_that_the_status_is_current_now_or_that_wall_clock_signing_time_was_independently_observed";
+  const bindingCommitment = clean(
+    tinkerBindingCeremony.accountCommitment,
+  ).toLowerCase();
+  const expectedBindingCommitment = clean(
+    snapshot.env?.TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT,
+  ).toLowerCase();
+  const tinkerBindingCeremonyValid =
+    tinkerBindingCeremony.valid === true
+    && tinkerBindingCeremony.verificationMode === expectedBindingMode
+    && tinkerBindingCeremony.historicalReplay === !freshDeployment
+    && tinkerBindingCeremony.truthStatus === expectedBindingTruth
+    && isNonzeroBytes32(bindingCommitment)
+    && bindingCommitment === expectedBindingCommitment
+    && clean(tinkerBindingCeremony.deploymentIntentSha256)
+      === deploymentIntentSha256
+    && clean(
+      tinkerBindingCeremony.reviewerAuthorityGenesisAcceptanceSha256,
+    ) === reviewerAuthorityGenesisAcceptanceSha256
+    && clean(tinkerBindingCeremony.reviewerAuthorityCurrentStatusSha256)
+      === clean(releaseAuthority.reviewerAuthorityCurrentStatusSha256)
+    && isNonzeroSha256(
+      tinkerBindingCeremony.persistedCeremonyReceiptSha256,
+    )
+    && isNonzeroSha256(
+      tinkerBindingCeremony.replayCeremonyReceiptSha256,
+    )
+    && (!freshDeployment
+      || tinkerBindingCeremony.persistedCeremonyReceiptSha256
+        === tinkerBindingCeremony.replayCeremonyReceiptSha256);
   const deploymentIntentValid = releaseAuthority.deploymentIntentValid === true
     && releaseAuthority.deploymentIntentFileHashBound === true
     && releaseAuthority.deploymentIntentFreshChallengeStateValid === true
     && isNonzeroSha256(deploymentIntentSha256)
-    && isNonzeroSha256(reviewerAuthorityGenesisAcceptanceSha256);
+    && isNonzeroSha256(reviewerAuthorityGenesisAcceptanceSha256)
+    && tinkerBindingCeremonyValid;
   checks.push(check(
     "authority.deployment_intent",
     deploymentIntentValid ? "pass" : "fail",
     deploymentIntentValid
-      ? "The canonical deployment intent binds exact file bytes and the expected empty, unpaused fresh ChallengeRegistry state."
-      : "The deployment intent is missing, invalid, file-unbound, or does not project the exact empty, unpaused fresh ChallengeRegistry state.",
-    "Create and validate the immutable deployment-intent core before any contract broadcast or CVM deployment.",
+      ? freshDeployment
+        ? "The canonical deployment intent binds exact file bytes, the expected empty ChallengeRegistry state, and a current two-reviewer opaque Tinker account-binding ceremony. The ceremony is not proof of a provider-internal identifier."
+        : "The canonical deployment intent binds exact file bytes and the original two-reviewer opaque Tinker binding ceremony was cryptographically replayed through the complete authenticated reviewer-status lineage. Historical replay proves the signed declared timestamp was in-window, not that the old status is current now."
+      : freshDeployment
+        ? "The deployment intent or fresh current-reviewer Tinker binding ceremony is missing, stale, substituted, file-unbound, or inconsistent."
+        : "The deployment intent is invalid or its Tinker binding ceremony could not be replayed through the complete authenticated reviewer-status lineage.",
+    freshDeployment
+      ? "Create the immutable deployment intent and complete the fixed current two-reviewer binding ceremony before any contract dry run or broadcast."
+      : "Provide the fixed ceremony plus complete authenticated current/status-history lineage; never relabel historical replay as current authorization.",
   ));
 
   const authorityReleaseSha = clean(releaseAuthority.releaseSha).toLowerCase();
@@ -2255,6 +2538,14 @@ export function buildPreflightReport(snapshot) {
   ));
 
   const finalAuthoritySha256 = clean(releaseAuthority.finalAuthoritySha256);
+  const finalAuthorityCollaborationRequested =
+    releaseAuthority.finalAuthorityCollaborationRequested;
+  const finalAuthorityCollaborationEnvironmentValue =
+    releaseAuthority.finalAuthorityCollaborationEnvironmentValue;
+  const finalAuthorityCollaborationProjectionValid =
+    typeof finalAuthorityCollaborationRequested === "boolean"
+    && finalAuthorityCollaborationEnvironmentValue
+      === (finalAuthorityCollaborationRequested ? "true" : "false");
   const finalAuthorityValid = releaseAuthority.finalAuthorityValid === true
     && releaseAuthority.finalAuthorityFileHashBound === true
     && isNonzeroSha256(finalAuthoritySha256)
@@ -2262,7 +2553,8 @@ export function buildPreflightReport(snapshot) {
       === deploymentIntentSha256
     && cvmLaunchIntentValid
     && clean(releaseAuthority.finalAuthorityCvmLaunchIntentSha256)
-      === cvmLaunchIntentSha256;
+      === cvmLaunchIntentSha256
+    && finalAuthorityCollaborationProjectionValid;
   checks.push(check(
     "authority.final_release_authority",
     preMeasuredAuthority || (measuredAuthorityStage && finalAuthorityValid) ? "pass" : "fail",
@@ -2280,60 +2572,142 @@ export function buildPreflightReport(snapshot) {
     "After CVM deployment, measure the trust roots and create the canonical final authority linked to both reviewed intents.",
   ));
 
+  const diligenceReleaseCeremony = snapshot.diligenceReleaseCeremony;
+  const diligenceReleaseCeremonyValid = exactObject(
+    diligenceReleaseCeremony,
+    [
+      "schema",
+      "status",
+      "truthStatus",
+      "valid",
+      "releaseSha",
+      "chainId",
+      "diligenceRoomAddress",
+      "governanceController",
+      "currentLedgerSha256",
+      "revisionChainSha256",
+      "finalizationReceiptSha256",
+      "phaseCount",
+      "reviewEnvelopeCount",
+      "distinctReviewEnvelopeCount",
+      "operatorTransactionCount",
+      "governanceAcceptanceMode",
+      "governanceAcceptanceClaim",
+      "governanceAcceptanceTransactionHash",
+      "finalizedThroughBlock",
+    ],
+  )
+    && diligenceReleaseCeremony.schema
+      === DILIGENCE_RELEASE_ACTIVATION_GATE_SCHEMA
+    && diligenceReleaseCeremony.status
+      === DILIGENCE_RELEASE_ACTIVATION_GATE_STATUS
+    && diligenceReleaseCeremony.truthStatus
+      === DILIGENCE_RELEASE_ACTIVATION_GATE_TRUTH_STATUS
+    && diligenceReleaseCeremony.valid === true
+    && diligenceReleaseCeremony.releaseSha === releaseSha
+    && diligenceReleaseCeremony.chainId === 84_532
+    && isNonzeroAddress(diligenceReleaseCeremony.diligenceRoomAddress)
+    && isNonzeroAddress(diligenceReleaseCeremony.governanceController)
+    && clean(diligenceReleaseCeremony.diligenceRoomAddress).toLowerCase()
+      !== clean(diligenceReleaseCeremony.governanceController).toLowerCase()
+    && isNonzeroSha256(diligenceReleaseCeremony.currentLedgerSha256)
+    && isNonzeroSha256(diligenceReleaseCeremony.revisionChainSha256)
+    && isNonzeroSha256(diligenceReleaseCeremony.finalizationReceiptSha256)
+    && diligenceReleaseCeremony.phaseCount === 4
+    && diligenceReleaseCeremony.reviewEnvelopeCount === 4
+    && diligenceReleaseCeremony.distinctReviewEnvelopeCount === 4
+    && diligenceReleaseCeremony.operatorTransactionCount === 13
+    && ["eoa_direct_call", "contract_event_and_state"].includes(
+      diligenceReleaseCeremony.governanceAcceptanceMode,
+    )
+    && diligenceReleaseCeremony.governanceAcceptanceClaim === (
+      diligenceReleaseCeremony.governanceAcceptanceMode === "eoa_direct_call"
+        ? "finalized_direct_eoa_call_event_and_state"
+        : "finalized_contract_controller_event_and_state_no_trace_claim"
+    )
+    && isNonzeroBytes32(
+      diligenceReleaseCeremony.governanceAcceptanceTransactionHash,
+    )
+    && Number.isSafeInteger(diligenceReleaseCeremony.finalizedThroughBlock)
+    && diligenceReleaseCeremony.finalizedThroughBlock > 0;
+  checks.push(check(
+    "authority.diligence_release_ceremony",
+    !liveActivation || diligenceReleaseCeremonyValid ? "pass" : "fail",
+    !liveActivation
+      ? "The completed DiligenceRoom ceremony is not accepted before live activation; each earlier stage retains its own narrower authority boundary."
+      : diligenceReleaseCeremonyValid
+        ? "The external ceremony ledger is durably replayed and frozen, all four ordered phases have independent current review envelopes, all 13 operator transactions are canonically bound, and phase 4 records finalized external-controller acceptance."
+        : "Live activation lacks a frozen replayable four-phase DiligenceRoom ledger with four independent valid reviews, canonical ordered operator transactions, and recorded finalized external-controller acceptance.",
+    !liveActivation
+      ? "Complete only the current stage; after phase 4, record external controller acceptance and freeze the durable ledger before live activation."
+      : "Provide the explicit external ledger/evidence paths and four phase-specific review envelopes; verification-only phase 4, an active 0600 ledger, stale reviews, or any lineage/evidence drift remains blocking.",
+  ));
+
   const expectedReviewSubjectKind = measuredAuthorityStage
     ? "final_release_authority"
     : cvmLaunch
       ? "cvm_launch_intent"
       : "deployment_intent";
-  const expectedReviewSubjectSha256 = measuredAuthorityStage
-    ? finalAuthoritySha256
-    : cvmLaunch
-      ? cvmLaunchIntentSha256
-      : deploymentIntentSha256;
-  const stageReview = cvmLaunch ? cvmLaunchAuthority : releaseAuthority;
-  const approvedAtMs = Date.parse(clean(stageReview.approvedAt));
-  const expiresAtMs = Date.parse(clean(stageReview.expiresAt));
-  const checkedAtMs = Number(stageReview.checkedAtMs);
-  const currentReviewValid = authorityStageValid
-    && stageReview.reviewEnvelopeValid === true
-    && stageReview.reviewEnvelopeFileHashBound === true
-    && isNonzeroSha256(stageReview.reviewEnvelopeSha256)
-    && stageReview.reviewSubjectKind === expectedReviewSubjectKind
-    && clean(stageReview.reviewSubjectSha256) === expectedReviewSubjectSha256
-    && Number.isFinite(approvedAtMs)
-    && Number.isFinite(expiresAtMs)
-    && Number.isSafeInteger(checkedAtMs)
-    && checkedAtMs > 0
-    && Number.isSafeInteger(releaseAuthority.commitTime)
-    && releaseAuthority.commitTime * 1_000 <= approvedAtMs
-    && approvedAtMs <= checkedAtMs + 300_000
-    && expiresAtMs > checkedAtMs
-    && expiresAtMs > approvedAtMs
-    && expiresAtMs - approvedAtMs <= 7 * 24 * 60 * 60 * 1_000;
-  checks.push(check(
-    "authority.current_review_envelope",
-    currentReviewValid ? "pass" : "fail",
-    currentReviewValid
-      ? `The renewable review envelope currently binds the exact ${expectedReviewSubjectKind} subject after the release commit.`
-      : "The review envelope is invalid, expired, future-dated, overlong, file-unbound, or names the wrong authority-stage subject.",
-    "Renew the canonical review envelope for the exact stage subject and rerun preflight before its bounded expiry.",
-  ));
-
-  const reviewEvidenceSha256 = clean(stageReview.reviewEvidenceSha256);
-  const reviewEvidenceValid = stageReview.reviewEvidenceValid === true
-    && stageReview.reviewEvidenceFileHashBound === true
-    && isNonzeroSha256(reviewEvidenceSha256);
-  checks.push(check(
-    "authority.review_evidence",
-    reviewEvidenceValid ? "pass" : "fail",
-    reviewEvidenceValid
-      ? "The public review-evidence bytes match the digest declared by the current review envelope."
-      : "The public review-evidence artifact is missing, malformed, zero-valued, or does not match the current envelope digest.",
-    "Provide the exact bounded public review-evidence file declared by the current review envelope.",
-  ));
-
   const candidate = snapshot.files?.releaseCandidate?.value;
   const candidateAuthority = candidate?.operator_policy;
+  const signedLiveAuthorityValid = liveActivation
+    && semanticLiveActivationReceiptValid(
+      snapshot.semanticValidationReceipt,
+      {
+        deploymentIntentSha256,
+        reviewerAuthorityGenesisAcceptanceSha256,
+        ceremonyAuthorizationSha256:
+          clean(candidateAuthority?.ceremony_authorization_sha256),
+        liveActivationAuthoritySha256:
+          clean(candidateAuthority?.live_activation_authority_sha256),
+        runtimeAuthorityDependencySha256:
+          clean(candidateAuthority?.runtime_authority_dependency_sha256),
+        releaseSha,
+      },
+    );
+  const currentReviewValid = freshDeployment
+    ? deploymentIntentValid && deploymentIntentSourceBound
+    : cvmLaunch
+      ? cvmLaunchIntentValid && cvmLaunchAuthority.artifactBindingsValid === true
+      : releaseCeremony
+        ? canonicalSevenCvmAuthorityValidationValid(
+          snapshot.canonicalSevenCvmAuthorityValidation,
+          { authorityStage, releaseSha, deploymentIntentSha256 },
+        )
+        : signedLiveAuthorityValid;
+  checks.push(check(
+    "authority.current_stage_signature",
+    currentReviewValid ? "pass" : "fail",
+    currentReviewValid
+      ? liveActivation
+        ? "The current exact-38 validator authenticated the exact signed-C dependency chain, independent Royalty H receipt, deterministic D lineage, and current reviewer-status window while replaying the frozen historical exact-37 boundary."
+        : releaseCeremony
+          ? "The fresh seven-CVM authority validator authenticated the exact signed-B ceremony subject."
+          : `The current ${expectedReviewSubjectKind} artifact is source- and dependency-bound for this non-live stage.`
+      : liveActivation
+        ? "The signed-C authority, reviewer-status window, or exact B/R/L/O/D dependency chain is invalid."
+        : "The current stage authority artifact is invalid, file-unbound, or names the wrong dependency subject.",
+    liveActivation
+      ? "Provide the exact signed C and all current exact-38 dependencies, including independent H and deterministic D; renewable review-envelope files are retired."
+      : "Provide the current canonical stage authority artifact for the exact subject.",
+  ));
+
+  const currentStageEvidenceValid = currentReviewValid;
+  checks.push(check(
+    "authority.current_stage_evidence",
+    currentStageEvidenceValid ? "pass" : "fail",
+    currentStageEvidenceValid
+      ? liveActivation
+        ? "Signed C and the current exact-38 receipt bind independent Royalty H, deterministic D, and the hash-only public release evidence without raw transcript egress."
+        : "The current stage evidence bytes match the digest declared by its stage signature."
+      : liveActivation
+        ? "The current exact-38 signed-C evidence receipt is missing, malformed, or does not match this release."
+        : "The current stage evidence is missing, malformed, or does not match its transitive authority.",
+    liveActivation
+      ? "Run the current exact-38 check-only validator with all current artifacts; the frozen exact-37 replay remains historical evidence only."
+      : "Provide the exact bounded evidence declared by the current stage signature.",
+  ));
+
   const releaseCore = snapshot.files?.releaseCore?.value;
   const ledgerIntentSha256 = clean(
     snapshot.files?.ledger?.value?.freshDeployment?.contractSuite
@@ -2356,6 +2730,8 @@ export function buildPreflightReport(snapshot) {
       expectedDeploymentIntentSha256: deploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        tinkerBindingCeremony.persistedCeremonyReceiptSha256,
     };
     projectedContractDeploymentReceipt = projectFreshContractDeploymentReceipt(
       snapshot.files?.ledger?.value,
@@ -2390,6 +2766,31 @@ export function buildPreflightReport(snapshot) {
     : (cvmLaunch || releaseCeremony)
       ? "fresh_fail_closed"
       : "";
+  const expectedPoststateContractCount = Object.keys(
+    CONTRACT_POSTSTATE_ASSERTIONS_BY_MODE[expectedPoststateMode] || {},
+  ).length;
+  const anchorWriterGasRequired = releaseCeremony || liveActivation;
+  let anchorWriterGasReadinessValid = cvmLaunch
+    && chainEvidence.anchorWriterGasReadiness === null;
+  if (anchorWriterGasRequired) {
+    try {
+      const normalizedGas = normalizeActivationReadinessAnchorWriterGas(
+        chainEvidence.anchorWriterGasReadiness,
+        {
+          required: true,
+          snapshotBlockNumber: chainEvidence.snapshotBlockNumber,
+          snapshotBlockHash: chainEvidence.snapshotBlockHash,
+        },
+      );
+      const reviewedAnchor = releaseCore?.execution_policy?.rollback_anchor_target;
+      anchorWriterGasReadinessValid =
+        normalizedGas.writer_address === reviewedAnchor?.writer_address
+        && canonicalJson(reviewedAnchor?.writer_gas_reserve_policy)
+          === canonicalJson(EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY);
+    } catch {
+      anchorWriterGasReadinessValid = false;
+    }
+  }
   const contractDeploymentChainEvidenceValid = exactObject(chainEvidence, [
     "evidenceSource",
     "valid",
@@ -2411,6 +2812,7 @@ export function buildPreflightReport(snapshot) {
     "finalizedRecheckBlockHash",
     "snapshotBlockHashVerified",
     "commonSnapshotBlock",
+    "anchorWriterGasReadiness",
     "contractCount",
     "transactionCount",
     "deployerMatchCount",
@@ -2445,7 +2847,6 @@ export function buildPreflightReport(snapshot) {
     "secondaryPoststateValid",
     "secondaryPoststateObservationsSha256",
     "poststateRpcAgreement",
-    "statelessPoststateException",
   ])
     && chainEvidence.evidenceSource === "production_collector"
     && chainEvidence.valid === true
@@ -2475,6 +2876,7 @@ export function buildPreflightReport(snapshot) {
       === clean(chainEvidence.finalizedRecheckBlockHash).toLowerCase()
     && chainEvidence.snapshotBlockHashVerified === true
     && chainEvidence.commonSnapshotBlock === true
+    && anchorWriterGasReadinessValid
     && [
       "contractCount",
       "transactionCount",
@@ -2525,16 +2927,15 @@ export function buildPreflightReport(snapshot) {
       }
     })()
     && chainEvidence.poststateMode === expectedPoststateMode
-    && chainEvidence.poststateContractCount === 6
+    && chainEvidence.poststateContractCount === expectedPoststateContractCount
     && chainEvidence.poststateValid === true
     && isNonzeroSha256(chainEvidence.primaryPoststateObservationsSha256)
-    && chainEvidence.secondaryPoststateContractCount === 6
+    && chainEvidence.secondaryPoststateContractCount
+      === expectedPoststateContractCount
     && chainEvidence.secondaryPoststateValid === true
     && chainEvidence.primaryPoststateObservationsSha256
       === chainEvidence.secondaryPoststateObservationsSha256
     && chainEvidence.poststateRpcAgreement === true
-    && chainEvidence.statelessPoststateException
-      === CONTRACT_STATELESS_POSTSTATE_EXCEPTION
     && (() => {
       try {
         normalizedReadinessPoststates(chainEvidence.poststates, expectedPoststateMode);
@@ -2584,6 +2985,20 @@ export function buildPreflightReport(snapshot) {
       ? "After broadcast, independently verify the immutable deployment receipt before CVM launch."
       : "Run the online read-only verifier against two independent RPCs; any endpoint, reconstruction, receipt, code, block, or poststate disagreement must remain blocked.",
   ));
+  const anchorWriterGasActivationReady = anchorWriterGasReadinessValid
+    && activationReadinessValid;
+  checks.push(check(
+    "chain.anchor_writer_gas_reserve",
+    preMeasuredAuthority || anchorWriterGasActivationReady ? "pass" : "fail",
+    preMeasuredAuthority
+      ? "Anchor-writer gas readiness is not accepted before the measured final authority fixes the dstack-derived writer and reserve policy."
+      : anchorWriterGasActivationReady
+        ? "The signed final authority fixes the exact dstack-derived writer and 0.033 ETH reserve policy; both independent RPCs returned the same canonical wei balance at the common finalized block, and the v5 readiness digest binds that sufficient balance."
+        : "The exact dstack-derived anchor writer has no current dual-RPC, common-finalized-block proof of at least 33000000000000000 wei; post-Compute Royalty anchoring is blocked.",
+    preMeasuredAuthority
+      ? "After the main CVM derives the reviewed writer, fund that exact address and collect the measured two-RPC readiness evidence."
+      : "Fund only the final-authority writer with Base Sepolia ETH, then rerun the read-only dual-RPC preflight; operator, USDC, QVL, relay, paymaster, and hot-key fallbacks are not accepted.",
+  ));
   const cvmLaunchArtifactHashesValid = [
     cvmLaunchAuthority.imageReleaseManifestSha256,
     cvmLaunchAuthority.imageAttestationBundleSha256,
@@ -2605,6 +3020,8 @@ export function buildPreflightReport(snapshot) {
     && cvmLaunchAuthority.descriptorCount === CVM_TOPOLOGY_DOMAINS.length
     && cvmLaunchAuthority.descriptorHashesDistinct === true
     && cvmLaunchAuthority.productionPostureValid === true
+    && cvmLaunchAuthority.collaborationGatePolicyValid === true
+    && cvmLaunchAuthority.collaborationGateBootstrapDefault === "false"
     && snapshot.files?.ledger?.valid === true
     && snapshot.files?.imageRelease?.valid === true
     && snapshot.files?.imageReleaseAttestationBundle?.valid === true
@@ -2648,15 +3065,15 @@ export function buildPreflightReport(snapshot) {
       ? freshDeployment
         ? "Fresh-deployment authority stops at the reviewed intent and does not accept any existing ledger as broadcast evidence."
         : cvmLaunch
-          ? "The reviewed launch intent binds the exact seven-contract ledger, five shared-image subjects, and seven distinct production descriptors."
+          ? "The reviewed launch intent binds the exact seven-contract ledger, five shared-image subjects, seven distinct production descriptors, and the delegate-only fail-closed Collaboration gate."
           : releaseCeremony
-            ? "The pre-mutation ceremony binds one exact intent, launch evidence, final authority, candidate, and current review/evidence chain."
-            : "The post-ceremony live gate binds one exact intent, launch evidence, final authority, candidate, and current review/evidence chain."
+            ? "The pre-mutation ceremony binds one exact intent, launch evidence, final authority, candidate, current review/evidence chain, and the v3 Collaboration feature projection."
+            : "The post-ceremony live gate binds one exact intent, launch evidence, final authority, candidate, current review/evidence chain, and the v3 Collaboration feature projection."
       : freshDeployment
         ? "The reviewed deployment intent does not authorize the expected fresh contract state."
         : cvmLaunch
-          ? "The CVM-launch intent, fresh ledger, five shared-image subjects, or seven production descriptor hashes do not match exactly."
-          : "The measured intent, launch evidence, final authority, candidate, or current review does not share one exact authority chain.",
+          ? "The CVM-launch intent, fresh ledger, five shared-image subjects, seven production descriptor hashes, or exact fail-closed Collaboration gate does not match."
+          : "The measured intent, launch evidence, final authority, candidate, current review, or v3 Collaboration feature projection does not share one exact authority chain.",
     freshDeployment
       ? "Correct and renew review of the deployment intent before any broadcast."
       : cvmLaunch
@@ -2703,14 +3120,14 @@ export function buildPreflightReport(snapshot) {
   }
 
   const fee = clean(env.COMPUTE_VAULT_DEVELOPER_FEE_BPS);
-  const feeValid = isUnsignedInteger(fee) && BigInt(fee) <= 2_000n;
+  const feeValid = isUnsignedInteger(fee) && BigInt(fee) <= 100n;
   checks.push(check(
     "contract_policy.compute_fee_cap",
     feeValid ? "pass" : "fail",
     feeValid
       ? "The Compute developer fee is within the deployment helper cap."
       : "The Compute developer fee exceeds the deployment helper cap or is malformed.",
-    "Use an explicitly reviewed fee no greater than 2000 bps.",
+    "Use an explicitly reviewed fresh-release fee no greater than 100 bps.",
   ));
   const delay = clean(env.EMAIL_ORACLE_UPGRADE_DELAY);
   const delayValid = isUnsignedInteger(delay)
@@ -2783,8 +3200,8 @@ export function buildPreflightReport(snapshot) {
   checks.push(check(
     "keystore.operator_match",
     "warn",
-    "The dev signer-to-DEPLOYMENT_OPERATOR match is intentionally not tested because this preflight never unlocks the keystore.",
-    "The deployment helper must perform the signer match immediately before an approved broadcast.",
+    "The dev signer-to-DEPLOYMENT_OPERATOR match and exact gas sufficiency are intentionally not claimed because this preflight neither unlocks the keystore nor executes the exact 13-transaction Forge simulation.",
+    "The deployment helper must match the signer and prove the operator balance covers its exact simulated 13-transaction requirement plus the code-owned safety margin immediately before an approved broadcast.",
   ));
 
   const rpcOkay = snapshot.probes?.rpcAttempted === true
@@ -2977,8 +3394,9 @@ export function buildPreflightReport(snapshot) {
         ? "Run the reviewed ceremony, then require a new live_activation preflight and signed-live-authority receipt before Cloudflare deployment."
         : "Provide exact canonical inputs and require the check-only validator receipt with all eight nonzero authority and lineage digests.",
   ));
-  const canonicalSevenCvmAuthorityValidated =
-    canonicalSevenCvmAuthorityValidationValid(
+  const canonicalSevenCvmAuthorityValidated = liveActivation
+    ? semanticEvidenceValidated
+    : canonicalSevenCvmAuthorityValidationValid(
       snapshot.canonicalSevenCvmAuthorityValidation,
       { authorityStage, releaseSha, deploymentIntentSha256 },
     );
@@ -2992,13 +3410,13 @@ export function buildPreflightReport(snapshot) {
       : canonicalSevenCvmAuthorityValidated
         ? authorityStage === "release_ceremony"
           ? "The shared validator authenticated fresh v3 release lineage, exact measurement policies, descriptor/posture authority, durable replay state, and all seven machine proofs."
-          : "The shared validator authenticated signed C with exact B/R/L/O/D dependencies and the persisted historical v3 transcript; it did not renew expired machine evidence."
+          : "The current exact-38 validator authenticated signed C with exact B/R/L/H/O/D dependencies while replaying the durable private exact-14 and frozen exact-37 historical boundaries; it did not renew expired machine evidence."
         : "Canonical seven-CVM release authority validation is unavailable or does not match this exact release lineage.",
     preMeasuredAuthority
       ? "Deploy the reviewed topology, then invoke the shared v3 verifier and ceremony authority validator."
       : authorityStage === "release_ceremony"
         ? "Provide the fresh canonical seven-CVM validator result; legacy v1/v2 probes and unpinned quote helpers are never accepted."
-        : "Provide the shared historical signed-C dependency validation result; do not remint R/L or rerun expired challenge freshness.",
+        : "Provide the current exact-38 signed-C dependency validation result; do not remint R/L, rewrite frozen exact-37 history, or rerun expired challenge freshness.",
   ));
   checks.push(check(
     "evidence.anchor_writer_mode",
@@ -3152,6 +3570,12 @@ export function buildPreflightReport(snapshot) {
   const writer = services["anchor-writer-evidence"] || {};
   const deal = services["deal-runtime"] || {};
   const compute = services["compute-execution-worker"] || {};
+  const tinkerCustomerAuthorityInit =
+    services["tinker-customer-authority-init"] || {};
+  const delegate = services.delegate || {};
+  const reviewOperations = services["review-operations"] || {};
+  const mailboxGenesis = services["mailbox-genesis"] || {};
+  const tinkerAccountGenesis = services["tinker-account-genesis"] || {};
   const evaluatorBindings = Object.entries(services)
     .filter(([, service]) => Object.hasOwn(service.environment || {}, "TINKER_EVALUATOR_MODE"))
     .map(([name, service]) => [name, service.environment.TINKER_EVALUATOR_MODE]);
@@ -3180,6 +3604,10 @@ export function buildPreflightReport(snapshot) {
     });
   const writerVolumes = JSON.stringify(writer.volumes || []);
   const dealVolumes = JSON.stringify(deal.volumes || []);
+  const tinkerCustomerAuthorityVolumes = JSON.stringify(
+    tinkerCustomerAuthorityInit.volumes || [],
+  );
+  const delegateVolumes = JSON.stringify(delegate.volumes || []);
   const requiredDealCommandValues = [
     "tinker-deal-runtime",
     "--qvl-url",
@@ -3203,9 +3631,50 @@ export function buildPreflightReport(snapshot) {
     && !writerVolumes.includes("arena-worker-sealed")
     && services["arena-policy-init"]?.network_mode === "none"
     && sameStringSet(compute.profiles, ["compute-execution"])
-    && compute["x-dnai-capability-status"] === "disabled_provider_contract_unavailable"
+    && compute["x-dnai-capability-status"] === "release_pinned_provider_runtime_gated"
+    && sameStringSet(tinkerCustomerAuthorityInit.profiles ?? [], [])
+    && JSON.stringify(tinkerCustomerAuthorityInit.command || [])
+      === JSON.stringify(["tinker-customer-authority-init"])
+    && tinkerCustomerAuthorityInit.restart === "no"
+    && tinkerCustomerAuthorityInit.network_mode === "none"
+    && tinkerCustomerAuthorityInit.environment?.TINKER_CUSTOMER_ENABLED
+      === "${TINKER_CUSTOMER_ENABLED:-false}"
+    && tinkerCustomerAuthorityInit.environment?.TINKER_CUSTOMER_AUTHORITY_B64
+      === "${TINKER_CUSTOMER_AUTHORITY_B64:-}"
+    && tinkerCustomerAuthorityInit.environment?.TINKER_CUSTOMER_AUTHORITY_PATH
+      === "/sealed/tinker-customer/authority.json"
+    && tinkerCustomerAuthorityInit.environment?.TINKER_CUSTOMER_AUTHORITY_SHA256
+      === "${TINKER_CUSTOMER_AUTHORITY_SHA256:-}"
+    && tinkerCustomerAuthorityVolumes.includes(
+      "tinker-customer-authority:/sealed/tinker-customer",
+    )
+    && delegate.depends_on?.["tinker-customer-authority-init"]?.condition
+      === "service_completed_successfully"
+    && delegateVolumes.includes(
+      "tinker-customer-authority:/sealed/tinker-customer:ro",
+    )
+    && sameStringSet(reviewOperations.profiles, ["review-operations"])
+    && JSON.stringify(reviewOperations.command || [])
+      === JSON.stringify(["tinker-review-operations"])
+    && sameStringSet(serviceNetworks(reviewOperations), ["tee-net"])
+    && reviewOperations.depends_on?.delegate?.condition === "service_healthy"
+    && reviewOperations.depends_on?.oracle?.condition === "service_healthy"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_ENABLED === "true"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_PRODUCTION_RELEASE === "true"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_DELEGATE_URL
+      === "http://delegate:8080"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_ORACLE_URL
+      === "http://oracle:8000"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_TOKEN === ""
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_KEY_PATH
+      === "tinker/runtime-auth"
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_TOKEN === ""
+    && reviewOperations.environment?.TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_KEY_PATH
+      === "oracle/runtime-auth"
     && sameStringSet(deal.profiles, ["deal-settlement"])
     && deal["x-dnai-capability-status"] === "release_pinned_deterministic_evaluator"
+    && sameStringSet(mailboxGenesis.profiles, ["mailbox-genesis"])
+    && sameStringSet(tinkerAccountGenesis.profiles, ["tinker-account-genesis"])
     && deal.environment?.TINKER_QVL_AUTH_TOKEN
       === "${TINKER_DILIGENCE_QVL_AUTH_TOKEN:?Phala-encrypted Diligence QVL bearer required}"
     && dealVolumes.includes("delegate-data:/data")
@@ -3217,8 +3686,8 @@ export function buildPreflightReport(snapshot) {
     "phala.main_release_profiles",
     profilesIsolated ? "pass" : "fail",
     profilesIsolated
-      ? "Diligence, Arena, and writer QVL bearers are purpose-separated; Deal and Compute remain profile/release-gated on isolated networks."
-      : "A release profile, purpose-specific QVL bearer, required Deal binding, or network boundary is missing or unsafe.",
+      ? "Diligence, Arena, and writer QVL bearers are purpose-separated; the sealed Tinker authority initializer, Review operations worker, Deal, Compute, mailbox genesis, and Tinker-account genesis remain exact and release-gated."
+      : "A release/genesis profile, sealed Tinker authority dependency, Review operations binding, purpose-specific QVL bearer, required Deal binding, or network boundary is missing or unsafe.",
     "Regenerate the main descriptor; do not manually relax one-shot or provider gates.",
   ));
 
@@ -3287,6 +3756,11 @@ export function buildPreflightReport(snapshot) {
     && topology.manifestSha256 === clean(snapshot.files?.imageRelease?.sha256)
     && topology.manifestAttestationSha256
       === clean(snapshot.files?.imageReleaseAttestationBundle?.sha256)
+    && topology.tinkerAccountBindingCeremonyReceipt?.sha256
+      === clean(snapshot.files?.tinkerAccountBindingCeremonyReceipt?.sha256)
+    && topology.tinkerAccountBindingCeremonyReceipt
+      ?.tinkerAccountBindingCeremonyReceiptSha256
+      === clean(tinkerBindingCeremony.persistedCeremonyReceiptSha256)
     && Object.entries(composeFilesByDomain).every(([domain, file]) => (
       topology.domains[domain]?.sha256 === clean(file?.sha256)
     ))
@@ -3305,8 +3779,8 @@ export function buildPreflightReport(snapshot) {
     "evidence.cvm_topology_binding",
     topologyBindings ? "pass" : "fail",
     topologyBindings
-      ? "The topology hashes and release metadata bind the exact manifest, its provenance bundle, services, images, and all seven compose descriptors."
-      : "The topology does not bind the exact manifest, provenance bundle, service/image topology, metadata, and seven compose files.",
+      ? "The topology hashes and release metadata bind the exact manifest, its provenance bundle, the account-binding ceremony receipt, services, images, and all seven compose descriptors."
+      : "The topology does not bind the exact manifest, provenance bundle, account-binding ceremony receipt, service/image topology, metadata, and seven compose files.",
     "Regenerate all release descriptors atomically from the exact image manifest.",
   ));
 
@@ -3367,6 +3841,11 @@ export function buildPreflightReport(snapshot) {
 
   const counts = { pass: 0, warn: 0, fail: 0 };
   for (const item of checks) counts[item.status] += 1;
+  if (checks.length !== PREFLIGHT_EXACT_CHECK_COUNT) {
+    throw new TypeError(
+      `activation preflight must emit exactly ${PREFLIGHT_EXACT_CHECK_COUNT} checks`,
+    );
+  }
   const actions = [...new Set(
     checks.filter((item) => item.status !== "pass" && item.action).map((item) => item.action),
   )].slice(0, 20);

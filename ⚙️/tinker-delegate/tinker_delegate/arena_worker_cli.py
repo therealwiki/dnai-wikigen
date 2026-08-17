@@ -42,6 +42,7 @@ from tinker_delegate.arena_ingress import (
     ArenaIngressRecipient,
     resolve_arena_recipient,
 )
+from tinker_delegate.arena_auth import arena_store_integrity_key
 from tinker_delegate.arena_safe_ir import (
     SAFE_IR_POLICY_COMMITMENT,
     SAFE_IR_RUNTIME,
@@ -112,7 +113,7 @@ EXECUTION_POLICY_APPROVAL_SCHEMA = (
     "dnai-wikigen/execution-policy-approval/v3"
 )
 EXECUTION_POLICY_API_SCHEMA_VERSION = 3
-EXECUTION_POLICY_STORE_SCHEMA_VERSION = 5
+EXECUTION_POLICY_STORE_SCHEMA_VERSION = 6
 EXECUTION_POLICY_ROLLBACK_ANCHOR_SCHEMA = (
     "dnai.execution-policy-rollback-anchor.v1"
 )
@@ -1495,6 +1496,10 @@ def build_arena_worker_service_from_settings(
         )
     ):
         raise ArenaWorkerBootstrapError("worker_configuration_missing")
+    try:
+        arena_integrity_key = arena_store_integrity_key(settings)
+    except Exception as exc:
+        raise ArenaWorkerBootstrapError("worker_configuration_missing") from exc
 
     pins = load_release_manifest(settings)
     anchor_pins = pins.execution_policy_rollback_anchor
@@ -1629,6 +1634,7 @@ def build_arena_worker_service_from_settings(
         )
         return build_verified_arena_worker_service(
             arena_store_path=arena_store_path,
+            arena_store_integrity_key=arena_integrity_key,
             ingress_store_path=ingress_store_path,
             recipient=recipient,
             evaluator=evaluator,

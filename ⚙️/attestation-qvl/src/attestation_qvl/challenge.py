@@ -34,15 +34,20 @@ ACTIVATION_CHALLENGE_DOMAIN = (
     b"dnai-wikigen/qvl-identity-challenge/v3\x00"
 )
 MAX_CHALLENGE_TTL_SECONDS = 120
-QVL_IDENTITY_DOMAIN_PROFILE: dict[str, QvlProfile] = {
-    "diligence_qvl_cvm": "diligence",
-    "arena_qvl_cvm": "arena",
-    "anchor_writer_qvl_cvm": "execution_policy_anchor_writer",
-    "compute_workload_qvl_cvm": "compute_workload",
-    "compute_metering_qvl_cvm": "compute_metering",
+QVL_IDENTITY_DOMAIN_PROFILES: dict[str, tuple[QvlProfile, ...]] = {
+    "diligence_qvl_cvm": (
+        "diligence",
+        "royalty_settlement",
+        "email_oracle_kms_restart",
+    ),
+    "arena_qvl_cvm": ("arena",),
+    "anchor_writer_qvl_cvm": ("execution_policy_anchor_writer",),
+    "compute_workload_qvl_cvm": ("compute_workload",),
+    "compute_metering_qvl_cvm": ("compute_metering",),
 }
 QVL_PROFILE_TARGET_DOMAIN: dict[QvlProfile, str] = {
     "diligence": "main_runtime_cvm",
+    "royalty_settlement": "main_runtime_cvm",
     "arena": "main_runtime_cvm",
     "execution_policy_anchor_writer": "main_runtime_cvm",
     "compute_workload": "main_runtime_cvm",
@@ -67,6 +72,8 @@ def qvl_profile(binding: ReportDataBinding) -> QvlProfile:
 
 def qvl_profiles(policy: ReleasePolicy) -> tuple[QvlProfile, ...]:
     profiles: list[QvlProfile] = [qvl_profile(policy.report_data_binding)]
+    if policy.royalty_settlement_binding is not None:
+        profiles.append("royalty_settlement")
     if policy.email_oracle_kms_restart_binding is not None:
         profiles.append("email_oracle_kms_restart")
     return tuple(profiles)
@@ -151,7 +158,9 @@ def validate_activation_challenge(
     if (
         max_ttl_seconds < 1
         or max_ttl_seconds > MAX_CHALLENGE_TTL_SECONDS
-        or QVL_IDENTITY_DOMAIN_PROFILE.get(request.domain) != request.profile
+        or request.profile not in QVL_IDENTITY_DOMAIN_PROFILES.get(
+            request.domain, ()
+        )
         or request.challenge_digest != activation_challenge_digest(request)
         or request.issued_at > now + 5
         or request.expires_at <= now

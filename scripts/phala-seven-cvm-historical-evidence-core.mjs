@@ -58,11 +58,13 @@ export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_DOMAIN =
 export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_STATUS =
   "fresh_independent_qvl_signed_intel_tdx_verdict_and_activation_appraisal_lease_verified";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA =
-  "dnai.phala-compute-workload-recipient-activation-verification.v3";
+  "dnai.phala-compute-workload-recipient-activation-verification.v4";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_DOMAIN =
-  "dnai-wikigen/phala-compute-workload-recipient-activation-verification/v3\0";
+  "dnai-wikigen/phala-compute-workload-recipient-activation-verification/v4\0";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS =
   "fresh_main_runtime_recipient_quote_independent_compute_workload_qvl_signature_and_recipient_evidence_lease_verified";
+export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH =
+  "release_lineage_signed_compute_workload_qvl_verdict_recipient_report_data_branded_main_runtime_fresh_vault_and_recipient_evidence_lease_verified_without_public_quote_or_collateral_disclosure";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_SCHEMA =
   "dnai.phala-seven-cvm-verified-evidence-set.v4";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_DOMAIN =
@@ -145,7 +147,7 @@ export const PINNED_SEVEN_CVM_HISTORICAL_DCAP_VERIFIER_AUTHORITY =
     pccs_url: "https://pccs.phala.network",
     collateral_mode: "authenticated_online_pccs",
     invocation:
-      "root_owned_system_python_I_S_B_root_protected_abi3_fd3_authenticated_source_fd4",
+      "root_owned_system_python_I_S_B_root_protected_abi3_fd3_to_read_only_unlinked_snapshot_source_fd4",
     platform: "darwin",
     architecture: "arm64",
     system_python_launcher: "/usr/bin/python3",
@@ -184,11 +186,11 @@ export const PINNED_SEVEN_CVM_HISTORICAL_DCAP_VERIFIER_AUTHORITY =
     dcap_qvl_abi3_cdhash_full_sha256:
       "758692e2a484440e6fd2a7bb4b3b74112647e9acd8c1a6f9750a0350a895d29f",
     bootstrap_sha256:
-      "9bdc99d17e92ca311326dc21e9ee82093962d05894a326b98f4df9970e930d92",
+      "b6e79f5ca1b214036d7e11e26aac0a249a26faa1ed702ef908ad27d0cdebb968",
     isolated_runtime_environment_sha256:
-      "sha256:62be45b60bcf7ad7434ad78247997256ab7282bb91d829ee87c301a3b55a146d",
+      "sha256:43fe517cb1b20e1a9009902cc9b7bea76e2788ec810251e373fbb7c45b60eb0b",
     verifier_script_sha256:
-      "baa62561c958026ae783f2d93da3ddf1ad7f2964d9b294aeb4f683ca98475b05",
+      "0ce3ad72b0b3c9821e1660396cd24ca7fc64cadf99cdb2df6fbe505c63dc7d0f",
     dcap_qvl_abi3_sha256:
       "6f86d8b8ed99c74663418d15150906cea4025352c49889e841ac68b387e04e7f",
   }, { label: "historical DCAP verifier authority" });
@@ -243,7 +245,7 @@ const COMPUTE_WORKLOAD_RECIPIENT_REPORT_DATA_DOMAIN =
 const COMPUTE_WORKLOAD_RECIPIENT_RELEASE_DOMAIN =
   "dnai-wikigen/compute-workload-recipient-release/v2\0";
 const COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_ARTIFACT_DOMAIN =
-  "dnai-wikigen/compute-workload-recipient-activation-artifact/v3\0";
+  "dnai-wikigen/compute-workload-recipient-activation-artifact/v4\0";
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -876,7 +878,8 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
     "qvl_identity_evidence_sha256", "qvl_release_policy_sha256",
     "qvl_verdict_artifact_sha256", "qvl_verdict_signing_digest",
     "qvl_verdict_verifier_address", "qvl_verdict_verifier_signature_sha256",
-    "raw_quote_persisted", "raw_secret_egress", "raw_transcript_sha256",
+    "raw_collateral_publicly_disclosed", "raw_quote_publicly_disclosed",
+    "raw_secret_egress", "raw_transcript_sha256",
     "recipient_evidence_lease_expires_at", "recipient_key_id",
     "recipient_release_commitment", "release_authority_sha256",
     "report_data", "schema", "source_activation", "status", "tdx_quote_sha256",
@@ -887,10 +890,12 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
   if (parsed.schema !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA
     || parsed.status !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS
     || parsed.truth_status
-      !== "release_lineage_signed_compute_workload_qvl_verdict_recipient_report_data_branded_main_runtime_fresh_vault_and_recipient_evidence_lease_verified"
+      !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH
     || parsed.chain_id !== CHAIN_ID || parsed.domain !== "main_runtime_cvm"
     || parsed.profile !== "compute_workload"
-    || parsed.raw_quote_persisted !== false || parsed.raw_secret_egress !== false
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false
     || parsed.activation_signer_key_path
       !== "tinker/compute_workload_activation_signer"
     || parsed.activation_signer_custody
@@ -1084,7 +1089,8 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
     authenticated_at: authenticatedAt,
     verified_at: verifiedAt,
     expires_at: proofExpiresAt,
-    raw_quote_persisted: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
 }

@@ -30,10 +30,15 @@ DEPLOYMENT_INTENT_SHA256=sha256:... # immutable reviewed pre-deployment intent
 # envelope; they never identify an operator-policy packet or projection.
 OPERATOR_POLICY_REVIEW_ENVELOPE_PATH=/absolute/path/deployment-intent.review-envelope.json
 OPERATOR_POLICY_REVIEW_ENVELOPE_SHA256=sha256:...
+RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH=/absolute/path/reviewer-authority-genesis.json
+RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH=/absolute/path/reviewer-authority-genesis-acceptance.json
+RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH=/absolute/path/reviewer-current-status.json
+RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH=/absolute/path/reviewer-status-history.json
 DEPLOYMENT_OPERATOR=0x...
+DILIGENCE_GOVERNANCE_CONTROLLER=0x... # immutable; nonzero and distinct from operator/developer
 COMPUTE_VAULT_DEVELOPER=0x...
 COMPUTE_VAULT_DEVELOPER_FEE_BPS=100 # explicit; deployment cap is 100 bps
-TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT=0x... # nonzero bytes32
+TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT=0x... # derived only by the two-reviewer ceremony below
 TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI=5000000000000000000 # policy units; not ETH
 TINKER_ENCUMBRANCE_MAX_SPEND_WEI=5000000000000000000 # policy units; not ETH
 EMAIL_ORACLE_UPGRADE_DELAY=172800 # explicit; minimum 2 days
@@ -54,16 +59,80 @@ this stage is a causal-cycle failure, not extra assurance.
 ## Single activation preflight
 
 First download `dnai-tee-image-release.json` and
-`dnai-tee-image-release.bundle.json` from the same clean GitHub Actions release
-job for the exact reviewed `RELEASE_SHA`. The artifact contains exactly the five
-operator-owned linux/amd64 image digests, the exact downloaded SPDX documents,
-their GitHub verification bindings, and the signed provenance bundle for the
-aggregate manifest. Create and validate the reviewer genesis/status/acceptance,
-deployment-intent core, and deployment-intent review using the current workflow
-in `deployments/operator-authority-artifacts.md`. The script filename
+`dnai-tee-image-release.bundle.json` from the same clean GitHub Actions
+`refs/heads/main` release job for the exact reviewed `RELEASE_SHA`. The
+production operator path is main-only: a tag-built or other-ref artifact is not
+accepted by the pinned Sigstore receipt verifier. The artifact contains exactly
+the five operator-owned linux/amd64 image digests, the exact downloaded SPDX
+documents, their GitHub verification bindings, and the signed provenance bundle
+for the aggregate manifest. Create and validate the reviewer
+genesis/status/acceptance artifacts using the current workflow in
+`deployments/operator-authority-artifacts.md`. The account commitment is not an
+arbitrary nonzero word and must not be an email, provider account identifier,
+or hash of either. Derive it with the two-reviewer ceremony below before
+authoring the deployment-intent core. The script filename
 `operator-policy-packet.mjs` is retained for its supported intent/review
 artifact subcommands only. The retired monolithic packet, `project` command,
 and operator-role projection are not accepted:
+
+### Two-reviewer opaque account-binding ceremony
+
+Create a new operator-owned mode-`0700` `.release` directory before deriving
+the commitment. Never reuse a previous directory or binding root. Each of the
+two active reviewers must independently generate one nonzero 32-byte share
+with an operating-system CSPRNG, retain it under separate custody, and provide
+it to the ceremony as an already-open mode-`0600`, single-link regular-file
+descriptor. The CLI deliberately accepts no share path, encoded share, seed,
+stdin, environment value, signer key, RPC URL, or output override:
+
+```bash
+set -euo pipefail
+REPOSITORY_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+RELEASE_DIRECTORY="$REPOSITORY_ROOT/.release"
+if [[ -e "$RELEASE_DIRECTORY" || -L "$RELEASE_DIRECTORY" ]]; then
+  printf '%s\n' \
+    "refusing to reuse $RELEASE_DIRECTORY; quarantine the previous generation first" \
+    >&2
+  exit 1
+fi
+mkdir -m 0700 "$RELEASE_DIRECTORY"
+
+# Open one independently generated binary share from each custody boundary.
+# Only the harmless local paths appear here; the 32 secret bytes never enter
+# argv, stdin, an environment variable, an RPC request, or calldata.
+exec 3</absolute/reviewer-one-custody/tinker-binding-share.bin
+exec 4</absolute/reviewer-two-custody/tinker-binding-share.bin
+node "$REPOSITORY_ROOT/scripts/tinker-account-binding-ceremony.mjs" \
+  intent-create \
+  --release-sha "$RELEASE_SHA" \
+  --reviewer-genesis "$RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH" \
+  --genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH" \
+  --current-status "$RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH" \
+  --status-history "$RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH" \
+  --share-fd 3 \
+  --share-fd 4
+exec 3<&-
+exec 4<&-
+
+TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT="$(jq -er \
+  '.account_commitment' \
+  "$RELEASE_DIRECTORY/tinker-account-binding-intent-core.json")"
+export TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT
+```
+
+The ceremony can prove exact file posture, share length, nonzero/distinct
+values, reviewer assignments, and reviewer declarations; no algorithm can
+prove that unknown input bytes actually came from a CSPRNG. Independent
+generation and custody are therefore an operational reviewer responsibility.
+Reusing the same binding root on Base Sepolia is linkable even though the root
+and shares remain private.
+
+Copy only the public commitment into
+`staticContractInputs.tinkerAccountEncumbrance.accountCommitment` while
+authoring the canonical deployment intent. The intent must bind the same
+release SHA, reviewer genesis acceptance, current-status epoch, and
+current-status digest. Then produce the normal two-reviewer deployment-intent
+review envelope and run both validators:
 
 ```bash
 node scripts/operator-policy-packet.mjs check-intent \
@@ -76,22 +145,78 @@ node scripts/operator-policy-packet.mjs check-review \
   --receipt-out /absolute/path/deployment-intent.review-receipt.json
 ```
 
-Render the seven production CVM descriptors directly from the canonical
-deployment intent and the two clean-CI image artifacts:
+Both reviewers next sign the exact EIP-191 message and payload digest in
+`.release/tinker-account-binding-intent.receipt.json`. Assemble those two
+address-sorted signatures in a canonical
+`dnai.tinker-account-binding-external-signatures.v1` JSON file with the exact
+reviewer address/controller pairs and purpose
+`tinker_account_binding_intent_reviewer_authorization`. No signer credential
+enters the repository ceremony process. Attach, verify, and recheck the fixed
+artifacts:
 
 ```bash
-cd "⚙️/tinker-delegate"
+node scripts/tinker-account-binding-ceremony.mjs ceremony-attach \
+  --reviewer-genesis "$RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH" \
+  --genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH" \
+  --current-status "$RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH" \
+  --status-history "$RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH" \
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH" \
+  --reviewer-signatures /absolute/path/tinker-binding-reviewer-signatures.json
+
+node scripts/tinker-account-binding-ceremony.mjs ceremony-verify \
+  --reviewer-genesis "$RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH" \
+  --genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH" \
+  --current-status "$RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH" \
+  --status-history "$RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH" \
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH"
+
+node scripts/tinker-account-binding-ceremony.mjs ceremony-check \
+  --reviewer-genesis "$RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH" \
+  --genesis-acceptance "$RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH" \
+  --current-status "$RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH" \
+  --status-history "$RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH" \
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH" >/dev/null
+```
+
+`ceremony-check` is read-only. Fresh attachment, verification, rendering, and
+contract deployment require the intent-pinned reviewer status to be current.
+Later activation checks may cryptographically replay the signed ceremony
+against an authenticated advanced status history, but that historical replay
+proves only that the signed declared timestamp was inside the old status
+window; it never re-labels an old status as current.
+
+Render the seven production CVM descriptors directly from the canonical
+deployment intent, verified binding-ceremony receipt, and two clean-CI image
+artifacts. The renderer preserves the four fixed ceremony artifacts already in
+the new `.release` directory and measures the receipt's canonical
+`tinker_account_binding_ceremony_receipt_sha256` into both one-shot genesis
+services:
+
+```bash
+set -euo pipefail
+REPOSITORY_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+cd "$REPOSITORY_ROOT/⚙️/tinker-delegate"
 uv run --frozen tinker-release-composes \
   --manifest /absolute/path/dnai-tee-image-release.json \
   --manifest-attestation-bundle /absolute/path/dnai-tee-image-release.bundle.json \
   --deployment-intent "$DEPLOYMENT_INTENT_PATH" \
+  --account-binding-ceremony-receipt \
+    "$RELEASE_DIRECTORY/tinker-account-binding-ceremony.receipt.json" \
   --release-sha "$RELEASE_SHA" \
-  --output-dir ../../.release
+  --output-dir "$RELEASE_DIRECTORY"
 ```
 
-The renderer accepts only `therealwiki/dnai-wikigen`, the repository's pinned
-TEE-image workflow, `refs/heads/main` or a `v*` tag, one exact source SHA,
-linux/amd64, and the canonical five-image order. It rejects extra fields,
+Do not automatically remove, overwrite, or rename an existing `.release`
+directory. Review its immutable receipt and generation first, then manually
+quarantine the whole directory before creating the new empty mode-`0700`
+directory. The atomic `mkdir` also fails if a path appears after the explicit
+check.
+
+The production renderer sequence accepts only `therealwiki/dnai-wikigen`, the
+repository's pinned TEE-image workflow, `refs/heads/main`, one exact source SHA,
+linux/amd64, and the canonical five-image order. Although the lower-level
+renderer also recognizes a `v*` tag for non-production tooling, the production
+receipt verifier deliberately does not. The renderer rejects extra fields,
 mutable tags, digest drift, or incomplete attestation metadata before writing.
 It publishes these generation-bound artifacts:
 
@@ -108,6 +233,52 @@ It publishes these generation-bound artifacts:
 .release/dnai-deployment-intent-core.json
 .release/dnai-cvm-topology.json
 ```
+
+Before activation preflight, cryptographically verify the exact copied
+manifest and bundle and persist the canonical production receipt:
+
+```bash
+REPOSITORY_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+node "$REPOSITORY_ROOT/scripts/release-manifest-sigstore-verification-cli.mjs" \
+  --repository-root "$REPOSITORY_ROOT" \
+  --release-sha "$RELEASE_SHA"
+```
+
+The producer accepts no manifest, bundle, or output path overrides. It reads
+the two exact filenames above, invokes the repository-pinned `gh` runtime with
+the exact repository, workflow, source-ref, source-SHA, SLSA predicate, and
+GitHub-hosted-runner policy, then writes only:
+
+```text
+.release/dnai-tee-image-release-manifest-sigstore-verification.json
+```
+
+The `.release` directory must be the new canonical, operator-owned `0700`
+directory created above. The receipt is canonical JSON, mode `0600`,
+single-link, durable, and create-only. An existing regular file, symlink, or
+hard link is never replaced. If the target nevertheless exists, stop and
+quarantine the entire generation, then render again into a newly created empty
+`0700` directory; do not delete or overwrite only the receipt merely to make
+the command pass. The success
+output contains only public release hashes and receipt commitments. Captured
+`gh` output, credentials, environment secrets, and absolute operator paths are
+not projected.
+
+The current production receipt authority is intentionally operator-platform
+specific: macOS on Apple silicon with Homebrew `gh` at
+`/opt/homebrew/Cellar/gh/2.87.3/bin/gh`, version `2.87.3`, and binary digest
+`sha256:67b51ba8ca861e0fcd4749d47eba740e8db8c799a8b18645833e904e09f7fb70`.
+An absent executable or any path, version, or digest drift fails closed. This
+does not claim a reviewed Linux tool pin.
+
+The verifier never executes the mutable Homebrew pathname after inspecting it.
+It runs both version and attestation commands from one randomized,
+operator-owned private copy of the verified bytes, then removes that copy
+before returning a receipt. The deterministic `verification_command_sha256`
+commits the reviewed logical pathname, exact pinned executable digest, fixed
+`dnai.pinned-gh-execution.private-verified-copy.v1` execution policy, and exact
+arguments. The randomized private pathname is ephemeral and is intentionally
+not represented as the command authority in the receipt.
 
 The renderer requires exact canonical `dnai.deployment-intent-core.v6` bytes,
 re-runs the fixed intent checker, re-reads the file to close the checker/use
@@ -191,7 +362,7 @@ initializer/worker, the one-shot anchor-writer evidence ceremony, and the
 profile-gated Compute worker. Diligence, Arena, anchor-writer, Compute-workload,
 and Compute-metering QVL plus the independent deterministic meter are six
 separate CVM descriptors outside the main runtime. The Compute profile remains labeled
-`disabled_provider_contract_unavailable`; rendering a descriptor does not
+`release_pinned_provider_runtime_gated`; rendering a descriptor does not
 enable or deploy it. Every output remains `rendered_not_deployed` and explicitly
 claims neither TDX verification nor deployment.
 
@@ -455,6 +626,14 @@ Both source variants carry the same exact release policy:
   `docker-compose.all.yaml` plus dstack overlay remains a source-build
   rehearsal, not production deployment evidence.
 
+The profile-gated `collaboration-execution-worker` intentionally exists only
+in the current dstack overlay and the renderer's emitted main-runtime
+descriptor. Its absence from the historical Phala base is expected; deploying
+that base by itself cannot enable Collaboration execution. The renderer copies
+the worker into the existing `main_runtime_cvm`, pins its release image, and
+validates its isolated egress, exact environment holders, and read-only dstack
+socket. It does not create an eighth CVM.
+
 For a syntax/merge check without reading real secrets, populate every required
 `${NAME:?message}` input with a syntactically valid, non-secret placeholder in
 a process-scoped environment. Use two different `https://*.invalid` RPC hosts,
@@ -522,10 +701,16 @@ tool never guesses that a predeployment checkout is already at live activation:
 ```bash
 node scripts/activation-preflight.mjs \
   --stage fresh-deployment \
-  --deployment-intent "$DEPLOYMENT_INTENT_PATH" \
-  --authority-review-envelope "$OPERATOR_POLICY_REVIEW_ENVELOPE_PATH" \
-  --authority-review-evidence /absolute/path/deployment-intent.review-evidence.json
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH"
 ```
+
+The preflight intentionally does **not** accept
+`--authority-review-envelope` or `--authority-review-evidence`. Those retired
+renewable-envelope flags are an unknown-argument failure, not a way to supply
+current stage authority. The fresh deployment helper separately validates the
+exact operator-policy review receipt and evidence named by the
+`OPERATOR_POLICY_REVIEW_ENVELOPE_*` environment inputs before broadcast; do
+not pass those files to this read-only preflight.
 
 After each irreversible boundary, rerun the same command with exactly one of
 `--stage cvm-launch`, `--stage release-ceremony`, or
@@ -535,11 +720,14 @@ postdeployment evidence must not be fabricated to make an earlier report look
 complete.
 
 By default the preflight reads the exact producer filenames
-`.release/deployment-intent-core.json`,
-`.release/cvm-launch-intent-core.json`, the stage-specific
-`*.review-envelope.json`, and the generated files under `.release`. When
-`DEPLOYMENT_INTENT_PATH`, `OPERATOR_POLICY_REVIEW_ENVELOPE_PATH`, or
-`DEPLOYMENT_MANIFEST_PATH` is populated, it is an absolute-path fallback. A
+`.release/dnai-deployment-intent-core.json`,
+`.release/cvm-launch-intent-core.json`, the five-image manifest, its bundle and
+pinned-Sigstore verification receipt, the seven-CVM topology, the seven
+rendered Compose descriptors, and the other stage-specific generated files
+under `.release`. Retired review-envelope files are not preflight authority.
+When `DEPLOYMENT_INTENT_PATH` or `DEPLOYMENT_MANIFEST_PATH` is populated, it is
+an absolute-path environment override of that default. The deploy helper consumes
+`OPERATOR_POLICY_REVIEW_ENVELOPE_PATH` at its separate mutation boundary. A
 different explicit CLI path and environment path is an ambiguity failure; the
 operator must choose one exact input. When neither `--ledger` nor
 `DEPLOYMENT_MANIFEST_PATH` is supplied, the preflight derives
@@ -551,14 +739,17 @@ Use
 `--compose`, `--diligence-qvl-compose`, `--arena-qvl-compose`,
 `--anchor-writer-qvl-compose`, `--compute-workload-qvl-compose`,
 `--compute-metering-qvl-compose`,
-`--metering-compose`, `--image-release`, and `--topology` only to point at
-another reviewed release directory. It
+`--metering-compose`, `--image-release`,
+`--image-release-attestation-bundle`,
+`--image-release-sigstore-verification-receipt`, and `--topology` only to point
+at another reviewed release directory. Override the manifest, bundle, and
+receipt together; never mix those three files across directories. It
 independently rechecks all literal digest pins, platform pins, service topology,
 one-shot/profile gates, image-manifest binding, and the hashes of all seven
 compose files. A historical `docker-compose.all.phala.yaml` is deliberately not
 the default and cannot satisfy the fresh-release topology.
 
-The same paths may be supplied through
+Other stage-specific evidence paths may be supplied through
 `ACTIVATION_RELEASE_CANDIDATE_PATH`,
 `ACTIVATION_ARTIFACT_EVIDENCE_PATH`,
 `ACTIVATION_ARENA_EVIDENCE_PATH`, and
@@ -569,10 +760,15 @@ structural report. A blocked report exits 1; a preflight-internal failure exits
 credential values, wallet addresses, RPC URLs, CLI stderr, or remote account
 details.
 
-`VERIFY=true` is blocking only at `fresh-deployment`, where source verification
-must accompany the reviewed broadcast. It is informational and ignored at
-later stages, whose authority comes from the immutable receipt and independent
-chain evidence. `BROADCAST` remains ignored by preflight at every stage.
+`VERIFY=true` is blocking only at `fresh-deployment`, where all seven source-
+verification submissions must accompany the reviewed broadcast. The helper's
+create-new `dnai.basescan-verification-submission-receipt.v1` proves only that
+the submission commands returned successfully; its status is deliberately
+`submitted_not_confirmed`. It does not prove that BaseScan has published or
+matched the source. Confirm all seven explorer pages separately before routing
+production traffic. At later stages `VERIFY` is informational and ignored;
+their authority comes from the immutable receipt and independent chain
+evidence. `BROADCAST` remains ignored by preflight at every stage.
 
 The legacy assignment names `JUDGE_PRIVATE_KEY` and `KMS_PRIVATE_KEY` are
 forbidden even when empty. Their presence fails environment hygiene without
@@ -621,6 +817,35 @@ state because `BROADCAST=false`. After reviewing the simulation, explicitly set
 `BROADCAST=true`. A broadcast uses literal Foundry `--account dev`; it unlocks
 that encrypted keystore, checks the derived signer against
 `DEPLOYMENT_OPERATOR`, and never accepts a raw key or `--private-key` flag.
+Before the helper lists a wallet, starts that dry run, or reaches any broadcast
+branch, it runs the read-only `ceremony-check` against the four fixed
+`.release/tinker-account-binding-*` artifacts, the exact deployment intent,
+and the absolute reviewer genesis, signed genesis acceptance, current-status,
+and complete status-history paths named by `RELEASE_REVIEWER_AUTHORITY_GENESIS_PATH`,
+`RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH`,
+`RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH`, and
+`RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH`. That deployment gate accepts
+only a fresh, current two-reviewer receipt whose public account commitment,
+deployment-intent digest, reviewer lineage, chain ID `84532`, and provider
+namespace all match. A historically replayable receipt is useful at later
+activation stages, but cannot authorize a new simulation or broadcast.
+When `BROADCAST=true`, the helper repeats that full current-authority replay
+after the reviewed dry run, nonce check, and balance check and immediately
+before unlocking `dev`. The second canonical receipt must be byte-identical to
+the first, so status expiry or authority/artifact drift during compilation and
+simulation fails before signer access.
+The read-only activation preflight deliberately reports signer and gas
+sufficiency as unproven; a merely nonzero balance is not readiness evidence.
+The fresh-suite helper closes that operational gate from the same immutable
+release worktree: it requires Forge's machine-readable dry-run artifact to be
+the exact ordered 13-transaction plan, pins the gas-unit estimate multiplier at
+130%, derives the required wei from Forge's internally consistent gas-price and
+amount projection, applies a further code-owned 2x balance margin, and re-reads
+both balance and nonce immediately before unlock/broadcast. The broadcast pins
+the simulated gas price. If any projection is absent, malformed, inconsistent,
+or exceeds the operator balance, no transaction is attempted. This is a
+bounded deployment-gas gate, not a promise that future governance phases are
+funded; each later phase must be simulated and funded separately.
 
 The reviewed testnet suite deploys:
 
@@ -630,14 +855,26 @@ The reviewed testnet suite deploys:
    The result verifier, QVL binding, compose, and TEE identity are admitted only
    through the post-deployment timelocked release ceremony. Both TEE approval
    gates are enabled and their requirements are irreversibly frozen with empty
-   allowlists, so the release is fail-closed pending verified CVM binding.
+   allowlists, so the release is fail-closed pending verified CVM binding. The
+   deployment operator is only the initial developer. The reviewed deployment
+   intent and constructor immutably pin `DILIGENCE_GOVERNANCE_CONTROLLER` as the
+   sole initial handoff target and production fee recipient; the measured final
+   release authority must repeat the same address. The ceremony proposes it only
+   after every Diligence authority set is frozen, and the room stays fail-closed
+   until that exact controller accepts after another two-day review window.
 2. `TinkerAccountEncumbrance` with an explicit account commitment and positive
    per-operation policy-unit caps no greater than the hard `10e18` ceiling,
    halted with empty compose and manager authority sets. The spend cap cannot
    exceed the add-balance cap. It cannot authorize an operation until the
    complete exact release policy, including the first compose and manager set,
    survives its separate two-day review ceremony.
-3. `RoyaltyDistributor` with exact-deposit and per-query replay protection.
+3. `RoyaltyDistributor`, owned by `DEPLOYMENT_OPERATOR` but deployed paused
+   with no settlement verifier, QVL verifier, policy anchor, release policy, or
+   pending authority. Its constructor binds the operator; runtime reconstruction
+   and the deployment ledger therefore use `constructor(address)`. The contract
+   cannot accept a settlement until the separate royalty release ceremony
+   admits three distinct roles: settlement CVM, independent QVL verifier, and
+   the already-frozen `ExecutionPolicyAnchor` writer.
 4. `ChallengeRegistry`, an owner-controlled, versioned metadata/commitment
    registry with forward-only lifecycle, independent governance/controller
    emergency pause latches, a two-day public review delay after every version,
@@ -661,6 +898,11 @@ unit conversion, and must remain execution-disabled until its independent
 metering and TEE release roots are bound. Private holdouts, submissions, and
 exact evaluation outputs must never be put on-chain.
 
+This is the explicit v1 product decision. Minted or transferable compute tokens,
+ETH challenge bonds, automated prize custody, and token/fiat conversion are
+roadmap designs that require a new threat model, reviewed contracts, tests, and
+deployment authority; none may be inferred from the v1 credit ledger.
+
 After a successful broadcast, the helper verifies runtime code and the on-chain
 operator and fail-closed zero-authority state before durably creating the new
 immutable release ledger at
@@ -675,6 +917,45 @@ commitments, and fail-closed poststates agree. A partial broadcast is a recovery
 event requiring chain inspection; it is never repaired by borrowing history
 from the prior-operator ledger.
 
+Only after that immutable post-contract ledger exists, build and independently
+recheck the pre-Phala CVM launch intent. These outputs are create-new; an
+existing output is a stop condition, not permission to overwrite it:
+
+```bash
+REPOSITORY_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+TINKER_BINDING_RECEIPT_SHA256="$(
+  jq -er \
+    '.tinker_account_binding_ceremony_receipt_sha256
+     | select(test("^sha256:[0-9a-f]{64}$"))' \
+    "$REPOSITORY_ROOT/.release/tinker-account-binding-ceremony.receipt.json"
+)"
+
+node "$REPOSITORY_ROOT/scripts/cvm-launch-intent.mjs" build \
+  --topology "$REPOSITORY_ROOT/.release/dnai-cvm-topology.json" \
+  --ledger "$REPOSITORY_ROOT/deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json" \
+  --tinker-account-binding-ceremony-receipt-sha256 "$TINKER_BINDING_RECEIPT_SHA256" \
+  --out "$REPOSITORY_ROOT/.release/cvm-launch-intent-core.json" \
+  --contract-receipt-out "$REPOSITORY_ROOT/.release/fresh-contract-deployment-receipt.json"
+
+node "$REPOSITORY_ROOT/scripts/cvm-launch-intent.mjs" check \
+  --in "$REPOSITORY_ROOT/.release/cvm-launch-intent-core.json" \
+  --receipt-out "$REPOSITORY_ROOT/.release/cvm-launch-intent.receipt.json"
+
+node "$REPOSITORY_ROOT/scripts/cvm-launch-intent.mjs" hash \
+  --in "$REPOSITORY_ROOT/.release/cvm-launch-intent-core.json"
+
+node "$REPOSITORY_ROOT/scripts/activation-preflight.mjs" \
+  --stage cvm-launch
+```
+
+The build order is causal: the topology exists before contract broadcast, but
+`cvm-launch-intent-core.json` and its normalized
+`fresh-contract-deployment-receipt.json` can be created only after the fresh
+ledger exists. `cvm-launch-intent.receipt.json` is the detached structural
+validation receipt; the `hash` command prints the domain-separated launch-intent
+digest for independent comparison. Do not substitute the historical
+`deployments/base-sepolia.json` ledger.
+
 Every production post-deployment helper named below consumes the same immutable
 deployment intent, measured final-release-authority core, and renewable review
 envelope before it can read Base Sepolia, inspect account `dev`, run a Forge
@@ -682,11 +963,11 @@ simulation, or broadcast. The shared guard checks all three canonical digests,
 the final authority's one-way binding to the deployment intent and release SHA,
 and the review envelope's exact final-authority subject. Legacy
 `OPERATOR_POLICY_PACKET_*` values and arbitrary projection JSON are rejected.
-The helpers currently stop at the bounded ceremony-field projection gate until
-one complete cryptographic projector can derive every Diligence, Compute,
-Email, anchor, and Tinker public input from those validated artifacts. This is
-an intentional fail-closed release boundary, not permission to treat shell
-environment values as reviewed authority.
+The helpers use `scripts/ceremony-authority-projector.mjs` to derive and compare
+exactly 36 named Diligence, Compute, Email, anchor, and Tinker public inputs from
+those validated artifacts. A missing, extra, or mismatched assertion fails
+before chain reads or keystore access; shell environment values are never
+accepted as independent reviewed authority.
 
 The fresh Tinker encumbrance remains
 `operations_fail_closed_pending_exact_timelocked_release_policy`. Its current
@@ -811,32 +1092,102 @@ are zero and both addition-freeze getters are false, so the room rejects deals
 but can still execute the reviewed timelocked admission sequence.
 
 After the replacement CVM's final compose hash and TEE identity are independently
-reviewed, configure the room in three phases:
+reviewed, configure the room in four phases:
 
 ```bash
 cd "⚙️/tinker-delegate/contracts"
 DILIGENCE_RELEASE_PHASE=1 ./scripts/configure-diligence-release.sh
 ```
 
-Each invocation is a dry run unless `BROADCAST=true`, and every broadcast uses
-only encrypted Foundry account `dev`. It requires a clean worktree whose `HEAD`
-equals `RELEASE_SHA`, the exact ledger-pinned `DILIGENCE_RUNTIME_CODE_HASH`, the
-live developer, and all mandatory/frozen settlement gates. The phases are:
+For phases 1-3, each invocation is a dry run unless `BROADCAST=true`, and every
+Foundry broadcast uses only encrypted account `dev`. Phase 4 never uses the
+operator keystore and never broadcasts from this helper: the distinct reviewed
+controller executes `acceptDeveloper()` through its own wallet ceremony, then
+the helper verifies the finalized receipt and exact live state before it may
+append evidence. Every phase requires a clean worktree whose `HEAD` equals
+`RELEASE_SHA`, the exact ledger-pinned `DILIGENCE_RUNTIME_CODE_HASH`, the
+final-authority-pinned `DILIGENCE_GOVERNANCE_CONTROLLER`, and all
+mandatory/frozen settlement gates. The phases are:
 
 1. Propose the exact compose hash.
 2. After the immutable two-day timelock, activate that compose hash and propose
    its exact TEE-identity binding.
 3. After the second immutable two-day timelock, activate the TEE identity and
-   permanently freeze both compose and TEE-identity additions.
+   permanently freeze both compose and TEE-identity additions, then propose the
+   exact permanent governance controller.
+4. After the final immutable two-day developer-transfer delay, the exact pending
+   controller accepts governance through its reviewed EOA, Safe, or other
+   contract-wallet flow. The old deployment operator cannot accept on its
+   behalf, and zero/self/verifier/TEE controller values are rejected. Acceptance
+   is permanent: every later production `proposeDeveloper` call reverts. Use the
+   frozen-set emergency revocations to stop activity; changing the reviewed
+   controller requires a fresh DiligenceRoom deployment and release ceremony.
 
-Do not route users to the room until phase 3 proves exactly one active compose,
+For phase 4, first obtain the exact no-argument calldata without exposing a key:
+
+```bash
+cast calldata 'acceptDeveloper()'
+```
+
+Submit that call from the final-authority-pinned controller using its normal
+reviewed wallet or multisig ceremony. Do not replace the Foundry `dev` keystore
+with a controller key. After the transaction is finalized, verify it without a
+ledger write:
+
+```bash
+DILIGENCE_RELEASE_PHASE=4 \
+  DILIGENCE_GOVERNANCE_ACCEPTANCE_MODE=contract_event_and_state \
+  DILIGENCE_GOVERNANCE_ACCEPTANCE_TX_HASH=0x... \
+  DILIGENCE_GOVERNANCE_ACCEPTANCE_RECORD=false \
+  BROADCAST=false \
+  ./scripts/configure-diligence-release.sh
+```
+
+Use `eoa_direct_call` only when the controller has no runtime code. That mode
+requires the outer transaction sender to equal the controller, its target to
+equal DiligenceRoom, and its calldata to equal only `acceptDeveloper()`. Use
+`contract_event_and_state` for a Safe or other contract controller. A normal
+Safe transaction is addressed to the Safe and may originate from an owner or
+relayer, so this mode deliberately makes no outer-call or trace claim. Instead
+it requires live controller code, a successful finalized receipt containing
+exactly one DiligenceRoom log—the indexed
+`DeveloperTransferred(oldOperator, controller)` event—and the exact final live
+state with both pending-developer getters zero. Both modes bind the receipt to
+the exact phase-3 activation deadline recorded in the append-only ledger.
+
+Once the verification-only invocation passes, repeat it with
+`DILIGENCE_GOVERNANCE_ACCEPTANCE_RECORD=true` to append the mode-specific,
+explicitly bounded receipt evidence under the release-wide lock. `BROADCAST`
+must remain `false`; phase 4 performs no chain action.
+
+The completed ledger has exactly four ordered
+`diligenceReleaseHistory` entries. Every entry repeats the immutable
+deployment-intent digest, Diligence deployment transaction, runtime hash,
+source commit, final-authority digest, deployment operator, and governance
+controller. Its `reviewEnvelopeSha256` is phase-specific: the review may be
+renewed between the six-day ceremony phases, but every envelope must validate
+the same final-authority subject. Phases 1-3 contain exact ordered
+`operatorTransactions` arrays of 3, 6, and 4 successful calls. Every item binds
+`sequence`, `transactionHash`, `sender`, `target`, `functionSignature`,
+`calldataSha256`, `receiptStatus`, `blockNumber`, and `blockHash`; the
+`operatorTransactionsSha256` is the SHA-256 of the compact key-sorted array
+emitted by `jq -cS`, including its trailing newline. Phase 4 has count `0`, an
+empty array, and a null operator-array digest because its controller acceptance
+is recorded separately. The shared ceremony lock, compare-and-swap revision
+receipt, and durable replacement protocol guard every append.
+
+Do not route users to the room until phase 4 proves exactly one active compose,
 exactly one active TEE identity, zero pending compose/TEE proposals, both
-addition freezes, and the exact compose-to-TEE binding. The minimum clean path
-takes four days. Revocation remains available as an emergency kill switch, but
-the closed set cannot admit a replacement; a new release or identity rotation
-requires a fresh DiligenceRoom deployment. Append all six governance
-transactions and a pinned final state snapshot to the deployment ledger before
-enabling browser writes.
+addition freezes, the exact compose-to-TEE binding, developer equal to the
+reviewed governance controller, and no pending developer transfer. A pending
+handoff keeps deal creation, funding, and result submission fail-closed. This
+Diligence path's minimum is six days. Revocation remains available as an
+emergency kill switch, but the closed set cannot admit a replacement; a new
+release or identity rotation requires a fresh DiligenceRoom deployment. Append
+all thirteen operator release-policy transactions, the controller's finalized
+acceptance transaction, its explicit EOA-call or contract event+state evidence
+mode, and a pinned final state snapshot to the ceremony ledger before enabling
+browser writes.
 
 The newly deployed `ComputeCreditVault` is also intentionally unusable for job
 authorization. After the execution and independent metering CVMs have final,
@@ -975,6 +1326,16 @@ independently verified:
 7. Read every resulting value back on-chain and append the governance
 transactions to the deployment ledger before calling the email path live.
 
+Schedule the parallel contract ceremonies from the projected on-chain epochs,
+not from a wall-clock promise. Record phase 1's
+`pendingOracleComposeHashes(EMAIL_ORACLE_COMPOSE_HASH)` epoch and phase 3's
+`pendingKmsBindingActivatesAt()` epoch, and require each later phase's finalized
+block timestamp to meet the recorded value. With the Diligence and Compute
+two-stage admission waits running in parallel, the protocol-only critical path
+is `max(4 days, 2 * EMAIL_ORACLE_UPGRADE_DELAY)` from their first proposals.
+External KMS/restart evidence collection, finality, interruptions, or a later
+proposal can only move the actual completion epoch later.
+
 Production Phala composes pin `TINKER_EVALUATOR_MODE=deterministic`. That lane
 runs the release-pinned three-recipe evaluator inside the main CVM, accepts only
 the buyer's exact on-chain policy commitment, and performs no provider,
@@ -1008,7 +1369,10 @@ measured main CVM, independent QVL evidence, and ceremony authority all agree.
 - Current-operator controlled: no
 - Compiler: `solc 0.8.28`
 - Optimizer runs: `200`
-- Verification: passed on BaseScan
+- Historical source-publication note: previously reported as visible on
+  BaseScan; this is not a fresh-suite submission receipt or authority for the
+  current release. Fresh receipts prove submission only until every explorer
+  page is independently confirmed.
 - Current on-chain `dealCount()`: `0`
 
 #### Security changes made before deployment
@@ -1202,6 +1566,183 @@ does it submit seven explicit `forge verify-contract` requests. This ordering
 ensures an explorer outage cannot leave successfully broadcast contracts absent
 from the deployment ledger. Constructor arguments and transactions remain in
 `broadcast/DeployFreshSuite.s.sol/84532/run-latest.json`.
+
+### Admit the Collaboration royalty release
+
+Fresh deployment does not make the royalty rail executable. First complete the
+`ExecutionPolicyAnchor` ceremony and confirm its third, distinct writer is
+active, rotation-frozen, and unpaused. A Royalty phase is not authorized by
+copying addresses into a shell. Two current independent reviewers sign one
+short-lived `royalty-release-phase-plan.v2`; the production wrapper reconstructs
+the fresh deployment and reviewer lineage, verifies that plan, and derives the
+exact contract, runtime, role, calldata, order, value, and nonce projection.
+
+Set absolute, canonical artifact paths for the reviewed inputs:
+
+```bash
+DEPLOYMENT_INTENT_PATH=/absolute/operator-evidence/deployment-intent.json
+ROYALTY_RELEASE_PRESCRIPTIVE_AUTHORITY_PATH=/absolute/operator-evidence/royalty-prescription.json
+ROYALTY_RELEASE_PHASE_PLAN_PATH=/absolute/operator-evidence/royalty-phase-plan.json
+ROYALTY_RELEASE_REVIEWER_GENESIS_PATH=/absolute/operator-evidence/reviewer-genesis.json
+ROYALTY_RELEASE_REVIEWER_GENESIS_ACCEPTANCE_PATH=/absolute/operator-evidence/reviewer-genesis-acceptance.json
+ROYALTY_RELEASE_REVIEWER_CURRENT_STATUS_PATH=/absolute/operator-evidence/reviewer-current-status.json
+ROYALTY_RELEASE_REVIEWER_STATUS_HISTORY_PATH=/absolute/operator-evidence/reviewer-status-history.json
+TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256=sha256:...
+```
+
+Construct the unsigned phase core with the code-owned projector; do not copy
+contract addresses, reviewer pins, calldata, or predecessor digests into a
+handwritten core. The only operator proposal is a canonical request containing
+the phase/mode, short validity window, and first transaction nonce:
+
+```json
+{
+  "execution_mode": "stage_authority",
+  "expires_at": "2026-08-17T12:14:00.000Z",
+  "first_transaction_nonce": "42",
+  "phase": 1,
+  "schema": "dnai.royalty-release-phase-plan-generation-request.v1",
+  "truth_status": "operator_supplied_window_and_nonce_only_not_reviewed_signed_or_chain_observed",
+  "valid_after": "2026-08-17T12:00:00.000Z"
+}
+```
+
+First capture the output of the supported ledger `replay` command into an
+operator-owned canonical `0600` JSON file under the external evidence root.
+Use a create-only temporary path and `jq -S`; never reuse an earlier replay
+after the working ledger changes. Then generate one create-only unsigned core:
+
+```bash
+node "$ROOT/⚙️/tinker-delegate/contracts/scripts/royalty-release-phase-plan.mjs" \
+  generate-core \
+  --deployment-intent "$DEPLOYMENT_INTENT_PATH" \
+  --fresh-deployment-manifest "$DEPLOYMENT_MANIFEST_PATH" \
+  --reviewer-genesis "$ROYALTY_RELEASE_REVIEWER_GENESIS_PATH" \
+  --reviewer-genesis-acceptance "$ROYALTY_RELEASE_REVIEWER_GENESIS_ACCEPTANCE_PATH" \
+  --reviewer-current-status "$ROYALTY_RELEASE_REVIEWER_CURRENT_STATUS_PATH" \
+  --reviewer-status-history "$ROYALTY_RELEASE_REVIEWER_STATUS_HISTORY_PATH" \
+  --royalty-release-prescription "$ROYALTY_RELEASE_PRESCRIPTIVE_AUTHORITY_PATH" \
+  --tinker-account-binding-ceremony-receipt-sha256 \
+    "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
+  --generation-request "$ROYALTY_RELEASE_PHASE_GENERATION_REQUEST_PATH" \
+  --ledger "$RELEASE_CEREMONY_LEDGER_PATH" \
+  --ledger-replay "$ROYALTY_RELEASE_LEDGER_REPLAY_PATH" \
+  --out "$ROYALTY_RELEASE_PHASE_CORE_PATH"
+```
+
+For normal phase 2 the request uses `phase: 2` and
+`execution_mode: "activate_and_unpause"`; the projector derives the entire
+phase-one prerequisite from the unique finalized ledger record and exact
+replay tip. Recovery uses `execution_mode: "recover_reverted_unpause"` and adds
+`--recovery-evidence /absolute/reviewer-recovery-evidence.json`; the projector
+structurally validates and recomputes that evidence digest and derives the sole
+retry nonce. This authoring check does not itself make an RPC finality claim;
+the production wrapper independently authenticates the activation and reverted
+unpause through both RPCs before it can execute the retry. The generated file
+still has `status: "proposed_for_review"`. Continue with `payload`, obtain two
+independent current-reviewer EIP-191 signatures, then use `attach` to write
+`ROYALTY_RELEASE_PHASE_PLAN_PATH`. `generate-core` accepts neither final-v4 nor
+H: those remain post-ceremony evidence.
+
+The pre-ceremony wrapper deliberately does not require final-authority v4 or H:
+those are post-ceremony facts and using them to authorize their own transactions
+would be circular. It requires the immutable fresh-deployment receipt, the
+distinct external working ledger and evidence/lock roots, and two distinct
+Base Sepolia HTTPS RPCs. Keep Foundry's broadcast,
+artifact, and cache directories outside the checkout so a reviewed clean source
+tree remains stable throughout the two-day interval:
+
+```bash
+DEPLOYMENT_MANIFEST_PATH=/absolute/operator-evidence/fresh/base-sepolia.json
+RELEASE_CEREMONY_LEDGER_PATH=/absolute/operator-evidence/ceremony/ledger.json
+RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT=/absolute/operator-evidence/ceremony/evidence
+RELEASE_CEREMONY_LOCK_ROOT=/absolute/operator-evidence/ceremony/locks
+FOUNDRY_BROADCAST=/absolute/operator-evidence/foundry/broadcast
+FOUNDRY_OUT=/absolute/operator-evidence/foundry/out
+FOUNDRY_CACHE_PATH=/absolute/operator-evidence/foundry/cache
+BASE_SEPOLIA_RPC_URL=https://...
+BASE_SEPOLIA_SECONDARY_RPC_URL=https://...
+FOUNDRY_KEYSTORE_ACCOUNT=dev
+```
+
+The operator, distributor, both royalty signers, anchor contract, and anchor
+writer must be pairwise distinct. Phase 1 requires the exact fresh paused and
+authority-empty distributor. Review the verified plan summary and simulate it;
+the default does not inspect or unlock the keystore:
+
+The anchor writer is a dstack-derived EOA and still needs Base Sepolia ETH to
+pay for the release marker and each subsequent policy/Royalty anchor. This gas
+reserve is separate from the deployment operator balance, Royalty reservation
+asset, and both settlement signatures. Do not activate post-Compute Royalty
+settlement until dual-RPC activation evidence proves the exact reviewed writer
+address has at least `33000000000000000` wei at one common finalized block.
+That v4 minimum budgets one marker plus 32 later anchors at 500,000 gas each
+and 2,000,000,000 wei per gas; it is bounded runway, not indefinite readiness.
+A nonzero balance by itself is not a sufficiency proof. This release has no
+relayer, paymaster, hot private-key fallback, or additional CVM.
+
+```bash
+cd "⚙️/tinker-delegate/contracts"
+ROYALTY_RELEASE_OPERATION=inspect ./scripts/configure-royalty-release.sh
+./scripts/configure-royalty-release.sh
+```
+
+Only after the reviewers approve that exact phase and the simulation output,
+set `BROADCAST=true`. The wrapper acquires the release-wide lock, reruns the
+entire authority and ledger verification, rechecks common-finalized state and
+nonce, then unlocks only the encrypted keystore account literally named `dev`.
+The exact classified dry run must also emit one internally consistent gas
+projection. Its gas units include the code-owned 130% multiplier; the owner
+must hold at least twice the resulting wei cost both before keystore access and
+immediately before broadcast. Broadcast pins that simulated gas price and the
+durable pre-broadcast capsule records the raw projection digest, price,
+estimated cost, required balance, and observed balance. A nonzero balance alone
+is not readiness:
+
+```bash
+BROADCAST=true ./scripts/configure-royalty-release.sh
+```
+
+After phase 1 is finalized and durably recorded, create a new short-lived phase
+2 plan whose prerequisite binds the exact phase-1 finality and ledger revision.
+The signed `phase_one_history_record_sha256` is the raw SHA-256 of the canonical
+deep-key-sorted phase-1 history JSON plus one trailing newline;
+`finalized_authority_receipt_sha256` applies the same encoding to that record's
+embedded finalized-authority receipt. `phase_one_finalized_at` is the canonical
+millisecond UTC rendering of the receipt's common-finalized block timestamp,
+not the later mutable ledger publication time. The wrapper recomputes all three
+from the external ledger before either RPC or Forge access.
+The wrapper will not proceed until the two-day activation timestamp has elapsed
+at the common finalized chain checkpoint. Normal phase 2 activates the exact
+staged binding and only then unpauses settlement. If activation finalized but a
+later unpause reverted, do not rerun or use Forge resume: create the separately
+reviewed `recover_reverted_unpause` plan whose evidence binds that activation,
+revert, and next nonce. If a broadcast completed but publication was
+interrupted, provide its external Forge receipt and reconcile without sending:
+
+```bash
+ROYALTY_RELEASE_OPERATION=reconcile \
+ROYALTY_RELEASE_BROADCAST_RECEIPT_PATH=/absolute/operator-evidence/foundry/broadcast/ConfigureRoyaltyRelease.s.sol/84532/run-latest.json \
+  ./scripts/configure-royalty-release.sh
+```
+
+There is one narrowly bounded same-plan continuation: if the original current
+`activate_and_unpause` plan still passes reviewer and freshness checks, both
+RPCs prove its activation finalized, the distributor is exact active-paused,
+no unpause is pending or replaced, and the live nonce is the reviewed unpause
+nonce, the wrapper may run only that reviewed unpause suffix. Supply the
+activation-only Forge artifact through
+`ROYALTY_RELEASE_BROADCAST_RECEIPT_PATH`. If any predicate fails or the signed
+window expired, stop and require a future separately signed
+`recover_missing_unpause` mode; never mislabel it as
+`recover_reverted_unpause`.
+
+The wrapper never performs blind resume. Missing or pending finality, an expired
+plan, active-but-paused state without the matching recovery authority, any
+runtime/role/policy drift, or ledger disagreement remains a hard stop. A signed
+settlement is valid for at most ten minutes, must still be the current anchor
+decision, and cannot be replayed under another funder because settlement ID and
+nonce are global.
 
 The fresh DiligenceRoom result ABI is
 `submitResult(uint256,ScoreBand,uint256,bytes32,uint256,bytes)`: deal ID, bounded

@@ -6,10 +6,15 @@ import {
 } from "../../scripts/canonical-authority-graph.mjs";
 import {
   FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes,
   canonicalFinalReleaseAuthorityCoreBytes,
   finalReleaseAuthorityCoreDigest,
+  historicalV3ParseCanonicalPublicHttpsUrl as parseCanonicalPublicHttpsUrl,
+  historicalFinalReleaseAuthorityCoreV2Digest,
+  normalizeHistoricalFinalReleaseAuthorityCoreV2,
   normalizeFinalReleaseAuthorityCore,
-} from "../../scripts/execution-policy-release-core.mjs";
+} from "../../scripts/execution-policy-release-core-v3-historical.mjs";
 import {
   normalizeHistoricalLiveActivationFrontendBinding,
 } from "../../scripts/release-authority-historical-core.mjs";
@@ -158,11 +163,16 @@ const EXTERNAL_ENTRYPOINTS = Object.freeze([
   ["asset_provenance_input", "outputs/wikigen-pitch-assets/attested-network.png"],
   ["asset_provenance_input", "outputs/wikigen-pitch-assets/private-reward-oracle.png"],
   ["module", "scripts/canonical-authority-graph.mjs"],
+  ["module", "scripts/canonical-public-https-url-core.mjs"],
   ["module", "scripts/compute-workload-activation-observation-core.mjs"],
-  ["module", "scripts/execution-policy-release-core-cli.mjs"],
+  ["module", "scripts/exact37-model-a-semantic-validator.mjs"],
+  // These path labels are historical receipt data. The replay implementation
+  // above imports the immutable v3 snapshot, but a frozen D manifest must keep
+  // the exact filenames committed by the original ceremony.
   ["module", "scripts/execution-policy-release-core.fixture.mjs"],
   ["module", "scripts/execution-policy-release-core.mjs"],
   ["module", "scripts/operator-policy-packet-core.mjs"],
+  ["verification_input", "scripts/phala-seven-cvm-dcap-verify.py"],
   ["module", "scripts/phala-seven-cvm-historical-transcript.mjs"],
   ["module", "scripts/pre-ceremony-runtime-authority-core.mjs"],
   ["module", "scripts/release-authority-historical-core.mjs"],
@@ -177,28 +187,51 @@ const EXTERNAL_FILES = Object.freeze([
   ["verification_input", "README.md", 4 * 1024 * 1024],
   ["asset_provenance_input", "outputs/wikigen-pitch-assets/attested-network.png", 4 * 1024 * 1024],
   ["asset_provenance_input", "outputs/wikigen-pitch-assets/private-reward-oracle.png", 4 * 1024 * 1024],
+  ["module", "scripts/build-tee-image-release.mjs", 4 * 1024 * 1024],
   ["module", "scripts/canonical-authority-graph.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/canonical-public-https-url-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/compute-workload-activation-observation-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/cvm-descriptor-runtime-authority-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/cvm-descriptor-runtime-authority.mjs", 4 * 1024 * 1024],
   ["module", "scripts/cvm-launch-intent-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/cvm-release-descriptor-set-constants.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/cvm-release-descriptor-set.mjs", 4 * 1024 * 1024],
   ["module", "scripts/ethereum-keccak.mjs", 4 * 1024 * 1024],
-  ["module", "scripts/execution-policy-release-core-cli.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/exact-model-a-dependency-graph.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/exact37-model-a-semantic-validator.mjs", 4 * 1024 * 1024],
   ["module", "scripts/execution-policy-release-core.fixture.mjs", 4 * 1024 * 1024],
   ["module", "scripts/execution-policy-release-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/operator-policy-packet-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-bootstrap-public-environment-authority-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-executor-state-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-nonlive-bootstrap-authorization-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-nonlive-bootstrap-authorization.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-post-measurement-activation-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-post-measurement-activation-receipt-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-production-execution-policy.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-production-posture-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-production-posture-receipt.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-production-target-authority.mjs", 4 * 1024 * 1024],
+  ["verification_input", "scripts/phala-seven-cvm-dcap-verify.py", 128 * 1024],
   ["module", "scripts/phala-seven-cvm-historical-evidence-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-seven-cvm-historical-release-verification-authority.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-seven-cvm-historical-runtime-binding-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-seven-cvm-historical-transcript.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-seven-cvm-launch-completion-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-seven-cvm-measurement-policy.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-seven-cvm-opened-fd-runtime-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/phala-seven-cvm-release-verification-authority-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/phala-seven-cvm-verifier-evidence.mjs", 4 * 1024 * 1024],
   ["module", "scripts/pre-ceremony-runtime-authority-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-authority-current-reviewer-facade.mjs", 4 * 1024 * 1024],
   ["module", "scripts/release-authority-historical-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/release-authority-signature-verifier-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-authority-signature-verifier.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-manifest-descriptor-historical-core.mjs", 4 * 1024 * 1024],
   ["module", "scripts/release-manifest-sigstore-verifier.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-reviewer-authority-core.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-reviewer-authority-genesis-acceptance.mjs", 4 * 1024 * 1024],
+  ["module", "scripts/release-reviewer-authority-genesis.mjs", 4 * 1024 * 1024],
   ["verification_input", "⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq", 1024 * 1024],
 ].map(([kind, path, maximumBytes]) => Object.freeze({
   kind,
@@ -393,32 +426,11 @@ function strictPublicHttpsEndpoint(value, label) {
   }
   let parsed;
   try {
-    parsed = new URL(value);
+    parsed = parseCanonicalPublicHttpsUrl(value, {
+      label,
+      maximumBytes: 4_096,
+    });
   } catch {
-    fail(`${label} must be a bounded exact public HTTPS endpoint`);
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  const labels = hostname.split(".");
-  const privateSuffixes = [
-    "localhost", "local", "localdomain", "internal", "lan", "home.arpa",
-    "onion", "test", "invalid", "example", "alt",
-  ];
-  if (parsed.protocol !== "https:"
-    || parsed.username
-    || parsed.password
-    || parsed.search
-    || parsed.hash
-    || hostname.includes(":")
-    || /^\d+(?:\.\d+){3}$/.test(hostname)
-    || labels.length < 2
-    || hostname.endsWith(".")
-    || hostname.length > 253
-    || labels.some((entry) => (
-      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(entry)
-    ))
-    || privateSuffixes.some((suffix) => (
-      hostname === suffix || hostname.endsWith(`.${suffix}`)
-    ))) {
     fail(`${label} must be a bounded exact public HTTPS endpoint`);
   }
   return parsed.pathname === "/" ? parsed.origin : parsed.href;
@@ -428,8 +440,8 @@ function distinctPublicHttpsEndpoints(primaryValue, secondaryValue) {
   const primary = strictPublicHttpsEndpoint(primaryValue, "frontend build primary RPC");
   const secondary = strictPublicHttpsEndpoint(secondaryValue, "frontend build secondary RPC");
   if (primary === secondary
-    || new URL(primary).origin.toLowerCase()
-      === new URL(secondary).origin.toLowerCase()) {
+    || parseCanonicalPublicHttpsUrl(primary).origin
+      === parseCanonicalPublicHttpsUrl(secondary).origin) {
     fail("frontend build secondary RPC must use a different public provider origin");
   }
   return { primary, secondary };
@@ -1142,13 +1154,19 @@ function projectExecutionPolicy(value) {
   };
 }
 
-export function finalReleaseAuthorityCoreFromHistoricalCandidate(candidateValue) {
+export function finalReleaseAuthorityCoreFromHistoricalCandidate(
+  candidateValue,
+  {
+    authorityStage = "live",
+    coreSchema = FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  } = {},
+) {
   const candidate = normalizeHistoricalFrontendReleaseCandidate(candidateValue, {
-    authorityStage: "live",
+    authorityStage,
   });
   assertGraph(candidate, "normalized historical release candidate");
-  return normalizeFinalReleaseAuthorityCore({
-    schema: FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  const value = {
+    schema: coreSchema,
     release_sha: candidate.release_sha,
     network: candidate.network,
     operator_address: candidate.operator_address,
@@ -1160,11 +1178,21 @@ export function finalReleaseAuthorityCoreFromHistoricalCandidate(candidateValue)
     wallet_auth: candidate.wallet_auth,
     requested_features: candidate.requested_features,
     execution_policy: projectExecutionPolicy(candidate.execution_policy),
-  });
+  };
+  if (coreSchema === FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA) {
+    return normalizeHistoricalFinalReleaseAuthorityCoreV2(value);
+  }
+  if (coreSchema === FINAL_RELEASE_AUTHORITY_CORE_SCHEMA) {
+    return normalizeFinalReleaseAuthorityCore(value);
+  }
+  fail("historical final release authority core schema is unsupported");
 }
 
 export function historicalFinalReleaseAuthorityCoreSha256(value) {
   assertGraph(value, "historical final release authority core");
+  if (value.schema === FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA) {
+    return `sha256:${historicalFinalReleaseAuthorityCoreV2Digest(value)}`;
+  }
   return `sha256:${finalReleaseAuthorityCoreDigest(value)}`;
 }
 
@@ -1173,16 +1201,31 @@ export function validateHistoricalFinalReleaseAuthorityCoreBinding({
   coreValue,
   runtimeAuthorityValue,
   authenticatedRuntimeAuthoritySha256,
+  authorityStage = "live",
+  expectedCoreSchema = FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
 }) {
   assertGraph(coreValue, "historical final release authority core");
   assertGraph(runtimeAuthorityValue, "authenticated historical R value");
   const candidate = normalizeHistoricalFrontendReleaseCandidate(candidateValue, {
-    authorityStage: "live",
+    authorityStage,
   });
-  const suppliedCore = normalizeFinalReleaseAuthorityCore(coreValue);
-  const projectedCore = finalReleaseAuthorityCoreFromHistoricalCandidate(candidate);
-  const suppliedBytes = canonicalFinalReleaseAuthorityCoreBytes(suppliedCore);
-  const projectedBytes = canonicalFinalReleaseAuthorityCoreBytes(projectedCore);
+  let suppliedCore;
+  if (expectedCoreSchema === FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA) {
+    suppliedCore = normalizeHistoricalFinalReleaseAuthorityCoreV2(coreValue);
+  } else if (expectedCoreSchema === FINAL_RELEASE_AUTHORITY_CORE_SCHEMA) {
+    suppliedCore = normalizeFinalReleaseAuthorityCore(coreValue);
+  } else {
+    fail("expected historical final release authority core schema is unsupported");
+  }
+  const projectedCore = finalReleaseAuthorityCoreFromHistoricalCandidate(candidate, {
+    authorityStage,
+    coreSchema: expectedCoreSchema,
+  });
+  const canonicalBytes = suppliedCore.schema === FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA
+    ? canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes
+    : canonicalFinalReleaseAuthorityCoreBytes;
+  const suppliedBytes = canonicalBytes(suppliedCore);
+  const projectedBytes = canonicalBytes(projectedCore);
   if (suppliedBytes.length !== projectedBytes.length
     || !suppliedBytes.equals(projectedBytes)) {
     fail("final release authority core does not exactly match the final release candidate's pre-anchor facts");

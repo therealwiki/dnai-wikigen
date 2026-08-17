@@ -55,6 +55,8 @@ function reviewedAuthorityContext(authority = knownVector()) {
   intent.release.reviewerAuthorityCurrentStatusSha256 = `sha256:${"92".repeat(32)}`;
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress = authority.operator_address;
+  intent.staticContractInputs.diligenceRoom.governanceController =
+    authority.contracts.diligence_room.developer;
   intent.staticContractInputs.computeCreditVault.developer =
     authority.contracts.compute_credit_vault.developer;
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment =

@@ -12,6 +12,11 @@ import {
   normalizeExecutionPolicyReleaseCore,
 } from "./execution-policy-release-core.mjs";
 
+const modulePath = fileURLToPath(new URL(
+  "./execution-policy-release-core-cli.mjs",
+  import.meta.url,
+));
+
 const MAX_ARTIFACT_BYTES = MAX_EXECUTION_POLICY_RELEASE_CORE_BYTES * 3;
 
 function usage() {
@@ -184,7 +189,7 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(executionPolicyWriterReleaseCommitment(artifact.core));
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

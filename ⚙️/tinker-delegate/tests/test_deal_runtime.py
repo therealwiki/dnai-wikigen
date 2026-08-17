@@ -14,6 +14,7 @@ from eth_account.messages import encode_defunct
 
 from tinker_delegate.chain_submitter import (
     DealRead,
+    PreparedSubmissionAttempt,
     SignerAttestationEvidence,
     signer_attestation_report_data,
 )
@@ -30,6 +31,7 @@ from tinker_delegate.deal_runtime import (
     DealRuntimeError,
     DealRuntimeRecord,
     DealRuntimeService,
+    DealRuntimeSingleWriterLease,
     DealRuntimeStateStore,
     ExecutionPolicyNotReady,
     HttpsIndependentQvlClient,
@@ -40,6 +42,7 @@ from tinker_delegate.deal_runtime import (
     SignerAttestationPacket,
     SubmissionRejected,
     SubmissionOutcome,
+    SubmissionReconciliation,
     build_parser,
 )
 from tinker_delegate.execution_policy_store import execution_resource_hash
@@ -230,6 +233,33 @@ class BoundedEvaluationTest(unittest.TestCase):
 
 
 class InternalDealApiTest(unittest.TestCase):
+    def test_reorg_quarantine_requires_exact_bounded_acknowledgement(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "deal_id": "7",
+                    "quarantined": True,
+                    "seller_reupload_required": True,
+                    "raw_secret_egress": False,
+                },
+            )
+
+        api = InternalDealApi(
+            "http://delegate:8080",
+            auth_token="runtime-test-token",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        api.quarantine_reorg("7")
+        self.assertEqual(requests[0].url.path, "/deal/7/chain-reorg")
+        self.assertEqual(
+            requests[0].headers["authorization"],
+            "Bearer runtime-test-token",
+        )
+
     def test_policy_preflight_and_evaluation_use_runtime_bearer_only_in_header(self):
         requests = []
 
@@ -343,6 +373,10 @@ class DealRuntimeStateStoreTest(unittest.TestCase):
             with self.assertRaises(RuntimeStateError):
                 store.load()
 
+            os.chmod(path, 0o644)
+            with self.assertRaisesRegex(RuntimeStateError, "unsafe"):
+                store.load()
+
 
 class FakeSource:
     contract_address = CONTRACT
@@ -351,9 +385,16 @@ class FakeSource:
         self.events = events
         self.latest = latest
         self.ranges = []
+        self.hashes = {}
 
     def latest_block(self):
         return self.latest
+
+    def block_hash(self, block_number):
+        return self.hashes.get(
+            block_number,
+            "0x" + f"{block_number + 1:064x}",
+        )
 
     def get_events(self, start, end):
         self.ranges.append((start, end))
@@ -399,6 +440,10 @@ class FakeControlPlane:
     def notify_funded(self, context):
         self.calls.append(("notify", context["deal_id"]))
 
+    def quarantine_reorg(self, deal_id):
+        self.calls.append(("reorg", deal_id))
+        self.missing_context = True
+
 
 class FakeCoordinator:
     def __init__(self, *, disposition="funded", error=None):
@@ -419,11 +464,28 @@ class FakeCoordinator:
             "artifact_hash": "0x" + "aa" * 32,
         }
 
-    def submit(self, evaluation):
+    def submit(self, evaluation, *, before_broadcast=None):
         self.submissions.append(evaluation)
         if self.error:
             raise self.error
+        if before_broadcast is not None:
+            before_broadcast(
+                PreparedSubmissionAttempt(
+                    tx_hash=TX_HASH,
+                    nonce=7,
+                    result_hash=RESULT_HASH,
+                    prepared_at=int(time.time()),
+                )
+            )
         return SubmissionOutcome(tx_hash=TX_HASH, result_hash=RESULT_HASH)
+
+    def reconcile_submission(self, *, deal_id, tx_hash, nonce):
+        return SubmissionReconciliation(
+            status="confirmed_success",
+            receipt_block=11,
+            receipt_block_hash="0x" + f"{12:064x}",
+            receipt_status=1,
+        )
 
 
 def _funded_event() -> DiligenceRoomEvent:
@@ -612,6 +674,146 @@ class DealRuntimeServiceTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeStateError, "cannot be downgraded"):
                 runtime.run_once()
+
+    def test_crash_after_prepare_recovers_exact_hash_without_rebroadcast(self):
+        class CrashAfterPrepare(FakeCoordinator):
+            def submit(self, evaluation, *, before_broadcast=None):
+                self.submissions.append(evaluation)
+                before_broadcast(
+                    PreparedSubmissionAttempt(
+                        tx_hash=TX_HASH,
+                        nonce=9,
+                        result_hash=RESULT_HASH,
+                        prepared_at=int(time.time()),
+                    )
+                )
+                raise SystemExit("simulated process death after durable prepare")
+
+        class ManualHold(FakeCoordinator):
+            def __init__(self):
+                super().__init__()
+                self.reconciliations = []
+
+            def reconcile_submission(self, *, deal_id, tx_hash, nonce):
+                self.reconciliations.append((deal_id, tx_hash, nonce))
+                return SubmissionReconciliation(
+                    status="exact_transaction_not_found"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._service(tmp, coordinator=CrashAfterPrepare())
+            with self.assertRaises(SystemExit):
+                first.run_once()
+            prepared = DealRuntimeStateStore(
+                Path(tmp) / "state.json"
+            ).load()["7"]
+            self.assertEqual(
+                prepared.stage,
+                RuntimeStage.SUBMISSION_UNCERTAIN,
+            )
+            self.assertEqual(prepared.submission_attempt_tx_hash, TX_HASH)
+            self.assertEqual(prepared.submission_nonce, 9)
+            self.assertEqual(
+                prepared.submission_attempt_result_hash,
+                RESULT_HASH,
+            )
+
+            hold = ManualHold()
+            restarted = self._service(
+                tmp,
+                events=[],
+                coordinator=hold,
+            )
+            restarted.source.events = []
+            restarted.run_once()
+            recovered = DealRuntimeStateStore(
+                Path(tmp) / "state.json"
+            ).load()["7"]
+            self.assertEqual(
+                recovered.stage,
+                RuntimeStage.SUBMISSION_UNCERTAIN,
+            )
+            self.assertEqual(
+                recovered.last_reason,
+                "exact_submission_not_found_manual_hold",
+            )
+            self.assertEqual(hold.submissions, [])
+            self.assertEqual(hold.reconciliations, [("7", TX_HASH, 9)])
+
+    def test_block_hash_reorg_quarantines_and_rebuilds_from_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cp = FakeControlPlane()
+            runtime = self._service(tmp, control_plane=cp)
+            runtime.run_once()
+            runtime.source.hashes[11] = "0x" + "ef" * 32
+            runtime.run_once()
+
+            rebuilt = DealRuntimeStateStore(
+                Path(tmp) / "state.json"
+            ).load()["7"]
+            self.assertEqual(rebuilt.stage, RuntimeStage.WAITING_ARTIFACT)
+            self.assertEqual(
+                rebuilt.last_reason,
+                "funded_context_rehydrated",
+            )
+            self.assertIn(("reorg", "7"), cp.calls)
+            self.assertIn(("notify", "7"), cp.calls)
+            self.assertIsNone(rebuilt.evaluation)
+
+    def test_reorg_cursor_rewind_survives_crash_before_state_compensation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cp = FakeControlPlane()
+            runtime = self._service(tmp, control_plane=cp)
+            runtime.run_once()
+            runtime.source.hashes[11] = "0x" + "de" * 32
+            durable_save = runtime.state_store.save
+
+            def crash_before_empty_state(records):
+                if not records:
+                    raise SystemExit(
+                        "simulated death after cursor rewind"
+                    )
+                return durable_save(records)
+
+            runtime.state_store.save = crash_before_empty_state
+            with self.assertRaises(SystemExit):
+                runtime.run_once()
+            self.assertEqual(
+                ChainCursorStore(Path(tmp) / "cursor.json").load().next_block,
+                11,
+            )
+            # The old checkpoint intentionally remains, so restart can detect
+            # and repeat compensation rather than trust the prior cursor.
+            self.assertIn(
+                "7",
+                DealRuntimeStateStore(Path(tmp) / "state.json").load(),
+            )
+
+            restarted = self._service(tmp, control_plane=cp)
+            restarted.source.hashes[11] = "0x" + "de" * 32
+            restarted.run_once()
+            rebuilt = DealRuntimeStateStore(
+                Path(tmp) / "state.json"
+            ).load()["7"]
+            self.assertEqual(rebuilt.stage, RuntimeStage.WAITING_ARTIFACT)
+            self.assertIn(("notify", "7"), cp.calls)
+
+    def test_single_writer_lease_rejects_second_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runtime.lock"
+            first = DealRuntimeSingleWriterLease(path)
+            second = DealRuntimeSingleWriterLease(path)
+            first.acquire()
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeStateError,
+                    "already held",
+                ):
+                    second.acquire()
+            finally:
+                first.release()
+            second.acquire()
+            second.release()
 
 
 class InjectedVerifierSigner:

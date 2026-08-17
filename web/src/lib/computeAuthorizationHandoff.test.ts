@@ -31,6 +31,8 @@ const transactionHash = `0x${"55".repeat(32)}` as Hex;
 const workloadCommitment = `0x${"66".repeat(32)}` as Hex;
 const manifestCommitment = `0x${"77".repeat(32)}` as Hex;
 const dispatchIntentCommitment = `0x${"88".repeat(32)}` as Hex;
+const executionBindingCommitment = `sha256:${"99".repeat(32)}` as `sha256:${string}`;
+const recipientReleaseCommitment = `sha256:${"aa".repeat(32)}` as `sha256:${string}`;
 const projectReference = "prj_0123456789abcdef01234567";
 const jobReference = "challenge-run-001";
 
@@ -111,6 +113,11 @@ function receipt() {
     jobReference,
     state,
     jobRead,
+    workloadAuthority: {
+      sourceKind: "credential",
+      executionBindingCommitment,
+      recipientReleaseCommitment,
+    },
     authorizationTransactionHash: transactionHash,
   });
 }
@@ -121,7 +128,7 @@ describe("Compute vault authorization handoff", () => {
     expect(Object.isFrozen(value)).toBe(true);
     expect(value).toMatchObject({
       surface: "compute_vault_authorization_handoff",
-      schemaVersion: 2,
+      schemaVersion: 3,
       source: "confirmed_transaction",
       projectReference,
       jobReference,
@@ -134,6 +141,10 @@ describe("Compute vault authorization handoff", () => {
       workloadCommitment,
       manifestCommitment,
       dispatchIntentCommitment,
+      sourceKind: "credential",
+      executionBindingCommitment,
+      recipientReleaseCommitment,
+      authorizationKind: "standalone",
       composeHash,
       vaultAddress: vault,
       vaultRuntimeCodeHash: codeHash,
@@ -142,6 +153,7 @@ describe("Compute vault authorization handoff", () => {
       authorizationTransactionHash: transactionHash,
     });
     expect(parseComputeAuthorizationHandoff(value, { projectReference, user: owner })).toEqual(value);
+    expect(value.authorizationContextCommitment).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(value).not.toHaveProperty("credits");
     expect(value).not.toHaveProperty("providerDispatch");
   });
@@ -161,6 +173,7 @@ describe("Compute vault authorization handoff", () => {
   it("rejects mutation, extra fields, mismatched references, and invented transaction provenance", () => {
     const value = receipt();
     expect(() => parseComputeAuthorizationHandoff({ ...value, maxAssetDebit: "6" })).toThrow(/commitment/);
+    expect(() => parseComputeAuthorizationHandoff({ ...value, sourceKind: "wallet" })).toThrow(/commitment/);
     expect(() => parseComputeAuthorizationHandoff({ ...value, credits: 50 })).toThrow(/fields are not exact/);
     expect(() => parseComputeAuthorizationHandoff({ ...value, projectReference: "different-project" })).toThrow(/project ID/);
     expect(() => createComputeAuthorizationHandoff({
@@ -196,6 +209,11 @@ describe("Compute vault authorization handoff", () => {
         jobReference,
         state: base.state,
         jobRead: base.jobRead,
+        workloadAuthority: {
+          sourceKind: "credential",
+          executionBindingCommitment,
+          recipientReleaseCommitment,
+        },
       })).toThrow(testCase.pattern);
     }
   });
@@ -205,11 +223,11 @@ describe("Compute vault authorization handoff", () => {
     const changed = createComputeAuthorizationHandoff({
       ...original,
       source: "pinned_block_inspection",
-      authorizationNonce: "9007199254740994",
+      executionBindingCommitment: `sha256:${"ab".repeat(32)}`,
       pinnedBlockNumber: "12346",
       authorizationTransactionHash: null,
     });
-    expect(() => assertComputeAuthorizationHandoffCoreUnchanged(original, changed)).toThrow(/authorizationNonce/);
+    expect(() => assertComputeAuthorizationHandoffCoreUnchanged(original, changed)).toThrow(/executionBindingCommitment/);
   });
 
   it("requires the authenticated journal record to preserve the complete vault tuple", () => {
@@ -229,6 +247,18 @@ describe("Compute vault authorization handoff", () => {
       manifest_commitment: value.manifestCommitment,
       intent_commitment: value.dispatchIntentCommitment,
       compose_hash: value.composeHash,
+      authorization: {
+        kind: value.authorizationKind,
+        context_commitment: value.authorizationContextCommitment,
+        server_derived: true,
+      },
+      workload_authority: {
+        source_kind: value.sourceKind,
+        execution_binding_commitment: value.executionBindingCommitment,
+        recipient_release_commitment: value.recipientReleaseCommitment,
+        funding_authority: "onchain_wallet_job",
+        device_spending_authority: false,
+      },
     } as ComputeDispatchIntentStatus;
     expect(() => assertComputeAuthorizationHandoffMatchesIntent(value, intent)).not.toThrow();
     expect(() => assertComputeAuthorizationHandoffMatchesIntent(value, {

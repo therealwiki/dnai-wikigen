@@ -18,13 +18,14 @@ for required_boundary in \
   'rawSigningMaterialReadOrSupplied: false' \
   'select(.transactionType == "CREATE" and .contractName == $name)' \
   'expected exactly one CREATE transaction for ' \
-  "assert_runtime_code DiligenceRoom \"\$DILIGENCE_ADDRESS\" 'constructor(bool)' true" \
+  "'constructor(bool,address)'" \
+  '"$DILIGENCE_GOVERNANCE_CONTROLLER"' \
   "'constructor(address,uint256,bool,bytes32,bytes32,bool)'" \
   'constructor re-execution failed' \
   'constructor re-execution returned malformed or empty runtime bytecode' \
   'freshBroadcastTransactionEvidenceFromLedger' \
   'collect_broadcast_transaction 12' \
-  "creation_input DiligenceRoom 'constructor(bool)' true" \
+  'DILIGENCE_CREATE_INPUT="$(' \
   '--argjson broadcastTransactions "$BROADCAST_TRANSACTIONS"' \
   'broadcastTransactionsSha256' \
   'transaction input digest' \
@@ -34,6 +35,8 @@ for required_boundary in \
   'rm -f "$PRODUCTION_SHAPE_MANIFEST"' \
   'rm -rf "$FOUNDRY_CACHE_PATH" "$FOUNDRY_OUT"' \
   'Synthetic DiligenceRoom accepted lifecycle' \
+  'proposeDeveloper(address)' \
+  'acceptDeveloper()' \
   'proposeEvaluatorPolicySet(bytes32[3])' \
   'activateEvaluatorPolicySet(bytes32[3])' \
   'freezeEvaluatorPolicySet()' \

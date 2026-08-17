@@ -5,6 +5,9 @@ import {
   CVM_LAUNCH_DOMAINS,
   CVM_PUBLIC_ENVIRONMENT_VALUE_PROJECTOR_SCHEMA,
 } from "./cvm-launch-intent-core.mjs";
+import {
+  parseCanonicalPublicHttpsUrl,
+} from "./canonical-public-https-url-core.mjs";
 
 export const PHALA_BOOTSTRAP_PUBLIC_ENVIRONMENT_AUTHORITY_SCHEMA =
   "dnai.phala-bootstrap-public-environment-authority.v3";
@@ -129,14 +132,26 @@ function exactPublicValueMap(value, expectedKeys, label) {
       && !BARE_SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero bare lowercase hash`);
     }
+    if (key.endsWith("_SHA256") && !SHA256.test(item)) {
+      throw new Error(`${label}.${key} must be a nonzero canonical SHA-256 digest`);
+    }
+    if (key.endsWith("_EPOCH")) {
+      if (!/^[1-9][0-9]{0,9}$/.test(item)
+        || Number(item) > 4_294_967_295) {
+        throw new Error(`${label}.${key} must be a canonical uint32 epoch`);
+      }
+    }
     if (key.endsWith("_URL")) {
       let endpoint;
-      try { endpoint = new URL(item); } catch {
+      try {
+        endpoint = parseCanonicalPublicHttpsUrl(item, {
+          label: `${label}.${key}`,
+          maximumBytes: 512,
+        });
+      } catch {
         throw new Error(`${label}.${key} must be a canonical HTTPS endpoint`);
       }
-      if (endpoint.protocol !== "https:" || endpoint.origin === "null"
-        || endpoint.username || endpoint.password || endpoint.hash
-        || endpoint.search || endpoint.href !== item) {
+      if (endpoint.href !== item) {
         throw new Error(`${label}.${key} must be a canonical HTTPS endpoint`);
       }
     }

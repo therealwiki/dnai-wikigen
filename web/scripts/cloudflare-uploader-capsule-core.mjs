@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { URL as NodeURL } from "node:url";
 import { TextDecoder } from "node:util";
 
 export const CLOUDFLARE_UPLOADER_CAPSULE_SCHEMA =
@@ -113,7 +114,7 @@ function validSha512Integrity(value) {
 function validRegistryResolution(value) {
   if (typeof value !== "string") return false;
   try {
-    const parsed = new URL(value);
+    const parsed = new NodeURL(value);
     return parsed.protocol === "https:"
       && parsed.hostname === "registry.npmjs.org"
       && parsed.port === ""

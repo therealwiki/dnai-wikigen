@@ -7,7 +7,7 @@ import {TinkerAccountEncumbrance} from "../src/TinkerAccountEncumbrance.sol";
 
 /// @notice Two-phase, fail-closed activation of the exact production Tinker policy.
 /// @dev A fresh encumbrance is halted. Phase 1 stages the reviewed account,
-///      per-operation caps, compose set, and optional delegated manager. Phase 2
+///      per-operation caps, one compose, and the sole main-runtime TEE manager. Phase 2
 ///      activates that exact commitment after the review delay and permanently
 ///      closes every authority-increasing path.
 contract ConfigureTinkerReleaseScript is Script {

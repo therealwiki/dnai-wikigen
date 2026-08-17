@@ -53,7 +53,8 @@ import {
   removePrivateReleaseBuildHome,
 } from "./release-build-home-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL("./deploy-cloudflare.mjs", import.meta.url));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const rootDir = path.resolve(webDir, "..");
 const RELEASE_GIT_PATH = "/usr/bin/git";
 const RELEASE_GIT_ENV = Object.freeze({
@@ -829,7 +830,7 @@ export async function runCloudflareDeployment({
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   runCloudflareDeployment().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

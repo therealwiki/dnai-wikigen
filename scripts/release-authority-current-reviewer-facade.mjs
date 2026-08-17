@@ -20,7 +20,7 @@ import {
 } from "./release-reviewer-authority-genesis-acceptance.mjs";
 import {
   normalizeExpectedReviewerAuthority,
-} from "./release-authority-signature-verifier.mjs";
+} from "./release-authority-signature-verifier-core.mjs";
 
 export const EXACT37_CURRENT_REVIEWER_AUTHORITY_ASSERTION_TRUTH =
   "deployment_intent_anchored_epoch_one_acceptance_status_current_with_no_unprovided_history";

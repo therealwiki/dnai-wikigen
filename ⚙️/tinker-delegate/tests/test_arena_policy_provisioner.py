@@ -187,7 +187,7 @@ def _valid_payloads():
             "dnai-wikigen/execution-policy-approval/v3"
         ),
         execution_policy_api_schema_version=3,
-        execution_policy_store_schema_version=5,
+        execution_policy_store_schema_version=6,
         execution_policy_approval_domain=DOMAIN,
         execution_policy_approval_domain_hash=approval_domain_hash,
         execution_policy_approver_hashes=POLICY_APPROVER_HASHES,
@@ -216,7 +216,7 @@ def _valid_payloads():
             "dnai-wikigen/execution-policy-approval/v3"
         ),
         "execution_policy_api_schema_version": 3,
-        "execution_policy_store_schema_version": 5,
+        "execution_policy_store_schema_version": 6,
         "execution_policy_approval_domain": DOMAIN,
         "execution_policy_approval_domain_hash": approval_domain_hash,
         "execution_policy_approver_hashes": list(POLICY_APPROVER_HASHES),

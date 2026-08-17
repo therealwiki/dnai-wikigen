@@ -8,7 +8,14 @@ def zero_address: "0x0000000000000000000000000000000000000000";
 def zero_bytes32: "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 def exact_fresh_diligence_authority:
-  ($verifier | ascii_downcase) == zero_address
+  ($diligenceDeveloper | ascii_downcase) == ($operator | ascii_downcase)
+  and ($diligenceInitialDeveloper | ascii_downcase) == ($operator | ascii_downcase)
+  and ($diligenceReleaseGovernanceController | ascii_downcase) == ($diligenceGovernanceController | ascii_downcase)
+  and ($diligenceProtocolFeeRecipient | ascii_downcase) == ($diligenceGovernanceController | ascii_downcase)
+  and ($diligencePendingDeveloper | ascii_downcase) == zero_address
+  and ($diligencePendingDeveloperAt | tonumber) == 0
+  and ($diligenceDeveloperTransferDelay | tonumber) == 172800
+  and ($verifier | ascii_downcase) == zero_address
   and ($diligencePendingVerifier | ascii_downcase) == zero_address
   and ($diligencePendingVerifierAt | tonumber) == 0
   and $diligenceVerifierFrozen == false
@@ -24,6 +31,18 @@ def exact_fresh_diligence_authority:
   and ($diligenceEvaluatorPolicySetRoot | ascii_downcase) == zero_bytes32
   and $diligenceEvaluatorPolicySetFrozen == false
   and ($diligenceRequiredEvaluatorPolicyCount | tonumber) == 3;
+
+def exact_fresh_royalty_authority:
+  ($royaltyOwner | ascii_downcase) == ($operator | ascii_downcase)
+  and ($royaltyPendingOwner | ascii_downcase) == zero_address
+  and $royaltyPaused == true
+  and ($royaltySettlementVerifier | ascii_downcase) == zero_address
+  and ($royaltyQvlVerifier | ascii_downcase) == zero_address
+  and ($royaltyExecutionPolicyAnchor | ascii_downcase) == zero_address
+  and ($royaltyAnchorWriterRelease | ascii_downcase) == zero_bytes32
+  and ($royaltyReleasePolicy | ascii_downcase) == zero_bytes32
+  and ($royaltyAuthorityNonce | tonumber) == 0
+  and ($royaltyPendingAuthorityAt | tonumber) == 0;
 
 def confirmed_deployment_receipt($receipts; $key; $operator; $address):
   ($receipts[$key] // null) as $receipt
@@ -61,14 +80,14 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     and ($digest | test("^sha256:[0-9a-f]{64}$"))
     and $digest != "sha256:" + ("0" * 64)
     and ([$transactions[] | {contractName, transactionType, functionSignature}] == [
-      {contractName:"DiligenceRoom",transactionType:"CREATE",functionSignature:"constructor(bool)"},
+      {contractName:"DiligenceRoom",transactionType:"CREATE",functionSignature:"constructor(bool,address)"},
       {contractName:"DiligenceRoom",transactionType:"CALL",functionSignature:"freezeFeeBps()"},
       {contractName:"DiligenceRoom",transactionType:"CALL",functionSignature:"enableComputeSettlementPolicy()"},
       {contractName:"DiligenceRoom",transactionType:"CALL",functionSignature:"setComposeApprovalRequired(bool)"},
       {contractName:"DiligenceRoom",transactionType:"CALL",functionSignature:"setTeeIdentityApprovalRequired(bool)"},
       {contractName:"DiligenceRoom",transactionType:"CALL",functionSignature:"freezeApprovalRequirements()"},
       {contractName:"TinkerAccountEncumbrance",transactionType:"CREATE",functionSignature:"constructor(address,bytes32,bytes32,uint256,uint256)"},
-      {contractName:"RoyaltyDistributor",transactionType:"CREATE",functionSignature:"constructor()"},
+      {contractName:"RoyaltyDistributor",transactionType:"CREATE",functionSignature:"constructor(address)"},
       {contractName:"ChallengeRegistry",transactionType:"CREATE",functionSignature:"constructor(address)"},
       {contractName:"ComputeCreditVault",transactionType:"CREATE",functionSignature:"constructor(address,address,uint16)"},
       {contractName:"ComputeCreditVault",transactionType:"CALL",functionSignature:"freezeDeveloperFee()"},
@@ -126,6 +145,9 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
 | if exact_fresh_diligence_authority then .
   else error("fresh DiligenceRoom signer, QVL, or evaluator-policy authority is not exactly empty")
   end
+| if exact_fresh_royalty_authority then .
+  else error("fresh RoyaltyDistributor must be operator-owned, paused, and exactly authority-empty")
+  end
 | ($root.contracts // {}) as $previousContracts
 | .schemaVersion = 2
 | del(.notAuthorityForFreshRelease, .supersededBoundary)
@@ -153,6 +175,7 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     sourceCommit: $sourceCommit,
     deploymentIntentSha256: $deploymentIntentSha256,
     reviewerAuthorityGenesisAcceptanceSha256: $reviewerAuthorityGenesisAcceptanceSha256,
+    tinkerAccountBindingCeremonyReceiptSha256: $tinkerAccountBindingCeremonyReceiptSha256,
     deploymentReviewEnvelopeSha256: $deploymentReviewEnvelopeSha256,
     deploymentReviewEvidenceSha256: $deploymentReviewEvidenceSha256,
     authorityStage: "deployment_intent_review_only",
@@ -185,6 +208,14 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
         deploymentBlockHash: $diligenceReceipt.deploymentBlockHash,
         creationInputSha256: $diligenceReceipt.creationInputSha256,
         runtimeCodeHash: $diligenceRuntimeCodeHash,
+        developer: $diligenceDeveloper,
+        initialDeveloper: $diligenceInitialDeveloper,
+        releaseGovernanceController: $diligenceReleaseGovernanceController,
+        protocolFeeRecipient: $diligenceProtocolFeeRecipient,
+        pendingDeveloper: $diligencePendingDeveloper,
+        pendingDeveloperActivatesAt: ($diligencePendingDeveloperAt | tonumber),
+        developerTransferDelaySeconds: ($diligenceDeveloperTransferDelay | tonumber),
+        governanceHandoffStatus: "pending_final_authority_and_release_ceremony",
         resultVerifier: $verifier,
         pendingResultVerifier: $diligencePendingVerifier,
         pendingResultVerifierActivatesAt: ($diligencePendingVerifierAt | tonumber),
@@ -270,6 +301,7 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
         policyState: "operations_fail_closed_pending_exact_timelocked_release_policy"
       },
       royaltyDistributor: {
+        status: "deployed_paused_unbound_pending_royalty_release",
         address: $royalty,
         deploymentTx: $royaltyTx,
         deploymentTxFrom: $royaltyReceipt.deploymentTxFrom,
@@ -278,7 +310,18 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
         deploymentBlock: $royaltyReceipt.deploymentBlock,
         deploymentBlockHash: $royaltyReceipt.deploymentBlockHash,
         creationInputSha256: $royaltyReceipt.creationInputSha256,
-        runtimeCodeHash: $royaltyRuntimeCodeHash
+        runtimeCodeHash: $royaltyRuntimeCodeHash,
+        owner: $royaltyOwner,
+        pendingOwner: $royaltyPendingOwner,
+        paused: $royaltyPaused,
+        settlementVerifier: $royaltySettlementVerifier,
+        qvlVerifier: $royaltyQvlVerifier,
+        executionPolicyAnchor: $royaltyExecutionPolicyAnchor,
+        anchorWriterReleaseCommitment: $royaltyAnchorWriterRelease,
+        releasePolicyCommitment: $royaltyReleasePolicy,
+        authorityNonce: ($royaltyAuthorityNonce | tonumber),
+        pendingAuthorityActivatesAt: ($royaltyPendingAuthorityAt | tonumber),
+        policyState: "settlements_fail_closed_pending_dual_signer_anchor_release"
       },
       challengeRegistry: {
         address: $challenge,
@@ -421,7 +464,14 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     creationInputSha256: $diligenceReceipt.creationInputSha256,
     transactionUrl: tx_url($diligenceTx),
     runtimeCodeHash: $diligenceRuntimeCodeHash,
-    developer: $operator,
+    developer: $diligenceDeveloper,
+    initialDeveloper: $diligenceInitialDeveloper,
+    releaseGovernanceController: $diligenceReleaseGovernanceController,
+    protocolFeeRecipient: $diligenceProtocolFeeRecipient,
+    pendingDeveloper: $diligencePendingDeveloper,
+    pendingDeveloperActivatesAt: ($diligencePendingDeveloperAt | tonumber),
+    developerTransferDelaySeconds: ($diligenceDeveloperTransferDelay | tonumber),
+    governanceHandoffStatus: "pending_final_authority_and_release_ceremony",
     productionRelease: $diligenceProductionRelease,
     dealCount: ($diligenceDealCount | tonumber),
     resultVerifier: $verifier,
@@ -517,7 +567,7 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     sourceCommit: $sourceCommit
   }
 | .contracts.royaltyDistributor = {
-    status: "deployed_ownerless_pull_payment_rail",
+    status: "deployed_paused_unbound_pending_royalty_release",
     address: $royalty,
     baseScanUrl: address_url($royalty),
     deploymentTx: $royaltyTx,
@@ -529,8 +579,20 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     creationInputSha256: $royaltyReceipt.creationInputSha256,
     transactionUrl: tx_url($royaltyTx),
     runtimeCodeHash: $royaltyRuntimeCodeHash,
-    queryReplayProtection: true,
-    queryReplayDomain: "distributor_address_and_query_ref",
+    owner: $royaltyOwner,
+    pendingOwner: $royaltyPendingOwner,
+    paused: $royaltyPaused,
+    settlementVerifier: $royaltySettlementVerifier,
+    qvlVerifier: $royaltyQvlVerifier,
+    executionPolicyAnchor: $royaltyExecutionPolicyAnchor,
+    anchorWriterReleaseCommitment: $royaltyAnchorWriterRelease,
+    releasePolicyCommitment: $royaltyReleasePolicy,
+    authorityNonce: ($royaltyAuthorityNonce | tonumber),
+    pendingAuthorityActivatesAt: ($royaltyPendingAuthorityAt | tonumber),
+    settlementReplayProtection: true,
+    settlementReplayDomain: "global_settlement_id_and_global_settlement_nonce",
+    releaseAuthority: "dual_eip712_settlement_cvm_and_independent_qvl_plus_current_policy_anchor",
+    policyState: "settlements_fail_closed_pending_dual_signer_anchor_release",
     challengePrizeOrBondCustody: false,
     verificationStatus: (if $verificationRequested then "pending_submission" else "not_requested" end),
     sourceCommit: $sourceCommit
@@ -704,6 +766,7 @@ def confirmed_broadcast_transactions($transactions; $digest; $operator):
     sourceCommit: $sourceCommit,
     deploymentIntentSha256: $deploymentIntentSha256,
     reviewerAuthorityGenesisAcceptanceSha256: $reviewerAuthorityGenesisAcceptanceSha256,
+    tinkerAccountBindingCeremonyReceiptSha256: $tinkerAccountBindingCeremonyReceiptSha256,
     deploymentReviewEnvelopeSha256: $deploymentReviewEnvelopeSha256,
     deploymentReviewEvidenceSha256: $deploymentReviewEvidenceSha256,
     authorityStage: "deployment_intent_review_only",

@@ -529,3 +529,75 @@ export function verifyIndependentEip191RawDigestSignature(input = {}) {
     signature_sha256: releaseAuthoritySignatureSha256(parsed.signature),
   });
 }
+
+/**
+ * Verify a canonical reviewer authorization without filesystem or subprocess
+ * capabilities. The caller remains responsible for deriving the supplied
+ * reviewer authority from an independently authenticated root and set.
+ */
+export function verifyIndependentReviewerAuthorization(input = {}) {
+  const parsed = exact(input, [
+    "expectedSignerCount",
+    "message",
+    "requireEveryReviewer",
+    "reviewerAuthority",
+    "signatures",
+  ], "independent reviewer authorization input");
+  if (typeof parsed.message !== "string") {
+    fail("independent reviewer authorization message must be a string");
+  }
+  const normalized = normalizeReviewerAuthorizationSignatures({
+    signatures: parsed.signatures,
+    reviewerAuthority: parsed.reviewerAuthority,
+    expectedReviewerRootHash: parsed.reviewerAuthority?.reviewer_root_hash,
+    expectedReviewerSetSha256: parsed.reviewerAuthority?.reviewer_set_sha256,
+    expectedSignerCount: parsed.expectedSignerCount,
+    requireEveryReviewer: parsed.requireEveryReviewer,
+  });
+  const signers = normalized.signatures.map((entry) => Object.freeze({
+    controller_id: entry.controller_id,
+    ...verifyIndependentEip191PersonalSignature({
+      address: entry.address,
+      message: parsed.message,
+      signature: entry.signature,
+    }),
+  }));
+  return deepFreezeCanonicalPlainDataGraph({
+    signature_scheme: PINNED_EIP191_SIGNATURE_SCHEME,
+    signature_verifier: { ...PINNED_CAST_SIGNATURE_VERIFIER },
+    reviewer_root_hash: normalized.reviewer_root_hash,
+    reviewer_set_sha256: normalized.reviewer_set_sha256,
+    signer_count: normalized.signer_count,
+    signers,
+  }, { label: "independent reviewer authorization evidence" });
+}
+
+export function verifyIndependentTwoSignerAuthorization(input = {}) {
+  const parsed = exact(input, [
+    "message", "reviewerAuthority", "signatures",
+  ], "independent two-signer authorization input");
+  return verifyIndependentReviewerAuthorization({
+    message: parsed.message,
+    reviewerAuthority: parsed.reviewerAuthority,
+    signatures: parsed.signatures,
+    expectedSignerCount: 2,
+    requireEveryReviewer: false,
+  });
+}
+
+export function verifyIndependentAllReviewerAuthorization(input = {}) {
+  const parsed = exact(input, [
+    "message", "reviewerAuthority", "signatures",
+  ], "independent all-reviewer authorization input");
+  const reviewerCount = parsed.reviewerAuthority.approved_reviewers?.length;
+  if (!Number.isSafeInteger(reviewerCount) || reviewerCount < 2) {
+    fail("independent all-reviewer authorization requires a canonical reviewer set");
+  }
+  return verifyIndependentReviewerAuthorization({
+    message: parsed.message,
+    reviewerAuthority: parsed.reviewerAuthority,
+    signatures: parsed.signatures,
+    expectedSignerCount: reviewerCount,
+    requireEveryReviewer: true,
+  });
+}

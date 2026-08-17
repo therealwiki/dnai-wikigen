@@ -20,11 +20,13 @@ dependencies = [
 [project.optional-dependencies]
 agent = [
     # Thinking Machines SDK (for IsolatedTinkerSession + evaluator).
-    # Pinned to >=0.22: the Tinker server rejects older SDKs with a 400
+    # Pinned to 0.22.7: the release adapter authenticates the installed SDK
+    # source tree and request contract before any provider request.
+    # The Tinker server rejects older SDKs with a 400
     # "Your Tinker SDK version is no longer supported" (the deployed CVM image
     # shipped 0.15.0, which is why the live smoke failed at ServiceClient
     # creation). Rebuild the CVM image to pick up a supported SDK.
-    "tinker>=0.22",
+    "tinker==0.22.7",
 ]
 
 [project.scripts]
@@ -32,10 +34,14 @@ tinker-delegate = "tinker_delegate.main:cli"
 tinker-deal-runtime = "tinker_delegate.deal_runtime:main"
 tinker-arena-worker = "tinker_delegate.arena_worker_cli:main"
 tinker-arena-provision = "tinker_delegate.arena_policy_provisioner:main"
+tinker-arena-submit = "tinker_delegate.arena_submission_client:main"
 tinker-diligence-evaluator-provision = "tinker_delegate.diligence_evaluator_provisioner:main"
 tinker-diligence-evaluator-release = "tinker_delegate.diligence_evaluator_release_builder:main"
 tinker-compute-runtime = "tinker_delegate.compute_runtime_cli:main"
+tinker-collaboration-execution-worker = "tinker_delegate.collaboration_execution_worker:main"
+tinker-customer-authority-init = "tinker_delegate.tinker_customer_authority:main"
 tinker-execution-policy-anchor-writer = "tinker_delegate.execution_policy_anchor_cli:main"
+tinker-review-operations = "tinker_delegate.review_operations:main"
 tinker-release-composes = "tinker_delegate.release_composes:main"
 
 [build-system]

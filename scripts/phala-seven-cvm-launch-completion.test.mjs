@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -287,9 +288,19 @@ test("exact-seven completion canonical form and separate final/mutation orders a
   assert.equal(normalized.two_workload_verdicts_machine_verified, true);
   assert.equal(normalized.compute_workload_recipient_activation_authorized, false);
   assert.equal(
+    normalized.private_historical_transcript_persisted,
+    true,
+  );
+  assert.equal(
+    normalized.private_historical_transcript_contains_raw_quote_and_collateral,
+    true,
+  );
+  assert.equal(
     normalized.private_historical_identity_response_quote_bytes_persisted,
     true,
   );
+  assert.equal(normalized.raw_quote_publicly_disclosed, false);
+  assert.equal(normalized.raw_collateral_publicly_disclosed, false);
   assert.equal(normalized.raw_quote_external_egress, false);
   assert.equal(normalized.raw_private_artifact_egress, false);
   assert.equal(normalized.raw_secret_egress, false);
@@ -396,6 +407,43 @@ test("normalization never brands and production creation requires branded raw de
     /canonical plain-data graph/i,
   );
   assert.equal(getterCalls, 0);
+});
+
+test("production exact14 persistence begins only after the full L lineage preflight", () => {
+  const source = readFileSync(
+    new URL("./phala-seven-cvm-launch-completion.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf(
+    "export async function createPersistedPhalaSevenCvmLaunchCompletionReceipt",
+  );
+  const end = source.indexOf(
+    "export function assertBrandedPhalaSevenCvmLaunchCompletionReceipt",
+    start,
+  );
+  const body = source.slice(start, end);
+  const prepare = body.indexOf(
+    "prepareProductionPhalaSevenCvmHistoricalTranscriptPersistence({",
+  );
+  const fullLineage = body.indexOf(
+    "externalAuthorityFromDependencies(dependencies, {",
+  );
+  const firstDurableWrite = body.indexOf(
+    "persistPreparedProductionPhalaSevenCvmHistoricalTranscriptFiles({",
+  );
+  const deterministicFinalization = body.indexOf(
+    "createBrandedCompletionFromExpectedAuthority(expected)",
+  );
+  assert.ok(prepare >= 0);
+  assert.ok(fullLineage > prepare);
+  assert.ok(firstDurableWrite > fullLineage);
+  assert.ok(deterministicFinalization > firstDurableWrite);
+  const postPersistence = body.slice(firstDurableWrite);
+  assert.doesNotMatch(
+    postPersistence,
+    /externalAuthorityFromDependencies|assertFreshProduction|Date\.now|await /,
+  );
+  assert.match(postPersistence, /explicit recovery is required/);
 });
 
 test("exact-37 historical reconstruction binds persisted L and executor to R without refreshing freshness", async () => {

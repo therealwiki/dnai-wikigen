@@ -4,7 +4,7 @@ import {
   executionPolicyReviewerHash,
   executionPolicyReviewerRootHash,
   reviewerSetSha256,
-} from "./release-authority-signature-verifier.mjs";
+} from "./release-authority-signature-verifier-core.mjs";
 
 export const RELEASE_REVIEWER_AUTHORITY_GENESIS_SCHEMA =
   "dnai.release-reviewer-authority-genesis.v2";

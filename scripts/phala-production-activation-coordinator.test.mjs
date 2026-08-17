@@ -50,6 +50,7 @@ const scenario = process.env.COORDINATOR_RECOVERY_SCENARIO;
 assert.ok([
   "different-second-retry",
   "partial-lock",
+  "postpersist-facade-failure",
   "wrong-proof-array",
 ].includes(scenario));
 const moduleUrl = (basename) => pathToFileURL(
@@ -151,7 +152,7 @@ await mockWithOriginalExports("cvm-launch-intent-core.mjs", {
     freshContractDeploymentReceiptDigest() { return freshReceiptBare; },
   },
 });
-await mockWithOriginalExports("cvm-release-descriptor-set.mjs", {
+await mockWithOriginalExports("cvm-release-descriptor-set-v3.mjs", {
   namedExports: {
     normalizeCvmReleaseDescriptorSetReceipt(value) { return value; },
     canonicalCvmReleaseDescriptorSetReceiptText(value) {
@@ -373,6 +374,9 @@ await mockWithOriginalExports("phala-seven-cvm-launch-completion.mjs", {
       persistCalls += 1;
       const digest = evidenceDigest(options.verifiedEvidenceSet);
       persistedTranscript = Object.freeze({ evidence_digest: digest });
+      if (scenario === "postpersist-facade-failure") {
+        throw new Error("forced failure after durable transcript commit before L return");
+      }
       return completionFor(digest);
     },
     createPhalaSevenCvmLaunchCompletionReceipt(options) {
@@ -984,6 +988,26 @@ test("a bubbled postlaunch resume failure burns capability and evidence session"
   assert.equal(result.persistCalls, 1);
   assert.equal(result.loadCalls, 1);
   assert.equal(result.reconstructedCompletionCalls, 0);
+  assert.equal(result.downstreamProjectionCalls, 1);
+  assert.equal(result.capabilityConsumeCalls, 1);
+  assert.equal(result.stageAFacadeCalls, 1);
+  assert.equal(result.stageBFacadeCalls, 1);
+  assert.deepEqual(result.authorityEvents, [
+    "reviewed-deployment-intent",
+    "stage-a",
+    "stage-b",
+    "deferred-projection",
+  ]);
+  assert.equal(result.closedPinnedHandles, 1);
+});
+
+test("a post-persist facade failure reconstructs L from the exact durable manifest", async () => {
+  const result = await runRecoveryHarness("postpersist-facade-failure");
+  assert.equal(result.evidenceFactoryCalls, 1);
+  assert.ok(result.evidenceFreshnessAssertions >= 2);
+  assert.equal(result.persistCalls, 1);
+  assert.equal(result.loadCalls, 2);
+  assert.equal(result.reconstructedCompletionCalls, 1);
   assert.equal(result.downstreamProjectionCalls, 1);
   assert.equal(result.capabilityConsumeCalls, 1);
   assert.equal(result.stageAFacadeCalls, 1);

@@ -260,18 +260,21 @@ The intent contains only facts available before deployment:
   complete guardian-signed successor lineage used at Stage B;
 - the canonical seven-contract and seven-CVM scope;
 - the encrypted Foundry `dev` deployment operator and public controller ID;
+- the exact immutable `DiligenceRoom` release-governance controller;
 - the exact immutable `ComputeCreditVault` developer address;
 - the exact immutable `TinkerAccountEncumbrance` account commitment;
 - contract, QVL, and independent-metering numeric policy.
 
 The static constructor inputs live at
-`staticContractInputs.computeCreditVault.developer` and
+`staticContractInputs.diligenceRoom.governanceController`,
+`staticContractInputs.computeCreditVault.developer`, and
 `staticContractInputs.tinkerAccountEncumbrance.accountCommitment`. The former
-must be a lowercase nonzero Ethereum address; the latter must be a lowercase
-nonzero `0x`-prefixed bytes32. They are reviewed before broadcast because the
+two must be distinct lowercase nonzero Ethereum addresses and also distinct
+from the deployment operator; the latter must be a lowercase nonzero
+`0x`-prefixed bytes32. They are reviewed before broadcast because the
 deployed contracts cannot honestly recover or replace an omitted constructor
-choice later. The validation receipt records `staticContractInputCount: 2`
-without echoing either value.
+choice later. The validation receipt records `staticContractInputCount: 3`
+without echoing any value.
 
 `dynamicRuntimeAuthorities` contains five explicit empty arrays:
 
@@ -294,6 +297,8 @@ exist, build the immutable pre-Phala authority:
 node scripts/cvm-launch-intent.mjs build \
   --topology "$PWD/.release/dnai-cvm-topology.json" \
   --ledger "$PWD/deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json" \
+  --tinker-account-binding-ceremony-receipt-sha256 \
+  "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
   --out "$PWD/.release/cvm-launch-intent-core.json" \
   --contract-receipt-out "$PWD/.release/fresh-contract-deployment-receipt.json"
 

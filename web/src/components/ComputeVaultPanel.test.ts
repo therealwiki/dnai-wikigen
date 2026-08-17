@@ -48,6 +48,24 @@ function authorizationFingerprint(overrides: {
 }
 
 describe("Compute vault async UI attribution", () => {
+  it("exposes the capacity asset picker as a pressed-button group, not a tab interface", () => {
+    expect(panelSource).toContain(
+      'class="vault-asset-tabs" role="group" aria-label="Capacity asset"',
+    );
+    expect(panelSource).toContain(
+      'aria-pressed={assetKind() === "native"}',
+    );
+    expect(panelSource).toContain(
+      'aria-pressed={assetKind() === "erc20"}',
+    );
+    expect(panelSource).not.toContain(
+      'class="vault-asset-tabs" role="tablist"',
+    );
+    expect(panelSource).not.toMatch(
+      /class="vault-asset-tabs"[\s\S]{0,500}\brole="tab"/,
+    );
+  });
+
   it("exposes sponsor recipients, nonce invalidation, and role accrual claims without broadening assets", () => {
     expect(panelSource).toContain("Capacity beneficiary");
     expect(panelSource).toContain("PAYER · SIGNS &amp; SPENDS");

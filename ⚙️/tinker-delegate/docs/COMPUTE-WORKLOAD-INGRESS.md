@@ -39,9 +39,14 @@ no raw prompt, examples, dataset, or model-output route.
 9. Retain an unresolved prepared ciphertext request only in memory. An
    uncertain network retry must reuse byte-identical ciphertext and the same
    idempotency key; rebuilding with a new blind would correctly conflict.
-10. Parse the ciphertext-free receipt and pass only `workload_id`,
-    `workload_schema`, `manifest_commitment`, and `workload_commitment` into the
-    exact-asset dispatch intent.
+10. Parse the ciphertext-free v2 receipt and retain its complete public
+    authorization handoff: `workload_id`, `workload_schema`, manifest and
+    workload commitments, immutable `source_kind`,
+    `dnai.compute.workload-execution-binding.v1` commitment, and stable
+    recipient-release commitment. The wallet signs an exact dispatch-intent v3
+    commitment over all of those fields; the API independently reconstructs
+    the same tuple from authenticated custody rather than trusting browser
+    copies.
 
 The SolidJS/browser implementation is frozen in
 `web/src/lib/computeWorkload.ts`. The shared Python/TypeScript canonicalization
@@ -165,6 +170,40 @@ The `/attestation?context=compute_workload` response is producer evidence only
 and always returns `verified: false`; it must never be presented as independent
 Intel TDX verification.
 
+## Immutable source and wallet adoption
+
+The public upload receipt is schema version 2 and the authenticated workload
+index is schema version 2. Each record permanently distinguishes a
+wallet-originated upload from a credential-originated upload. That source is
+part of the execution-binding commitment and cannot be rewritten when a wallet
+later funds execution.
+
+A purpose-scoped device credential may upload ciphertext, but it never receives
+onchain spending authority. When the measured production release enables
+credential adoption, a current project owner, admin, or developer may attach
+the exact credential-originated ciphertext to their own independently
+authorized `ComputeCreditVault` job. Viewers, outsiders, a credential bearer,
+and members of another project cannot adopt it. A wallet-originated upload is
+more restrictive: only its original uploader wallet may fund it until a future
+signed transfer protocol exists.
+
+Adoption is at most once. The execution journal first durably records a
+non-actionable `workload_claim_pending` intent, the ingress index then moves the
+exact ciphertext from `sealed` to `dispatch_claimed`, and the journal finally
+confirms the `dnai.compute.workload-dispatch-claim.v1` commitment. Recovery
+replays this same three-part tuple after either crash window; a different job,
+wallet, intent, source, execution binding, or recipient release conflicts.
+Public metadata labels the claimed state `claimed_by_wallet_dispatch`, reports
+the funding authority as `onchain_wallet_job`, preserves the original source,
+and continues to state `device_spending_authority: false`.
+
+The claim does not prove that a provider accepted work. It only closes local
+double adoption and makes the authenticated journal actionable. No automatic
+redispatch is allowed. If a provider response is inconclusive after the
+at-most-once attempt checkpoint, the ciphertext remains encrypted and retained
+for separately attested reconciliation; neither an operator nor the browser may
+open it for plaintext review.
+
 ## Durable custody and one-shot execution
 
 The store uses directory-FD-anchored, no-follow file operations, authenticated
@@ -179,24 +218,29 @@ full release lineage, measurement-policy-set and main-runtime-evidence digests,
 compose hash, app ID, OS image hash, release policy, QVL verifier, verification
 method, execution signer, chain, and contract. The upload-time activation
 commitment remains immutable proof of the historical quote; a refreshed quote
-may differ without weakening the stable release comparison. Execution then
-moves the authenticated record through
-`sealed -> deleting`, durably removes the ciphertext before provider use,
-decrypts and validates the private frame inside the CVM, yields only the
-stripped private payload buffer to the future compiled recipe, and then
-zeroizes both private payload and sealed-frame buffers. Explicit user deletion
-uses the same durable consume path and never returns ciphertext.
+may differ without weakening the stable release comparison. Execution opens a
+non-destructive authenticated lease, decrypts and validates the private frame
+inside the CVM, yields only the stripped private payload buffer to the compiled
+recipe, and then zeroizes both private payload and sealed-frame buffers. The
+sealed ciphertext remains durable across the provider attempt. It is erased
+only after a conclusive bounded-usage checkpoint; an inconclusive post-boundary
+outcome retains it for separately attested reconciliation. Explicit user
+deletion and pre-start dispatch cancellation use domain-separated durable
+release checkpoints and never return ciphertext.
 
 ## Still intentionally unavailable
 
 - No provider API call is made by ingress.
-- The public capability and every receipt keep
-  `provider_dispatch_enabled: false`.
-- The Tinker adapter remains unavailable until the separately documented
-  restart/idempotency conformance gate is satisfied.
+- Ingress capability and upload receipts never claim provider dispatch. The
+  separately compiled provider adapter is activation-gated by its exact release
+  pins and a fresh authenticated worker heartbeat.
+- The adapter claims an at-most-once local attempt checkpoint, not upstream
+  provider idempotent replay. Ambiguous outcomes are terminal and are never
+  automatically redispatched.
 - The final Base Sepolia job authorization must sign both exact workload and
-  manifest commitments, or sign the exact dispatch-intent commitment that
-  transitively includes them. UI/API fields alone are not an onchain binding.
+  manifest commitments plus the exact dispatch-intent v3 commitment that
+  transitively includes the source, execution binding, recipient release, and
+  authorization context. UI/API fields alone are not an onchain binding.
 - The Compute ciphertext-upload route is capped at 1,425,408 request bytes by
   the shared ASGI pre-buffer body-limit policy. Declared oversize bodies,
   missing or false `Content-Length`, and chunked over-limit bodies fail before

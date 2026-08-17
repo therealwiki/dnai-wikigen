@@ -1,7 +1,9 @@
+import base64
 import hashlib
 import json
 import os
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,6 +23,8 @@ from tinker_delegate.arena_store import (
     ArenaStore,
     ArenaStoreCorruptError,
     ArenaStoreError,
+    CiphertextEvidence,
+    CiphertextState,
     ExecutionCapability,
     ExecutionProvenance,
     QueueReason,
@@ -37,6 +41,7 @@ WALLET_A = "0x" + "ab" * 20
 WALLET_B = "0x" + "cd" * 20
 PROJECT_A = "wallet:" + "ab" * 20
 PROJECT_B = "wallet:" + "cd" * 20
+ARENA_STORE_KEY = b"a" * 32
 
 
 def _challenge():
@@ -78,6 +83,20 @@ def _dnaseq_manifest(*, source_bytes: int = 128):
 
 def _commitment(label: str) -> str:
     return "sha256:" + hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _write_canonical_json(path: Path, payload: object) -> None:
+    path.write_text(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _submit(
@@ -183,6 +202,16 @@ def _assert_no_public_timing(test: unittest.TestCase, value) -> None:
             _assert_no_public_timing(test, child)
 
 
+def _decode_public_cursor_for_test(cursor: str) -> dict:
+    """Inspect the test token only to assert its privacy contract."""
+
+    prefix, body, checksum = cursor.split(".")
+    if prefix != "arena_page_v1" or len(checksum) != 64:
+        raise AssertionError("unexpected public cursor envelope")
+    raw = base64.urlsafe_b64decode(body + ("=" * (-len(body) % 4)))
+    return json.loads(raw.decode("ascii"))
+
+
 class ArenaCatalogTest(unittest.TestCase):
     def test_default_catalog_has_modeled_python_preview_and_dnaseq_safe_ir(self):
         catalog = default_challenge_catalog().to_public_dict()
@@ -263,7 +292,7 @@ class ArenaSubmissionBoundaryTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tempdir.name) / "arena.json"
-        self.store = ArenaStore(self.path)
+        self.store = ArenaStore(self.path, integrity_key=ARENA_STORE_KEY)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -274,6 +303,19 @@ class ArenaSubmissionBoundaryTest(unittest.TestCase):
 
         public = self.store.public_submission(result.submission.submission_id)
         owner = self.store.owner_submission(result.submission.submission_id)
+        with self.assertRaisesRegex(ArenaStoreError, "durable worker claim"):
+            self.store.worker_submission(result.submission.submission_id)
+        for state, reason, occurred_at in (
+            (QueueState.POLICY_SCREEN, QueueReason.POLICY_CHECK_STARTED, 101),
+            (QueueState.QUEUED, QueueReason.POLICY_PASSED, 102),
+            (QueueState.PROVISIONING, QueueReason.WORKER_CLAIMED, 103),
+        ):
+            self.store.transition_submission(
+                result.submission.submission_id,
+                state,
+                reason=reason,
+                occurred_at=occurred_at,
+            )
         worker = self.store.worker_submission(result.submission.submission_id)
         persisted_text = self.path.read_text(encoding="utf-8")
         public_text = json.dumps(public, sort_keys=True)
@@ -515,14 +557,151 @@ class ArenaSubmissionBoundaryTest(unittest.TestCase):
         self.assertEqual(len({result.submission.submission_id for result in results}), 1)
         queue = self.store.public_queue(BIO_CHALLENGE_ID, BIO_CHALLENGE_VERSION)
         self.assertEqual(queue["submission_count"], 1)
-        ArenaStore(self.path)  # A fresh loader sees one valid durable record.
+        ArenaStore(
+            self.path, integrity_key=ARENA_STORE_KEY
+        )  # A fresh loader sees one valid durable record.
+
+    def test_owner_cancel_wins_before_claim_and_cleanup_receipt_is_idempotent(self):
+        submission = _submit_dnaseq(self.store, "cancel-wins").submission
+
+        cancelled = self.store.cancel_owner_submission(
+            submission.submission_id,
+            wallet_address=WALLET_A,
+            challenge_id=DNASEQ_SAFE_IR_CHALLENGE_ID,
+            challenge_version=DNASEQ_SAFE_IR_CHALLENGE_VERSION,
+            occurred_at=101,
+        )
+
+        self.assertTrue(cancelled.changed)
+        self.assertEqual(cancelled.submission.state, QueueState.CANCELLED)
+        self.assertEqual(
+            cancelled.submission.ciphertext_state,
+            CiphertextState.ERASURE_PENDING,
+        )
+        with self.assertRaisesRegex(ArenaStoreError, "not ready"):
+            self.store.claim_safe_ir_submission(
+                submission.submission_id,
+                occurred_at=102,
+            )
+        with self.assertRaisesRegex(ArenaStoreError, "durable worker claim"):
+            self.store.worker_submission(submission.submission_id)
+
+        retryable = self.store.record_ciphertext_erasure(
+            submission.submission_id,
+            evidence=CiphertextEvidence.UNLINK_FAILED,
+            occurred_at=102,
+        )
+        self.assertEqual(
+            retryable.ciphertext_state,
+            CiphertextState.ERASURE_RETRY_REQUIRED,
+        )
+        self.assertEqual(
+            [item.submission_id for item in self.store.ciphertext_cleanup_candidates()],
+            [submission.submission_id],
+        )
+        unlinked = self.store.record_ciphertext_erasure(
+            submission.submission_id,
+            evidence=CiphertextEvidence.DIRECTORY_ENTRY_ABSENT,
+            occurred_at=103,
+        )
+        self.assertEqual(unlinked.ciphertext_state, CiphertextState.UNLINKED)
+        self.assertEqual(unlinked.ciphertext_erase_attempts, 2)
+        replay = self.store.record_ciphertext_erasure(
+            submission.submission_id,
+            evidence=CiphertextEvidence.DIRECTORY_ENTRY_ABSENT,
+            occurred_at=104,
+        )
+        self.assertEqual(replay, unlinked)
+        self.assertEqual(self.store.ciphertext_cleanup_candidates(), ())
+        owner = self.store.owner_submission(submission.submission_id)
+        self.assertFalse(owner["owner_actions"]["can_cancel"])
+        self.assertFalse(owner["owner_actions"]["can_retry_ciphertext_erasure"])
+        self.assertFalse(
+            owner["ciphertext_lifecycle"]["physical_erasure_claimed"]
+        )
+
+    def test_worker_claim_wins_before_owner_cancel_and_keeps_ciphertext_available(self):
+        submission = _submit_dnaseq(self.store, "claim-wins").submission
+
+        claimed = self.store.claim_safe_ir_submission(
+            submission.submission_id,
+            occurred_at=101,
+        )
+
+        self.assertFalse(claimed.recovered)
+        self.assertIsNotNone(claimed.submission.worker_claimed_at)
+        with self.assertRaisesRegex(ArenaStoreError, "durably claimed"):
+            self.store.cancel_owner_submission(
+                submission.submission_id,
+                wallet_address=WALLET_A,
+                challenge_id=DNASEQ_SAFE_IR_CHALLENGE_ID,
+                challenge_version=DNASEQ_SAFE_IR_CHALLENGE_VERSION,
+                occurred_at=102,
+            )
+        worker = self.store.worker_submission(submission.submission_id)
+        self.assertEqual(
+            worker["encrypted_reference"],
+            submission.encrypted_reference,
+        )
+        owner = self.store.owner_submission(submission.submission_id)
+        self.assertFalse(owner["owner_actions"]["can_cancel"])
+        self.assertEqual(
+            owner["ciphertext_lifecycle"]["state"],
+            CiphertextState.RETAINED.value,
+        )
+
+    def test_concurrent_owner_cancel_and_worker_claim_have_one_durable_winner(self):
+        submission = _submit_dnaseq(self.store, "atomic-claim-cancel").submission
+        first = ArenaStore(self.path, integrity_key=ARENA_STORE_KEY)
+        second = ArenaStore(self.path, integrity_key=ARENA_STORE_KEY)
+        barrier = threading.Barrier(2)
+
+        def cancel():
+            barrier.wait()
+            try:
+                first.cancel_owner_submission(
+                    submission.submission_id,
+                    wallet_address=WALLET_A,
+                    challenge_id=DNASEQ_SAFE_IR_CHALLENGE_ID,
+                    challenge_version=DNASEQ_SAFE_IR_CHALLENGE_VERSION,
+                    occurred_at=101,
+                )
+                return "cancelled"
+            except ArenaStoreError:
+                return "cancel_rejected"
+
+        def claim():
+            barrier.wait()
+            try:
+                second.claim_safe_ir_submission(
+                    submission.submission_id,
+                    occurred_at=101,
+                )
+                return "claimed"
+            except ArenaStoreError:
+                return "claim_rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cancel_future = pool.submit(cancel)
+            claim_future = pool.submit(claim)
+            outcomes = {cancel_future.result(), claim_future.result()}
+
+        durable = ArenaStore(
+            self.path, integrity_key=ARENA_STORE_KEY
+        ).get_submission(submission.submission_id)
+        if durable.state == QueueState.CANCELLED:
+            self.assertEqual(outcomes, {"cancelled", "claim_rejected"})
+            self.assertIsNone(durable.worker_claimed_at)
+        else:
+            self.assertEqual(outcomes, {"claimed", "cancel_rejected"})
+            self.assertIsNotNone(durable.worker_claimed_at)
 
 
 class ArenaQueueAndLeaderboardTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tempdir.name) / "arena.json"
-        self.store = ArenaStore(self.path)
+        self.store = ArenaStore(self.path, integrity_key=ARENA_STORE_KEY)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -633,11 +812,280 @@ class ArenaQueueAndLeaderboardTest(unittest.TestCase):
         _assert_no_public_timing(self, board)
         _assert_no_float(self, board)
 
-        reloaded = ArenaStore(self.path)
+        reloaded = ArenaStore(self.path, integrity_key=ARENA_STORE_KEY)
         self.assertEqual(
             reloaded.public_leaderboard(BIO_CHALLENGE_ID, BIO_CHALLENGE_VERSION),
             board,
         )
+
+    def test_public_queue_cursor_is_stable_scoped_private_and_fail_closed(self):
+        submissions = [
+            _submit(self.store, "page-old", submitted_at=100).submission,
+            _submit(
+                self.store,
+                "page-new-a",
+                wallet=WALLET_B,
+                project_id=PROJECT_B,
+                submitted_at=200,
+            ).submission,
+            _submit(
+                self.store,
+                "page-new-b",
+                wallet="0x" + "ef" * 20,
+                project_id="wallet:" + "ef" * 20,
+                submitted_at=200,
+            ).submission,
+        ]
+        expected = [
+            record.submission_id
+            for record in sorted(
+                submissions,
+                key=lambda item: (-item.created_at, item.submission_id),
+            )
+        ]
+
+        first = self.store.public_queue(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+        )
+        self.assertEqual(first["submission_count"], 1)
+        self.assertTrue(first["has_more"])
+        self.assertIsInstance(first["next_cursor"], str)
+        cursor = first["next_cursor"]
+        cursor_payload = _decode_public_cursor_for_test(cursor)
+        self.assertEqual(
+            set(cursor_payload),
+            {
+                "version",
+                "surface",
+                "challenge_id",
+                "challenge_version",
+                "anchor_submission_id",
+                "order_sha256",
+            },
+        )
+        self.assertEqual(cursor_payload["surface"], "queue")
+        self.assertEqual(cursor_payload["challenge_id"], BIO_CHALLENGE_ID)
+        self.assertEqual(
+            cursor_payload["challenge_version"],
+            BIO_CHALLENGE_VERSION,
+        )
+        self.assertEqual(
+            cursor_payload["anchor_submission_id"],
+            expected[0],
+        )
+        self.assertTrue(
+            {
+                "created_at",
+                "updated_at",
+                "occurred_at",
+                "ladder_released_at",
+                "wallet_address",
+                "project_id",
+                "identity",
+                "encrypted_reference",
+                "score",
+                "reward",
+            }.isdisjoint(cursor_payload)
+        )
+
+        second = self.store.public_queue(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+            cursor=cursor,
+        )
+        third = self.store.public_queue(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+            cursor=second["next_cursor"],
+        )
+        ids = [
+            first["submissions"][0]["submission_id"],
+            second["submissions"][0]["submission_id"],
+            third["submissions"][0]["submission_id"],
+        ]
+        self.assertEqual(ids, expected)
+        self.assertTrue(second["has_more"])
+        self.assertFalse(third["has_more"])
+        self.assertIsNone(third["next_cursor"])
+
+        rendered = json.dumps([first, second, third], sort_keys=True)
+        for forbidden in (
+            WALLET_A,
+            WALLET_B,
+            "0x" + "ef" * 20,
+            "sealed://",
+            "encrypted_reference\"",
+            "created_at",
+            "updated_at",
+            "occurred_at",
+            "ladder_released_at",
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+        with self.assertRaisesRegex(ArenaStoreError, "outside this challenge"):
+            self.store.public_queue(
+                DNASEQ_SAFE_IR_CHALLENGE_ID,
+                DNASEQ_SAFE_IR_CHALLENGE_VERSION,
+                limit=1,
+                cursor=cursor,
+            )
+        with self.assertRaisesRegex(ArenaStoreError, "outside this surface"):
+            self.store.public_leaderboard(
+                BIO_CHALLENGE_ID,
+                BIO_CHALLENGE_VERSION,
+                limit=1,
+                cursor=cursor,
+            )
+        tampered = cursor[:-1] + ("0" if cursor[-1] != "0" else "1")
+        with self.assertRaisesRegex(ArenaStoreError, "malformed"):
+            self.store.public_queue(
+                BIO_CHALLENGE_ID,
+                BIO_CHALLENGE_VERSION,
+                limit=1,
+                cursor=tampered,
+            )
+        for invalid_limit in (0, 101):
+            with self.subTest(invalid_limit=invalid_limit):
+                with self.assertRaises(ArenaStoreError):
+                    self.store.public_queue(
+                        BIO_CHALLENGE_ID,
+                        BIO_CHALLENGE_VERSION,
+                        limit=invalid_limit,
+                    )
+
+        _submit(self.store, "page-new-snapshot", submitted_at=300)
+        with self.assertRaisesRegex(ArenaStoreError, "stale"):
+            self.store.public_queue(
+                BIO_CHALLENGE_ID,
+                BIO_CHALLENGE_VERSION,
+                limit=1,
+                cursor=cursor,
+            )
+
+    def test_public_leaderboard_pagination_preserves_global_rank_and_snapshot(self):
+        def accepted_row(
+            label: str,
+            *,
+            wallet: str,
+            project_id: str,
+            submitted_at: int,
+            score: float,
+        ) -> str:
+            submission = _submit(
+                self.store,
+                label,
+                wallet=wallet,
+                project_id=project_id,
+                submitted_at=submitted_at,
+            ).submission
+            _advance_to_sealed_eval(
+                self.store,
+                submission.submission_id,
+                start=submitted_at,
+            )
+            release = self.store.evaluate_ladder_submission(
+                submission.submission_id,
+                score,
+                occurred_at=submitted_at + 6,
+            )
+            self.assertTrue(release["accepted"])
+            self.store.transition_submission(
+                submission.submission_id,
+                QueueState.COMPLETED,
+                reason=QueueReason.EVALUATION_COMPLETED,
+                occurred_at=submitted_at + 7,
+            )
+            return submission.submission_id
+
+        low = accepted_row(
+            "page-rank-low",
+            wallet="0x" + "01" * 20,
+            project_id="team-1",
+            submitted_at=100,
+            score=0.2,
+        )
+        middle = accepted_row(
+            "page-rank-middle",
+            wallet="0x" + "02" * 20,
+            project_id="team-2",
+            submitted_at=200,
+            score=0.4,
+        )
+        high = accepted_row(
+            "page-rank-high",
+            wallet="0x" + "03" * 20,
+            project_id="team-3",
+            submitted_at=300,
+            score=0.6,
+        )
+
+        first = self.store.public_leaderboard(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+        )
+        second = self.store.public_leaderboard(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+            cursor=first["next_cursor"],
+        )
+        third = self.store.public_leaderboard(
+            BIO_CHALLENGE_ID,
+            BIO_CHALLENGE_VERSION,
+            limit=1,
+            cursor=second["next_cursor"],
+        )
+        self.assertEqual(
+            [
+                first["rows"][0]["submission_id"],
+                second["rows"][0]["submission_id"],
+                third["rows"][0]["submission_id"],
+            ],
+            [high, middle, low],
+        )
+        self.assertEqual(
+            [
+                first["rows"][0]["rank"],
+                second["rows"][0]["rank"],
+                third["rows"][0]["rank"],
+            ],
+            [1, 2, 3],
+        )
+        self.assertTrue(first["has_more"])
+        self.assertTrue(second["has_more"])
+        self.assertFalse(third["has_more"])
+        self.assertIsNone(third["next_cursor"])
+        _assert_no_public_timing(self, [first, second, third])
+        _assert_no_float(self, [first, second, third])
+
+        cursor = first["next_cursor"]
+        accepted_row(
+            "page-rank-new-best",
+            wallet="0x" + "04" * 20,
+            project_id="team-4",
+            submitted_at=400,
+            score=0.8,
+        )
+        with self.assertRaisesRegex(ArenaStoreError, "stale"):
+            self.store.public_leaderboard(
+                BIO_CHALLENGE_ID,
+                BIO_CHALLENGE_VERSION,
+                limit=1,
+                cursor=cursor,
+            )
+        for invalid_limit in (0, 101):
+            with self.subTest(invalid_limit=invalid_limit):
+                with self.assertRaises(ArenaStoreError):
+                    self.store.public_leaderboard(
+                        BIO_CHALLENGE_ID,
+                        BIO_CHALLENGE_VERSION,
+                        limit=invalid_limit,
+                    )
 
     def test_record_ladder_release_validates_order_denominator_and_counters(self):
         submission = _submit(self.store, "strict-release").submission
@@ -717,7 +1165,9 @@ class ArenaQueueAndLeaderboardTest(unittest.TestCase):
         self.assertEqual(board["rows"][0]["product_status"], "live")
         self.assertEqual(board["rows"][0]["execution_provenance"], evidence)
         self.assertEqual(
-            ArenaStore(self.path).public_submission(submission.submission_id),
+            ArenaStore(
+                self.path, integrity_key=ARENA_STORE_KEY
+            ).public_submission(submission.submission_id),
             public,
         )
 
@@ -794,15 +1244,38 @@ class ArenaQueueAndLeaderboardTest(unittest.TestCase):
 
 
 class ArenaPersistenceTest(unittest.TestCase):
+    def test_integrity_key_is_required_and_fresh_store_has_exact_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "arena.json"
+            with self.assertRaisesRegex(ArenaStoreError, "at least 32 bytes"):
+                ArenaStore(path, integrity_key=b"short")
+
+            ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+            root = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(root),
+                {"surface", "schema_version", "payload", "integrity"},
+            )
+            self.assertEqual(root["schema_version"], 4)
+            self.assertEqual(
+                set(root["integrity"]),
+                {"schema", "algorithm", "key_id", "value"},
+            )
+            self.assertEqual(
+                root["integrity"]["schema"],
+                "dnai.arena-store-integrity.v1",
+            )
+            self.assertEqual(root["integrity"]["algorithm"], "HMAC-SHA256")
+
     def test_round_trip_preserves_owner_and_public_projections(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "arena.json"
-            store = ArenaStore(path)
+            store = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
             submission = _submit(store, "round-trip").submission
             before_public = store.public_submission(submission.submission_id)
             before_owner = store.owner_submission(submission.submission_id)
 
-            loaded = ArenaStore(path)
+            loaded = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
 
             self.assertEqual(loaded.public_submission(submission.submission_id), before_public)
             self.assertEqual(loaded.owner_submission(submission.submission_id), before_owner)
@@ -811,7 +1284,7 @@ class ArenaPersistenceTest(unittest.TestCase):
     def test_atomic_write_failure_does_not_mutate_memory_or_disk(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "arena.json"
-            store = ArenaStore(path)
+            store = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
             original = path.read_bytes()
             with patch(
                 "tinker_delegate.arena_store.os.replace",
@@ -831,7 +1304,11 @@ class ArenaPersistenceTest(unittest.TestCase):
 
     def test_store_count_limit_is_enforced(self):
         with tempfile.TemporaryDirectory() as directory:
-            store = ArenaStore(Path(directory) / "arena.json", max_submissions=1)
+            store = ArenaStore(
+                Path(directory) / "arena.json",
+                integrity_key=ARENA_STORE_KEY,
+                max_submissions=1,
+            )
             _submit(store, "first")
             with self.assertRaisesRegex(ArenaStoreError, "store is full"):
                 _submit(
@@ -854,7 +1331,90 @@ class ArenaPersistenceTest(unittest.TestCase):
                     path = Path(directory) / "arena.json"
                     path.write_bytes(document)
                     with self.assertRaises(ArenaStoreCorruptError):
-                        ArenaStore(path)
+                        ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+    def test_wrong_key_tamper_truncation_duplicate_fields_and_mixed_schema_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "arena.json"
+            ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+            original = path.read_bytes()
+
+            with self.assertRaises(ArenaStoreCorruptError):
+                ArenaStore(path, integrity_key=b"w" * 32)
+
+            tampered = json.loads(original)
+            tampered["payload"]["raw_candidate_persisted"] = True
+            _write_canonical_json(path, tampered)
+            with self.assertRaises(ArenaStoreCorruptError):
+                ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+            path.write_bytes(original[:-12])
+            with self.assertRaises(ArenaStoreCorruptError):
+                ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+            duplicate_documents = (
+                original.replace(
+                    b'"algorithm":"HMAC-SHA256","key_id":',
+                    b'"algorithm":"HMAC-SHA256","algorithm":"HMAC-SHA256","key_id":',
+                    1,
+                ),
+                original.replace(
+                    b'"raw_candidate_persisted":false,"submissions":',
+                    b'"raw_candidate_persisted":false,"raw_candidate_persisted":false,"submissions":',
+                    1,
+                ),
+                original.replace(
+                    b'"schema_version":4,"surface":"arena_store"',
+                    b'"schema_version":4,"schema_version":4,"surface":"arena_store"',
+                    1,
+                ),
+            )
+            for duplicate in duplicate_documents:
+                with self.subTest(duplicate=duplicate[:80]):
+                    self.assertNotEqual(duplicate, original)
+                    path.write_bytes(duplicate)
+                    with self.assertRaises(ArenaStoreCorruptError):
+                        ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+            mixed = json.loads(original)
+            mixed["payload"]["schema_version"] = 3
+            _write_canonical_json(path, mixed)
+            with self.assertRaises(ArenaStoreCorruptError):
+                ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+            legacy_flat = {
+                "surface": "arena_store",
+                "schema_version": 3,
+                **json.loads(original)["payload"],
+            }
+            _write_canonical_json(path, legacy_flat)
+            with self.assertRaises(ArenaStoreCorruptError):
+                ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+
+    def test_hmac_integrity_is_explicitly_not_an_anti_rollback_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "arena.json"
+            store = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+            older_valid_envelope = path.read_bytes()
+            _submit(store, "newer-state")
+            self.assertEqual(
+                store.public_queue(BIO_CHALLENGE_ID, BIO_CHALLENGE_VERSION)[
+                    "submission_count"
+                ],
+                1,
+            )
+
+            # A volume-level rollback can restore an older envelope whose HMAC
+            # is still valid. This test prevents the integrity layer from ever
+            # being misdescribed as an external monotonic high-water mark.
+            path.write_bytes(older_valid_envelope)
+            replayed = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
+            self.assertEqual(
+                replayed.public_queue(BIO_CHALLENGE_ID, BIO_CHALLENGE_VERSION)[
+                    "submission_count"
+                ],
+                0,
+            )
 
     def test_tampered_catalog_or_raw_candidate_marker_fails_closed(self):
         mutators = (
@@ -870,12 +1430,12 @@ class ArenaPersistenceTest(unittest.TestCase):
             with self.subTest(mutator=mutator):
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "arena.json"
-                    ArenaStore(path)
+                    ArenaStore(path, integrity_key=ARENA_STORE_KEY)
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                    mutator(payload)
-                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    mutator(payload["payload"])
+                    _write_canonical_json(path, payload)
                     with self.assertRaises(ArenaStoreCorruptError):
-                        ArenaStore(path)
+                        ArenaStore(path, integrity_key=ARENA_STORE_KEY)
 
     def test_tampered_submission_or_idempotency_hash_fails_closed(self):
         mutators = (
@@ -893,13 +1453,13 @@ class ArenaPersistenceTest(unittest.TestCase):
             with self.subTest(mutator=mutator):
                 with tempfile.TemporaryDirectory() as directory:
                     path = Path(directory) / "arena.json"
-                    store = ArenaStore(path)
+                    store = ArenaStore(path, integrity_key=ARENA_STORE_KEY)
                     _submit(store, "tamper")
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                    mutator(payload)
-                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    mutator(payload["payload"])
+                    _write_canonical_json(path, payload)
                     with self.assertRaises(ArenaStoreCorruptError):
-                        ArenaStore(path)
+                        ArenaStore(path, integrity_key=ARENA_STORE_KEY)
 
 
 if __name__ == "__main__":

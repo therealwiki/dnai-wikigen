@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
+import re
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
 from tinker_delegate.execution_policy_release_core import (
     FINAL_RELEASE_AUTHORITY_CORE_DOMAIN,
     FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+    FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN,
+    FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
     MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES,
     FinalReleaseAuthorityCoreValidationError,
+    canonical_historical_final_release_authority_core_v2_bytes,
     canonical_final_release_authority_core_bytes,
     diligence_evaluator_policy_set_root,
     final_release_authority_core_digest,
+    historical_final_release_authority_core_v2_digest,
+    normalize_historical_final_release_authority_core_v2,
     normalize_final_release_authority_core,
     EXECUTION_POLICY_RELEASE_CORE_DOMAIN,
     EXECUTION_POLICY_RELEASE_CORE_SCHEMA,
@@ -24,8 +32,31 @@ from tinker_delegate.execution_policy_release_core import (
     normalize_execution_policy_release_core,
 )
 
-KNOWN_VECTOR_ID = "dnai.final-release-authority-core.v2/known-answer-1"
-KNOWN_DIGEST = "d1bab06a461597c4b0d12d9bbf50ea37549c2023b8c37b3e8ef7638b8c874fce"
+SHARED_V3_FIXTURE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "scripts"
+    / "execution-policy-release-core-v3-historical.fixture.mjs"
+)
+SHARED_V3_FIXTURE_SOURCE = SHARED_V3_FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+def _shared_v3_fixture_string_export(name: str) -> str:
+    matches = re.findall(
+        rf'export const {re.escape(name)} =\s*"([^"]+)";',
+        SHARED_V3_FIXTURE_SOURCE,
+    )
+    assert len(matches) == 1
+    return matches[0]
+
+
+KNOWN_VECTOR_ID = _shared_v3_fixture_string_export("KNOWN_VECTOR_ID")
+KNOWN_DIGEST = _shared_v3_fixture_string_export("KNOWN_DIGEST")
+HISTORICAL_V2_KNOWN_VECTOR_ID = (
+    "dnai.final-release-authority-core.v2/known-answer-1"
+)
+HISTORICAL_V2_KNOWN_DIGEST = (
+    "d1bab06a461597c4b0d12d9bbf50ea37549c2023b8c37b3e8ef7638b8c874fce"
+)
 RELEASE_SHA = "0123456789abcdef0123456789abcdef01234567"
 APPROVER_ROOT = "013c34f9ab123ac6d7bb6ed0711bddb94806f04c02885cb9c2eeb7af2ac739d7"
 USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e"
@@ -57,7 +88,7 @@ def _image(service: str, repository: str, digest_pair: str) -> dict[str, object]
     }
 
 
-def _known_vector() -> dict[str, object]:
+def _historical_v2_known_vector() -> dict[str, object]:
     return {
         "schema": "dnai.final-release-authority-core.v2",
         "release_sha": RELEASE_SHA,
@@ -311,6 +342,16 @@ def _known_vector() -> dict[str, object]:
     }
 
 
+def _known_vector() -> dict[str, object]:
+    opening = "export const KNOWN_VECTOR_JSON = String.raw`\n"
+    closing = "\n`;"
+    assert SHARED_V3_FIXTURE_SOURCE.count(opening) == 1
+    start = SHARED_V3_FIXTURE_SOURCE.index(opening) + len(opening)
+    end = SHARED_V3_FIXTURE_SOURCE.index(closing, start)
+    assert SHARED_V3_FIXTURE_SOURCE.find(closing, end + len(closing)) == -1
+    return json.loads(SHARED_V3_FIXTURE_SOURCE[start:end])
+
+
 def _rename_arena_catalog_key(value: dict[str, object], replacement: str) -> None:
     bindings = value["arena_registry_bindings"]
     binding = bindings.pop("synthetic-bio-assay-qc@1.0.0")
@@ -337,11 +378,11 @@ def _add_second_arena_binding(value: dict[str, object]) -> None:
 
 
 def test_known_answer_vector_matches_javascript_digest() -> None:
-    assert KNOWN_VECTOR_ID == "dnai.final-release-authority-core.v2/known-answer-1"
+    assert KNOWN_VECTOR_ID == "dnai.final-release-authority-core.v3/known-answer-1"
     assert FINAL_RELEASE_AUTHORITY_CORE_SCHEMA == _known_vector()["schema"]
     assert (
         FINAL_RELEASE_AUTHORITY_CORE_DOMAIN
-        == b"dnai-wikigen/final-release-authority-core/v2\0"
+        == b"dnai-wikigen/final-release-authority-core/v3\0"
     )
     normalized = normalize_final_release_authority_core(_known_vector())
     assert normalized["deployment_intent_sha256"] == "sha256:" + "b1" * 32
@@ -391,6 +432,80 @@ def test_known_answer_vector_matches_javascript_digest() -> None:
     )
 
 
+def test_historical_v2_known_answer_remains_frozen_for_explicit_replay() -> None:
+    value = _historical_v2_known_vector()
+    assert (
+        HISTORICAL_V2_KNOWN_VECTOR_ID
+        == "dnai.final-release-authority-core.v2/known-answer-1"
+    )
+    assert FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA == value["schema"]
+    assert (
+        FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN
+        == b"dnai-wikigen/final-release-authority-core/v2\0"
+    )
+    normalized = normalize_historical_final_release_authority_core_v2(value)
+    assert (
+        historical_final_release_authority_core_v2_digest(normalized)
+        == HISTORICAL_V2_KNOWN_DIGEST
+    )
+    assert canonical_historical_final_release_authority_core_v2_bytes(normalized)
+    assert "tinker_customer" not in normalized["requested_features"]
+    assert "collaboration" not in normalized["requested_features"]
+    with pytest.raises(FinalReleaseAuthorityCoreValidationError):
+        normalize_final_release_authority_core(value)
+    with pytest.raises(FinalReleaseAuthorityCoreValidationError):
+        normalize_historical_final_release_authority_core_v2(_known_vector())
+
+
+def test_v2_archival_and_v3_activation_semantics_are_version_pinned() -> None:
+    historical = _historical_v2_known_vector()
+    assert (
+        historical["contracts"]["diligence_room"]["developer"]
+        == historical["operator_address"]
+    )
+    historical_broad_origin = copy.deepcopy(historical)
+    historical_broad_origin["cvm"]["delegate_url"] = "https://127.0.0.1:8443"
+    assert (
+        normalize_historical_final_release_authority_core_v2(
+            historical_broad_origin
+        )["cvm"]["delegate_url"]
+        == "https://127.0.0.1:8443"
+    )
+    historical_separated_developer = copy.deepcopy(historical)
+    historical_separated_developer["contracts"]["diligence_room"][
+        "developer"
+    ] = _address(21)
+    with pytest.raises(
+        FinalReleaseAuthorityCoreValidationError,
+        match="DiligenceRoom developer must equal operator_address",
+    ):
+        normalize_historical_final_release_authority_core_v2(
+            historical_separated_developer
+        )
+
+    current = _known_vector()
+    assert (
+        current["contracts"]["diligence_room"]["developer"]
+        != current["operator_address"]
+    )
+    current_operator_developer = copy.deepcopy(current)
+    current_operator_developer["contracts"]["diligence_room"]["developer"] = (
+        current_operator_developer["operator_address"]
+    )
+    with pytest.raises(
+        FinalReleaseAuthorityCoreValidationError,
+        match="permanent developer must differ",
+    ):
+        normalize_final_release_authority_core(current_operator_developer)
+    current_broad_origin = copy.deepcopy(current)
+    current_broad_origin["cvm"]["delegate_url"] = "https://127.0.0.1:8443"
+    with pytest.raises(
+        FinalReleaseAuthorityCoreValidationError,
+        match="canonical HTTPS origin",
+    ):
+        normalize_final_release_authority_core(current_broad_origin)
+
+
 def test_valid_upstream_mutations_change_the_release_core_digest() -> None:
     baseline = execution_policy_release_core_digest(_known_vector())
 
@@ -409,7 +524,7 @@ def test_valid_upstream_mutations_change_the_release_core_digest() -> None:
     anchor_mutation = copy.deepcopy(_known_vector())
     anchor_mutation["execution_policy"]["rollback_anchor_target"][
         "contract_address"
-    ] = _address(21)
+    ] = _address(22)
     assert execution_policy_release_core_digest(anchor_mutation) != baseline
 
     metering_policy_mutation = copy.deepcopy(_known_vector())
@@ -463,6 +578,46 @@ def test_valid_upstream_mutations_change_the_release_core_digest() -> None:
         "synthetic-bio-assay-qc@1.0.0"
     ]["sealed_artifact_commitment"] = _word("d5")
     assert execution_policy_release_core_digest(arena_mutation) != baseline
+
+    for key in ("tinker_customer", "collaboration"):
+        feature_mutation = copy.deepcopy(_known_vector())
+        feature_mutation["requested_features"][key] = True
+        assert execution_policy_release_core_digest(feature_mutation) != baseline
+
+
+def test_tinker_customer_and_collaboration_gates_are_explicit_independent_booleans() -> (
+    None
+):
+    normalized = normalize_final_release_authority_core(_known_vector())
+    assert normalized["requested_features"]["compute_console"] is True
+    assert normalized["requested_features"]["tinker_customer"] is False
+    assert normalized["requested_features"]["collaboration"] is False
+
+    for key, other in (
+        ("tinker_customer", "collaboration"),
+        ("collaboration", "tinker_customer"),
+    ):
+        enabled = copy.deepcopy(_known_vector())
+        enabled["requested_features"][key] = True
+        normalized_enabled = normalize_final_release_authority_core(enabled)
+        assert normalized_enabled["requested_features"][key] is True
+        assert normalized_enabled["requested_features"][other] is False
+
+        for invalid in (None, 0, 1, "false", "true"):
+            malformed = copy.deepcopy(_known_vector())
+            malformed["requested_features"][key] = invalid
+            with pytest.raises(FinalReleaseAuthorityCoreValidationError):
+                normalize_final_release_authority_core(malformed)
+
+        missing = copy.deepcopy(_known_vector())
+        del missing["requested_features"][key]
+        with pytest.raises(FinalReleaseAuthorityCoreValidationError):
+            normalize_final_release_authority_core(missing)
+
+    unknown = copy.deepcopy(_known_vector())
+    unknown["requested_features"]["compute_customer_alias"] = False
+    with pytest.raises(FinalReleaseAuthorityCoreValidationError):
+        normalize_final_release_authority_core(unknown)
 
 
 def test_unordered_release_sets_normalize_to_one_commitment() -> None:

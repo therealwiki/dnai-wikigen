@@ -7,12 +7,15 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import {
   assertCanonicalPlainDataGraph,
   deepFreezeCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
+import {
+  parseCanonicalPublicHttpsUrl,
+} from "./canonical-public-https-url-core.mjs";
 
 import {
   CVM_LAUNCH_DESCRIPTOR_FILES,
@@ -370,18 +373,13 @@ function normalizeReleaseManifest(text, expectedReleaseSha) {
         ["predicate_type", "id", "url"],
         `${expectedName} ${kind} attestation`,
       );
-      let attestationUrl;
-      try {
-        attestationUrl = new URL(attestation.url);
-      } catch {
-        throw new Error(`${expectedName} ${kind} attestation URL is invalid`);
-      }
+      const attestationUrl = parseCanonicalPublicHttpsUrl(attestation.url, {
+        label: `${expectedName} ${kind} attestation URL`,
+        requirePath: true,
+      });
       if (attestation.predicate_type !== predicate
         || !/^[1-9][0-9]*$/.test(attestation.id)
-        || attestationUrl.protocol !== "https:"
-        || attestationUrl.username
-        || attestationUrl.password
-        || attestationUrl.hash) {
+        || attestationUrl.pathname === "/") {
         throw new Error(`${expectedName} ${kind} attestation authority is invalid`);
       }
     }
@@ -426,7 +424,9 @@ function expectedServiceImageName(domain, service) {
   if (domain.endsWith("_qvl_cvm")) return "attestation-qvl";
   if (domain === "independent_metering_cvm") return "compute-metering";
   if (service === "neko") return "neko-chrome";
-  if (service === "oracle") return "tee-email-oracle";
+  if (service === "oracle" || service === "mailbox-genesis") {
+    return "tee-email-oracle";
+  }
   return "tinker-delegate";
 }
 
@@ -977,6 +977,10 @@ export async function main(argv = process.argv.slice(2), io = console) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
+if (process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(new URL(
+    "./cvm-release-descriptor-set.mjs",
+    import.meta.url,
+  ))) {
   process.exitCode = await main();
 }

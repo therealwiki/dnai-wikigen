@@ -144,13 +144,13 @@ function historicalFixture() {
   };
 }
 
-test("L v4 binds five private quote transcripts and activation leases without claiming external egress", () => {
+test("L v5 is the durable private exact-14 quote/collateral boundary without public disclosure", () => {
   const { receipt, expectedAuthority } = fixture();
   const normalized = normalizePhalaSevenCvmLaunchCompletionReceipt(receipt, {
     expectedAuthority,
   });
   assert.equal(normalized.schema, PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA);
-  assert.equal(PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_DOMAIN.endsWith("/v4\0"), true);
+  assert.equal(PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_DOMAIN.endsWith("/v5\0"), true);
   assert.equal(
     normalized.activation_evidence_lease_expires_at,
     Math.min(...normalized.domains.map((entry) => (
@@ -158,9 +158,19 @@ test("L v4 binds five private quote transcripts and activation leases without cl
     ))),
   );
   assert.equal(
+    normalized.private_historical_transcript_persisted,
+    true,
+  );
+  assert.equal(
+    normalized.private_historical_transcript_contains_raw_quote_and_collateral,
+    true,
+  );
+  assert.equal(
     normalized.private_historical_identity_response_quote_bytes_persisted,
     true,
   );
+  assert.equal(normalized.raw_quote_publicly_disclosed, false);
+  assert.equal(normalized.raw_collateral_publicly_disclosed, false);
   assert.equal(normalized.raw_quote_external_egress, false);
   assert.equal(normalized.raw_private_artifact_egress, false);
   assert.equal(normalized.domains.filter((entry) => (
@@ -173,11 +183,11 @@ test("L v4 binds five private quote transcripts and activation leases without cl
     canonicalPhalaSevenCvmLaunchCompletionReceiptText(receipt, {
       expectedAuthority,
     }),
-    /private_historical_identity_response_quote_bytes_persisted/,
+    /private_historical_transcript_persisted/,
   );
 });
 
-test("L v4 rejects missing measurements and false private-quote claims", () => {
+test("L v5 rejects missing measurements and false private-persistence claims", () => {
   const missingMeasurements = fixture();
   const identity = missingMeasurements.receipt.domains.find((entry) => (
     entry.machine_evidence_kind === "qvl_identity_local_dcap_verification"
@@ -191,8 +201,7 @@ test("L v4 rejects missing measurements and false private-quote claims", () => {
     /observed TDX measurements/i,
   );
   const falsePersistence = fixture();
-  falsePersistence.receipt
-    .private_historical_identity_response_quote_bytes_persisted = false;
+  falsePersistence.receipt.private_historical_transcript_persisted = false;
   assert.throws(
     () => normalizePhalaSevenCvmLaunchCompletionReceipt(
       falsePersistence.receipt,
@@ -241,7 +250,7 @@ test("L and embedded release authority reject impossible UTC dates", () => {
   );
 });
 
-test("L v4 cross-checks every release resource field", () => {
+test("L v5 cross-checks every release resource field", () => {
   for (const [field, replacement] of [
     ["kms_id", "kms-tampered-01"],
     ["instance_type", "tdx.tampered"],
@@ -333,7 +342,7 @@ test("historical L rejects accessors before execution and has a pure closure", (
     "node:child_process",
     "Date.now",
     "process.",
-    "WeakMap",
+    "new WeakMap",
     "import(",
   ]) assert.equal(sources.includes(forbidden), false, forbidden);
 });

@@ -6,8 +6,7 @@ import path from "node:path";
 import {
   normalizePreCeremonyRuntimeAuthority,
   preCeremonyRuntimeAuthoritySha256,
-  assertFreshBrandedPreCeremonyRuntimeAuthority,
-} from "./pre-ceremony-runtime-authority.mjs";
+} from "./pre-ceremony-runtime-authority-core.mjs";
 import {
   canonicalArtifactSha256,
   DEPLOYMENT_TOOLCHAIN_AUTHORITY,
@@ -15,15 +14,15 @@ import {
 } from "./operator-policy-packet-core.mjs";
 import {
   RELEASE_CEREMONY_LOCK_PROTOCOL,
-} from "./release-ceremony-lock.mjs";
+} from "./release-ceremony-lock-protocol-core.mjs";
 import {
   PINNED_CAST_SIGNATURE_VERIFIER,
   PINNED_EIP191_SIGNATURE_SCHEME,
   eip191AuthorizationSigningDigest,
   eip191AuthorizationSigningMessage,
   executionPolicyReviewerRootHash,
-  verifyPinnedTwoSignerAuthorization,
-} from "./release-authority-signature-verifier.mjs";
+  verifyIndependentTwoSignerAuthorization,
+} from "./release-authority-signature-verifier-core.mjs";
 import {
   normalizeReleaseReviewerAuthorityGenesis,
   releaseReviewerAuthorityGenesisSha256,
@@ -64,15 +63,15 @@ export const CEREMONY_AUTHORIZATION_REVIEW_SUBJECT_DOMAIN =
   "dnai-wikigen/ceremony-authorization-review-subject/v1\0";
 
 export const LIVE_ACTIVATION_AUTHORITY_SCHEMA =
-  "dnai.live-activation-authority.v5";
+  "dnai.live-activation-authority.v6";
 export const LIVE_ACTIVATION_AUTHORITY_STATUS =
   "live_activation_authorized";
 export const LIVE_ACTIVATION_REVIEW_SUBJECT_KIND =
   "live_activation_authority";
 export const LIVE_ACTIVATION_AUTHORITY_DOMAIN =
-  "dnai-wikigen/live-activation-authority/v5\0";
+  "dnai-wikigen/live-activation-authority/v6\0";
 export const LIVE_ACTIVATION_REVIEW_SUBJECT_DOMAIN =
-  "dnai-wikigen/live-activation-review-subject/v5\0";
+  "dnai-wikigen/live-activation-review-subject/v6\0";
 
 export const RELEASE_AUTHORITY_CRYPTOGRAPHIC_REVIEW_SCHEMA =
   "dnai.release-authority-cryptographic-review.v2";
@@ -603,7 +602,11 @@ export function normalizeCryptographicReview(value, {
     return { address: signer, controller_id: signature.controller_id, signature: signature.signature };
   });
   const message = releaseAuthorityReviewSigningMessage(signingPayload);
-  verifyPinnedTwoSignerAuthorization({ signatures, message, reviewerAuthority });
+  verifyIndependentTwoSignerAuthorization({
+    signatures,
+    message,
+    reviewerAuthority,
+  });
   return {
     schema: parsed.schema,
     stage: parsed.stage,
@@ -664,7 +667,7 @@ export function assertReviewSignedUnderCurrentReviewerStatus(review, {
 export const assertReviewSignedUnderAnchoredReviewerStatus =
   assertReviewSignedUnderCurrentReviewerStatus;
 
-function assertCeremonyReviewInsideRuntimeAuthorityWindow(
+export function assertCeremonyReviewInsideRuntimeAuthorityWindow(
   review,
   preCeremonyRuntimeAuthority,
 ) {
@@ -824,36 +827,6 @@ export function ceremonyAuthorizationReviewSigningPayload(unsignedBody, reviewMe
   });
 }
 
-/**
- * Production-only Stage-B signing projection. The ordinary projection above is
- * intentionally pure so historical bytes remain replayable; this entry point
- * refuses parsed/cloned R values and therefore cannot authorize activation from
- * a synthetically reconstructed pre-ceremony dependency.
- */
-export function ceremonyAuthorizationReviewSigningPayloadForProduction(
-  unsignedBody,
-  reviewMetadata,
-  { preCeremonyRuntimeAuthority } = {},
-) {
-  const authority = assertFreshBrandedPreCeremonyRuntimeAuthority(
-    preCeremonyRuntimeAuthority,
-  );
-  const body = normalizeStageOneBody(unsignedBody);
-  if (body.release_sha !== authority.release_sha
-    || body.deployment_authority.deployment_intent_sha256
-      !== authority.deployment_intent_sha256
-    || body.cvm_launch_intent_sha256 !== authority.cvm_launch_intent_sha256
-    || body.pre_ceremony_runtime_authority_sha256
-      !== preCeremonyRuntimeAuthoritySha256(authority)) {
-    fail("production ceremony signing body does not bind the exact fresh branded R");
-  }
-  assertCeremonyReviewInsideRuntimeAuthorityWindow(
-    reviewMetadata,
-    authority,
-  );
-  return ceremonyAuthorizationReviewSigningPayload(body, reviewMetadata);
-}
-
 export function normalizeCeremonyAuthorizationCore(value, {
   deploymentIntent,
   freshContractDeploymentReceipt: freshContractDeploymentReceiptValue,
@@ -903,14 +876,21 @@ export function normalizeCeremonyAuthorizationCore(value, {
   const reviewerGenesisSha = reviewerStage.genesisSha256;
   const reviewerGenesisAcceptanceSha = reviewerStage.acceptanceSha256;
   const deploymentIntentSha = canonicalArtifactSha256(deploymentIntent);
+  const freshReceiptAuthorityPins = {
+    expectedDeploymentIntentSha256: deploymentIntentSha,
+    expectedReviewerAuthorityGenesisAcceptanceSha256:
+      reviewerGenesisAcceptanceSha,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      preCeremonyRuntimeAuthority.post_measurement_activation_plan
+        ?.release_verification_authority
+        ?.tinker_account_binding_ceremony_receipt_sha256
+      ?? freshContractDeploymentReceiptValue
+        ?.tinker_account_binding_ceremony_receipt_sha256,
+  };
   try {
     freshContractDeploymentReceipt = normalizeFreshContractDeploymentReceipt(
       freshContractDeploymentReceiptValue,
-      {
-        expectedDeploymentIntentSha256: deploymentIntentSha,
-        expectedReviewerAuthorityGenesisAcceptanceSha256:
-          reviewerGenesisAcceptanceSha,
-      },
+      freshReceiptAuthorityPins,
     );
   } catch (error) {
     fail(`ceremony authorization fresh deployment receipt is invalid: ${error.message}`);
@@ -932,11 +912,7 @@ export function normalizeCeremonyAuthorizationCore(value, {
   );
   const freshContractDeploymentReceiptSha = `sha256:${freshContractDeploymentReceiptDigest(
     freshContractDeploymentReceipt,
-    {
-      expectedDeploymentIntentSha256: deploymentIntentSha,
-      expectedReviewerAuthorityGenesisAcceptanceSha256:
-        reviewerGenesisAcceptanceSha,
-    },
+    freshReceiptAuthorityPins,
   )}`;
   if (body.release_sha !== deploymentIntent.release.releaseSha
     || body.release_sha !== freshContractDeploymentReceipt.release_sha
@@ -997,16 +973,6 @@ export function ceremonyAuthorizationCoreDigest(value, options) {
 
 export function ceremonyAuthorizationCoreSha256(value, options) {
   return `sha256:${ceremonyAuthorizationCoreDigest(value, options)}`;
-}
-
-export function assertFreshProductionCeremonyAuthorizationCore(value, options = {}) {
-  assertFreshBrandedPreCeremonyRuntimeAuthority(
-    options.preCeremonyRuntimeAuthority,
-  );
-  return normalizeCeremonyAuthorizationCore(value, {
-    ...options,
-    enforceFreshness: true,
-  });
 }
 
 export function frontendBuildCandidateAuthorityBindingFromCeremonyAuthorization(

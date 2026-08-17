@@ -154,11 +154,12 @@ describe("wallet signing boundary", () => {
     const address = "0x5555555555555555555555555555555555555555" as Address;
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + 300;
-    const ordinaryStatement = "Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.";
+    const ordinaryStatement = "Authorize encrypted candidate submissions, read only your bounded submission status, cancel only before worker claim, and retry terminal ciphertext unlink for the specified challenge version during this short session. This request will not trigger a blockchain transaction.";
     const ordinaryResources = [
       "- urn:dnai:arena:challenge:synthetic-bio-assay-qc:version:1.0.0",
       "- urn:dnai:scope:challenge:submit",
       "- urn:dnai:scope:challenge:submissions:read",
+      "- urn:dnai:scope:challenge:submissions:manage",
     ];
     const ordinaryMessage = buildApprovedWalletSigningMessage({
       address,
@@ -170,7 +171,7 @@ describe("wallet signing boundary", () => {
     });
     const ordinary: SigningChallengeResponse = {
       address,
-      scope: "challenge:submit challenge:submissions:read",
+      scope: "challenge:submit challenge:submissions:read challenge:submissions:manage",
       nonce: "11111111111111111111111111111111",
       issued_at: issuedAt,
       expires_at: expiresAt,
@@ -178,7 +179,7 @@ describe("wallet signing boundary", () => {
     };
     const ordinaryExpected = {
       address,
-      scope: "challenge:submit challenge:submissions:read",
+      scope: "challenge:submit challenge:submissions:read challenge:submissions:manage",
       statement: ordinaryStatement,
       resources: ordinaryResources,
       maximumTtlSeconds: 600,
@@ -217,6 +218,7 @@ describe("wallet signing boundary", () => {
     expect(() => validateSigningChallenge(management, managementExpected)).not.toThrow();
     expect(managementMessage).not.toContain("urn:dnai:scope:challenge:submit");
     expect(managementMessage).not.toContain("urn:dnai:scope:challenge:submissions:read");
+    expect(managementMessage).not.toContain("urn:dnai:scope:challenge:submissions:manage");
     expect(() => validateSigningChallenge({
       ...management,
       scope: ordinary.scope,

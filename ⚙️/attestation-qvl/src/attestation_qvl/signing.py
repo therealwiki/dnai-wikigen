@@ -11,6 +11,7 @@ from typing import Protocol
 
 from dstack_sdk import DstackClient
 from dstack_sdk.ethereum import to_account_secure
+from eth_account import Account
 from eth_account.messages import encode_defunct
 from eth_account.signers.local import LocalAccount
 from eth_hash.auto import keccak
@@ -21,8 +22,14 @@ from .models import IndependentTdxVerdict
 
 VERDICT_DOMAIN = b"dnai-wikigen/independent-tdx-verdict/v4\x00"
 SIGNER_PATH_PREFIX = "dnai-wikigen/attestation-qvl/verdict-signer/v1"
+ROYALTY_SIGNER_PATH_PREFIX = (
+    "dnai-wikigen/attestation-qvl/royalty-settlement-signer/v1"
+)
 BYTES32_RE = re.compile(r"^0x[0-9a-f]{64}$")
 ADDRESS_RE = re.compile(r"^0x[0-9a-f]{40}$")
+SECP256K1_HALF_ORDER = (
+    0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+)
 QVL_RESULT_AUTHORIZATION_TYPEHASH = keccak(
     b"DiligenceRoomQVLAuthorization(uint256 chainId,address contractAddress,uint256 dealId,address teeIdentity,bytes32 composeHash,bytes32 evaluatorPolicyCommitment,bytes32 resultHash,bytes32 attestationReleasePolicyHash,bytes32 attestationEvidenceHash,uint256 authorizationExpiry)"
 )
@@ -33,6 +40,23 @@ COMPUTE_VAULT_NAME_HASH = keccak(b"DNAI Compute Credit Vault")
 COMPUTE_VAULT_VERSION_HASH = keccak(b"2")
 COMPUTE_METERING_QVL_RECEIPT_TYPEHASH = keccak(
     b"ComputeMeteringQvlReceipt(bytes32 projectId,bytes32 jobId,address user,address asset,uint256 authorizationNonce,uint256 maxAssetDebit,uint256 actualAssetDebit,uint256 authorizationExpiry,bytes32 ratePolicyCommitment,bytes32 workloadCommitment,bytes32 manifestCommitment,bytes32 dispatchIntentCommitment,address teeIdentity,bytes32 composeHash,bytes32 startCommitment,uint256 billableComputeUnits,uint256 usageStartedAt,uint256 usageEndedAt,bytes32 usageCommitment,bytes32 meteringPolicySetHash,bytes32 attestationEvidenceHash,uint256 receiptExpiry)"
+)
+ROYALTY_DISTRIBUTOR_NAME_HASH = keccak(b"DNAI Royalty Distributor")
+ROYALTY_DISTRIBUTOR_VERSION_HASH = keccak(b"3")
+ROYALTY_RELEASE_POLICY_TYPEHASH = keccak(
+    b"RoyaltyReleasePolicy(uint256 chainId,address distributor,uint256 authorityNonce,address settlementVerifier,address qvlVerifier,address executionPolicyAnchor,bytes32 anchorWriterReleaseCommitment)"
+)
+ROYALTY_COLLABORATION_RESOURCE_TYPEHASH = keccak(
+    b"RoyaltyCollaborationResource(uint256 chainId,address distributor,bytes32 roomCommitment,bytes32 queryCommitment)"
+)
+ROYALTY_SETTLEMENT_DECISION_TYPEHASH = keccak(
+    b"RoyaltySettlementDecision(uint256 chainId,address distributor,bytes32 settlementId,uint256 settlementNonce,bytes32 fundingReservationId,bytes32 releasePolicyCommitment,bytes32 roomCommitment,bytes32 roomStateCommitment,bytes32 queryCommitment,bytes32 grantSetCommitment,bytes32 allocationCommitment,bytes32 ownersAmountsHash,address asset,uint256 total,bytes32 executionCommitment,bytes32 resultCommitment,bytes32 usageCommitment,bytes32 attestationEvidenceHash,bytes32 anchorResourceHash,uint256 expiry)"
+)
+ROYALTY_SETTLEMENT_QVL_AUTHORIZATION_TYPEHASH = keccak(
+    b"RoyaltySettlementQvlAuthorization(bytes32 settlementId,uint256 settlementNonce,bytes32 fundingReservationId,bytes32 releasePolicyCommitment,bytes32 roomCommitment,bytes32 roomStateCommitment,bytes32 queryCommitment,bytes32 grantSetCommitment,bytes32 allocationCommitment,bytes32 ownersAmountsHash,address asset,uint256 total,bytes32 executionCommitment,bytes32 resultCommitment,bytes32 usageCommitment,bytes32 attestationEvidenceHash,bytes32 anchorResourceHash,bytes32 anchorDecisionHash,uint256 anchorSequence,uint256 expiry)"
+)
+ROYALTY_SETTLEMENT_AUTHORIZATION_TYPEHASH = keccak(
+    b"RoyaltySettlementAuthorization(bytes32 settlementId,uint256 settlementNonce,bytes32 fundingReservationId,bytes32 releasePolicyCommitment,bytes32 roomCommitment,bytes32 roomStateCommitment,bytes32 queryCommitment,bytes32 grantSetCommitment,bytes32 allocationCommitment,bytes32 ownersAmountsHash,address asset,uint256 total,bytes32 executionCommitment,bytes32 resultCommitment,bytes32 usageCommitment,bytes32 attestationEvidenceHash,bytes32 anchorResourceHash,bytes32 anchorDecisionHash,uint256 anchorSequence,uint256 expiry)"
 )
 
 
@@ -47,11 +71,42 @@ class VerdictSigner(Protocol):
         """Raw-sign one EIP-712 digest for direct contract recovery."""
 
 
+class RoyaltySettlementSigner(Protocol):
+    address: str
+    custody: str
+    key_path: str
+
+    def sign_raw_digest(self, digest: str) -> str:
+        """Raw-sign one RoyaltyDistributor v3 QVL authorization digest."""
+
+
 def normalize_address(value: str) -> str:
     lowered = value.lower()
     if not re.fullmatch(r"0x[0-9a-f]{40}", lowered):
         raise VerifierUnavailable
     return lowered
+
+
+def recover_raw_digest_address(*, digest: str, signature: str) -> str:
+    """Match the contracts' canonical 65-byte, low-s raw-hash recovery."""
+
+    if not BYTES32_RE.fullmatch(digest) or not re.fullmatch(
+        r"0x[0-9a-f]{130}", signature
+    ):
+        raise VerifierUnavailable
+    encoded = bytes.fromhex(signature[2:])
+    r = int.from_bytes(encoded[:32], "big")
+    s = int.from_bytes(encoded[32:64], "big")
+    v = encoded[64]
+    if r == 0 or s == 0 or s > SECP256K1_HALF_ORDER or v not in (27, 28):
+        raise VerifierUnavailable
+    try:
+        recovered = Account._recover_hash(  # noqa: SLF001
+            bytes.fromhex(digest[2:]), signature=encoded
+        )
+    except Exception as exc:
+        raise VerifierUnavailable from exc
+    return normalize_address(recovered)
 
 
 def _word_uint(value: int) -> bytes:
@@ -176,6 +231,289 @@ def compute_metering_qvl_authorization_digest(
     return "0x" + keccak(b"\x19\x01" + domain_separator + struct_hash).hex()
 
 
+def royalty_release_policy_commitment(
+    *,
+    chain_id: int,
+    distributor_address: str,
+    authority_nonce: int,
+    settlement_verifier: str,
+    qvl_verifier: str,
+    execution_policy_anchor: str,
+    anchor_writer_release_commitment: str,
+) -> str:
+    """Reproduce RoyaltyDistributor.computeReleasePolicyCommitment exactly."""
+
+    return "0x" + keccak(
+        b"".join(
+            (
+                ROYALTY_RELEASE_POLICY_TYPEHASH,
+                _word_uint(chain_id),
+                _word_address(distributor_address),
+                _word_uint(authority_nonce),
+                _word_address(settlement_verifier),
+                _word_address(qvl_verifier),
+                _word_address(execution_policy_anchor),
+                _word_bytes32(anchor_writer_release_commitment),
+            )
+        )
+    ).hex()
+
+
+def royalty_collaboration_resource_hash(
+    *,
+    chain_id: int,
+    distributor_address: str,
+    room_commitment: str,
+    query_commitment: str,
+) -> str:
+    """Reproduce RoyaltyDistributor.collaborationResourceHash exactly."""
+
+    return "0x" + keccak(
+        b"".join(
+            (
+                ROYALTY_COLLABORATION_RESOURCE_TYPEHASH,
+                _word_uint(chain_id),
+                _word_address(distributor_address),
+                _word_bytes32(room_commitment),
+                _word_bytes32(query_commitment),
+            )
+        )
+    ).hex()
+
+
+def royalty_settlement_decision_hash(
+    *,
+    chain_id: int,
+    distributor_address: str,
+    settlement_id: str,
+    settlement_nonce: int,
+    funding_reservation_id: str,
+    release_policy_commitment: str,
+    room_commitment: str,
+    room_state_commitment: str,
+    query_commitment: str,
+    grant_set_commitment: str,
+    allocation_commitment: str,
+    owners_amounts_hash: str,
+    asset: str,
+    total: int,
+    execution_commitment: str,
+    result_commitment: str,
+    usage_commitment: str,
+    attestation_evidence_hash: str,
+    anchor_resource_hash: str,
+    expiry: int,
+) -> str:
+    """Reproduce RoyaltyDistributor.settlementDecisionHash exactly."""
+
+    return "0x" + keccak(
+        b"".join(
+            (
+                ROYALTY_SETTLEMENT_DECISION_TYPEHASH,
+                _word_uint(chain_id),
+                _word_address(distributor_address),
+                _word_bytes32(settlement_id),
+                _word_uint(settlement_nonce),
+                _word_bytes32(funding_reservation_id),
+                _word_bytes32(release_policy_commitment),
+                _word_bytes32(room_commitment),
+                _word_bytes32(room_state_commitment),
+                _word_bytes32(query_commitment),
+                _word_bytes32(grant_set_commitment),
+                _word_bytes32(allocation_commitment),
+                _word_bytes32(owners_amounts_hash),
+                _word_address(asset),
+                _word_uint(total),
+                _word_bytes32(execution_commitment),
+                _word_bytes32(result_commitment),
+                _word_bytes32(usage_commitment),
+                _word_bytes32(attestation_evidence_hash),
+                _word_bytes32(anchor_resource_hash),
+                _word_uint(expiry),
+            )
+        )
+    ).hex()
+
+
+def royalty_settlement_qvl_authorization_digest(
+    *,
+    chain_id: int,
+    distributor_address: str,
+    settlement_id: str,
+    settlement_nonce: int,
+    funding_reservation_id: str,
+    release_policy_commitment: str,
+    room_commitment: str,
+    room_state_commitment: str,
+    query_commitment: str,
+    grant_set_commitment: str,
+    allocation_commitment: str,
+    owners_amounts_hash: str,
+    asset: str,
+    total: int,
+    execution_commitment: str,
+    result_commitment: str,
+    usage_commitment: str,
+    attestation_evidence_hash: str,
+    anchor_resource_hash: str,
+    anchor_decision_hash: str,
+    anchor_sequence: int,
+    expiry: int,
+) -> str:
+    """Exact EIP-712 digest consumed by RoyaltyDistributor v3's QVL branch."""
+
+    domain_separator = keccak(
+        b"".join(
+            (
+                EIP712_DOMAIN_TYPEHASH,
+                ROYALTY_DISTRIBUTOR_NAME_HASH,
+                ROYALTY_DISTRIBUTOR_VERSION_HASH,
+                _word_uint(chain_id),
+                _word_address(distributor_address),
+            )
+        )
+    )
+    struct_hash = keccak(
+        ROYALTY_SETTLEMENT_QVL_AUTHORIZATION_TYPEHASH
+        + _royalty_authorization_words(
+            settlement_id=settlement_id,
+            settlement_nonce=settlement_nonce,
+            funding_reservation_id=funding_reservation_id,
+            release_policy_commitment=release_policy_commitment,
+            room_commitment=room_commitment,
+            room_state_commitment=room_state_commitment,
+            query_commitment=query_commitment,
+            grant_set_commitment=grant_set_commitment,
+            allocation_commitment=allocation_commitment,
+            owners_amounts_hash=owners_amounts_hash,
+            asset=asset,
+            total=total,
+            execution_commitment=execution_commitment,
+            result_commitment=result_commitment,
+            usage_commitment=usage_commitment,
+            attestation_evidence_hash=attestation_evidence_hash,
+            anchor_resource_hash=anchor_resource_hash,
+            anchor_decision_hash=anchor_decision_hash,
+            anchor_sequence=anchor_sequence,
+            expiry=expiry,
+        )
+    )
+    return "0x" + keccak(b"\x19\x01" + domain_separator + struct_hash).hex()
+
+
+def _royalty_authorization_words(
+    *,
+    settlement_id: str,
+    settlement_nonce: int,
+    funding_reservation_id: str,
+    release_policy_commitment: str,
+    room_commitment: str,
+    room_state_commitment: str,
+    query_commitment: str,
+    grant_set_commitment: str,
+    allocation_commitment: str,
+    owners_amounts_hash: str,
+    asset: str,
+    total: int,
+    execution_commitment: str,
+    result_commitment: str,
+    usage_commitment: str,
+    attestation_evidence_hash: str,
+    anchor_resource_hash: str,
+    anchor_decision_hash: str,
+    anchor_sequence: int,
+    expiry: int,
+) -> bytes:
+    return b"".join(
+        (
+            _word_bytes32(settlement_id),
+            _word_uint(settlement_nonce),
+            _word_bytes32(funding_reservation_id),
+            _word_bytes32(release_policy_commitment),
+            _word_bytes32(room_commitment),
+            _word_bytes32(room_state_commitment),
+            _word_bytes32(query_commitment),
+            _word_bytes32(grant_set_commitment),
+            _word_bytes32(allocation_commitment),
+            _word_bytes32(owners_amounts_hash),
+            _word_address(asset),
+            _word_uint(total),
+            _word_bytes32(execution_commitment),
+            _word_bytes32(result_commitment),
+            _word_bytes32(usage_commitment),
+            _word_bytes32(attestation_evidence_hash),
+            _word_bytes32(anchor_resource_hash),
+            _word_bytes32(anchor_decision_hash),
+            _word_uint(anchor_sequence),
+            _word_uint(expiry),
+        )
+    )
+
+
+def royalty_settlement_authorization_digest(
+    *,
+    chain_id: int,
+    distributor_address: str,
+    settlement_id: str,
+    settlement_nonce: int,
+    funding_reservation_id: str,
+    release_policy_commitment: str,
+    room_commitment: str,
+    room_state_commitment: str,
+    query_commitment: str,
+    grant_set_commitment: str,
+    allocation_commitment: str,
+    owners_amounts_hash: str,
+    asset: str,
+    total: int,
+    execution_commitment: str,
+    result_commitment: str,
+    usage_commitment: str,
+    attestation_evidence_hash: str,
+    anchor_resource_hash: str,
+    anchor_decision_hash: str,
+    anchor_sequence: int,
+    expiry: int,
+) -> str:
+    """Exact EIP-712 digest signed by the attested main-runtime authority."""
+
+    domain_separator = keccak(
+        b"".join(
+            (
+                EIP712_DOMAIN_TYPEHASH,
+                ROYALTY_DISTRIBUTOR_NAME_HASH,
+                ROYALTY_DISTRIBUTOR_VERSION_HASH,
+                _word_uint(chain_id),
+                _word_address(distributor_address),
+            )
+        )
+    )
+    words = _royalty_authorization_words(
+        settlement_id=settlement_id,
+        settlement_nonce=settlement_nonce,
+        funding_reservation_id=funding_reservation_id,
+        release_policy_commitment=release_policy_commitment,
+        room_commitment=room_commitment,
+        room_state_commitment=room_state_commitment,
+        query_commitment=query_commitment,
+        grant_set_commitment=grant_set_commitment,
+        allocation_commitment=allocation_commitment,
+        owners_amounts_hash=owners_amounts_hash,
+        asset=asset,
+        total=total,
+        execution_commitment=execution_commitment,
+        result_commitment=result_commitment,
+        usage_commitment=usage_commitment,
+        attestation_evidence_hash=attestation_evidence_hash,
+        anchor_resource_hash=anchor_resource_hash,
+        anchor_decision_hash=anchor_decision_hash,
+        anchor_sequence=anchor_sequence,
+        expiry=expiry,
+    )
+    struct_hash = keccak(ROYALTY_SETTLEMENT_AUTHORIZATION_TYPEHASH + words)
+    return "0x" + keccak(b"\x19\x01" + domain_separator + struct_hash).hex()
+
+
 def independent_verdict_digest(verdict: IndependentTdxVerdict | dict[str, object]) -> str:
     payload = (
         verdict.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -227,15 +565,40 @@ def independent_verdict_digest(verdict: IndependentTdxVerdict | dict[str, object
         "qvl_compute_authorization_digest",
         "qvl_compute_authorization_signature",
     }
+    royalty_qvl_fields = {
+        "qvl_royalty_verifier_address",
+        "qvl_royalty_policy_commitment",
+        "qvl_royalty_release_policy_commitment",
+        "qvl_royalty_attestation_evidence_hash",
+        "qvl_royalty_anchor_evidence_commitment",
+        "qvl_royalty_authorization_expiry",
+        "qvl_royalty_authorization_digest",
+        "qvl_royalty_authorization_signature",
+    }
     supplied_qvl_fields = set(payload).intersection(qvl_fields)
     supplied_compute_qvl_fields = set(payload).intersection(compute_qvl_fields)
+    supplied_royalty_qvl_fields = set(payload).intersection(royalty_qvl_fields)
     if supplied_qvl_fields and supplied_qvl_fields != qvl_fields:
         raise VerifierUnavailable
     if supplied_compute_qvl_fields and supplied_compute_qvl_fields != compute_qvl_fields:
         raise VerifierUnavailable
-    if supplied_qvl_fields and supplied_compute_qvl_fields:
+    if supplied_royalty_qvl_fields and supplied_royalty_qvl_fields != royalty_qvl_fields:
         raise VerifierUnavailable
-    if set(payload) != expected | supplied_qvl_fields | supplied_compute_qvl_fields:
+    if sum(
+        bool(fields)
+        for fields in (
+            supplied_qvl_fields,
+            supplied_compute_qvl_fields,
+            supplied_royalty_qvl_fields,
+        )
+    ) > 1:
+        raise VerifierUnavailable
+    if set(payload) != (
+        expected
+        | supplied_qvl_fields
+        | supplied_compute_qvl_fields
+        | supplied_royalty_qvl_fields
+    ):
         raise VerifierUnavailable
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "0x" + hashlib.sha256(VERDICT_DOMAIN + encoded).hexdigest()
@@ -284,6 +647,53 @@ class DstackVerdictSigner:
         if not re.fullmatch(r"0x[0-9a-f]{130}", signature):
             raise VerifierUnavailable
         return signature
+
+    def sign_raw_digest(self, digest: str) -> str:
+        if not BYTES32_RE.fullmatch(digest):
+            raise VerifierUnavailable
+        try:
+            signed = self._account.unsafe_sign_hash(bytes.fromhex(digest[2:]))
+            signature = "0x" + bytes(signed.signature).hex()
+        except Exception as exc:
+            raise VerifierUnavailable from exc
+        if not re.fullmatch(r"0x[0-9a-f]{130}", signature):
+            raise VerifierUnavailable
+        return signature
+
+
+@dataclass(frozen=True)
+class DstackRoyaltySettlementSigner:
+    """Purpose-separated raw signer for RoyaltyDistributor v3 only."""
+
+    _account: LocalAccount = field(repr=False)
+    key_path: str
+
+    custody = "dstack_derived_diligence_qvl_royalty_settlement_signer"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "address", normalize_address(self._account.address))
+
+    @classmethod
+    def from_key_id(cls, key_id: str) -> "DstackRoyaltySettlementSigner":
+        if any(
+            os.environ.get(name, "").strip()
+            for name in ("DSTACK_SIMULATOR_ENDPOINT", "TAPPD_SIMULATOR_ENDPOINT")
+        ):
+            raise VerifierUnavailable
+        if not BYTES32_RE.fullmatch(key_id) or int(key_id[2:], 16) == 0:
+            raise VerifierUnavailable
+        key_path = f"{ROYALTY_SIGNER_PATH_PREFIX}/{key_id[2:]}"
+        try:
+            client = DstackClient()
+            if not client.is_reachable():
+                raise VerifierUnavailable
+            key_result = client.get_key(key_path, "ethereum-signing")
+            account = to_account_secure(key_result)
+        except VerifierUnavailable:
+            raise
+        except Exception as exc:
+            raise VerifierUnavailable from exc
+        return cls(_account=account, key_path=key_path)
 
     def sign_raw_digest(self, digest: str) -> str:
         if not BYTES32_RE.fullmatch(digest):

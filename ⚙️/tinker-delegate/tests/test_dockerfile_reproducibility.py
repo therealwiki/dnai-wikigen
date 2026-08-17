@@ -108,6 +108,8 @@ class DockerfileReproducibilityTest(unittest.TestCase):
                 "!Dockerfile",
                 "!pyproject.toml",
                 "!uv.lock",
+                "!scripts/",
+                "!scripts/fetch_pinned_qwen3_tokenizer.py",
                 "!tinker_delegate/",
                 "!tinker_delegate/**",
                 "tinker_delegate/**/__pycache__/",

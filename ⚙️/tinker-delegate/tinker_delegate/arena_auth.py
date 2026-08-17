@@ -3,8 +3,9 @@
 Arena authorization is intentionally separate from seller artifact-upload
 authorization.  A browser signs a short-lived, challenge-version-bound
 ``personal_sign`` message and exchanges the one-time nonce for a short-lived
-token carrying the exact Arena session scopes: encrypted submission and the
-authenticated owner's bounded read projection.  The distinct issuer,
+token carrying the exact Arena session scopes: encrypted submission, the
+authenticated owner's bounded read projection, and owner-only pre-claim
+cancellation/ciphertext-cleanup management.  The distinct issuer,
 audience, signing-key domain, JWT key id, and resource claims prevent an Arena
 token from being accepted by the deal, operator, or Tinker proxy paths.
 """
@@ -43,10 +44,12 @@ from tinker_delegate.wallet_signature_verifier import (
 
 ARENA_SUBMIT_SCOPE = "challenge:submit"
 ARENA_OWNER_READ_SCOPE = "challenge:submissions:read"
+ARENA_OWNER_MANAGE_SCOPE = "challenge:submissions:manage"
 ARENA_AGENT_MANAGE_SCOPE = "challenge:agents:manage"
 ARENA_SESSION_SCOPES = (
     ARENA_SUBMIT_SCOPE,
     ARENA_OWNER_READ_SCOPE,
+    ARENA_OWNER_MANAGE_SCOPE,
 )
 ARENA_AGENT_MANAGEMENT_SCOPES = (ARENA_AGENT_MANAGE_SCOPE,)
 ARENA_AGENT_SCOPES = tuple(sorted((ARENA_SUBMIT_SCOPE, ARENA_OWNER_READ_SCOPE)))
@@ -985,6 +988,23 @@ def arena_agent_store_integrity_key(settings: Any) -> bytes:
     )
 
 
+def arena_store_integrity_key(settings: Any) -> bytes:
+    """Resolve the purpose-separated HMAC key for Arena queue state.
+
+    A real dstack process always derives this key from its own storage-key
+    path. Explicit material and the local wallet-secret fallback exist only so
+    development processes can exercise the authenticated file format.
+    """
+
+    return _arena_agent_key(
+        settings,
+        explicit_name="arena_store_integrity_key",
+        path_name="arena_store_integrity_key_path",
+        default_path="tinker/arena_store_integrity",
+        domain=b"tinker-arena-store-integrity-v1:",
+    )
+
+
 def _arena_agent_key(
     settings: Any,
     *,
@@ -996,11 +1016,11 @@ def _arena_agent_key(
     if dstack_utils.is_dstack_enabled():
         path = str(getattr(settings, path_name, default_path) or "").strip()
         if not path:
-            raise ArenaAuthUnavailable("Arena agent dstack key path is not configured")
+            raise ArenaAuthUnavailable("Arena dstack key path is not configured")
         try:
             material = dstack_utils.derive_storage_key(path)
         except Exception as exc:
-            raise ArenaAuthUnavailable("Arena agent dstack key derivation failed") from exc
+            raise ArenaAuthUnavailable("Arena dstack key derivation failed") from exc
         return hashlib.sha256(domain + b"dstack:" + material).digest()
     explicit = str(getattr(settings, explicit_name, "") or "")
     if not explicit:
@@ -1044,9 +1064,10 @@ def _challenge_message(
             raise ArenaAuthError(f"wallet auth {field_name} contains a newline")
     if scopes == ARENA_SESSION_SCOPES:
         statement = (
-            "Authorize encrypted candidate submissions and read only your bounded "
-            "submission status for the specified challenge version during this "
-            "short session. This request will not trigger a blockchain transaction."
+            "Authorize encrypted candidate submissions, read only your bounded "
+            "submission status, cancel only before worker claim, and retry terminal "
+            "ciphertext unlink for the specified challenge version during this short "
+            "session. This request will not trigger a blockchain transaction."
         )
     elif scopes == ARENA_AGENT_MANAGEMENT_SCOPES:
         statement = (

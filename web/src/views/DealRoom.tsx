@@ -34,15 +34,31 @@ import {
 import { baseSepolia } from "viem/chains";
 import { BASE_SEPOLIA_USDC_ADDRESS, computeVaultDeployment, deployment, explorerTx } from "../config";
 import {
+  assertDealCreationIntentContext,
+  createDealCreationIntent,
+  createDealCreationRecovery,
+  DEAL_CREATION_CONFIRMATION_DEPTH,
+  DEAL_CREATION_RECOVERY_STORAGE_KEY,
+  decodeDealCreationRecovery,
   diligenceRoomAbi,
+  encodeDealCreationRecovery,
   formatEth,
   isZeroAddress,
+  loadDealById,
   loadDiligenceWritePolicySnapshot,
   loadDeals,
+  mergeDealPages,
   publicClient,
+  reconcileDealCreation,
   shortAddress,
   type ChainDeal,
+  type DealCreationReconciliation,
+  type DealCreationRecovery,
+  type DealPageCursor,
+  type DealSnapshot,
   type DealState,
+  type ExactDealLookup,
+  walletRequestWasExplicitlyRejected,
 } from "../lib/contract";
 import { wallet } from "../lib/wallet";
 import {
@@ -75,6 +91,20 @@ import {
 
 type DealFilter = "all" | "open" | "mine" | "settled";
 type TxState = { kind: "idle" | "wallet" | "chain" | "success" | "error"; label: string; hash?: Hex };
+type DealListFailure = "restart" | "more" | undefined;
+type DealCreationResolution =
+  | DealCreationReconciliation
+  | Readonly<{
+    status: "not_broadcast";
+    reason: string;
+    observedThroughBlock: bigint;
+    transactionHash?: undefined;
+  }>;
+type StoredDealCreationRecovery = Readonly<{
+  recovery?: DealCreationRecovery;
+  error?: string;
+  restored: boolean;
+}>;
 type ArtifactUploadRecovery = Readonly<{
   dealId: string;
   file: File;
@@ -82,11 +112,43 @@ type ArtifactUploadRecovery = Readonly<{
   receiptName: string;
   message: string;
 }>;
+export type DealIngressPhase =
+  | "idle"
+  | "authorizing"
+  | "encrypting"
+  | "retrying"
+  | "accepted"
+  | "failed_preflight"
+  | "delivery_uncertain";
+type DealIngressLifecycle = Readonly<{
+  phase: DealIngressPhase;
+  ciphertextReceipt?: string;
+}>;
+export type DealLifecycleTone = "complete" | "current" | "pending" | "unobserved" | "failed" | "expired";
+export type DealLifecycleStep = Readonly<{
+  key: "ciphertext" | "queue" | "policy" | "evaluation" | "result" | "resolution";
+  label: string;
+  detail: string;
+  tone: DealLifecycleTone;
+}>;
+export type DealLifecycleProjection = Readonly<{
+  headline: string;
+  explanation: string;
+  steps: readonly DealLifecycleStep[];
+}>;
+
+function lifecycleSteps(...steps: DealLifecycleStep[]): readonly DealLifecycleStep[] {
+  return Object.freeze(steps);
+}
 type ContractWritePolicy = {
   bytecodeObserved: true;
   inspectedBlock: bigint;
   productionRelease: true;
   developer: Address;
+  initialDeveloper: Address;
+  releaseGovernanceController: Address;
+  pendingDeveloper: typeof zeroAddress;
+  pendingDeveloperActivatesAt: 0n;
   resultVerifier: Address;
   resultVerifierFrozen: true;
   attestationVerifier: Address;
@@ -120,6 +182,34 @@ type AuthorizedWrite = {
 };
 
 type AuthorizeWrite = (prompt: (authorized: AuthorizedWrite) => Promise<Hex>) => Promise<Hex>;
+type TransactHooks = Readonly<{
+  onBroadcast?: (hash: Hex) => void;
+  onFailure?: (cause: unknown, hash: Hex | undefined, walletPromptOpened: boolean) => void;
+}>;
+
+function readStoredDealCreationRecovery(): StoredDealCreationRecovery {
+  let serialized: string | null;
+  try {
+    serialized = window.localStorage.getItem(DEAL_CREATION_RECOVERY_STORAGE_KEY);
+  } catch (cause) {
+    return Object.freeze({
+      restored: false,
+      error: cause instanceof Error ? cause.message : "Browser recovery storage is unavailable",
+    });
+  }
+  if (!serialized) return Object.freeze({ restored: false });
+  try {
+    return Object.freeze({
+      recovery: decodeDealCreationRecovery(serialized),
+      restored: true,
+    });
+  } catch (cause) {
+    return Object.freeze({
+      restored: true,
+      error: cause instanceof Error ? cause.message : "Stored Deal Room creation recovery is invalid",
+    });
+  }
+}
 
 const erc20Abi = [
   {
@@ -213,10 +303,111 @@ const DEMO_DEALS: ChainDeal[] = [
 
 const TERMINAL: DealState[] = ["Accepted", "Rejected", "Expired"];
 
+/**
+ * Project only evidence the public browser actually has. The worker's
+ * queued/awaiting-policy/running states are intentionally not inferred from an
+ * accepted ciphertext POST; today they remain private runtime state.
+ */
+export function projectDealLifecycle(input: {
+  state: DealState;
+  ingress: DealIngressLifecycle;
+}): DealLifecycleProjection {
+  const resolved = input.state === "Accepted" || input.state === "Rejected";
+  const hasCommittedResult = input.state === "Evaluated" || resolved;
+  const expired = input.state === "Expired";
+
+  if (expired) {
+    return Object.freeze({
+      headline: "Expired on Base Sepolia",
+      explanation: "The room reached its terminal expiry state. This browser does not infer that any queued or running evaluation completed before expiry.",
+      steps: lifecycleSteps(
+        { key: "ciphertext", label: "Ciphertext", detail: "Prior ingress is not reconstructed", tone: "unobserved" },
+        { key: "queue", label: "Queued", detail: "Historical worker state not public", tone: "unobserved" },
+        { key: "policy", label: "Awaiting policy", detail: "Historical worker state not public", tone: "unobserved" },
+        { key: "evaluation", label: "Running", detail: "Never inferred from elapsed time", tone: "unobserved" },
+        { key: "result", label: "Bounded result", detail: "No committed result observed", tone: "pending" },
+        { key: "resolution", label: "Expired", detail: "Terminal chain state", tone: "expired" },
+      ),
+    });
+  }
+
+  if (hasCommittedResult) {
+    return Object.freeze({
+      headline: resolved ? `Result ${input.state.toLowerCase()} on Base Sepolia` : "Bounded result committed on Base Sepolia",
+      explanation: "The contract result transition is public. Queue, policy, and running events are shown as transitively completed prerequisites, not as separately observed CVM telemetry.",
+      steps: lifecycleSteps(
+        { key: "ciphertext", label: "Ciphertext", detail: "Required before evaluation; not replayed here", tone: "complete" },
+        { key: "queue", label: "Queued", detail: "Transitively complete · event not public", tone: "complete" },
+        { key: "policy", label: "Awaiting policy", detail: "Gate cleared · receipt not exposed here", tone: "complete" },
+        { key: "evaluation", label: "Running", detail: "Finished · exact runtime trace private", tone: "complete" },
+        { key: "result", label: "Bounded result", detail: "Commitment observed on-chain", tone: "complete" },
+        { key: "resolution", label: resolved ? input.state : "Buyer decision", detail: resolved ? "Terminal chain state" : "Accept or reject remains open", tone: resolved ? "complete" : "current" },
+      ),
+    });
+  }
+
+  if (input.state === "Created") {
+    return Object.freeze({
+      headline: "Waiting for a buyer-defined cap and evaluator recipe",
+      explanation: "No ciphertext can enter before the room is funded and the immutable evaluator policy is selected.",
+      steps: lifecycleSteps(
+        { key: "ciphertext", label: "Ciphertext", detail: "Locked until funding", tone: "pending" },
+        { key: "queue", label: "Queued", detail: "Not entered", tone: "pending" },
+        { key: "policy", label: "Awaiting policy", detail: "Evaluator recipe not selected", tone: "pending" },
+        { key: "evaluation", label: "Running", detail: "Not started", tone: "pending" },
+        { key: "result", label: "Bounded result", detail: "Not available", tone: "pending" },
+        { key: "resolution", label: "Expired / settled", detail: "Terminal state not reached", tone: "pending" },
+      ),
+    });
+  }
+
+  const ingress = input.ingress;
+  const ciphertextStep: DealLifecycleStep = ingress.phase === "accepted"
+    ? { key: "ciphertext", label: "Ciphertext", detail: "Delegate acknowledgement matched locally", tone: "complete" }
+    : ingress.phase === "delivery_uncertain"
+      ? { key: "ciphertext", label: "Ciphertext", detail: "Delivery uncertain · retry retained pair", tone: "failed" }
+      : ingress.phase === "failed_preflight"
+        ? { key: "ciphertext", label: "Ciphertext", detail: "Failed before a confirmed POST · correct and retry", tone: "failed" }
+        : ingress.phase === "retrying"
+          ? { key: "ciphertext", label: "Ciphertext", detail: "Retrying the exact retained pair", tone: "current" }
+          : ingress.phase === "authorizing"
+            ? { key: "ciphertext", label: "Ciphertext", detail: "Awaiting wallet authorization", tone: "current" }
+            : ingress.phase === "encrypting"
+              ? { key: "ciphertext", label: "Ciphertext", detail: "Verifying, sealing, and sending", tone: "current" }
+              : { key: "ciphertext", label: "Ciphertext", detail: "Seller upload not observed in this tab", tone: "current" };
+  const acknowledged = ingress.phase === "accepted";
+  const uncertain = ingress.phase === "delivery_uncertain";
+
+  return Object.freeze({
+    headline: acknowledged
+      ? "Ciphertext acknowledged · internal phase remains bounded"
+      : uncertain
+        ? "Delivery failed closed · exact-pair retry available"
+        : "Funded room · waiting for a verifiable ciphertext handoff",
+    explanation: acknowledged
+      ? "The acknowledgement proves only this upload response. Queued, awaiting-policy, and running are private worker states; the browser waits for a bounded on-chain result instead of inventing progress."
+      : uncertain
+        ? "The POST boundary may have been crossed. The original file and recovery receipt stay locked in memory so Retry cannot silently send different bytes."
+        : "Another session may already have uploaded the artifact. Until a bounded result reaches the contract, this browser labels worker progress unobserved.",
+    steps: lifecycleSteps(
+      ciphertextStep,
+      { key: "queue", label: "Queued", detail: acknowledged ? "Eligible · queue record not public" : uncertain ? "Unknown after ambiguous delivery" : "Not observed", tone: "unobserved" },
+      { key: "policy", label: "Awaiting policy", detail: "Private runtime state · not asserted", tone: "unobserved" },
+      { key: "evaluation", label: "Running", detail: "Private runtime state · not asserted", tone: "unobserved" },
+      { key: "result", label: "Bounded result", detail: "Waiting for chain commitment", tone: "pending" },
+      { key: "resolution", label: "Expired / settled", detail: "Room remains funded", tone: "pending" },
+    ),
+  });
+}
+
 function assetSymbol(token: Address): string {
   if (isZeroAddress(token)) return "ETH";
   if (deployment.usdcAddress && token.toLowerCase() === deployment.usdcAddress.toLowerCase()) return "USDC";
   return "TOKEN";
+}
+
+function sameAddress(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function formatAsset(value: bigint, token: Address, digits = 4): string {
@@ -301,6 +492,7 @@ function DealActions(props: {
   artifactRecovery: () => ArtifactUploadRecovery | undefined;
   retainArtifactRecovery: (recovery: ArtifactUploadRecovery) => void;
   clearArtifactRecovery: (dealId: string) => void;
+  onIngressLifecycleChange: (state: DealIngressLifecycle) => void;
 }) {
   const initialRecovery = props.artifactRecovery();
   const [amount, setAmount] = createSignal(
@@ -435,6 +627,7 @@ function DealActions(props: {
         setUploadMessage("");
         try {
           setUploadState("authorizing");
+          props.onIngressLifecycleChange({ phase: retry ? "retrying" : "authorizing" });
           const authorization = await wallet.authorizeDealUpload(props.deal.id);
           const walletVersion = wallet.authorizationVersion();
           if (
@@ -445,6 +638,7 @@ function DealActions(props: {
             throw new Error("Wallet session changed before encrypted upload; authorize it again");
           }
           setUploadState("encrypting");
+          props.onIngressLifecycleChange({ phase: "encrypting" });
           const result = await uploadEncryptedArtifact(
             file,
             receipt,
@@ -464,6 +658,10 @@ function DealActions(props: {
           props.clearArtifactRecovery(props.deal.id.toString());
           setUploadState("success");
           setUploadMessage(`Encrypted artifact accepted · ciphertext receipt ${result.ciphertextSha256.slice(0, 18)}…`);
+          props.onIngressLifecycleChange({
+            phase: "accepted",
+            ciphertextReceipt: result.ciphertextSha256,
+          });
           setUploadFile(undefined);
           setUploadReceipt(undefined);
           setUploadReceiptName("");
@@ -486,6 +684,11 @@ function DealActions(props: {
           }
           setUploadState("error");
           setUploadMessage(recoveryMessage);
+          props.onIngressLifecycleChange({
+            phase: uploadBoundaryEntered || uploadRecoveryPending()
+              ? "delivery_uncertain"
+              : "failed_preflight",
+          });
           return false;
         }
       },
@@ -544,6 +747,7 @@ function DealActions(props: {
     setUploadReceiptName("");
     setUploadState("idle");
     setUploadMessage("");
+    props.onIngressLifecycleChange({ phase: "idle" });
     uploadFileInput.value = "";
     uploadReceiptInput.value = "";
   };
@@ -657,6 +861,16 @@ function DealCard(props: {
   retainArtifactRecovery: (recovery: ArtifactUploadRecovery) => void;
   clearArtifactRecovery: (dealId: string) => void;
 }) {
+  const [ingressLifecycle, setIngressLifecycle] = createSignal<DealIngressLifecycle>(
+    props.artifactRecovery()
+      ? { phase: "delivery_uncertain" }
+      : { phase: "idle" },
+  );
+  const lifecycle = createMemo(() => projectDealLifecycle({
+    state: props.deal.state,
+    ingress: ingressLifecycle(),
+  }));
+
   return (
     <article class="deal-card">
       <div class="deal-card-head">
@@ -688,6 +902,24 @@ function DealCard(props: {
         <div><small>Buyer cap</small><strong>{props.deal.budgetCap > 0n ? formatAsset(props.deal.budgetCap, props.deal.paymentToken) : "Not funded"}</strong></div>
         <div><small>Compute + fee</small><strong>{props.deal.computeCost > 0n ? formatAsset(props.deal.computeCost + props.deal.fee, props.deal.paymentToken) : "Pending"}</strong></div>
       </div>
+      <section class="deal-lifecycle" aria-label={`Bounded lifecycle for Deal Room ${props.deal.id.toString()}`}>
+        <div class="deal-lifecycle-head">
+          <div><small>BOUNDED ROOM LIFECYCLE</small><strong>{lifecycle().headline}</strong></div>
+          <span class={props.modeled ? "modeled" : "live"}>{props.modeled ? "MODELED PROJECTION" : "PUBLIC + LOCAL EVIDENCE"}</span>
+        </div>
+        <ol>
+          <For each={lifecycle().steps}>{(step, index) => (
+            <li class={step.tone} aria-current={step.tone === "current" ? "step" : undefined}>
+              <span>{String(index() + 1).padStart(2, "0")}</span>
+              <div><strong>{step.label}</strong><small>{step.detail}</small></div>
+            </li>
+          )}</For>
+        </ol>
+        <p>{lifecycle().explanation}</p>
+        <Show when={ingressLifecycle().ciphertextReceipt} keyed>
+          {(receipt) => <div class="deal-lifecycle-receipt"><ShieldCheck size={13} /><span>LOCAL ACKNOWLEDGEMENT</span><code>{shortAddress(receipt, 10)}</code></div>}
+        </Show>
+      </section>
       <Show when={props.deal.state === "Evaluated" || props.deal.state === "Accepted" || props.deal.state === "Rejected"}>
         <div class="bounded-result">
           <div class="result-orb"><ShieldCheck size={19} /></div>
@@ -728,16 +960,25 @@ function DealCard(props: {
         artifactRecovery={props.artifactRecovery}
         retainArtifactRecovery={props.retainArtifactRecovery}
         clearArtifactRecovery={props.clearArtifactRecovery}
+        onIngressLifecycleChange={setIngressLifecycle}
       />
     </article>
   );
 }
 
 export function DealRoom(props: { inspectEvidence: (context: VerificationContext) => void }) {
+  const restoredCreation = readStoredDealCreationRecovery();
   const [deals, setDeals] = createSignal<ChainDeal[]>(deployment.contractAddress ? [] : DEMO_DEALS);
   const [chainBacked, setChainBacked] = createSignal(false);
   const [loading, setLoading] = createSignal(Boolean(deployment.contractAddress));
   const [loadError, setLoadError] = createSignal("");
+  const [loadFailure, setLoadFailure] = createSignal<DealListFailure>();
+  const [dealSnapshot, setDealSnapshot] = createSignal<DealSnapshot>();
+  const [dealContinuation, setDealContinuation] = createSignal<DealPageCursor>();
+  const [exactDealId, setExactDealId] = createSignal("");
+  const [exactLookup, setExactLookup] = createSignal<ExactDealLookup>();
+  const [exactLookupError, setExactLookupError] = createSignal("");
+  const [exactLookupLoading, setExactLookupLoading] = createSignal(false);
   const [filter, setFilter] = createSignal<DealFilter>("all");
   const [showCreate, setShowCreate] = createSignal(false);
   const [reserve, setReserve] = createSignal("0.015");
@@ -753,12 +994,18 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
   const [tx, setTx] = createSignal<TxState>({ kind: "idle", label: "" });
   const [activeOperation, setActiveOperation] = createSignal<DealRoomOperationLease>();
   const [artifactUploadRecovery, setArtifactUploadRecovery] = createSignal<ArtifactUploadRecovery>();
+  const [dealCreationRecovery, setDealCreationRecovery] = createSignal<DealCreationRecovery | undefined>(restoredCreation.recovery);
+  const [dealCreationResolution, setDealCreationResolution] = createSignal<DealCreationResolution>();
+  const [dealCreationStorageError, setDealCreationStorageError] = createSignal(restoredCreation.error ?? "");
+  const [creationRecoveryRestored] = createSignal(restoredCreation.restored);
   const [pendingNative, setPendingNative] = createSignal(0n);
   const [pendingUsdc, setPendingUsdc] = createSignal(0n);
   const [writePolicy, setWritePolicy] = createSignal<ContractWritePolicy>();
   const [policyMessage, setPolicyMessage] = createSignal("");
   const operationLock = new DealRoomOperationLock((active) => setActiveOperation(active));
   let artifactPreparation = 0;
+  let dealLoadGeneration = 0;
+  let exactLookupGeneration = 0;
 
   const contractConfigured = () => Boolean(deployment.contractAddress);
   const writesReady = () => chainBacked() && deployment.contractWritesEnabled && Boolean(writePolicy());
@@ -768,8 +1015,20 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
     operationInFlight: operationBusy() || loading(),
     uploadRecoveryPending: artifactUploadRecovery() !== undefined,
   });
-  const creationDraftIsAllowed = () => writesReady() && draftMutationIsAllowed();
-  const creationLocked = () => !writesReady() || mutationLocked();
+  const creationDraftIsAllowed = () =>
+    writesReady()
+    && draftMutationIsAllowed()
+    && dealCreationRecovery() === undefined
+    && dealCreationStorageError() === "";
+  const creationLocked = () =>
+    !writesReady()
+    || mutationLocked()
+    || dealCreationRecovery() !== undefined
+    || dealCreationStorageError() !== "";
+  const creationRetryAllowed = () => {
+    const status = dealCreationResolution()?.status;
+    return status === "reverted" || status === "not_broadcast";
+  };
   const retainArtifactRecovery = (recovery: ArtifactUploadRecovery) => {
     setArtifactUploadRecovery((current) => {
       if (current && current.dealId !== recovery.dealId) return current;
@@ -779,6 +1038,46 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
   const clearArtifactRecovery = (dealId: string) => {
     setArtifactUploadRecovery((current) => current?.dealId === dealId ? undefined : current);
   };
+  const persistDealCreationRecovery = (
+    recovery: DealCreationRecovery,
+    mustPersistBeforePrompt: boolean,
+  ): void => {
+    const normalized = createDealCreationRecovery(recovery.intent, recovery.transactionHash);
+    try {
+      window.localStorage.setItem(
+        DEAL_CREATION_RECOVERY_STORAGE_KEY,
+        encodeDealCreationRecovery(normalized),
+      );
+      setDealCreationStorageError("");
+      setDealCreationRecovery(normalized);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Browser recovery storage is unavailable";
+      setDealCreationStorageError(message);
+      if (mustPersistBeforePrompt) throw new Error(`Creation was not broadcast because recovery metadata could not be persisted: ${message}`);
+      // A hash may already exist. Retain it in memory even when durable storage
+      // refused the immediate hash update; the previously persisted hashless
+      // intent still fails closed after a reload.
+      setDealCreationRecovery(normalized);
+    }
+  };
+  const clearDealCreationRecovery = (): boolean => {
+    try {
+      window.localStorage.removeItem(DEAL_CREATION_RECOVERY_STORAGE_KEY);
+    } catch (cause) {
+      setDealCreationStorageError(cause instanceof Error ? cause.message : "Could not clear browser recovery storage");
+      return false;
+    }
+    setDealCreationRecovery(undefined);
+    setDealCreationResolution(undefined);
+    setDealCreationStorageError("");
+    return true;
+  };
+  const creationRuntimeContext = () => ({
+    account: wallet.account(),
+    chainId: wallet.chainId(),
+    releaseSha: deployment.releaseSha,
+    contract: deployment.contractAddress,
+  });
 
   const inspectContractWritePolicy = async (expectedAccount?: Address): Promise<ContractWritePolicy | undefined> => {
     const contract = deployment.contractAddress;
@@ -797,6 +1096,8 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
     if (
       !deployment.contractCodeHash
       || !deployment.contractDeveloper
+      || !deployment.contractInitialDeveloper
+      || !deployment.contractReleaseGovernanceController
       || !deployment.resultVerifierAddress
       || !deployment.attestationVerifierAddress
       || !deployment.attestationReleasePolicyHash
@@ -823,6 +1124,10 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
         bytecode,
         productionRelease,
         developer,
+        initialDeveloper,
+        releaseGovernanceController,
+        pendingDeveloper,
+        pendingDeveloperActivatesAt,
         resultVerifier,
         resultVerifierFrozen,
         attestationVerifier,
@@ -858,7 +1163,14 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
       if (!bytecode || bytecode === "0x") throw new Error("Configured DiligenceRoom has no bytecode on Base Sepolia");
       if (keccak256(bytecode) !== deployment.contractCodeHash) throw new Error("DiligenceRoom runtime bytecode does not match the release pin");
       if (!productionRelease) throw new Error("DiligenceRoom was not constructor-bound as a production release");
+      if (initialDeveloper.toLowerCase() !== deployment.contractInitialDeveloper.toLowerCase()) throw new Error("DiligenceRoom initial developer does not match the release pin");
+      if (releaseGovernanceController.toLowerCase() !== deployment.contractReleaseGovernanceController.toLowerCase()) throw new Error("DiligenceRoom immutable governance controller does not match the release pin");
       if (developer.toLowerCase() !== deployment.contractDeveloper.toLowerCase()) throw new Error("DiligenceRoom developer role does not match the release pin");
+      if (developer.toLowerCase() !== releaseGovernanceController.toLowerCase()) throw new Error("DiligenceRoom governance controller has not accepted the delayed developer handoff");
+      if (
+        pendingDeveloper.toLowerCase() !== zeroAddress
+        || pendingDeveloperActivatesAt !== 0n
+      ) throw new Error("DiligenceRoom has an unexpected pending developer handoff");
       if (resultVerifier.toLowerCase() !== deployment.resultVerifierAddress.toLowerCase()) throw new Error("DiligenceRoom result verifier does not match the release pin");
       if (!resultVerifierFrozen) throw new Error("DiligenceRoom result verifier is not permanently frozen");
       if (attestationVerifier.toLowerCase() !== deployment.attestationVerifierAddress.toLowerCase()) throw new Error("DiligenceRoom independent QVL verifier does not match the release pin");
@@ -891,6 +1203,10 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
         inspectedBlock: blockNumber,
         productionRelease: true,
         developer,
+        initialDeveloper,
+        releaseGovernanceController,
+        pendingDeveloper: zeroAddress,
+        pendingDeveloperActivatesAt: 0n,
         resultVerifier,
         resultVerifierFrozen: true,
         attestationVerifier,
@@ -916,7 +1232,7 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
         composeApproved: true,
       };
       setWritePolicy(policy);
-      setPolicyMessage(`Write gate matched at Base Sepolia block ${blockNumber}: production constructor, frozen verifiers, one compose, one TEE, and exactly three evaluator recipes.`);
+      setPolicyMessage(`Write gate matched at Base Sepolia block ${blockNumber}: the immutable governance controller accepted its delayed handoff, no developer transfer is pending, and the frozen release contains one compose, one TEE, and exactly three evaluator recipes.`);
       return policy;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Contract write policy inspection failed";
@@ -960,20 +1276,80 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
 
   const refresh = async () => {
     if (!deployment.contractAddress) return;
+    const generation = ++dealLoadGeneration;
     setChainBacked(false);
     setLoading(true);
     setLoadError("");
+    setLoadFailure(undefined);
     try {
       try {
-        const chainDeals = await loadDeals();
-        setDeals(chainDeals);
+        const page = await loadDeals();
+        if (generation !== dealLoadGeneration) return;
+        setDeals([...page.deals]);
+        setDealSnapshot(page.snapshot);
+        setDealContinuation(page.continuation);
         setChainBacked(true);
       } catch (cause) {
+        if (generation !== dealLoadGeneration) return;
         setLoadError(cause instanceof Error ? cause.message : "Unable to read the contract");
+        setLoadFailure("restart");
       }
       await inspectContractWritePolicy();
     } finally {
-      setLoading(false);
+      if (generation === dealLoadGeneration) setLoading(false);
+    }
+  };
+
+  const loadMoreDeals = async () => {
+    const cursor = dealContinuation();
+    if (!cursor || loading()) return;
+    const generation = dealLoadGeneration;
+    setLoading(true);
+    setLoadError("");
+    setLoadFailure(undefined);
+    try {
+      const page = await loadDeals({ cursor });
+      if (generation !== dealLoadGeneration || dealContinuation() !== cursor) return;
+      setDeals((current) => [...mergeDealPages(current, page.deals)]);
+      setDealSnapshot(page.snapshot);
+      setDealContinuation(page.continuation);
+    } catch (cause) {
+      if (generation !== dealLoadGeneration) return;
+      setLoadError(cause instanceof Error ? cause.message : "Unable to load the next pinned room page");
+      setLoadFailure("more");
+    } finally {
+      if (generation === dealLoadGeneration) setLoading(false);
+    }
+  };
+
+  const retryDealLoad = () => {
+    if (loadFailure() === "more" && dealContinuation()) {
+      void loadMoreDeals();
+      return;
+    }
+    void refresh();
+  };
+
+  const inspectExactDeal = async () => {
+    const candidate = exactDealId().trim();
+    if (!/^(0|[1-9][0-9]*)$/.test(candidate)) {
+      setExactLookupError("Enter one canonical nonnegative Deal Room ID");
+      return;
+    }
+    const requestedId = BigInt(candidate);
+    const generation = ++exactLookupGeneration;
+    setExactLookupLoading(true);
+    setExactLookupError("");
+    try {
+      const lookup = await loadDealById(requestedId);
+      if (generation !== exactLookupGeneration || exactDealId().trim() !== candidate) return;
+      setExactLookup(lookup);
+    } catch (cause) {
+      if (generation !== exactLookupGeneration) return;
+      setExactLookup(undefined);
+      setExactLookupError(cause instanceof Error ? cause.message : "Unable to inspect that exact Deal Room ID");
+    } finally {
+      if (generation === exactLookupGeneration) setExactLookupLoading(false);
     }
   };
 
@@ -993,6 +1369,12 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
       if (filter() === "mine") return Boolean(account && (deal.seller.toLowerCase() === account || deal.buyer.toLowerCase() === account));
       return true;
     });
+  });
+  const visibleDeals = createMemo(() => {
+    const filteredDeals = filtered();
+    const exact = exactLookup()?.deal;
+    if (!exact || filteredDeals.some((deal) => deal.id === exact.id)) return filteredDeals;
+    return [exact, ...filteredDeals];
   });
 
   const prepareArtifact = async (file: File | undefined) => {
@@ -1052,6 +1434,7 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
   const transact = async (
     label: string,
     action: (authorize: AuthorizeWrite) => Promise<Hex>,
+    hooks?: TransactHooks,
   ): Promise<boolean> => {
     if (!draftMutationIsAllowed()) return false;
     if (!deployment.contractWritesEnabled || !deployment.contractAddress) {
@@ -1067,6 +1450,8 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
       "wallet_transaction",
       label,
       async (lease) => {
+        let broadcastHash: Hex | undefined;
+        let walletPromptOpened = false;
         try {
           if (!wallet.isCorrectChain()) await wallet.switchToBase();
           if (!operationLock.isCurrent(lease)) throw new Error("A newer Deal Room operation replaced this wallet request");
@@ -1094,12 +1479,17 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
             onPrompt: (policy) => {
               if (!operationLock.isCurrent(lease)) throw new Error("Wallet authorization lease is no longer current");
               authorizationCount += 1;
+              walletPromptOpened = true;
               setTx({ kind: "wallet", label: `${label}: confirm in your wallet (policy checked at block ${policy.inspectedBlock})` });
             },
             prompt: ({ client, account, policy }) => prompt({ client, account, contract, policy }),
           });
 
           const hash = await action(authorize);
+          broadcastHash = hash;
+          // Retain the hash synchronously before receipt polling or any other
+          // awaited operation can lose the wallet response.
+          hooks?.onBroadcast?.(hash);
           if (!operationLock.isCurrent(lease)) throw new Error("Wallet authorization lease is no longer current");
           if (authorizationCount === 0) throw new Error("Mutation attempted without a fresh contract policy inspection");
           assertWalletMutationContext(
@@ -1120,7 +1510,12 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
           await Promise.all([refresh(), refreshPending(expectedAccount), wallet.refreshBalance()]);
           return true;
         } catch (cause) {
-          setTx({ kind: "error", label: cause instanceof Error ? cause.message : `${label} failed` });
+          hooks?.onFailure?.(cause, broadcastHash, walletPromptOpened);
+          setTx({
+            kind: "error",
+            label: cause instanceof Error ? cause.message : `${label} failed`,
+            hash: broadcastHash,
+          });
           return false;
         }
       },
@@ -1128,15 +1523,190 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
     return operation.started ? operation.value : false;
   };
 
+  const finalizeCreatedDeal = async (
+    result: DealCreationReconciliation,
+  ): Promise<boolean> => {
+    if (result.status !== "confirmed" || result.dealId === undefined || !result.transactionHash) {
+      return false;
+    }
+    const privateReceiptUnavailable = creationRecoveryRestored() && artifactReceipt() === undefined;
+    if (!clearDealCreationRecovery()) {
+      setTx({
+        kind: "error",
+        label: "Room is confirmed, but the local recovery marker could not be cleared; retry remains locked",
+        hash: result.transactionHash,
+      });
+      return false;
+    }
+    ++artifactPreparation;
+    setArtifactReceipt(undefined);
+    setArtifactHash(undefined);
+    setArtifactName("");
+    setReceiptDownloaded(false);
+    setShowCreate(false);
+    setExactDealId(result.dealId.toString());
+    setTx({
+      kind: "success",
+      label: privateReceiptUnavailable
+        ? `Room #${result.dealId.toString()} recovered. This reload did not restore private artifact material; use the recovery receipt you downloaded before broadcast.`
+        : `Room #${result.dealId.toString()} matched its exact creation intent`,
+      hash: result.transactionHash,
+    });
+    await refresh();
+    return true;
+  };
+
+  const reconcileRetainedCreation = async (): Promise<DealCreationResolution | undefined> => {
+    const recovery = dealCreationRecovery();
+    if (!recovery || operationBusy()) return undefined;
+    setTx({
+      kind: "chain",
+      label: recovery.transactionHash
+        ? "Reconciling the retained transaction, exact DealCreated log, and room state"
+        : "Scanning the bounded post-intent block range for one exact DealCreated log",
+      hash: recovery.transactionHash,
+    });
+    try {
+      const result = await reconcileDealCreation(recovery);
+      if (result.transactionHash && !recovery.transactionHash) {
+        persistDealCreationRecovery(
+          createDealCreationRecovery(recovery.intent, result.transactionHash),
+          false,
+        );
+      }
+      setDealCreationResolution(result);
+      if (result.status === "confirmed") {
+        await finalizeCreatedDeal(result);
+      } else {
+        setTx({
+          kind: result.status === "pending" ? "chain" : "error",
+          label: result.reason,
+          hash: result.transactionHash,
+        });
+      }
+      return result;
+    } catch (cause) {
+      const label = cause instanceof Error ? cause.message : "Deal Room creation reconciliation failed";
+      setTx({ kind: "error", label, hash: recovery.transactionHash });
+      return undefined;
+    }
+  };
+
+  const broadcastRetainedCreation = async (
+    recovery: DealCreationRecovery,
+    label: string,
+  ): Promise<boolean> => {
+    const intent = recovery.intent;
+    const retainNotBroadcast = (reason: string): false => {
+      const resolution = Object.freeze({
+        status: "not_broadcast" as const,
+        reason,
+        observedThroughBlock: intent.startBlock,
+      });
+      setDealCreationResolution(resolution);
+      setTx({ kind: "error", label: resolution.reason });
+      return false;
+    };
+    try {
+      if (!isZeroAddress(intent.paymentToken)) {
+        if (!deployment.usdcAddress || !sameAddress(intent.paymentToken, deployment.usdcAddress)) {
+          throw new Error("Retained creation payment token is not the release-approved USDC contract");
+        }
+        await assertApprovedUsdc(intent.paymentToken);
+      }
+    } catch (cause) {
+      return retainNotBroadcast(
+        cause instanceof Error
+          ? `Creation stopped before a wallet prompt: ${cause.message}`
+          : "Creation stopped before a wallet prompt",
+      );
+    }
+    let failure: unknown;
+    let walletPromptOpened = false;
+    const created = await transact(
+      label,
+      async (authorize) => {
+        // Detect account/chain/release/contract drift before the wallet prompt,
+        // then repeat the exact check inside the freshly inspected callback.
+        assertDealCreationIntentContext(intent, creationRuntimeContext());
+        return authorize(({ client, account, contract }) => {
+          assertDealCreationIntentContext(intent, {
+            ...creationRuntimeContext(),
+            account,
+            contract,
+          });
+          if (isZeroAddress(intent.paymentToken)) {
+            return client.writeContract({
+              account,
+              chain: baseSepolia,
+              address: contract,
+              abi: diligenceRoomAbi,
+              functionName: "createDeal",
+              args: [
+                intent.reservePrice,
+                intent.expiry,
+                intent.artifactHash,
+                intent.teeIdentity,
+              ],
+            });
+          }
+          return client.writeContract({
+            account,
+            chain: baseSepolia,
+            address: contract,
+            abi: diligenceRoomAbi,
+            functionName: "createDeal",
+            args: [
+              intent.reservePrice,
+              intent.expiry,
+              intent.artifactHash,
+              intent.teeIdentity,
+              intent.paymentToken,
+            ],
+          });
+        });
+      },
+      {
+        onBroadcast: (transactionHash) => {
+          persistDealCreationRecovery(
+            createDealCreationRecovery(intent, transactionHash),
+            false,
+          );
+        },
+        onFailure: (cause, _hash, promptOpened) => {
+          failure = cause;
+          walletPromptOpened = promptOpened;
+        },
+      },
+    );
+    const retained = dealCreationRecovery();
+    if (
+      !created
+      && !retained?.transactionHash
+      && (!walletPromptOpened || walletRequestWasExplicitlyRejected(failure))
+    ) {
+      return retainNotBroadcast(
+        walletRequestWasExplicitlyRejected(failure)
+          ? "Wallet explicitly rejected the request before a transaction hash; the exact expiry and intent remain available for retry"
+          : "Creation stopped before a wallet prompt; the exact expiry and intent remain available for retry",
+      );
+    }
+    const resolution = await reconcileRetainedCreation();
+    return resolution?.status === "confirmed";
+  };
+
   const createDeal = async () => {
-    if (!draftMutationIsAllowed()) return;
+    if (!creationDraftIsAllowed()) return;
     const hash = artifactHash();
     const receipt = artifactReceipt();
     const tee = deployment.teeIdentity;
+    const account = wallet.account();
+    const contract = deployment.contractAddress;
+    const releaseSha = deployment.releaseSha;
     const settlementAsset = settlement();
     const requestedReserve = reserve();
     const selectedPaymentToken = paymentToken();
-    if (!wallet.client() || !wallet.account() || !deployment.contractAddress || !hash || !receipt || !tee) {
+    if (!wallet.client() || !account || !contract || !releaseSha || !hash || !receipt || !tee) {
       setTx({ kind: "error", label: "Connect a wallet and choose an artifact after the fresh deployment policy is configured" });
       return;
     }
@@ -1153,45 +1723,73 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
       setTx({ kind: "error", label: "Room lifetime must be a whole number from 1 to 90 days" });
       return;
     }
-    const expiry = BigInt(Math.floor(Date.now() / 1000) + days * 86400);
-    let nativeReserve: bigint;
     try {
-      nativeReserve = parseEther(requestedReserve);
-      if (nativeReserve <= 0n) throw new Error("Reserve must be greater than zero");
+      const expiry = BigInt(Math.floor(Date.now() / 1000) + days * 86400);
+      let reservePrice: bigint;
+      let token: Address = zeroAddress;
+      if (settlementAsset === "erc20") {
+        if (!deployment.usdcAddress || !sameAddress(selectedPaymentToken, deployment.usdcAddress)) {
+          throw new Error("Only the configured USDC contract is permitted by this frontend");
+        }
+        token = getAddress(selectedPaymentToken);
+        const decimals = await assertApprovedUsdc(token);
+        reservePrice = parseUnits(requestedReserve, decimals);
+      } else {
+        reservePrice = parseEther(requestedReserve);
+      }
+      if (reservePrice <= 0n) throw new Error("Reserve must be greater than zero");
+      const intent = createDealCreationIntent({
+        account,
+        chainId: baseSepolia.id,
+        releaseSha,
+        contract,
+        artifactHash: hash,
+        reservePrice,
+        expiry,
+        teeIdentity: tee,
+        paymentToken: token,
+        startBlock: await publicClient.getBlockNumber(),
+      });
+      const recovery = createDealCreationRecovery(intent);
+      // Persist the public, nonsecret exact intent before opening the wallet.
+      // If this fails, no transaction prompt is issued.
+      persistDealCreationRecovery(recovery, true);
+      setDealCreationResolution(undefined);
+      await broadcastRetainedCreation(recovery, "Create room");
     } catch (cause) {
-      setTx({ kind: "error", label: cause instanceof Error ? cause.message : "Seller reserve is invalid" });
+      setTx({ kind: "error", label: cause instanceof Error ? cause.message : "Seller room intent is invalid" });
+    }
+  };
+
+  const retryExactCreation = async () => {
+    const recovery = dealCreationRecovery();
+    if (!recovery || !creationRetryAllowed() || operationBusy()) return;
+    if (recovery.intent.expiry <= BigInt(Math.floor(Date.now() / 1000))) {
+      setTx({
+        kind: "error",
+        label: "The retained expiry has passed. Discard this resolved attempt explicitly before drafting a new expiry.",
+        hash: recovery.transactionHash,
+      });
       return;
     }
-    const created = await transact("Create room", async (authorize) => {
-      if (settlementAsset === "erc20") {
-        if (!deployment.usdcAddress || selectedPaymentToken.toLowerCase() !== deployment.usdcAddress.toLowerCase()) throw new Error("Only the configured USDC contract is permitted by this frontend");
-        const token = getAddress(selectedPaymentToken);
-        const decimals = await assertApprovedUsdc(token);
-        return authorize(({ client, account, contract }) => client.writeContract({
-            account,
-            chain: baseSepolia,
-            address: contract,
-            abi: diligenceRoomAbi,
-            functionName: "createDeal",
-            args: [parseUnits(requestedReserve, decimals), expiry, hash, tee, token],
-          }));
-      }
-      return authorize(({ client, account, contract }) => client.writeContract({
-          account,
-          chain: baseSepolia,
-          address: contract,
-          abi: diligenceRoomAbi,
-          functionName: "createDeal",
-          args: [nativeReserve, expiry, hash, tee],
-        }));
-    });
-    if (created) {
-      ++artifactPreparation;
-      setArtifactReceipt(undefined);
-      setArtifactHash(undefined);
-      setArtifactName("");
-      setReceiptDownloaded(false);
-      setShowCreate(false);
+    try {
+      assertDealCreationIntentContext(recovery.intent, creationRuntimeContext());
+      const exactRetry = createDealCreationRecovery(recovery.intent);
+      persistDealCreationRecovery(exactRetry, true);
+      setDealCreationResolution(undefined);
+      await broadcastRetainedCreation(exactRetry, "Retry exact room intent");
+    } catch (cause) {
+      setTx({ kind: "error", label: cause instanceof Error ? cause.message : "Exact room retry is blocked" });
+    }
+  };
+
+  const discardResolvedCreation = () => {
+    if (!creationRetryAllowed() || operationBusy()) return;
+    if (clearDealCreationRecovery()) {
+      setTx({
+        kind: "idle",
+        label: "",
+      });
     }
   };
 
@@ -1222,11 +1820,11 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
         </div>
         <button class="primary-button large" type="button" aria-describedby="deal-room-write-status" disabled={creationLocked()} onClick={() => {
           if (creationDraftIsAllowed()) setShowCreate(!showCreate());
-        }}><Plus size={17} /> {writesReady() ? "Create room" : "Room creation locked"}</button>
+        }}><Plus size={17} /> {dealCreationStorageError() ? "Recovery storage blocked" : dealCreationRecovery() ? "Creation recovery required" : writesReady() ? "Create room" : "Room creation locked"}</button>
       </header>
 
       <Show when={!contractConfigured()}>
-        <div id="deal-room-write-status" class="environment-banner warning"><TriangleAlert size={17} /><div><strong>Modeled preview</strong><span>The current repo deployment belongs to another operator and is intentionally not wired. These cards show the complete interaction shape; writes remain locked until our fresh contract and CVM pass verification. No private artifact selector is enabled in this state.</span></div></div>
+        <div id="deal-room-write-status" class="environment-banner warning" role="status"><TriangleAlert size={17} /><div><strong>No fresh project-owned deployment</strong><span>No project-owned DiligenceRoom and CVM release is configured in this build. Any prior operator deployment is excluded rather than inherited. These modeled cards show the interaction shape only; writes remain locked, and no private artifact selector is enabled.</span></div></div>
       </Show>
       <Show when={contractConfigured()}>
         <div id="deal-room-write-status" class={`environment-banner ${writesReady() ? "live" : "warning"}`} role="status">
@@ -1239,6 +1837,55 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
                 ? "Checking live chain read · writes locked"
                 : "Chain read unavailable · writes locked"}</strong><span>{policyMessage() || "Inspecting runtime bytecode, roles, mandatory approval gates, compose binding, and TEE identity…"}</span></div>
         </div>
+      </Show>
+
+      <Show when={dealCreationStorageError()}>
+        <div class="creation-recovery-storage-error" role="alert">
+          <TriangleAlert size={17} />
+          <div><strong>Local creation recovery is unavailable</strong><span>{dealCreationStorageError()}. Room creation stays locked because this browser cannot safely retain or clear an ambiguous broadcast.</span></div>
+        </div>
+      </Show>
+
+      <Show when={dealCreationRecovery()} keyed>
+        {(recovery) => (
+          <section class="creation-recovery-panel" aria-label="Retained Deal Room creation recovery">
+            <div class="creation-recovery-head">
+              <div>
+                <span class="step-index">RECOVERY</span>
+                <h2>One exact room intent is retained</h2>
+                <p>{dealCreationResolution()?.reason ?? "No retry is permitted until the browser reconciles the retained transaction or bounded DealCreated log range."}</p>
+                <p class="creation-recovery-finality">Recovery clears only after {DEAL_CREATION_CONFIRMATION_DEPTH.toString()} canonical confirmations. This is a same-RPC depth check, not consensus finality.</p>
+              </div>
+              <span class={`status-badge ${dealCreationResolution()?.status === "confirmed" ? "success" : dealCreationResolution()?.status === "mismatch" ? "danger" : "gold"}`}>
+                {dealCreationResolution()?.status ?? (recovery.transactionHash ? "hash retained" : "hash unavailable")}
+              </span>
+            </div>
+            <dl class="creation-recovery-facts">
+              <div><dt>Account</dt><dd><code>{shortAddress(recovery.intent.account, 8)}</code></dd></div>
+              <div><dt>Reserve</dt><dd><strong>{formatAsset(recovery.intent.reservePrice, recovery.intent.paymentToken)}</strong></dd></div>
+              <div><dt>Exact expiry</dt><dd><strong>{new Date(Number(recovery.intent.expiry) * 1000).toLocaleString()}</strong></dd></div>
+              <div><dt>Start block</dt><dd><strong>{recovery.intent.startBlock.toString()}</strong></dd></div>
+              <div><dt>Artifact commitment</dt><dd><code>{shortAddress(recovery.intent.artifactHash, 9)}</code></dd></div>
+              <div><dt>Transaction</dt><dd><code>{recovery.transactionHash ? shortAddress(recovery.transactionHash, 9) : "No hash returned"}</code></dd></div>
+            </dl>
+            <Show when={creationRecoveryRestored()}>
+              <p class="creation-recovery-limit"><FileKey size={14} /> Reload restored only public intent metadata. It did not store the private file, salt, recovery receipt, ciphertext, wallet credentials, or a tab-local no-broadcast classification. A hashless reload stays blocked unless one exact log appears.</p>
+            </Show>
+            <div class="creation-recovery-actions">
+              <button class="secondary-button" type="button" disabled={operationBusy() || loading()} onClick={() => void reconcileRetainedCreation()}>
+                <RefreshCw class={tx().kind === "chain" ? "spin" : ""} size={15} /> Reconcile exact intent
+              </button>
+              <Show when={creationRetryAllowed()}>
+                <button class="primary-button" type="button" disabled={!writesReady() || operationBusy() || loading()} onClick={() => void retryExactCreation()}>
+                  <FileKey size={15} /> Retry same expiry + intent
+                </button>
+                <button class="secondary-button danger" type="button" disabled={operationBusy() || loading()} onClick={discardResolvedCreation}>
+                  <XCircle size={15} /> Discard resolved attempt
+                </button>
+              </Show>
+            </div>
+          </section>
+        )}
       </Show>
 
       <Show when={pendingNative() > 0n || pendingUsdc() > 0n}>
@@ -1287,7 +1934,7 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
               </Show>
             </div>
             <label><span>Release-pinned TEE identity</span><input value={deployment.teeIdentity ?? "Not configured"} readOnly aria-readonly="true" /><small>Sellers cannot substitute an arbitrary signer. The write gate requires this identity to be approved and compose-bound on-chain.</small></label>
-            <button class="primary-button large full" type="submit" disabled={!writesReady() || hashing() || !artifactHash() || !receiptDownloaded() || mutationLocked()}><FileKey size={17} /> Commit and create room <ArrowRight size={16} /></button>
+            <button class="primary-button large full" type="submit" disabled={creationLocked() || hashing() || !artifactHash() || !receiptDownloaded()}><FileKey size={17} /> Commit and create room <ArrowRight size={16} /></button>
             <Show when={artifactHash() && !receiptDownloaded()}><p class="modeled-note"><LockKeyhole size={13} /> Download the private recovery receipt to unlock room creation.</p></Show>
           </form>
         </section>
@@ -1317,14 +1964,84 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
               }}>{item.label}</button>}
             </For>
           </div>
-          <button class="icon-text-button" type="button" onClick={() => {
-            if (draftMutationIsAllowed()) void refresh();
-          }} disabled={!contractConfigured() || loading() || mutationLocked()}><RefreshCw class={loading() ? "spin" : ""} size={15} /> Refresh chain</button>
+          <div class="deal-list-actions">
+            <form class="exact-deal-lookup" onSubmit={(event) => {
+              event.preventDefault();
+              void inspectExactDeal();
+            }}>
+              <Hash size={14} />
+              <label class="sr-only" for="exact-deal-id">Inspect exact Deal Room ID</label>
+              <input
+                id="exact-deal-id"
+                value={exactDealId()}
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="Exact room ID"
+                disabled={!contractConfigured() || exactLookupLoading()}
+                onInput={(event) => {
+                  setExactDealId(event.currentTarget.value);
+                  setExactLookupError("");
+                }}
+              />
+              <button class="secondary-button" type="submit" disabled={!contractConfigured() || exactLookupLoading()}>
+                {exactLookupLoading() ? "Inspecting…" : "Inspect"}
+              </button>
+            </form>
+            <button class="icon-text-button" type="button" onClick={() => {
+              if (draftMutationIsAllowed()) void refresh();
+            }} disabled={!contractConfigured() || loading() || mutationLocked()}><RefreshCw class={loading() ? "spin" : ""} size={15} /> Restart snapshot</button>
+          </div>
         </div>
 
-        <Show when={loadError()}><div class="inline-alert"><TriangleAlert size={16} />{loadError()}</div></Show>
+        <Show when={dealSnapshot()}>
+          {(snapshot) => (
+            <div class="deal-snapshot-status" role="status">
+              <ShieldCheck size={14} />
+              <span>
+                <strong>{deals().length.toString()} of {snapshot().dealCount.toString()} snapshot rooms loaded</strong>
+                All discovery pages remain pinned to Base Sepolia block {snapshot().blockNumber.toString()} · {shortAddress(snapshot().blockHash, 8)}.
+              </span>
+            </div>
+          )}
+        </Show>
+        <Show when={filter() === "mine" && contractConfigured()}>
+          <div class={`mine-scan-status ${dealContinuation() ? "partial" : "complete"}`} role="status">
+            <WalletCards size={14} />
+            <span>{!wallet.account()
+              ? "Connect a wallet to evaluate ownership. No completeness claim is made without an account."
+              : dealContinuation()
+                ? "Partial ownership scan: My rooms covers only loaded pages. Load every older page before treating this result as complete."
+                : dealSnapshot()
+                  ? `Complete ownership scan for the snapshot at block ${dealSnapshot()!.blockNumber.toString()}.`
+                  : "Ownership scan has not loaded a chain snapshot."}</span>
+          </div>
+        </Show>
+        <Show when={exactLookup()}>
+          {(lookup) => (
+            <div class="exact-deal-result">
+              <Hash size={14} />
+              <span><strong>Exact room #{lookup().deal.id.toString()}</strong> independently read at block {lookup().snapshot.blockNumber.toString()} · {shortAddress(lookup().snapshot.blockHash, 8)} and shown once regardless of the active filter.</span>
+              <button class="secondary-button" type="button" onClick={() => {
+                ++exactLookupGeneration;
+                setExactLookup(undefined);
+                setExactDealId("");
+                setExactLookupError("");
+              }}>Clear exact lookup</button>
+            </div>
+          )}
+        </Show>
+        <Show when={exactLookupError()}><div class="inline-alert"><TriangleAlert size={16} />{exactLookupError()}</div></Show>
+        <Show when={loadError()}>
+          <div class="deal-page-error">
+            <TriangleAlert size={16} />
+            <span><strong>{loadFailure() === "more" ? "Pinned page failed" : "Snapshot restart failed"}</strong>{loadError()}</span>
+            <button class="secondary-button" type="button" disabled={loading()} onClick={retryDealLoad}>
+              <RefreshCw class={loading() ? "spin" : ""} size={14} /> {loadFailure() === "more" ? "Retry same page" : "Retry restart"}
+            </button>
+          </div>
+        </Show>
         <div class="deal-grid">
-          <For each={filtered()}>{(deal) => <DealCard
+          <For each={visibleDeals()}>{(deal) => <DealCard
             deal={deal}
             chainBacked={chainBacked()}
             writeReady={writesReady()}
@@ -1339,8 +2056,19 @@ export function DealRoom(props: { inspectEvidence: (context: VerificationContext
             clearArtifactRecovery={clearArtifactRecovery}
           />}</For>
         </div>
-        <Show when={!loading() && filtered().length === 0}>
+        <Show when={!loading() && visibleDeals().length === 0}>
           <div class="empty-state"><CircleDollarSign size={28} /><h3>No rooms match this view</h3><p>Create the first room or switch filters.</p></div>
+        </Show>
+        <Show when={dealContinuation()}>
+          <div class="deal-pagination-foot">
+            <span>Older IDs remain outside this pinned view. Loading more will not advance the snapshot block.</span>
+            <button class="secondary-button" type="button" disabled={loading()} onClick={() => void loadMoreDeals()}>
+              <RefreshCw class={loading() ? "spin" : ""} size={14} /> {loadFailure() === "more" ? "Retry older page" : "Load older rooms"}
+            </button>
+          </div>
+        </Show>
+        <Show when={chainBacked() && dealSnapshot() && !dealContinuation()}>
+          <div class="deal-pagination-complete"><CheckCircle2 size={14} /> All {dealSnapshot()!.dealCount.toString()} room IDs in the block {dealSnapshot()!.blockNumber.toString()} snapshot are loaded.</div>
         </Show>
       </section>
     </div>

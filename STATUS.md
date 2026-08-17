@@ -1,6 +1,6 @@
 # dnai-wikigen Status
 
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 
 Scope: current repository evidence only. This file is a status ledger, not a
 production deployment manifest.
@@ -16,37 +16,136 @@ production deployment manifest.
 
 ## Current Verdict
 
-### 2026-07-21 current source candidate and release boundary
+### 2026-07-24 current source candidate and release boundary
 
 The current tree is a tested **source candidate**, not a deployed confidential-
-compute production release. Its eleven-route SolidJS build is published only
-as the explicit modeled preview at
+compute production release. An earlier twelve-route SolidJS build is published
+only as the explicit modeled preview at
 `https://modeled-preview.wikigenme.pages.dev`; the canonical production origin
 and custom domains were not changed for this source candidate. That preview is
 a product/design artifact, not evidence of a fresh contract, CVM, QVL, or TDX
 release. An older modeled nine-route production bundle was browser-checked in a
-prior release. The current source candidate's typecheck, unfiltered
-frontend/release tests, and production build pass locally, but the required
-in-app-browser visual QA for the current eleven-route preview has not yet
-completed.
+prior release. For the current source candidate, all **612/612** unfiltered
+Vitest assertions, TypeScript no-emit checking, the production Vite build, and
+the hardened security-header checks pass locally. The complete backend run
+records **2,548 passed, 6 skipped**, with **751 subtests passed**; the email
+oracle passes **92/92** through its repository-native `unittest` release
+runner. The launch/descriptor regression group passes **199/199**, and the
+focused activation-preflight group passes **92/92**. The full Foundry suite
+passes **444/444** after `forge fmt --check` and `forge build --force --sizes`,
+including its fuzz and invariant campaigns.
 
-`[real/source]` The frontend now covers the complete product vocabulary:
-diligence rooms, a GPUMODE-inspired sealed bio challenge Arena, a source-modeled
-human release desk, data vaults, wallet-scoped proxy credentials, modeled
-service credits, exact-asset Compute capacity, a release-gated delegated Tinker
-account lifecycle, execution safeguards, a capability catalog, layered
-verification, and multi-owner collaboration planning with a runtime-pinned
-RoyaltyDistributor read/self-claim panel. The panel does not create or validate
-allocations, and no fresh RoyaltyDistributor is deployed. The Trust Center also
-has a read-only, finalized-block EmailOracleAuth/KMS readiness panel; its
-single-RPC contract observation is not email-delivery, restart, Intel TDX, or
-independent QVL evidence. Wallet discovery supports
+The last complete root Node run discovered **1,039** tests: **1,020 passed** and
+**19 failed**. Two failures were subsequently repaired and reverified with
+focused checks: the post-measurement activation plan KAT and the bounded
+pending-ready deadline under repository-wide parallel load. The remaining 17
+were host-bound evidence failures: eight Phala SDK-adapter cases could not
+create their home-directory test roots in the managed sandbox, and nine
+opened-file-descriptor verifier cases found that the current macOS
+system-version authority bytes no longer match the frozen verifier pin. The
+complete root Node suite has not been rerun after the two focused repairs, so
+this ledger does not infer a replacement aggregate.
+
+The current complete web release-boundary run ends **279/281** in its Node
+phase. Its public-bootstrap TypeScript-parser timeout remains bounded at 30
+seconds and passes under the full runner. The other two failures are deliberate
+release gates: immutable `git_commit` materialization requires an operator-
+authorized commit, and the outer macOS Cloudflare-sandbox proof is not
+available inside the managed sandbox. The offline npm audit reports zero known
+vulnerabilities.
+
+A 1600×900 in-app-browser pass covered all twelve canonical routes from the
+freshly built local production preview: every route had the correct title and
+heading, no route overflowed horizontally, and no interactive control was
+clipped. A 920×1079 pass covered the same twelve routes without page-level
+horizontal overflow and found one compact-menu control per route. Arena's eight
+offscreen controls are contained by its intentional table-local leaderboard
+scroll region, not page overflow. Desktop visual inspection covered Overview,
+Arena, Tinker, Compute, and Collaboration; compact visual inspection covered
+Overview and Arena. The browser console remained free of warnings and errors.
+The compact navigation opened and closed with all twelve routes present, and
+the wallet dialog opened and closed without a provider installed while clearly
+reporting WalletConnect as unconfigured and the injected-wallet path as
+unavailable; no connection, signature, network switch, or transaction was
+attempted. A separate phone-width live visual pass has not been recorded. The
+current staging classification contains 380 dirty paths: 369 source-candidate
+paths are in scope and 11 user/research paths are excluded, including the dirty
+`🔬/jameslbarnes/dshield` gitlink. The bytewise-sorted
+`XY<TAB>path<LF>` classification digests are
+`9cf7e0a07eb9e0512621b2199716f387a6059c12871f5722688c0db9b49009c2`
+for the included set and
+`1c98e58850a1ad7ac2c680b562ed6eb1c58410a09a621421cc4a78c3c9418c56`
+for the excluded set. Nothing is currently staged.
+
+The read-only `live-activation` preflight currently reports **43 pass, 1 warn,
+64 fail** across its exact 108-check contract while proving that it unlocked no
+keystore, attempted no broadcast or deployment, printed no secret value, and
+mutated no remote state. Its blocking roots include the dirty/uncommitted
+source, absent exact release SHA and
+reviewed role inputs, unauthenticated Phala CLI, missing fresh deployment and
+seven-CVM evidence, and the deliberately absent finalized four-phase
+DiligenceRoom controller-acceptance ledger. The current read-only Wrangler
+identity probe also fails closed because its saved OAuth token is no longer
+accepted; the existing `wikigenme` Pages project and earlier authentication
+snapshot are not current activation evidence, and this source candidate has
+not been uploaded.
+
+`[real/source]` The frontend now covers the complete product vocabulary: an
+explicitly modeled, reload-cleared Health Guide that accepts no health data;
+diligence rooms; a GPUMODE-inspired sealed bio challenge Arena; a release-gated
+human-review API and browser desk; data vaults; wallet-scoped proxy credentials;
+modeled service credits; exact-asset Compute capacity; a release-gated delegated
+Tinker account lifecycle; execution safeguards; a capability catalog; layered
+verification; and a release-gated schema-v2 multi-owner Collaboration API/UI
+plus a runtime-pinned RoyaltyDistributor read/self-claim panel. The browser does
+not invent allocations. The v3 contract and Collaboration execution service
+implement deterministic exact prefunding reservations; finalized worker
+admission; bounded Compute; on-demand exact anchoring and purpose-separated
+main/QVL authorization; a sponsor-wallet `settleReserved` handoff; and finalized
+reconciliation. Direct distribute calls remain compatibility paths. That path
+is implemented and tested in source, but no fresh activated
+`RoyaltyDistributor`, settlement CVM, independent Royalty QVL, sponsor deposit,
+or settlement is live. The Trust
+Center also has a read-only, finalized-block
+EmailOracleAuth/KMS readiness panel; its single-RPC contract observation is not
+email-delivery, restart, Intel TDX, or independent QVL evidence. Wallet
+discovery supports
 EIP-6963 and injected EIP-1193 wallets such as MetaMask, Rabby, and Coinbase
 Wallet, with an optional release-configured WalletConnect provider. Wallet
 connection identifies the selected address and network; exact signed nonce
 challenges establish service authorization. Every action is labeled live,
 modeled, roadmap, or fail-closed; illustrative receipts are never labeled Intel
 TDX evidence.
+
+`[real/source; release gated]` Human Review now includes the strict public
+hash-only queue, runtime-authenticated internal enqueue/expiry operations,
+release-bound reviewer-wallet challenges, signed release/deny decisions,
+private M-of-N resolution, self-review/duplicate-vote rejection, browser UI,
+and a browser-rechecked Base Sepolia rollback witness. It is not activated
+production reviewer custody: the fresh reviewer roster and keys, notifications,
+scheduled expiry worker, and new release deployment remain open.
+
+`[real/source; release gated]` Collaboration schema v2 now includes a persistent
+authenticated control plane and browser UI for durable rooms, invitations,
+membership and owner-role changes, exact-query grants, bounded pagination,
+idempotent recovery, joint-consent snapshots, and quiescent archive. A separate
+execution service implements the production-shaped, one-shot continuation:
+deterministic reservation after the complete fresh grant set; RPC-reported
+finalized EIP-1898 admission of the exact Royalty reservation and Compute job;
+bounded Compute; an on-demand exact settlement-decision anchor plus main/QVL
+authorizations; sponsor-wallet `settleReserved`; and finalized receipt/state
+reconciliation. The public API cannot synthesize that execution context.
+
+This is source/test evidence, not production joint execution or settlement.
+Local HMAC mode remains explicitly non-monotonic. Live dstack mode is
+source-implemented with a release/project/wallet-domain-bound Base Sepolia
+`ExecutionPolicyAnchor` witness under the explicit single-RPC
+reported-finalized model, crash-safe pending-state recovery, current-head
+rechecks, and fail-closed auth/read/mutation behavior on witness outage,
+regression, or state mismatch. This is not RPC quorum or a consensus proof. No
+fresh release has activated that authority or produced current live Base
+Sepolia, Phala, TDX, independent-QVL, sponsor-funding, settlement, or Cloudflare
+evidence.
 
 `[real/source]` The fresh Base Sepolia suite now contains seven contracts:
 `DiligenceRoom`, `TinkerAccountEncumbrance`, `RoyaltyDistributor`,
@@ -119,7 +218,7 @@ requires one common fresh finalized block and identical code/auth results, and
 persists a monotonic checkpoint across ordinary restarts. That checkpoint is
 not hardware anti-rollback against restoration of the entire persistent volume.
 
-`[real/source]` Approval schema v3 and store schema v5 bind every protected
+`[real/source]` Approval schema v3 and store schema v6 bind every protected
 operation to a canonical hash-only record. Writers hold an OS-backed exclusive
 lease from preflight through persistence and anchor finalization; deal, Arena,
 and Compute executors hold the matching shared lease through their irreversible
@@ -130,6 +229,25 @@ reservation record. A caller cannot supply that context. The browser exact-
 asset workflow obtains it only through a wallet-authenticated status lookup,
 recomputes it locally, checks the intent owner, and excludes legacy service
 credits from that public approval path.
+
+Store v6 keeps local records numbered from one while requiring a non-circular
+release marker at on-chain sequence one. The marker decision is the reviewed
+final-authority SHA-256 supplied through `TINKER_RELEASE_AUTHORITY_SHA256`; its
+resource domain is
+`dnai-wikigen/execution-policy/final-release-authority/v1`. Consequently the
+first local record anchors at chain sequence two, and Royalty authorization
+always carries the chain sequence including that marker offset.
+
+`[real/source; funding pending]` Current final-authority v4 also signs the
+exact dstack-derived anchor writer's bounded gas policy: one release marker
+plus 32 subsequent anchors, at 500,000 gas and a reviewed 2,000,000,000 wei per
+gas, for a minimum `33000000000000000` wei (0.033 ETH). Activation preflight
+v4 now emits 110 exact checks. Its readiness snapshot v5 calls
+`eth_getBalance` for that writer through both distinct Base Sepolia RPCs at one
+common finalized block, requires identical canonical decimal wei, and blocks
+release-ceremony/live activation if the response is missing, divergent, or
+underfunded. This is 33-transaction runway, not indefinite readiness; no
+operator/USDC/QVL/relayer/paymaster/hot-key fallback is accepted.
 
 The rollback witness selects the older of one release-pinned RPC's reported
 `finalized` head and the configured confirmation-depth boundary, then pins all
@@ -153,17 +271,18 @@ exists, and a new literal digest before that service may be executed.
 
 `[partial]` The deal runtime, capability-free `dnai-safe-ir-v1` Arena worker,
 and crash-resumable exact-asset Compute worker are implemented and locally
-verified. The Compute production CLI intentionally remains non-activatable.
-The pinned Tinker 0.22.7 transport contains a low-level idempotency-header
-hook, but the supported paid-workflow API exposes neither caller-stable replay
-keys at every mutating step nor exact post-restart lookup with documented
-server semantics. Enabling it could therefore double-dispatch paid work or lose
-a usage receipt after a crash. A no-network SDK capability audit pins that
-boundary. Upstream 0.23.0 was released after the lock; an isolated spot-check of
-its public clients and generated transport found the same missing public
-dispatch/recovery contract, so it is neither claimed as absent nor adopted as
-the release dependency. The UI reports provider dispatch as disconnected and distinguishes a
-confirmed dispatch from an ambiguous durable checkpoint.
+verified. Compute provider execution is not categorically disconnected: the
+compiled Tinker 0.22.7 adapter records a durable at-most-once attempt checkpoint
+before its first provider request, never claims upstream idempotent replay, and
+never automatically redispatches after that boundary. A restart or
+inconclusive post-boundary failure enters a terminal ambiguous-outcome
+quarantine with ciphertext retained for separately attested reconciliation.
+Production dispatch remains fail closed unless the exact release pins,
+recipient activation, project flag, independent metering and settlement
+capabilities, and a fresh authenticated worker heartbeat all agree. That
+heartbeat proves process presence only, not TDX. The UI projects the exact
+capability as modeled, unavailable, or live and does not infer readiness from a
+configured endpoint. No fresh CVM/provider activation is claimed here.
 
 `[real/source]` A clean-CI release lane now builds the exact five-image set
 (`tinker-delegate`, `tee-email-oracle`, `neko-chrome`, `attestation-qvl`, and
@@ -1276,9 +1395,12 @@ the post-email-submit Tinker auth posture, not browser launch or email typing.
   account commitment, exact approved compose/manager roots, per-operation
   add-balance/spend caps, two-day release review, one-way policy freeze,
   emergency halt, bounded operation authorizations, and receipt hashes.
-- `⚙️/tinker-delegate/contracts/src/RoyaltyDistributor.sol` provides
-  exact-deposit, replay-protected native/ERC-20 royalty accounting with pull
-  withdrawals.
+- `⚙️/tinker-delegate/contracts/src/RoyaltyDistributor.sol` provides a
+  two-day release-bound settlement-CVM/QVL/policy-anchor authority ceremony,
+  deterministic intent-keyed native/ERC-20 reservations, sponsor-only expiry
+  refunds, ten-minute EIP-712 settlement authorizations, globally one-shot
+  settlement IDs and nonces, exact `settleReserved` consumption, permanent
+  reconciliation getters, solvency accounting, and owner pull withdrawals.
 - `⚙️/tinker-delegate/contracts/src/ChallengeRegistry.sol` commits versioned
   Arena metadata and release policy without accepting candidate, prize, or
   artifact custody.
@@ -1581,8 +1703,11 @@ the post-email-submit Tinker auth posture, not browser launch or email typing.
   `DealContext`. The upload endpoint rejects any caller-supplied mismatch before
   decryption, verifies the salted commitment before custody, and re-verifies it
   immediately before evaluation.
-- Accepted artifact bytes remain in memory; regression tests guard against disk
-  writes on the upload path.
+- Accepted artifact plaintext remains in TEE process memory. In dstack mode the
+  active context is also persisted only as a versioned AES-256-GCM ciphertext
+  under a purpose-separated dstack-derived key on the private data volume;
+  regression tests verify that the file contains no plaintext artifact and
+  fails closed under tamper, wrong key, unsafe mode, or malformed schema.
 
 [real] Supporting CLIs and tests:
 
@@ -1943,14 +2068,18 @@ real Tinker trainer, which stays blocked — see Current Blockers):
   `DealFunded`, runs the watcher over JSON-RPC, and verifies a bounded
   control-plane stub receives funded state for deal `0` without manual curl
   calls or raw private-key flags.
-- `ChainCursorStore` gives the watcher durable restart state: it stores the
-  next block, confirmation depth, contract address hash summary, and public
-  `DealCreated` context. Restart tests and the Anvil proof show a later
+- `ChainCursorStore` plus the deal-runtime v2 journal give the watcher durable
+  restart state: they store the next block, confirmation depth, contract
+  address hash summary, public `DealCreated` context, canonical block-hash
+  checkpoints, and the exact prepared transaction hash/nonce/result binding.
+  Restart tests and the Anvil proof show a later
   `DealFunded` can still notify funded state after the created context has
   crossed a process boundary. The watcher advances the cursor only after
-  successful dispatch and only scans confirmation-safe blocks.
-- `tinker_delegate.chain_submitter` provides partial TEE-to-chain signing
-  plumbing: in dstack mode it derives an Ethereum signer from dstack key
+  successful dispatch and only scans confirmation-safe blocks. A checkpoint
+  mismatch quarantines private state and rewinds to the original scan anchor.
+- `tinker_delegate.chain_submitter` and `tinker_delegate.deal_runtime` provide
+  TEE-to-chain signing and ambiguity-reconciliation plumbing: in dstack mode
+  they derive an Ethereum signer from dstack key
   material, has no raw-private-key CLI/env path, verifies the public
   `deals(dealId)` state before signing, requires the signer to match
   `teeIdentity`, checks funded state and compute budget, signs
@@ -1960,8 +2089,9 @@ real Tinker trainer, which stays blocked — see Current Blockers):
   immutable funded-deal fields, compose hash, score band, and deterministic
   public compute tariff. The verifier and submitter recompute that same hash;
   neither accepts a payload result hash or reward-transcript commitment. Current
-  tests include a hard-coded Solidity/Python parity vector, signed transaction
-  recovery, public-field sensitivity, and bounded receipt shape without raw keys.
+  tests include a hard-coded Solidity/Python parity vector, crash-after-prepare
+  recovery, exact nonce/hash reconciliation, public-field sensitivity, and
+  bounded receipt shape without raw keys.
 - `DiligenceRoom.sol` now requires a result-verifier signature before accepting
   `submitResult()`. The signed authorization binds chain ID, contract address,
   deal ID, TEE identity, compose hash, score band, compute cost, replay-bound
@@ -2001,9 +2131,10 @@ real Tinker trainer, which stays blocked — see Current Blockers):
   same contract-derived canonical public commitment authorized off-chain, with
   signer attestation metadata, verifier-signature hash, and
   `raw_secret_egress=false`.
-- The watcher is not yet deployed as a Phala/CVM process and does not include
-  chain-lag alerting or deep-reorg rollback beyond the configured confirmation
-  policy.
+- The watcher is not yet deployed as a fresh Phala/CVM process and does not
+  include chain-lag alerting. Source-level deep-reorg handling is conservative:
+  canonical hash divergence destroys active private authority and fully rewinds
+  rather than attempting a semantic inverse transition.
 - A deployed-CVM proof of verifier-authorized `submitResult()` broadcast has
   not yet been run. The verifier policy/signature module and operator CLI path
   are real, but they have not yet been deployed as a verifier service and full
@@ -2012,12 +2143,16 @@ real Tinker trainer, which stays blocked — see Current Blockers):
 
 [partial] Data custody:
 
-- The upload endpoint keeps accepted plaintext in memory and avoids intentional
-  disk writes.
+- The upload endpoint keeps accepted plaintext in TEE memory. Dstack mode also
+  writes an authenticated encrypted active-deal snapshot; the public runtime
+  journal and logs contain no artifact bytes, commitment secret, raw quote, or
+  signed transaction.
 - The downstream evaluator, Tinker SDK/browser handoff, heap lifetime, crash
   logs, browser download directory, and deployed debug tooling still need a
   full no-disk/no-egress audit.
-- Sealed retention keys are not implemented for long-lived artifact custody.
+- Active-deal restart sealing and separate policy-controlled sealed retention
+  are implemented in source. Fresh CVM deployment evidence and an operational
+  backup/rollback policy remain open.
 
 [partial] Private reward environments:
 

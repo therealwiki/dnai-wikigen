@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -6,6 +7,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -22,6 +24,7 @@ import {
   MAX_GH_VERSION_OUTPUT_BYTES,
   MAX_RELEASE_BUNDLE_BYTES,
   PINNED_GH_TOOL,
+  PINNED_GH_EXECUTION_POLICY,
   RELEASE_MANIFEST_SIGSTORE_AUTHORITY,
   RELEASE_MANIFEST_SIGSTORE_BLOCKER,
   RELEASE_MANIFEST_SIGSTORE_VERIFICATION_SCHEMA,
@@ -56,6 +59,17 @@ const IMAGE_NAMES = [
 
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function domainSha256(domain, value) {
+  const valueBytes = Buffer.from(value, "utf8");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(valueBytes.length));
+  return sha256(Buffer.concat([
+    Buffer.from(`${domain}\0`, "utf8"),
+    length,
+    valueBytes,
+  ]));
 }
 
 function canonicalManifest(value) {
@@ -364,6 +378,26 @@ test("test seam validates exact evidence but cannot clear the production blocker
   assert.equal(receipt.release_manifest_sha256, value.manifestDigest);
   assert.equal(receipt.release_manifest_sigstore_bundle_sha256, sha256(value.bundleBytes));
   assert.equal(receipt.gh_executable_sha256, value.toolAuthority.sha256);
+  assert.equal(
+    PINNED_GH_EXECUTION_POLICY,
+    "dnai.pinned-gh-execution.private-verified-copy.v1",
+  );
+  assert.equal(
+    receipt.verification_command_sha256,
+    domainSha256(
+      "dnai.tee-image-release-manifest-sigstore-command.v1",
+      `${JSON.stringify({
+        args: releaseManifestSigstoreVerificationArgs({
+          manifestPath: value.manifestPath,
+          bundlePath: value.bundlePath,
+          releaseSha: RELEASE_SHA,
+        }),
+        execution_policy: PINNED_GH_EXECUTION_POLICY,
+        logical_executable_path: value.toolAuthority.path,
+        logical_executable_sha256: value.toolAuthority.sha256,
+      })}\n`,
+    ),
+  );
   assert.ok(Object.isFrozen(receipt));
   for (const [key, evidence] of Object.entries(receipt)) {
     if (key.endsWith("_sha256")) {
@@ -374,11 +408,16 @@ test("test seam validates exact evidence but cannot clear the production blocker
   assert.doesNotMatch(serialized, /therealwiki|build-tee-images|2\.87\.3/);
   assert.ok(!serialized.includes(value.root));
   assert.equal(calls.length, 2);
-  assert.equal(calls[0].command, value.toolPath);
+  assert.notEqual(calls[0].command, value.toolPath);
+  assert.match(path.basename(calls[0].command), /^gh-[0-9a-f]{32}$/);
+  assert.match(
+    path.basename(path.dirname(calls[0].command)),
+    /^dnai-pinned-gh-/,
+  );
   assert.deepEqual(calls[0].args, ["--version"]);
   assert.equal(calls[0].options.timeout, GH_VERSION_TIMEOUT_MS);
   assert.equal(calls[0].options.maxBuffer, MAX_GH_VERSION_OUTPUT_BYTES);
-  assert.equal(calls[1].command, value.toolPath);
+  assert.equal(calls[1].command, calls[0].command);
   assert.deepEqual(
     calls[1].args,
     releaseManifestSigstoreVerificationArgs({
@@ -412,6 +451,77 @@ test("test seam validates exact evidence but cannot clear the production blocker
       false,
     );
   }
+  await assert.rejects(
+    readFile(calls[0].command),
+    (error) => error?.code === "ENOENT",
+  );
+  await assert.rejects(
+    readFile(path.dirname(calls[0].command)),
+    (error) => error?.code === "ENOENT",
+  );
+});
+
+test("source parent swap-and-restore cannot change executed gh bytes", async (t) => {
+  const value = await fixture();
+  const parkedRoot = `${value.root}-parked`;
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  t.after(() => rm(parkedRoot, { recursive: true, force: true }));
+
+  const exactOutput = `${JSON.stringify(
+    verificationOutput(value.bundle, value.manifestDigest),
+  )}\n`;
+  const shellLiteral = (text) => `'${text.replaceAll("'", `'"'"'`)}'`;
+  const verifiedToolBytes = Buffer.from([
+    "#!/bin/sh",
+    'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then',
+    `  printf '%s\\n' ${shellLiteral(
+      `gh version ${value.toolAuthority.version} (2026-02-23)`,
+    )} ${shellLiteral(
+      `https://github.com/cli/cli/releases/tag/v${value.toolAuthority.version}`,
+    )}`,
+    "  exit 0",
+    "fi",
+    `printf '%s\\n' ${shellLiteral(exactOutput.replace(/\n$/, ""))}`,
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(value.toolPath, verifiedToolBytes, { mode: 0o755 });
+  await chmod(value.toolPath, 0o755);
+  value.toolBytes = verifiedToolBytes;
+  value.toolAuthority.sha256 = sha256(verifiedToolBytes);
+
+  const maliciousToolBytes = Buffer.from(
+    "#!/bin/sh\nprintf '%s\\n' 'malicious swapped gh executed'\nexit 9\n",
+    "utf8",
+  );
+  const invokedCommands = [];
+  let swapCount = 0;
+  const runner = async (command, args, options) => {
+    invokedCommands.push(command);
+    assert.notEqual(command, value.toolPath);
+    await rename(value.root, parkedRoot);
+    await mkdir(value.root, { mode: 0o700 });
+    await writeFile(value.toolPath, maliciousToolBytes, { mode: 0o755 });
+    await chmod(value.toolPath, 0o755);
+    swapCount += 1;
+    try {
+      return spawnSync(command, args, options);
+    } finally {
+      await rm(value.root, { recursive: true, force: true });
+      await rename(parkedRoot, value.root);
+    }
+  };
+
+  const receipt = await verifyFixture(value, runner);
+  assert.equal(swapCount, 2);
+  assert.equal(invokedCommands.length, 2);
+  assert.equal(invokedCommands[0], invokedCommands[1]);
+  assert.equal(receipt.gh_executable_sha256, sha256(verifiedToolBytes));
+  assert.deepEqual(await readFile(value.toolPath), verifiedToolBytes);
+  assert.ok(Object.isFrozen(receipt));
+  await assert.rejects(
+    readFile(invokedCommands[0]),
+    (error) => error?.code === "ENOENT",
+  );
 });
 
 test("production receipt normalization accepts only the frozen authority brand", async (t) => {
@@ -724,19 +834,30 @@ test("canonical paths reject aliases, symlinks, and different directories", asyn
     );
   });
 
-  await t.test("parent directory symlink", async (t) => {
-    const value = await fixture();
-    t.after(() => rm(value.root, { recursive: true, force: true }));
-    const alias = `${value.root}-alias`;
-    t.after(() => rm(alias, { recursive: true, force: true }));
-    await symlink(value.root, alias, "dir");
-    value.input.manifestPath = path.join(alias, path.basename(value.manifestPath));
-    value.input.bundlePath = path.join(alias, path.basename(value.bundlePath));
-    await rejectsCode(
-      verifyFixture(value, runnerFor(value)),
-      "release_manifest_path_invalid",
-    );
-  });
+  await t.test(
+    "parent directory symlink deterministically rejects the manifest first",
+    async (t) => {
+      const value = await fixture();
+      t.after(() => rm(value.root, { recursive: true, force: true }));
+      const alias = `${value.root}-alias`;
+      t.after(() => rm(alias, { recursive: true, force: true }));
+      await symlink(value.root, alias, "dir");
+      value.input.manifestPath = path.join(
+        alias,
+        path.basename(value.manifestPath),
+      );
+      value.input.bundlePath = path.join(
+        alias,
+        path.basename(value.bundlePath),
+      );
+      await Promise.all(Array.from({ length: 64 }, () => (
+        rejectsCode(
+          verifyFixture(value, runnerFor(value)),
+          "release_manifest_path_invalid",
+        )
+      )));
+    },
+  );
 
   await t.test("bundle symlink", async (t) => {
     const value = await fixture();
@@ -764,6 +885,28 @@ test("canonical paths reject aliases, symlinks, and different directories", asyn
       "release_inputs_directory_mismatch",
     );
   });
+});
+
+test("private gh copy rejects an attacker-writable non-sticky temp root", async (t) => {
+  const value = await fixture();
+  const unsafeTempRoot = await mkdtemp(
+    path.join(os.tmpdir(), "dnai-unsafe-gh-temp-root-"),
+  );
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  t.after(() => rm(unsafeTempRoot, { recursive: true, force: true }));
+  await chmod(unsafeTempRoot, 0o777);
+
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = unsafeTempRoot;
+  try {
+    await rejectsCode(
+      verifyFixture(value, runnerFor(value)),
+      "gh_private_copy_temp_root_invalid",
+    );
+  } finally {
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+  }
 });
 
 test("manifest, bundle, and gh bytes cannot change across verification", async (t) => {

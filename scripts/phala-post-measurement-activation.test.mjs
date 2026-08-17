@@ -23,11 +23,15 @@ import {
 } from "./phala-post-measurement-activation.mjs";
 import {
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   syntheticPhalaSevenCvmReleaseDescriptorsFixture,
-  syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
 } from "./phala-seven-cvm-release-verification-authority.fixture.mjs";
+import {
+  CURRENT_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as
+    syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
+} from "./current-cvm-authority-v4.fixture.mjs";
 import {
   phalaQvlMeasurementPolicySha256,
 } from "./phala-seven-cvm-measurement-policy.mjs";
@@ -172,7 +176,39 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
   assert.equal(canonicalPhalaPostMeasurementActivationPlanText(plan).endsWith("\n"), true);
   assert.equal(
     phalaPostMeasurementActivationPlanSha256(plan),
-    "sha256:fb377fcad7c1dfe225d3ff63509286773da754d37f121ebf3fa91ad716968368",
+    "sha256:c5aad909c9bd318386c7ec807784521baf4fb9e95082c9e648724ad670387086",
+  );
+  const runtimeAuthority =
+    plan.release_verification_authority.cvm_descriptor_runtime_authority;
+  const mainRuntime = runtimeAuthority.descriptors.find(
+    ({ domain }) => domain === "main_runtime_cvm",
+  );
+  assert.deepEqual(
+    mainRuntime.service_images.map(({ service }) => service),
+    [
+      "neko",
+      "oracle",
+      "delegate",
+      "diligence-policy-init",
+      "tinker-customer-authority-init",
+      "arena-policy-init",
+      "arena-worker",
+      "anchor-writer-evidence",
+      "deal-runtime",
+      "compute-execution-worker",
+      "review-operations",
+      "mailbox-genesis",
+      "tinker-account-genesis",
+    ],
+  );
+  assert.equal(
+    plan.release_verification_authority
+      .tinker_account_binding_ceremony_receipt_sha256,
+    CURRENT_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
+  );
+  assert.equal(
+    runtimeAuthority.tinker_account_binding_ceremony_receipt_sha256,
+    CURRENT_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   );
   assert.equal(plan.runtime_commitments.TINKER_COMPUTE_WORKLOAD_CVM_ID,
     plan.target.cvm_id);
@@ -196,6 +232,9 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
     "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
     "TINKER_ARENA_REGISTRY_RPC_URL",
     "TINKER_ARENA_REGISTRY_RUNTIME_CODE_HASH",
+    "TINKER_COLLABORATION_ENABLED",
+    "TINKER_CUSTOMER_AUTHORITY_SHA256",
+    "TINKER_CUSTOMER_ENABLED",
   ]) {
     assert.equal(plan.injected_environment_key_names.includes(key), true);
   }
@@ -235,6 +274,42 @@ test("post-measurement plan rejects retries, target drift, env-key widening, and
         value.release_verification_authority,
       );
       value.release_verification_authority.descriptors[0].disk_size += 1;
+    },
+    (value) => {
+      value.release_verification_authority = structuredClone(
+        value.release_verification_authority,
+      );
+      value.release_verification_authority
+        .tinker_account_binding_ceremony_receipt_sha256 = sha("f");
+    },
+    (value) => {
+      value.release_verification_authority = structuredClone(
+        value.release_verification_authority,
+      );
+      value.release_verification_authority.cvm_descriptor_runtime_authority
+        .tinker_account_binding_ceremony_receipt_sha256 = sha("f");
+    },
+    (value) => {
+      value.release_verification_authority = structuredClone(
+        value.release_verification_authority,
+      );
+      const services = value.release_verification_authority
+        .cvm_descriptor_runtime_authority.descriptors
+        .find(({ domain }) => domain === "main_runtime_cvm").service_images;
+      services.splice(
+        services.findIndex(({ service }) => service === "mailbox-genesis"),
+        1,
+      );
+    },
+    (value) => {
+      value.release_verification_authority = structuredClone(
+        value.release_verification_authority,
+      );
+      value.release_verification_authority
+        .cvm_descriptor_runtime_authority.descriptors
+        .find(({ domain }) => domain === "main_runtime_cvm").service_images
+        .find(({ service }) => service === "tinker-account-genesis").service =
+          "tinker-account-genesis-substituted";
     },
   ];
   for (const mutate of mutations) {

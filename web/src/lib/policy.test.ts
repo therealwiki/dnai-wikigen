@@ -9,12 +9,17 @@ import {
   executionPolicyApproverHash,
   executionPolicyApproverRootHash,
   executionPolicyDecisionHash,
+  executionPolicyEvaluationIdempotencyKey,
   executionPolicySignatureHash,
   parsePolicyBundleText,
+  recoverExecutionPolicyWorkflow,
   runExecutionPolicyWorkflow,
+  ExecutionPolicyIntentExpiredError,
+  ExecutionPolicyRecoveryMismatchError,
   type ExecutionPolicyRecord,
   type ExecutionPolicySurface,
   type PolicyBundle,
+  type PreparedExecutionPolicyIntent,
 } from "./policy";
 import {
   POLICY_CANONICALIZATION_VERSION,
@@ -699,6 +704,317 @@ describe("live execution-policy workflow", () => {
       approverAddress: ADDRESS,
       personalSign: async () => bounded.signature,
     })).rejects.toThrow(/Release-pinned/);
+    expect(neverFetch).not.toHaveBeenCalled();
+  });
+
+  it("derives and submits one domain-separated idempotency commitment from the signed approval", async () => {
+    const surface = "arena_execution" as const;
+    const resourceId = "private-submission-idempotency";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    const responses = [bounded.preflight, bounded.approval, bounded.evaluation, bounded.status];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      jsonResponse(responses.shift())
+    ));
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+
+    await runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    });
+
+    expect(prepared).toBeDefined();
+    const expected = await executionPolicyEvaluationIdempotencyKey(
+      String(bounded.approval.approval_message_hash),
+    );
+    expect(expected).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(prepared?.evaluationIdempotencyKey).toBe(expected);
+    expect(JSON.parse(String((fetchMock.mock.calls[2][1] as RequestInit).body))).toMatchObject({
+      idempotency_key: expected,
+      expires_at: expiresAt,
+      previous_decision_hash: "0".repeat(64),
+      approval_signature: bounded.signature,
+    });
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init).toMatchObject({
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+      });
+    }
+  });
+
+  it("recovers a committed decision from status after the mutation response is lost without appending twice", async () => {
+    const surface = "arena_execution" as const;
+    const resourceId = "private-submission-committed-response-lost";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    let statusReads = 0;
+    let evaluationCalls = 0;
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/policy/status") {
+        statusReads += 1;
+        return jsonResponse(statusReads === 1 ? bounded.preflight : bounded.status);
+      }
+      if (path === "/policy/approval-message") return jsonResponse(bounded.approval);
+      if (path === "/policy/evaluate") {
+        evaluationCalls += 1;
+        throw new Error("connection reset after commit");
+      }
+      throw new Error(`unexpected policy path ${path}`);
+    });
+
+    await expect(runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    })).rejects.toThrow(/connection reset after commit/);
+
+    expect(prepared).toBeDefined();
+    const recovered = await recoverExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      approverAddress: ADDRESS,
+      intent: prepared!,
+    });
+
+    expect(evaluationCalls).toBe(1);
+    expect(statusReads).toBe(2);
+    expect(recovered.status.record?.decision_hash)
+      .toBe(bounded.status.record && (bounded.status.record as ExecutionPolicyRecord).decision_hash);
+    expect(recovered.evaluation.execution_binding.sequence).toBe(1);
+  });
+
+  it("replays byte-identical evaluate bytes only when status still proves the exact prior head", async () => {
+    const surface = "deal_evaluation" as const;
+    const resourceId = "deal-exact-replay";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    let statusReads = 0;
+    let evaluationCalls = 0;
+    const evaluationBodies: string[] = [];
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/policy/status") {
+        statusReads += 1;
+        return jsonResponse(statusReads < 3 ? bounded.preflight : bounded.status);
+      }
+      if (path === "/policy/approval-message") return jsonResponse(bounded.approval);
+      if (path === "/policy/evaluate") {
+        evaluationCalls += 1;
+        evaluationBodies.push(String(init?.body));
+        if (evaluationCalls === 1) throw new Error("connection closed before commit");
+        return jsonResponse(bounded.evaluation);
+      }
+      throw new Error(`unexpected policy path ${path}`);
+    });
+
+    await expect(runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    })).rejects.toThrow(/connection closed before commit/);
+
+    const recovered = await recoverExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      approverAddress: ADDRESS,
+      intent: prepared!,
+    });
+
+    expect(statusReads).toBe(3);
+    expect(evaluationCalls).toBe(2);
+    expect(evaluationBodies[1]).toBe(evaluationBodies[0]);
+    expect(JSON.parse(evaluationBodies[1])).toMatchObject({
+      idempotency_key: prepared?.evaluationIdempotencyKey,
+      expires_at: prepared?.expiresAt,
+      previous_decision_hash: prepared?.approval.previous_decision_hash,
+      approval_signature: prepared?.approvalSignature,
+    });
+    expect(recovered.status.record?.decision_hash)
+      .toBe((bounded.status.record as ExecutionPolicyRecord).decision_hash);
+  });
+
+  it("refuses recovery when current status is neither the retained decision nor its exact prior head", async () => {
+    const surface = "arena_execution" as const;
+    const resourceId = "private-submission-head-drift";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    const conflicting = await policyResponses(holdBundle, surface, resourceId, expiresAt);
+    let statusReads = 0;
+    let evaluationCalls = 0;
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/policy/status") {
+        statusReads += 1;
+        return jsonResponse(statusReads === 1 ? bounded.preflight : conflicting.status);
+      }
+      if (path === "/policy/approval-message") return jsonResponse(bounded.approval);
+      if (path === "/policy/evaluate") {
+        evaluationCalls += 1;
+        throw new Error("ambiguous mutation");
+      }
+      throw new Error(`unexpected policy path ${path}`);
+    });
+
+    await expect(runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    })).rejects.toThrow(/ambiguous mutation/);
+
+    await expect(recoverExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      approverAddress: ADDRESS,
+      intent: prepared!,
+    })).rejects.toBeInstanceOf(ExecutionPolicyRecoveryMismatchError);
+    expect(statusReads).toBe(2);
+    expect(evaluationCalls).toBe(1);
+  });
+
+  it("keeps pending-anchor and expired recoveries read-only", async () => {
+    const surface = "deal_evaluation" as const;
+    const resourceId = "deal-pending-or-expired";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    let statusReads = 0;
+    let evaluationCalls = 0;
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/policy/status") {
+        statusReads += 1;
+        if (statusReads === 1) return jsonResponse(bounded.preflight);
+        if (statusReads === 2) return jsonResponse({}, 503);
+        return jsonResponse(bounded.preflight);
+      }
+      if (path === "/policy/approval-message") return jsonResponse(bounded.approval);
+      if (path === "/policy/evaluate") {
+        evaluationCalls += 1;
+        throw new Error("ambiguous mutation");
+      }
+      throw new Error(`unexpected policy path ${path}`);
+    });
+
+    await expect(runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    })).rejects.toThrow(/ambiguous mutation/);
+
+    const recoveryInput = {
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: fetchMock as typeof fetch,
+      approverAddress: ADDRESS,
+      intent: prepared!,
+    };
+    await expect(recoverExecutionPolicyWorkflow(recoveryInput))
+      .rejects.toThrow(/trust roots are unavailable/);
+    expect(evaluationCalls).toBe(1);
+
+    await expect(recoverExecutionPolicyWorkflow({
+      ...recoveryInput,
+      now: expiresAt,
+    })).rejects.toBeInstanceOf(ExecutionPolicyIntentExpiredError);
+    expect(statusReads).toBe(3);
+    expect(evaluationCalls).toBe(1);
+  });
+
+  it("rejects a conflicting retained idempotency key before any recovery transport", async () => {
+    const surface = "deal_evaluation" as const;
+    const resourceId = "deal-conflicting-idempotency";
+    const expiresAt = Math.floor(Date.now() / 1_000) + 600;
+    const bounded = await policyResponses(bundle, surface, resourceId, expiresAt);
+    const initialResponses = [bounded.preflight, bounded.approval];
+    let prepared: PreparedExecutionPolicyIntent | undefined;
+    const initialFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/policy/evaluate") throw new Error("ambiguous mutation");
+      return jsonResponse(initialResponses.shift());
+    });
+
+    await expect(runExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: initialFetch as typeof fetch,
+      surface,
+      resourceId,
+      expiresAt,
+      bundle,
+      approverAddress: ADDRESS,
+      personalSign: async () => bounded.signature,
+      onPreparedIntent: (intent) => { prepared = intent; },
+    })).rejects.toThrow(/ambiguous mutation/);
+
+    const neverFetch = vi.fn(async () => jsonResponse({}));
+    const conflictingIntent = {
+      ...prepared!,
+      evaluationIdempotencyKey: `sha256:${"f".repeat(64)}`,
+    } as PreparedExecutionPolicyIntent;
+    await expect(recoverExecutionPolicyWorkflow({
+      delegateUrl: "https://delegate.example",
+      runtimeBearer: "runtime-bearer",
+      ...POLICY_TRUST,
+      fetchImpl: neverFetch as typeof fetch,
+      approverAddress: ADDRESS,
+      intent: conflictingIntent,
+    })).rejects.toBeInstanceOf(ExecutionPolicyRecoveryMismatchError);
     expect(neverFetch).not.toHaveBeenCalled();
   });
 });

@@ -108,7 +108,23 @@ Authorization: Bearer <short-lived challenge:submit token>
 Idempotency-Key: <bounded caller-generated key>
 ```
 
-Runtime-worker-only state operations:
+Wallet-owner lifecycle operations for that exact challenge version:
+
+```text
+GET  /arena/challenges/{challenge_id}/versions/{version}/submissions/mine
+POST /arena/challenges/{challenge_id}/versions/{version}/submissions/{submission_id}/cancel
+POST /arena/challenges/{challenge_id}/versions/{version}/submissions/{submission_id}/ciphertext-erasure/retry
+Authorization: Bearer <short-lived wallet session token>
+```
+
+The two POST routes require the wallet-only
+`challenge:submissions:manage` scope. They match the recovered wallet,
+challenge ID, challenge version, and submission ID inside the durable store.
+An Arena agent credential has only submit/read scopes and cannot cancel or
+request cleanup. Neither owner route grants queue-transition, evaluator,
+runtime-worker, reward, or settlement authority.
+
+Legacy local-development worker compatibility operations:
 
 ```text
 GET  /arena/internal/submissions/{submission_id}
@@ -116,11 +132,37 @@ POST /arena/internal/submissions/{submission_id}/transition
 POST /arena/internal/submissions/{submission_id}/ladder-release
 ```
 
-The internal routes require configured runtime bearer authentication. They do
-not fail open when runtime auth is absent. The internal submission read is the
-only worker-only HTTP response that includes the opaque server-generated
-encrypted-object reference. No public response includes that reference or a
-reconstructible object ID.
+These routes are disabled by default, return `404` before request-body
+validation, and are unconditionally unavailable in every dstack process even
+if an operator supplies the development switch. When deliberately enabled in
+a non-dstack test process, they still require configured runtime bearer
+authentication and do not fail open when runtime auth is absent. The
+production Arena worker never uses these routes: it shares and mutates the
+authenticated Arena store directly while holding its worker lease. No public
+or owner response includes the opaque encrypted reference or a reconstructible
+object ID.
+
+## Authenticated Arena state and rollback boundary
+
+The queue, bounded Ladder releases, and encrypted-object references use one
+fresh schema-v4 canonical JSON envelope. Its exact root fields are `surface`,
+`schema_version`, `payload`, and `integrity`. The integrity record names
+`dnai.arena-store-integrity.v1`, `HMAC-SHA256`, a purpose-separated key ID, and
+the tag over the canonical surface, schema version, and complete payload.
+
+The API and direct-store worker must resolve the same Arena-store integrity
+key before opening or creating persistent state. A real dstack process derives
+that key from `tinker/arena_store_integrity`; it never consumes an explicit
+local key. The loader rejects old flat schemas rather than silently blessing
+them, as well as wrong keys, modified state, truncated JSON, duplicate fields,
+unknown/mixed schema fields, noncanonical bytes, and invalid state invariants.
+
+This is an integrity boundary, not a freshness boundary. Anyone able to restore
+an older complete schema-v4 file together with its still-valid HMAC can roll
+back queue state. The Arena file has no sequence anchored outside the volume,
+and its HMAC is not Intel TDX evidence, Base Sepolia finality evidence, or an
+anti-rollback guarantee. A future live monotonic claim requires a separately
+reviewed external high-water mark or equivalent rollback-resistant storage.
 
 Exact submission, queue-transition, evaluator, and Ladder-release timestamps
 are likewise internal-only. Public submissions, queues, and leaderboards emit
@@ -128,6 +170,17 @@ are likewise internal-only. Public submissions, queues, and leaderboards emit
 otherwise candidate-dependent evaluation latency could become a side channel
 once a confidential worker is connected. The durable store keeps exact times
 solely for ordering, idempotency, and crash recovery.
+
+The public queue and leaderboard accept `limit=1..100` and an optional opaque
+`cursor`. Their existing `submission_count` and `row_count` fields are page
+counts. Both responses add `has_more` and `next_cursor`; the latter is null on
+the terminal page. A cursor is bound to the exact surface, challenge ID,
+challenge version, already-public anchor submission ID, and a SHA-256
+commitment to the complete ordered snapshot. It contains no wallet/project
+identity, score, reward, encrypted reference, or exact timing. Malformed,
+tampered, cross-surface, cross-challenge, and stale-snapshot cursors fail
+closed. This intentionally asks a client to restart at page one after the
+ordered set changes instead of silently duplicating or skipping rows.
 
 `GET /arena/candidate-encryption-contract` is public and returns exactly these
 top-level fields:
@@ -156,8 +209,8 @@ Arena authentication is cryptographically separate from diligence-deal seller
 upload authentication:
 
 - two mutually exclusive exact short wallet-session profiles:
-  `challenge:submit challenge:submissions:read`, or the separately requested
-  `challenge:agents:manage`
+  `challenge:submit challenge:submissions:read challenge:submissions:manage`,
+  or the separately requested `challenge:agents:manage`
 - challenge resource: exact challenge ID and semantic version
 - Base Sepolia chain ID: `84532`
 - separate JWT issuer and audience
@@ -214,7 +267,7 @@ breaks are significant):
 {domain} wants you to sign in with your Ethereum account:
 {normalized_lowercase_wallet}
 
-Authorize encrypted candidate submissions and read only your bounded submission status for the specified challenge version during this short session. This request will not trigger a blockchain transaction.
+Authorize encrypted candidate submissions, read only your bounded submission status, cancel only before worker claim, and retry terminal ciphertext unlink for the specified challenge version during this short session. This request will not trigger a blockchain transaction.
 
 URI: {uri}
 Version: 1
@@ -226,6 +279,7 @@ Resources:
 - urn:dnai:arena:challenge:{challenge_id}:version:{challenge_version}
 - urn:dnai:scope:challenge:submit
 - urn:dnai:scope:challenge:submissions:read
+- urn:dnai:scope:challenge:submissions:manage
 ```
 
 Agent management is never included above. The user explicitly requests
@@ -557,10 +611,11 @@ Idempotency is scoped to:
 The raw `Idempotency-Key` is never persisted. Both stores record only bounded
 hashes. The candidate-ingress request hash covers the exact AAD binding and
 complete encryption envelope; the queue request hash covers the server-created
-sealed reference and bounded manifest. Replaying an identical request returns
-the original ciphertext/submission with `created=false` and performs no blob
-rewrite. Reusing the key for a different commitment, manifest, identity,
-recipient, AAD, nonce, ephemeral key, or ciphertext returns HTTP 409.
+sealed reference, bounded manifest, and retained ciphertext receipt
+commitments. Replaying an identical request returns the original
+ciphertext/submission with `created=false` and performs no blob rewrite.
+Reusing the key for a different commitment, manifest, identity, recipient,
+AAD, nonce, ephemeral key, ciphertext, or receipt commitment returns HTTP 409.
 
 Arena queue state is an allowlisted JSON document written through a
 same-directory temporary file, `fsync`, atomic `os.replace`, and
@@ -579,13 +634,100 @@ durable write does not mutate the in-memory view. Loading fails closed on:
 - candidate-egress marker tampering
 - oversized files or record counts
 - inconsistent idempotency or Ladder history
-- missing, extra, symlinked, permission-broadened, or hash-mismatched ciphertext blobs
+- missing, extra, symlinked, permission-broadened, or hash-mismatched retained ciphertext blobs
 - envelope/index recipient, AAD, ciphertext-size, and object-ID inconsistencies
 
-The JSON implementation uses an in-process lock, not a distributed or
-multi-process transaction. Run one delegate API worker for this slice. A future
-multi-worker deployment must move Arena state to a sealed transactional store
-with equivalent exact-schema and atomicity checks.
+The queue and ingress stores each combine an in-process lock with a separate
+same-host `flock` file, refreshing durable state after lock acquisition. This
+makes API/worker compare-and-swap and ingress unlink retry atomic across local
+processes. It is not a distributed transaction or rollback-resistant monotonic
+store. A deployment spanning hosts must move Arena state to a sealed
+transactional store with equivalent exact-schema, atomicity, and
+rollback-resistance checks.
+
+## Owner cancellation and ciphertext lifecycle
+
+The queue store persists an explicit ciphertext state for every submission:
+
+```text
+retained
+  -> erasure_pending
+  -> unlinked
+  -> (idempotent unlinked replay)
+
+erasure_pending
+  -> erasure_retry_required
+  -> unlinked
+```
+
+`completed`, `failed`, `withheld`, `cancelled`, `expired`, and `dead_letter`
+are terminal. A terminal transition atomically changes `retained` to
+`erasure_pending`, records a configured maximum-retention deadline no later
+than 3,600 seconds after the transition, and preserves only the non-secret blob,
+ciphertext, recipient-key, candidate, and public evaluation commitments and
+receipts. The system attempts unlink immediately; 3,600 seconds is the maximum
+retention policy/deadline for bounded retry scheduling, not a promised delay
+before cleanup, a physical-deletion guarantee, or a guarantee that persistent
+storage failure can be resolved by that time. Cleanup failure remains explicit
+and retryable rather than silently claiming success. Service retrieval is
+blocked immediately for every terminal row, including while unlink is pending
+or retry-required. The continuously polling worker runs a bounded oldest-first
+cleanup batch at the start of every `run_once` cycle, and the wallet owner can
+request an idempotent retry.
+
+Production terminal entry points invoke cleanup, not merely the lifecycle
+marker: owner cancellation invokes it after the cancellation write; internal
+terminal transitions invoke it after the terminal write; and Safe-IR
+completion/failure invokes it before returning its bounded receipt. If a
+process crashes after the terminal write but before cleanup, the next worker
+poll finds the durable pending state and retries.
+
+Owner cancellation and worker claim are compare-and-swap operations under the
+same Arena-store `flock`:
+
+1. The worker opens no ciphertext blob during preflight. It reads only the
+   ingress index commitments required for the registry claim.
+2. It obtains the fresh execution-policy/release/registry authorization.
+3. It durably writes `worker_claimed_at`.
+4. Only then may it open and decrypt the ciphertext.
+
+If cancellation acquires the lock first, the row becomes terminal and the
+worker claim fails; the ingress index is moved to `unlink_pending` before any
+unlink attempt, so even an unlink failure prevents later worker reads. If the
+worker claim acquires the lock first, owner cancellation fails and the claimed
+worker may read the still-retained blob. Owner routes never perform worker
+transitions.
+
+Ingress unlink is a crash-retry protocol:
+
+1. atomically persist `storage_state=unlink_pending`;
+2. validate and unlink the owned directory entry through a directory file
+   descriptor;
+3. atomically remove the index record.
+
+A crash before step 2 leaves a pending record plus file. A crash after step 2
+leaves a pending record plus an absent entry. Either state is safe to retry;
+the latter finalizes with `directory_entry_absent`. Reads and ingress
+idempotency replays reject `unlink_pending`. Blob opens and unlinks use
+validated object IDs, directory-relative operations, `O_NOFOLLOW` where
+available, regular-file/mode checks, and a non-symlinked directory descriptor.
+Path traversal, symlink substitution, unindexed files, or broadened modes fail
+closed.
+
+The owner projection exposes only:
+
+- `retained`, `erasure_pending`, `erasure_retry_required`, or `unlinked`;
+- unlink attempt count and retryability;
+- `directory_entry_unlinked`, `directory_entry_absent`, `unlink_failed`, or
+  `none`;
+- the non-secret receipt commitments; and
+- `physical_erasure_claimed=false`.
+
+`directory_entry_unlinked` means the validated directory entry was
+successfully unlinked in the current operation.
+`directory_entry_absent` means the validated entry was absent when retried.
+Neither is evidence of media overwrite, flash translation-layer behavior,
+remote backup deletion, or physical erasure.
 
 ## Queue model
 
@@ -628,7 +770,8 @@ For the DNASeq challenge, the worker evaluates the selected subsets from the
 two sealed synthetic per-variant quality lanes, computes the exact Z-prime
 score inside the boundary, and
 reduces it with the existing `LadderLeaderboard`. Exact scores are not accepted
-by any HTTP route. The internal HTTP route accepts only the resulting bounded:
+by any HTTP route. The local-development compatibility route accepts only the
+resulting bounded:
 
 ```json
 {
@@ -654,6 +797,9 @@ release. This method is intentionally not exposed over HTTP.
 
 ```text
 TINKER_ARENA_STORE_PATH=/data/arena_state.json
+TINKER_ARENA_STORE_INTEGRITY_KEY=<local development only; empty in dstack>
+TINKER_ARENA_STORE_INTEGRITY_KEY_PATH=tinker/arena_store_integrity
+TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED=false
 TINKER_ARENA_WALLET_AUTH_KEY_PATH=tinker/arena_wallet_auth
 TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS=300
 TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS=300
@@ -686,12 +832,14 @@ TINKER_ARENA_WORKER_HEARTBEAT_KEY_PATH=tinker/arena_worker_heartbeat
 
 An empty `TINKER_ARENA_STORE_PATH` keeps the immutable public catalog readable
 but disables auth challenge issuance, submission writes, queue reads, and
-leaderboard reads fail-closed. An empty candidate-ingress store disables the
-Arena attestation, browser encryption contract, and submission endpoint. Local
-development must use a dedicated `0600` key file so queued ciphertext survives
-a restart. Dstack ignores local/explicit key material and derives at the
-distinct Arena path. The production compose mounts both stores under the
-delegate data volume.
+leaderboard reads fail-closed. An unavailable Arena-store integrity key also
+closes every persistent API/worker construction. An empty candidate-ingress
+store disables the Arena attestation, browser encryption contract, and
+submission endpoint. Local development must use a dedicated `0600` ingress key
+file so queued ciphertext survives a restart. Dstack ignores local/explicit
+key material and derives at the distinct Arena paths. The production compose
+mounts both stores under the delegate data volume and hard-codes the legacy
+internal HTTP switch false.
 
 The local compose descriptors put the modeled Arena agent store on that same
 durable `/data` volume and configure two distinct future dstack derivation
@@ -721,8 +869,8 @@ policy trust context committed into the on-chain Arena release policy:
 - `execution_policy_approval_schema` is exactly
   `dnai-wikigen/execution-policy-approval/v3`;
 - `execution_policy_api_schema_version` is exactly `3` and
-  `execution_policy_store_schema_version` is exactly `5`; the v3 approval and
-  authenticated v5 decision bind the hash-only execution context so an
+  `execution_policy_store_schema_version` is exactly `6`; the v3 approval and
+  authenticated v6 decision bind the hash-only execution context so an
   approved intent cannot be reused for a different compiled recipe;
 - the full Base Sepolia release approval domain and its domain-separated
   SHA-256 hash;
@@ -772,10 +920,12 @@ manifest.
 The final Cloudflare origin must be present exactly in
 `TINKER_CORS_ALLOWED_ORIGINS`, and the edge should rate-limit public wallet
 challenge issuance and submission attempts. Cloudflare Queues/R2 integration
-does not exist in this slice; the current durable ciphertext store is the
-single-worker backend. No frontend should claim Cloudflare queue execution. A
-worker-presence signal is not row evidence, and worker-reported row provenance
-is not independently verified TDX evidence.
+does not exist in this slice. API and worker processes can share the current
+same-host durable ciphertext state under the store `flock`, but exactly one
+evaluator process is elected through the separate lifetime worker lease. No
+frontend should claim Cloudflare queue execution. A worker-presence signal is
+not row evidence, and worker-reported row provenance is not independently
+verified TDX evidence.
 
 ## Fresh-CVM go-live gate
 

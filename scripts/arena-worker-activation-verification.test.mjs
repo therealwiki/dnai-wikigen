@@ -92,12 +92,14 @@ function reviewedProjectionFixture(directory, { delegateUrl } = {}) {
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress =
     "0x0000000000000000000000000000000000000001";
+  intent.staticContractInputs.diligenceRoom.governanceController =
+    "0x0000000000000000000000000000000000000015";
   intent.staticContractInputs.computeCreditVault.developer =
     "0x000000000000000000000000000000000000000a";
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment =
     `0x${"22".repeat(32)}`;
   intent.numericPolicy.contract = {
-    computeDeveloperFeeBps: 500,
+    computeDeveloperFeeBps: 100,
     emailOracleUpgradeDelaySeconds: 172_800,
     tinkerMaxAddBalanceWei: "1000000000000000000",
     tinkerMaxSpendWei: "250000000000000000",

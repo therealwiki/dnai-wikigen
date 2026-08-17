@@ -10,6 +10,7 @@ const OPENED_FD_DCAP_RUNTIME_AUTHORITY_DOMAIN =
   "dnai-wikigen/opened-fd-dcap-runtime-authority/v1\0";
 const PYTHON_RUNTIME_TREE_DOMAIN = "dnai-wikigen/python-runtime-tree/v1\0";
 const ROOT_OWNED_PRODUCTION_MODE = "root_owned_production";
+const MAX_DCAP_WIRE_BYTES = 2 * 1024 * 1024;
 
 // This label is part of the already-pinned Python bootstrap bytes. It describes
 // fixture ownership only; it is not an authentication claim about node:test.
@@ -20,8 +21,8 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import os
+import stat
 import sys
-import time
 import types
 
 def read_fd(fd, maximum):
@@ -39,10 +40,18 @@ def read_fd(fd, maximum):
     os.lseek(fd, 0, os.SEEK_SET)
     return b"".join(chunks)
 
+def write_all(fd, value):
+    offset = 0
+    while offset < len(value):
+        written = os.write(fd, value[offset:])
+        if written < 1:
+            raise ValueError
+        offset += written
+
 try:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         raise ValueError
-    native_sha256, source_sha256, bootstrap_sha256, runtime_sha256, native_mode = sys.argv[1:]
+    native_sha256, source_sha256, bootstrap_sha256, runtime_sha256, native_mode, barrier_path = sys.argv[1:]
     if any(len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
            for value in (native_sha256, source_sha256, bootstrap_sha256)):
         raise ValueError
@@ -55,53 +64,204 @@ try:
             or hashlib.sha256(source_bytes).hexdigest() != source_sha256):
         raise ValueError
     native_stat = os.fstat(3)
+    source_stat = os.fstat(4)
+    if (not stat.S_ISREG(source_stat.st_mode)
+            or source_stat.st_uid != os.geteuid()
+            or source_stat.st_nlink != 1
+            or source_stat.st_mode & 0o7022):
+        raise ValueError
     if native_mode == "root_owned_production":
-        if (native_stat.st_uid != 0 or native_stat.st_nlink != 1
-                or native_stat.st_mode & 0o022):
+        if (not stat.S_ISREG(native_stat.st_mode)
+                or native_stat.st_uid != 0 or native_stat.st_nlink != 1
+                or stat.S_IMODE(native_stat.st_mode) != 0o555
+                or native_stat.st_mode & 0o7000):
             raise ValueError
     elif native_mode == "operator_owned_node_test":
-        if (native_stat.st_uid != os.geteuid() or native_stat.st_nlink != 1
-                or native_stat.st_mode & 0o022):
+        if (not stat.S_ISREG(native_stat.st_mode)
+                or native_stat.st_uid != os.geteuid() or native_stat.st_nlink != 1
+                or native_stat.st_mode & 0o7022):
             raise ValueError
     else:
         raise ValueError
-    native_path = "/dev/fd/3"
-    package = types.ModuleType("dcap_qvl")
-    package.__path__ = []
-    package.__package__ = "dcap_qvl"
-    sys.modules["dcap_qvl"] = package
-    loader = importlib.machinery.ExtensionFileLoader(
-        "dcap_qvl._dcap_qvl", native_path
-    )
-    spec = importlib.util.spec_from_file_location(
-        "dcap_qvl._dcap_qvl", native_path, loader=loader
-    )
-    if spec is None or spec.loader is None:
+
+    snapshot_root = "/private/tmp"
+    snapshot_root_stat = os.lstat(snapshot_root)
+    if (not stat.S_ISDIR(snapshot_root_stat.st_mode)
+            or stat.S_ISLNK(snapshot_root_stat.st_mode)
+            or snapshot_root_stat.st_uid != 0
+            or stat.S_IMODE(snapshot_root_stat.st_mode) != 0o1777):
         raise ValueError
-    native = importlib.util.module_from_spec(spec)
-    sys.modules["dcap_qvl._dcap_qvl"] = native
-    loader.exec_module(native)
+    snapshot_directory = snapshot_root + "/dnai-dcap-" + os.urandom(32).hex()
+    os.mkdir(snapshot_directory, 0o700)
+    snapshot_name = snapshot_directory + "/native.abi3.so"
+    snapshot_writer_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    snapshot_reader_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        snapshot_writer_flags |= os.O_NOFOLLOW
+        snapshot_reader_flags |= os.O_NOFOLLOW
+    snapshot_writer_fd = None
+    snapshot_fd = None
+    snapshot_identity = None
+    try:
+        snapshot_writer_fd = os.open(snapshot_name, snapshot_writer_flags, 0o700)
+        write_all(snapshot_writer_fd, native_bytes)
+        os.fsync(snapshot_writer_fd)
+        os.fchmod(snapshot_writer_fd, 0o500)
+        snapshot_writer_stat = os.fstat(snapshot_writer_fd)
+        snapshot_fd = os.open(snapshot_name, snapshot_reader_flags)
+        if snapshot_fd < 5 or snapshot_fd > 64:
+            raise ValueError
+        snapshot_stat = os.fstat(snapshot_fd)
+        snapshot_identity = (
+            snapshot_stat.st_dev,
+            snapshot_stat.st_ino,
+            snapshot_stat.st_uid,
+            snapshot_stat.st_mode,
+            snapshot_stat.st_size,
+        )
+        if (not stat.S_ISREG(snapshot_stat.st_mode)
+                or snapshot_stat.st_uid != os.geteuid()
+                or snapshot_stat.st_nlink != 1
+                or stat.S_IMODE(snapshot_stat.st_mode) != 0o500
+                or snapshot_writer_stat.st_dev != snapshot_stat.st_dev
+                or snapshot_writer_stat.st_ino != snapshot_stat.st_ino
+                or snapshot_writer_stat.st_size != snapshot_stat.st_size
+                or hashlib.sha256(read_fd(snapshot_fd, 32 * 1024 * 1024)).hexdigest()
+                != native_sha256):
+            raise ValueError
+        os.close(snapshot_writer_fd)
+        snapshot_writer_fd = None
+        os.close(3)
 
-    async def get_collateral_and_verify(raw_quote, pccs_url):
-        collateral = await native.get_collateral(pccs_url, raw_quote)
-        return native.py_verify(raw_quote, collateral, int(time.time()))
+        if barrier_path != "-":
+            if (not barrier_path.startswith("/") or len(barrier_path.encode("utf-8")) > 1024
+                    or "\x00" in barrier_path):
+                raise ValueError
+            barrier_stat = os.lstat(barrier_path)
+            if (not stat.S_ISDIR(barrier_stat.st_mode)
+                    or stat.S_ISLNK(barrier_stat.st_mode)
+                    or barrier_stat.st_uid != os.geteuid()
+                    or stat.S_IMODE(barrier_stat.st_mode) != 0o700):
+                raise ValueError
+            ready_path = barrier_path + "/snapshot-ready"
+            release_path = barrier_path + "/continue"
+            loaded_path = barrier_path + "/snapshot-loaded"
+            restored_path = barrier_path + "/original-restored"
+            for handshake_path in (ready_path, release_path, loaded_path, restored_path):
+                handshake_stat = os.lstat(handshake_path)
+                if (not stat.S_ISFIFO(handshake_stat.st_mode)
+                        or handshake_stat.st_uid != os.geteuid()
+                        or handshake_stat.st_nlink != 1
+                        or stat.S_IMODE(handshake_stat.st_mode) != 0o600):
+                    raise ValueError
+            barrier_fd = os.open(ready_path, os.O_WRONLY)
+            try:
+                write_all(barrier_fd, b"snapshot-ready\n")
+            finally:
+                os.close(barrier_fd)
+            release_fd = os.open(release_path, os.O_RDONLY)
+            try:
+                release_stat = os.fstat(release_fd)
+                if (not stat.S_ISFIFO(release_stat.st_mode)
+                        or release_stat.st_uid != os.geteuid()
+                        or release_stat.st_nlink != 1
+                        or stat.S_IMODE(release_stat.st_mode) != 0o600
+                        or os.read(release_fd, 64) != b"continue\n"
+                        or os.read(release_fd, 1) != b""):
+                    raise ValueError
+            finally:
+                os.close(release_fd)
 
-    package.parse_quote = native.parse_quote
-    package.get_collateral_and_verify = get_collateral_and_verify
-    package.__version__ = "0.5.2"
-    package.__native_sha256__ = native_sha256
-    package.__native_path__ = native_path
-    package.__native_authority_mode__ = native_mode
-    package.__verifier_source_sha256__ = source_sha256
-    package.__bootstrap_sha256__ = bootstrap_sha256
-    package.__runtime_environment_sha256__ = runtime_sha256
-    globals_value = {
-        "__builtins__": __builtins__,
-        "__file__": "/dev/fd/4",
-        "__name__": "__main__",
-        "__package__": None,
-    }
-    exec(compile(source_bytes, "/dev/fd/4", "exec"), globals_value, globals_value)
+        # Darwin's extension loader requires a linked file during exec_module.
+        # The private link exists only for that load window and is removed
+        # before verifier source executes. This is pathname-race mitigation,
+        # not a hostile same-UID kernel boundary.
+        native_path = "/dev/fd/" + str(snapshot_fd)
+        package = types.ModuleType("dcap_qvl")
+        package.__path__ = []
+        package.__package__ = "dcap_qvl"
+        sys.modules["dcap_qvl"] = package
+        loader = importlib.machinery.ExtensionFileLoader(
+            "dcap_qvl._dcap_qvl", native_path
+        )
+        spec = importlib.util.spec_from_file_location(
+            "dcap_qvl._dcap_qvl", native_path, loader=loader
+        )
+        if spec is None or spec.loader is None:
+            raise ValueError
+        native = importlib.util.module_from_spec(spec)
+        sys.modules["dcap_qvl._dcap_qvl"] = native
+        loader.exec_module(native)
+        os.unlink(snapshot_name)
+        snapshot_name = None
+        os.rmdir(snapshot_directory)
+        snapshot_directory = None
+        after_snapshot = os.fstat(snapshot_fd)
+        after_identity = (
+            after_snapshot.st_dev,
+            after_snapshot.st_ino,
+            after_snapshot.st_uid,
+            after_snapshot.st_mode,
+            after_snapshot.st_size,
+        )
+        if (after_snapshot.st_nlink != 0
+                or after_identity != snapshot_identity
+                or hashlib.sha256(read_fd(snapshot_fd, 32 * 1024 * 1024)).hexdigest()
+                != native_sha256):
+            raise ValueError
+
+        if barrier_path != "-":
+            loaded_fd = os.open(loaded_path, os.O_WRONLY)
+            try:
+                write_all(loaded_fd, b"snapshot-loaded\n")
+            finally:
+                os.close(loaded_fd)
+            restored_fd = os.open(restored_path, os.O_RDONLY)
+            try:
+                restored_stat = os.fstat(restored_fd)
+                if (not stat.S_ISFIFO(restored_stat.st_mode)
+                        or restored_stat.st_uid != os.geteuid()
+                        or restored_stat.st_nlink != 1
+                        or stat.S_IMODE(restored_stat.st_mode) != 0o600
+                        or os.read(restored_fd, 64) != b"original-restored\n"
+                        or os.read(restored_fd, 1) != b""):
+                    raise ValueError
+            finally:
+                os.close(restored_fd)
+
+        package.parse_quote = native.parse_quote
+        package.get_collateral = native.get_collateral
+        package.collateral_from_json = native.PyQuoteCollateralV3.from_json
+        package.verify_with_collateral = native.py_verify
+        package.__version__ = "0.5.2"
+        package.__native_sha256__ = native_sha256
+        package.__native_snapshot_fd__ = snapshot_fd
+        package.__native_snapshot_path__ = native_path
+        package.__verifier_source_sha256__ = source_sha256
+        package.__bootstrap_sha256__ = bootstrap_sha256
+        package.__runtime_environment_sha256__ = runtime_sha256
+        globals_value = {
+            "__builtins__": __builtins__,
+            "__file__": "/dev/fd/4",
+            "__name__": "__main__",
+            "__package__": None,
+        }
+        exec(compile(source_bytes, "/dev/fd/4", "exec"), globals_value, globals_value)
+    except Exception:
+        raise
+    finally:
+        if snapshot_writer_fd is not None:
+            os.close(snapshot_writer_fd)
+        if snapshot_name is not None:
+            try:
+                os.unlink(snapshot_name)
+            except OSError:
+                pass
+        if snapshot_directory is not None:
+            try:
+                os.rmdir(snapshot_directory)
+            except OSError:
+                pass
 except SystemExit:
     raise
 except Exception:
@@ -491,6 +651,8 @@ function openedFdDcapRuntimeAuthorityManifest(authority) {
     dcap_qvl_abi3_cdhash_full_sha256: authority.dcap_qvl_abi3_cdhash_full_sha256,
     native_descriptor_authority:
       "root_owned_fixed_path_sha256_and_code_signature_authenticated_before_inherited_fd3_load",
+    native_snapshot:
+      "darwin_private_link_retained_only_through_exec_module_then_unlinked_read_only_0500_snapshot_rehashed_nlink0_path_race_mitigation_not_hostile_same_uid_kernel_boundary",
     bootstrap_sha256: authority.bootstrap_sha256,
     verifier_script_sha256: authority.verifier_script_sha256,
     dcap_qvl_abi3_sha256: authority.dcap_qvl_abi3_sha256,
@@ -505,7 +667,7 @@ function openedFdDcapRuntimeAuthoritySha256(authority) {
 }
 
 function normalizeRuntimeConfiguration(value) {
-  const optional = ["beforeSpawn", "extraEnvironment"]
+  const optional = ["beforeSpawn", "extraEnvironment", "nativeSnapshotBarrier"]
     .filter((key) => Object.hasOwn(value || {}, key));
   const parsed = exactRecord(value, [
     "authority", "host", "nativeAuthorityMode", "nativePath", "sourcePath", ...optional,
@@ -516,7 +678,12 @@ function normalizeRuntimeConfiguration(value) {
     || typeof host.platform !== "string" || typeof host.architecture !== "string"
     || ![ROOT_OWNED_PRODUCTION_MODE, OPERATOR_OWNED_FIXTURE_MODE]
       .includes(parsed.nativeAuthorityMode)
-    || (parsed.beforeSpawn !== undefined && typeof parsed.beforeSpawn !== "function")) {
+    || (parsed.beforeSpawn !== undefined && typeof parsed.beforeSpawn !== "function")
+    || (parsed.nativeSnapshotBarrier !== undefined
+      && (typeof parsed.nativeSnapshotBarrier !== "string"
+        || !path.isAbsolute(parsed.nativeSnapshotBarrier)
+        || path.resolve(parsed.nativeSnapshotBarrier) !== parsed.nativeSnapshotBarrier
+        || Buffer.byteLength(parsed.nativeSnapshotBarrier, "utf8") > 1_024))) {
     throw new Error("opened-FD runtime configuration is invalid");
   }
   const extraEnvironment = parsed.extraEnvironment === undefined
@@ -534,7 +701,8 @@ function normalizeRuntimeConfiguration(value) {
   }
   if (parsed.nativeAuthorityMode === ROOT_OWNED_PRODUCTION_MODE
     && (parsed.nativePath !== parsed.authority?.dcap_qvl_abi3_path
-      || parsed.beforeSpawn !== undefined || Object.keys(extraEnvironment).length !== 0)) {
+      || parsed.beforeSpawn !== undefined || parsed.nativeSnapshotBarrier !== undefined
+      || Object.keys(extraEnvironment).length !== 0)) {
     throw new Error("root-owned production runtime configuration cannot contain overrides");
   }
   return Object.freeze({
@@ -544,6 +712,7 @@ function normalizeRuntimeConfiguration(value) {
     nativePath: parsed.nativePath,
     nativeAuthorityMode: parsed.nativeAuthorityMode,
     beforeSpawn: parsed.beforeSpawn,
+    nativeSnapshotBarrier: parsed.nativeSnapshotBarrier,
     extraEnvironment: Object.freeze({ ...extraEnvironment }),
   });
 }
@@ -650,6 +819,11 @@ export function createPinnedSevenCvmOpenedFdRuntime(configuration) {
 
   function run(input) {
     assertRuntime();
+    const inputText = JSON.stringify(input);
+    if (typeof inputText !== "string" || Buffer.byteLength(inputText, "utf8") < 2
+      || Buffer.byteLength(inputText, "utf8") > MAX_DCAP_WIRE_BYTES) {
+      throw new Error("opened-FD DCAP verifier input is outside its frozen wire bound");
+    }
     const native = openPinnedDcapNative();
     let source;
     try {
@@ -667,13 +841,14 @@ export function createPinnedSevenCvmOpenedFdRuntime(configuration) {
         authority.bootstrap_sha256,
         authority.isolated_runtime_environment_sha256,
         config.nativeAuthorityMode,
+        config.nativeSnapshotBarrier ?? "-",
       ], {
         cwd: "/",
         encoding: "utf8",
-        input: JSON.stringify(input),
+        input: inputText,
         stdio: ["pipe", "pipe", "pipe", native.fd, source.fd],
         timeout: 60_000,
-        maxBuffer: 16 * 1024,
+        maxBuffer: MAX_DCAP_WIRE_BYTES,
         env: {
           HOME: "/var/empty",
           LANG: "C",
@@ -686,7 +861,7 @@ export function createPinnedSevenCvmOpenedFdRuntime(configuration) {
       assertOpenedFileStillAuthenticated(source);
       const output = String(result.stdout || "");
       if (result.error || result.status !== 0 || String(result.stderr || "") !== ""
-        || output.length > 12 * 1024) {
+        || Buffer.byteLength(output, "utf8") > MAX_DCAP_WIRE_BYTES) {
         throw new Error("pinned opened-FD Intel TDX verifier failed");
       }
       let parsed;

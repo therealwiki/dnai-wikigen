@@ -42,6 +42,7 @@ const qvlVerifier = "0x7777777777777777777777777777777777777777";
 const tee = "0x4444444444444444444444444444444444444444";
 const token = "0x5555555555555555555555555555555555555555";
 const provider = "0x6666666666666666666666666666666666666666";
+const tokenProvider = "0x8888888888888888888888888888888888888888";
 const hash = `0x${"ab".repeat(32)}` as Hex;
 const tokenHash = `0x${"cd".repeat(32)}` as Hex;
 const nativePolicy = `0x${"11".repeat(32)}` as Hex;
@@ -60,14 +61,17 @@ function configured() {
     VITE_COMPUTE_VAULT_METERING_QVL_VERIFIER: qvlVerifier,
     VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH: meteringPolicySet,
     VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256: meteringQuotePin,
+    VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS: "500",
     VITE_COMPUTE_VAULT_TEE_IDENTITY: tee,
     VITE_COMPUTE_VAULT_COMPOSE_HASH: hash,
     VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT: nativePolicy,
+    VITE_COMPUTE_VAULT_NATIVE_PROVIDER: provider,
     VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS: token,
     VITE_COMPUTE_VAULT_ERC20_ASSET_CODE_HASH: tokenHash,
     VITE_COMPUTE_VAULT_ERC20_SYMBOL: "USDC",
     VITE_COMPUTE_VAULT_ERC20_DECIMALS: "6",
     VITE_COMPUTE_VAULT_ERC20_RATE_POLICY_COMMITMENT: tokenPolicy,
+    VITE_COMPUTE_VAULT_ERC20_PROVIDER: tokenProvider,
   });
 }
 
@@ -84,6 +88,7 @@ function liveSnapshot(): VaultChainSnapshot {
     pendingMeteringPolicySetHash: zeroHash,
     pendingMeteringBindingActivatesAt: 0n,
     meteringBindingFrozen: true,
+    developerFeeBps: 500,
     developerFeeFrozen: true,
     pendingDeveloperFeeActivatesAt: 0n,
     composePolicyFrozen: true,
@@ -101,7 +106,7 @@ function liveSnapshot(): VaultChainSnapshot {
     composeApproved: true,
     teeComposeHash: hash,
     nativePolicy: { asset: zeroAddress, provider: provider as Address, developerFeeBps: 500, active: true },
-    tokenPolicy: { asset: token as Address, provider: provider as Address, developerFeeBps: 500, active: true },
+    tokenPolicy: { asset: token as Address, provider: tokenProvider as Address, developerFeeBps: 500, active: true },
     tokenAllowed: true,
     tokenRuntimeCodeHash: tokenHash,
     tokenSymbol: "USDC",
@@ -148,8 +153,10 @@ describe("Compute vault fail-closed readiness", () => {
 
   it("fails token funding closed when the exact token rate policy is inactive or misbound", () => {
     for (const tokenPolicyDrift of [
-      { asset: token as Address, provider: provider as Address, developerFeeBps: 500, active: false },
-      { asset: developer as Address, provider: provider as Address, developerFeeBps: 500, active: true },
+      { asset: token as Address, provider: tokenProvider as Address, developerFeeBps: 500, active: false },
+      { asset: developer as Address, provider: tokenProvider as Address, developerFeeBps: 500, active: true },
+      { asset: token as Address, provider: provider as Address, developerFeeBps: 500, active: true },
+      { asset: token as Address, provider: tokenProvider as Address, developerFeeBps: 501, active: true },
     ]) {
       const status = assessComputeVaultReadiness(configured(), {
         ...liveSnapshot(),
@@ -158,7 +165,7 @@ describe("Compute vault fail-closed readiness", () => {
       expect(status.nativeFundingReady).toBe(true);
       expect(status.tokenFundingReady).toBe(false);
       expect(status.tokenAuthorizationReady).toBe(false);
-      expect(status.tokenReasons).toContain("ERC20 exact-asset rate policy is not active");
+      expect(status.tokenReasons.length).toBeGreaterThan(0);
     }
   });
 
@@ -215,11 +222,27 @@ describe("Compute vault fail-closed readiness", () => {
       { pendingMeteringQvlVerifier: qvlVerifier as Address },
       { pendingMeteringPolicySetHash: tokenHash },
       { pendingMeteringBindingActivatesAt: 1n },
+      { developerFeeBps: 501 },
       { pendingDeveloperFeeActivatesAt: 1n },
     ]) {
       const status = assessComputeVaultReadiness(configured(), { ...liveSnapshot(), ...drift });
       expect(status.nativeFundingReady).toBe(false);
       expect(status.nativeAuthorizationReady).toBe(false);
+    }
+  });
+
+  it("pins the native provider and policy fee independently of the policy commitment", () => {
+    for (const nativePolicyDrift of [
+      { asset: zeroAddress, provider: tokenProvider as Address, developerFeeBps: 500, active: true },
+      { asset: zeroAddress, provider: provider as Address, developerFeeBps: 501, active: true },
+    ]) {
+      const status = assessComputeVaultReadiness(configured(), {
+        ...liveSnapshot(),
+        nativePolicy: nativePolicyDrift,
+      });
+      expect(status.nativeFundingReady).toBe(false);
+      expect(status.nativeAuthorizationReady).toBe(false);
+      expect(status.fundingReasons.join(" ")).toMatch(/rate-policy/);
     }
   });
 });
@@ -277,6 +300,9 @@ describe("Compute vault EIP-712 ABI", () => {
     maxPrefillTokens: 1_024,
     maxSampleTokens: 128,
     maxTrainTokens: 0,
+    sourceKind: "wallet" as const,
+    executionBindingCommitment: `sha256:${"77".repeat(32)}` as `sha256:${string}`,
+    recipientReleaseCommitment: `sha256:${"88".repeat(32)}` as `sha256:${string}`,
   };
 
   it("uses the contract's exact authorization domain and field order", () => {
@@ -397,6 +423,10 @@ describe("Compute vault EIP-712 ABI", () => {
       ...validWorkload,
       resultPolicy: "raw_output" as never,
     })).rejects.toThrow(/compiled release recipe/);
+    await expect(authorize({
+      ...validWorkload,
+      executionBindingCommitment: `sha256:${"0".repeat(64)}`,
+    })).rejects.toThrow(/execution binding/);
   });
 
   it("does not expose TEE-only dispatch or metering writes in the browser ABI", () => {
@@ -459,6 +489,7 @@ describe("Compute vault pinned-block reads", () => {
       if (request.functionName === "pendingMeteringQvlVerifier") return zeroAddress;
       if (request.functionName === "pendingMeteringPolicySetHash") return zeroHash;
       if (["pendingMeteringBindingActivatesAt", "pendingDeveloperFeeActivatesAt"].includes(request.functionName)) return 0n;
+      if (request.functionName === "developerFeeBps") return 500;
       if (["meteringBindingFrozen", "developerFeeFrozen", "composePolicyFrozen", "teeIdentityAdditionsFrozen", "assetAdditionsFrozen", "ratePolicyAdditionsFrozen"].includes(request.functionName)) return true;
       if (request.functionName === "allowedAssetCount" || request.functionName === "approvedComposeCount") return 1n;
       if (request.functionName === "activeRatePolicyCount") return 2n;
@@ -495,6 +526,7 @@ describe("Compute vault pinned-block reads", () => {
       if (request.functionName === "pendingMeteringQvlVerifier") return zeroAddress;
       if (request.functionName === "pendingMeteringPolicySetHash") return zeroHash;
       if (["pendingMeteringBindingActivatesAt", "pendingDeveloperFeeActivatesAt"].includes(request.functionName)) return 0n;
+      if (request.functionName === "developerFeeBps") return 500;
       if (["meteringBindingFrozen", "developerFeeFrozen", "composePolicyFrozen", "teeIdentityAdditionsFrozen", "assetAdditionsFrozen", "ratePolicyAdditionsFrozen"].includes(request.functionName)) return true;
       if (request.functionName === "allowedAssetCount" || request.functionName === "approvedComposeCount") return 1n;
       if (request.functionName === "activeRatePolicyCount") return 2n;
@@ -605,6 +637,7 @@ describe("Compute vault verified end-user writes", () => {
       if (request.functionName === "pendingMeteringQvlVerifier") return zeroAddress;
       if (request.functionName === "pendingMeteringPolicySetHash") return zeroHash;
       if (["pendingMeteringBindingActivatesAt", "pendingDeveloperFeeActivatesAt"].includes(request.functionName)) return 0n;
+      if (request.functionName === "developerFeeBps") return 500;
       if (["meteringBindingFrozen", "developerFeeFrozen", "composePolicyFrozen", "teeIdentityAdditionsFrozen", "assetAdditionsFrozen", "ratePolicyAdditionsFrozen"].includes(request.functionName)) return true;
       if (request.functionName === "allowedAssetCount" || request.functionName === "approvedComposeCount") return 1n;
       if (request.functionName === "activeRatePolicyCount") return 2n;
@@ -614,7 +647,7 @@ describe("Compute vault verified end-user writes", () => {
       if (request.functionName === "teeIdentityComposeHash") return hash;
       if (request.functionName === "ratePolicies") {
         return request.args?.[0] === tokenPolicy
-          ? [token, provider, 500, true]
+          ? [token, tokenProvider, 500, true]
           : [zeroAddress, provider, 500, true];
       }
       if (request.functionName === "allowedAssets") return true;
@@ -729,6 +762,29 @@ describe("Compute vault verified end-user writes", () => {
       data: encodeAbiParameters([{ name: "amount", type: "uint256" }], [amount]),
     };
   }
+
+  it("reads the release-pinned fee and distinct payout providers at one block", async () => {
+    configureActionRelease();
+    mockActionReads();
+
+    const state = await loadComputeVaultState(developer as Address, projectReference);
+
+    expect(state.snapshot.developerFeeBps).toBe(500);
+    expect(state.snapshot.nativePolicy).toMatchObject({
+      provider,
+      developerFeeBps: 500,
+      active: true,
+    });
+    expect(state.snapshot.tokenPolicy).toMatchObject({
+      provider: tokenProvider,
+      developerFeeBps: 500,
+      active: true,
+    });
+    expect(state.readiness.nativeFundingReady).toBe(true);
+    expect(state.readiness.tokenFundingReady).toBe(true);
+    expect(state.readiness.nativeAuthorizationReady).toBe(true);
+    expect(state.readiness.tokenAuthorizationReady).toBe(true);
+  });
 
   it("loads every risk-reducing slot without governance reads and survives token metadata failure", async () => {
     configureActionRelease();

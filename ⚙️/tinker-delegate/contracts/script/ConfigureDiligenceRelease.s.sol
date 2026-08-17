@@ -5,11 +5,13 @@ import {Script, console} from "forge-std/Script.sol";
 
 import {DiligenceRoom} from "../src/DiligenceRoom.sol";
 
-/// @notice Three-phase admission of the exact release-bound diligence CVM.
+/// @notice Four-phase admission of the exact release-bound diligence CVM and
+///         delayed handoff to the reviewed permanent governance controller.
 /// @dev Phase 1 proposes the compose hash. Phase 2 activates that hash and
 ///      proposes the TEE identity's exact binding. Phase 3 activates the
-///      binding and permanently closes both admission sets. Each transition is
-///      guarded by the contract's fixed two-day timelock and exact counters.
+///      binding, permanently closes both admission sets, and proposes the
+///      governance controller. Phase 4 is accepted by that controller after
+///      the fixed transfer delay. The room remains fail-closed until phase 4.
 contract ConfigureDiligenceReleaseScript is Script {
     uint256 internal constant BASE_SEPOLIA_CHAIN_ID = 84532;
 
@@ -17,6 +19,7 @@ contract ConfigureDiligenceReleaseScript is Script {
         DiligenceRoom room;
         bytes32 roomRuntimeCodeHash;
         address operator;
+        address governanceController;
         address resultVerifier;
         address teeIdentity;
         bytes32 composeHash;
@@ -39,6 +42,7 @@ contract ConfigureDiligenceReleaseScript is Script {
             room: DiligenceRoom(payable(vm.envAddress("DILIGENCE_ROOM_ADDRESS"))),
             roomRuntimeCodeHash: vm.envBytes32("DILIGENCE_RUNTIME_CODE_HASH"),
             operator: vm.envAddress("DEPLOYMENT_OPERATOR"),
+            governanceController: vm.envAddress("DILIGENCE_GOVERNANCE_CONTROLLER"),
             resultVerifier: vm.envAddress("DILIGENCE_RESULT_VERIFIER"),
             teeIdentity: vm.envAddress("DILIGENCE_TEE_IDENTITY"),
             composeHash: vm.envBytes32("DILIGENCE_COMPOSE_HASH"),
@@ -56,7 +60,7 @@ contract ConfigureDiligenceReleaseScript is Script {
 
     function _executePhase(uint256 phase, ReleaseInputs memory inputs) internal {
         require(block.chainid == BASE_SEPOLIA_CHAIN_ID, "diligence release is Base Sepolia only");
-        _requireCommonReleaseInputs(inputs);
+        _requireCommonReleaseInputs(phase, inputs);
 
         if (phase == 1) {
             _phaseOne(
@@ -86,10 +90,13 @@ contract ConfigureDiligenceReleaseScript is Script {
                 inputs.attestationVerifier,
                 inputs.qvlReleasePolicyHash,
                 inputs.evaluatorPolicies,
-                inputs.evaluatorPolicySetRoot
+                inputs.evaluatorPolicySetRoot,
+                inputs.governanceController
             );
+        } else if (phase == 4) {
+            _phaseFour(inputs);
         } else {
-            revert("DILIGENCE_RELEASE_PHASE must be 1, 2, or 3");
+            revert("DILIGENCE_RELEASE_PHASE must be 1, 2, 3, or 4");
         }
 
         console.log("Diligence release phase:", phase);
@@ -103,17 +110,42 @@ contract ConfigureDiligenceReleaseScript is Script {
         console.log("Attestation binding frozen:", inputs.room.attestationBindingFrozen());
         console.log("Approved evaluator policies:", inputs.room.approvedEvaluatorPolicyCount());
         console.logBytes32(inputs.room.evaluatorPolicySetRoot());
+        console.log("Developer:", inputs.room.developer());
+        console.log("Pending developer:", inputs.room.pendingDeveloper());
+        console.log("Pending developer activates at:", inputs.room.pendingDeveloperActivatesAt());
     }
 
-    function _requireCommonReleaseInputs(ReleaseInputs memory inputs) internal view {
+    function _requireCommonReleaseInputs(uint256 phase, ReleaseInputs memory inputs) internal view {
         DiligenceRoom room = inputs.room;
         require(
             inputs.roomRuntimeCodeHash != bytes32(0) && address(room).codehash == inputs.roomRuntimeCodeHash,
             "DiligenceRoom runtime code hash mismatch"
         );
+        require(inputs.operator != address(0), "diligence operator must be nonzero");
+        require(inputs.governanceController != address(0), "diligence governance controller must be nonzero");
         require(
-            inputs.operator != address(0) && room.developer() == inputs.operator, "operator does not own DiligenceRoom"
+            inputs.governanceController != inputs.operator && inputs.governanceController != address(room),
+            "diligence governance controller conflicts with deployment authority"
         );
+        require(room.initialDeveloper() == inputs.operator, "diligence initial developer mismatch");
+        require(
+            room.releaseGovernanceController() == inputs.governanceController,
+            "DiligenceRoom release governance controller mismatch"
+        );
+        if (phase <= 3) {
+            require(
+                room.developer() == inputs.operator && room.pendingDeveloper() == address(0)
+                    && room.pendingDeveloperActivatesAt() == 0,
+                "operator does not own an unencumbered DiligenceRoom"
+            );
+        } else {
+            require(
+                phase == 4 && room.developer() == inputs.operator
+                    && room.pendingDeveloper() == inputs.governanceController
+                    && room.pendingDeveloperActivatesAt() != 0,
+                "phase 4 requires the exact pending governance handoff"
+            );
+        }
         require(inputs.teeIdentity != address(0), "diligence TEE identity must be nonzero");
         require(inputs.resultVerifier != address(0), "diligence result verifier must be nonzero");
         require(inputs.composeHash != bytes32(0), "diligence compose hash must be nonzero");
@@ -136,14 +168,21 @@ contract ConfigureDiligenceReleaseScript is Script {
         require(
             inputs.attestationVerifier != inputs.operator && inputs.attestationVerifier != inputs.resultVerifier
                 && inputs.attestationVerifier != room.resultVerifier() && inputs.attestationVerifier != address(room)
-                && inputs.attestationVerifier != inputs.teeIdentity,
+                && inputs.attestationVerifier != inputs.teeIdentity
+                && inputs.attestationVerifier != inputs.governanceController,
             "diligence attestation verifier conflicts with a release role"
         );
         require(
             inputs.teeIdentity != inputs.operator && inputs.teeIdentity != inputs.resultVerifier
                 && inputs.teeIdentity != room.resultVerifier() && inputs.teeIdentity != address(room)
-                && inputs.teeIdentity != inputs.attestationVerifier,
+                && inputs.teeIdentity != inputs.attestationVerifier
+                && inputs.teeIdentity != inputs.governanceController,
             "diligence TEE conflicts with a control role"
+        );
+        require(
+            inputs.governanceController != inputs.resultVerifier && inputs.governanceController != room.resultVerifier()
+                && inputs.governanceController != inputs.attestationVerifier,
+            "diligence governance controller conflicts with a verifier role"
         );
         require(room.feeBpsFrozen() && room.feeBps() == room.DEFAULT_FEE_BPS(), "diligence fee is not release-frozen");
         require(room.computeSettlementPolicyEnabled(), "diligence compute policy is not enabled");
@@ -261,7 +300,8 @@ contract ConfigureDiligenceReleaseScript is Script {
         address attestationVerifier,
         bytes32 qvlReleasePolicyHash,
         bytes32[3] memory evaluatorPolicies,
-        bytes32 evaluatorPolicySetRoot
+        bytes32 evaluatorPolicySetRoot,
+        address governanceController
     ) internal {
         bytes32[3] memory activeEvaluatorPolicies = room.evaluatorPolicies();
         require(
@@ -294,6 +334,7 @@ contract ConfigureDiligenceReleaseScript is Script {
         room.activateTeeIdentity(teeIdentity);
         room.freezeComposeAndEvaluatorPolicySets();
         room.freezeTeeIdentityAdditions();
+        room.proposeDeveloper(governanceController);
         vm.stopBroadcast();
 
         require(
@@ -307,8 +348,52 @@ contract ConfigureDiligenceReleaseScript is Script {
                 && room.pendingEvaluatorPolicyCount() == 0 && room.evaluatorPolicySetRoot() == evaluatorPolicySetRoot
                 && room.approvedEvaluatorPolicies(evaluatorPolicies[0])
                 && room.approvedEvaluatorPolicies(evaluatorPolicies[1])
-                && room.approvedEvaluatorPolicies(evaluatorPolicies[2]),
-            "phase 3 did not close the exact diligence release policy"
+                && room.approvedEvaluatorPolicies(evaluatorPolicies[2]) && room.developer() != governanceController
+                && room.pendingDeveloper() == governanceController
+                && room.pendingDeveloperActivatesAt() > block.timestamp,
+            "phase 3 did not close the release policy and stage governance"
+        );
+    }
+
+    function _phaseFour(ReleaseInputs memory inputs) internal {
+        DiligenceRoom room = inputs.room;
+        _requireClosedReleaseState(inputs);
+        uint256 activatesAt = room.pendingDeveloperActivatesAt();
+        require(activatesAt <= block.timestamp, "developer-transfer timelock has not elapsed");
+
+        _acceptDeveloper(room);
+
+        require(
+            room.developer() == inputs.governanceController && room.pendingDeveloper() == address(0)
+                && room.pendingDeveloperActivatesAt() == 0,
+            "phase 4 did not accept the exact governance controller"
+        );
+        _requireClosedReleaseState(inputs);
+    }
+
+    function _acceptDeveloper(DiligenceRoom room) internal virtual {
+        vm.startBroadcast();
+        room.acceptDeveloper();
+        vm.stopBroadcast();
+    }
+
+    function _requireClosedReleaseState(ReleaseInputs memory inputs) internal view {
+        DiligenceRoom room = inputs.room;
+        require(
+            room.approvedComposeCount() == 1 && room.approvedTeeIdentityCount() == 1 && room.pendingComposeCount() == 0
+                && room.pendingTeeIdentityCount() == 0 && room.composeAdditionsFrozen()
+                && room.teeIdentityAdditionsFrozen() && room.approvedComposeHashes(inputs.composeHash)
+                && room.teeIdentityComposeHash(inputs.teeIdentity) == inputs.composeHash
+                && room.resultVerifier() == inputs.resultVerifier && room.resultVerifierFrozen()
+                && room.attestationVerifier() == inputs.attestationVerifier
+                && room.attestationReleasePolicyHash() == inputs.qvlReleasePolicyHash && room.attestationBindingFrozen()
+                && room.evaluatorPolicySetFrozen() && room.approvedEvaluatorPolicyCount() == 3
+                && room.pendingEvaluatorPolicyCount() == 0
+                && room.evaluatorPolicySetRoot() == inputs.evaluatorPolicySetRoot
+                && room.approvedEvaluatorPolicies(inputs.evaluatorPolicies[0])
+                && room.approvedEvaluatorPolicies(inputs.evaluatorPolicies[1])
+                && room.approvedEvaluatorPolicies(inputs.evaluatorPolicies[2]),
+            "phase 4 requires the exact closed diligence release policy"
         );
     }
 }

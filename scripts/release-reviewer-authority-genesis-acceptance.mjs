@@ -9,9 +9,9 @@ import {
   executionPolicyReviewerRootHash,
   normalizeExpectedReviewerAuthority,
   reviewerSetSha256,
-  verifyPinnedAllReviewerAuthorization,
-  verifyPinnedTwoSignerAuthorization,
-} from "./release-authority-signature-verifier.mjs";
+  verifyIndependentAllReviewerAuthorization,
+  verifyIndependentTwoSignerAuthorization,
+} from "./release-authority-signature-verifier-core.mjs";
 import {
   RELEASE_REVIEWER_AUTHORITY_GENESIS_TRUTH_STATUS,
   normalizeReleaseReviewerAuthorityGenesis,
@@ -494,7 +494,7 @@ function normalizeCurrentStatusAgainstPrevious(value, {
     prefix: RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_MESSAGE_PREFIX,
     digest: signingPayloadSha256,
   });
-  verifyPinnedTwoSignerAuthorization({
+  verifyIndependentTwoSignerAuthorization({
     signatures: guardianSignatures,
     message,
     reviewerAuthority: guardianAuthorityFromGenesis(genesis),
@@ -725,7 +725,7 @@ export function normalizeReleaseReviewerAuthorityGenesisAcceptance(value, {
     prefix: RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_MESSAGE_PREFIX,
     digest: signingPayloadSha256,
   });
-  verifyPinnedAllReviewerAuthorization({
+  verifyIndependentAllReviewerAuthorization({
     signatures: acceptances,
     message,
     reviewerAuthority: activeAuthorityFromStatus(currentStatus),

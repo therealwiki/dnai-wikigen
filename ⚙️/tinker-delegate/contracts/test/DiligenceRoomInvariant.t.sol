@@ -13,7 +13,7 @@ contract DiligenceAdmissionHandler is Test {
     address[4] internal _teeIdentities;
 
     constructor() {
-        room = new DiligenceRoom(true);
+        room = new DiligenceRoom(true, address(0xBEEF));
         room.setComposeApprovalRequired(true);
         room.setTeeIdentityApprovalRequired(true);
         room.freezeApprovalRequirements();

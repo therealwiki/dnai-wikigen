@@ -1,9 +1,10 @@
 """Strict, non-cyclic final release authority commitments.
 
 This module intentionally has no integration with the current release manifest.
-It defines the independently testable ``dnai.final-release-authority-core.v2``
-primitive. Renewable review evidence points to this authority; it is never part
-of the authority digest.
+It preserves the frozen ``dnai.final-release-authority-core.v3`` primitive and
+an explicit historical v2 replay path for cross-language evidence replay. The
+current v4 authority is owned by the canonical JavaScript implementation;
+callers must not treat these compatibility aliases as current release authority.
 """
 
 from __future__ import annotations
@@ -11,15 +12,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
 from eth_hash.auto import keccak
 
-FINAL_RELEASE_AUTHORITY_CORE_SCHEMA = "dnai.final-release-authority-core.v2"
-FINAL_RELEASE_AUTHORITY_CORE_DOMAIN = (
+FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA = "dnai.final-release-authority-core.v2"
+FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN = (
     b"dnai-wikigen/final-release-authority-core/v2\0"
 )
+FINAL_RELEASE_AUTHORITY_CORE_V3_SCHEMA = "dnai.final-release-authority-core.v3"
+FINAL_RELEASE_AUTHORITY_CORE_V3_DOMAIN = (
+    b"dnai-wikigen/final-release-authority-core/v3\0"
+)
+FINAL_RELEASE_AUTHORITY_CORE_SCHEMA = FINAL_RELEASE_AUTHORITY_CORE_V3_SCHEMA
+FINAL_RELEASE_AUTHORITY_CORE_DOMAIN = FINAL_RELEASE_AUTHORITY_CORE_V3_DOMAIN
 MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES = 65_536
 DILIGENCE_EVALUATOR_POLICY_SET_TYPE = (
     "DiligenceRoomEvaluatorPolicySet(bytes32[3] evaluatorPolicies)"
@@ -60,7 +68,25 @@ _ADDRESS = re.compile(r"0x[0-9a-f]{40}\Z")
 _BARE_BYTES32 = re.compile(r"[0-9a-f]{64}\Z")
 _BYTES32 = re.compile(r"0x[0-9a-f]{64}\Z")
 _SHA256_PIN = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_DNS_OR_IPV4_HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
+_HISTORICAL_DNS_OR_IPV4_HOSTNAME_V2 = re.compile(
+    r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z"
+)
+_PUBLIC_DNS_LABEL_V3 = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
+)
+_PRIVATE_DNS_SUFFIXES_V3 = (
+    "localhost",
+    "local",
+    "localdomain",
+    "internal",
+    "lan",
+    "home.arpa",
+    "onion",
+    "test",
+    "invalid",
+    "example",
+    "alt",
+)
 _ARENA_CATALOG_KEY = re.compile(
     r"[a-z0-9][a-z0-9-]{0,63}@"
     r"(?:0|[1-9][0-9]*)\."
@@ -162,10 +188,22 @@ _RUNTIME_CONTROL_EXPECTATIONS = {
     "raw_secret_egress_prohibited": True,
 }
 
-_REQUESTED_FEATURE_KEYS = (
+_HISTORICAL_REQUESTED_FEATURE_KEYS_V2 = (
     "contract_writes",
     "artifact_upload",
     "compute_console",
+    "compute_vault_funding",
+    "compute_vault_authorization",
+    "compute_workload_upload",
+    "arena_submission",
+)
+
+_REQUESTED_FEATURE_KEYS_V3 = (
+    "contract_writes",
+    "artifact_upload",
+    "compute_console",
+    "tinker_customer",
+    "collaboration",
     "compute_vault_funding",
     "compute_vault_authorization",
     "compute_workload_upload",
@@ -416,7 +454,7 @@ def _walletconnect_project_id(value: Any, label: str) -> str:
     return value
 
 
-def _https_origin(value: Any, label: str) -> str:
+def _historical_https_origin_v2(value: Any, label: str) -> str:
     origin = _assert_string(value, label, 512)
     try:
         parsed = urlsplit(origin)
@@ -432,7 +470,7 @@ def _https_origin(value: Any, label: str) -> str:
         or parsed.fragment
         or parsed.path not in ("", "/")
         or parsed.hostname != parsed.hostname.lower()
-        or _DNS_OR_IPV4_HOSTNAME.fullmatch(parsed.hostname) is None
+        or _HISTORICAL_DNS_OR_IPV4_HOSTNAME_V2.fullmatch(parsed.hostname) is None
         or port == 443
     ):
         _fail(f"{label} must be a canonical lowercase HTTPS origin without a path")
@@ -441,6 +479,35 @@ def _https_origin(value: Any, label: str) -> str:
         expected_netloc += f":{port}"
     if parsed.netloc != expected_netloc or origin != f"https://{expected_netloc}":
         _fail(f"{label} must be a canonical lowercase HTTPS origin without a path")
+    return origin
+
+
+def _current_public_https_origin_v3(value: Any, label: str) -> str:
+    origin = _assert_string(value, label, 512)
+    if (
+        origin != origin.strip()
+        or re.fullmatch(r"[\x21-\x7e]+", origin) is None
+        or any(character in origin for character in ("\\", "@", "?", "#", "*"))
+    ):
+        _fail(f"{label} must be a canonical HTTPS origin")
+    match = re.fullmatch(r"https://([^/:]+)(?::([0-9]+))?", origin)
+    if match is None:
+        _fail(f"{label} must be a canonical HTTPS origin")
+    hostname, raw_port = match.groups()
+    labels = hostname.split(".")
+    if (
+        len(hostname) > 253
+        or hostname.endswith(".")
+        or re.fullmatch(r"\d+(?:\.\d+){3}", hostname) is not None
+        or len(labels) < 2
+        or any(_PUBLIC_DNS_LABEL_V3.fullmatch(entry) is None for entry in labels)
+        or any(
+            hostname == suffix or hostname.endswith("." + suffix)
+            for suffix in _PRIVATE_DNS_SUFFIXES_V3
+        )
+        or raw_port is not None
+    ):
+        _fail(f"{label} must be a canonical HTTPS origin")
     return origin
 
 
@@ -1306,7 +1373,11 @@ def _normalize_compute_workload_ingress(value: Any) -> dict[str, Any]:
     }
 
 
-def _normalize_cvm(value: Any, release: str) -> dict[str, Any]:
+def _normalize_cvm(
+    value: Any,
+    release: str,
+    normalize_https_origin: Callable[[Any, str], str],
+) -> dict[str, Any]:
     parsed = _exact_record(value, _CVM_KEYS, "cvm")
     if type(parsed["images"]) is not list or len(parsed["images"]) != 3:
         _fail("cvm.images must contain exactly delegate, neko, and oracle")
@@ -1326,7 +1397,7 @@ def _normalize_cvm(value: Any, release: str) -> dict[str, Any]:
     ):
         _fail("cvm.allowed_browser_origins must contain exactly three reviewed origins")
     origins = sorted(
-        _https_origin(entry, f"cvm.allowed_browser_origins[{index}]")
+        normalize_https_origin(entry, f"cvm.allowed_browser_origins[{index}]")
         for index, entry in enumerate(parsed["allowed_browser_origins"])
     )
     if origins != list(_REQUIRED_BROWSER_ORIGINS):
@@ -1350,7 +1421,10 @@ def _normalize_cvm(value: Any, release: str) -> dict[str, Any]:
         "public_sysinfo": _boolean(parsed["public_sysinfo"], "cvm.public_sysinfo"),
         "public_tcbinfo": _boolean(parsed["public_tcbinfo"], "cvm.public_tcbinfo"),
         "tee_identity": _address(parsed["tee_identity"], "cvm.tee_identity"),
-        "delegate_url": _https_origin(parsed["delegate_url"], "cvm.delegate_url"),
+        "delegate_url": normalize_https_origin(
+            parsed["delegate_url"],
+            "cvm.delegate_url",
+        ),
         "images": images,
         "allowed_browser_origins": origins,
         "compute_workload_ingress": _normalize_compute_workload_ingress(
@@ -1368,11 +1442,14 @@ def _normalize_cvm(value: Any, release: str) -> dict[str, Any]:
     return normalized
 
 
-def _normalize_requested_features(value: Any) -> dict[str, bool]:
-    parsed = _exact_record(value, _REQUESTED_FEATURE_KEYS, "requested_features")
+def _normalize_requested_features(
+    value: Any,
+    keys: tuple[str, ...],
+) -> dict[str, bool]:
+    parsed = _exact_record(value, keys, "requested_features")
     normalized = {
         key: _boolean(parsed[key], f"requested_features.{key}")
-        for key in _REQUESTED_FEATURE_KEYS
+        for key in keys
     }
     if (
         normalized["compute_vault_authorization"]
@@ -1514,13 +1591,16 @@ def _normalize_execution_policy(value: Any) -> dict[str, Any]:
     }
 
 
-def _validate_cross_bindings(core: dict[str, Any]) -> None:
+def _validate_cross_bindings(
+    core: dict[str, Any],
+    *,
+    diligence_developer_policy: str,
+) -> None:
     contracts = core["contracts"]
     cvm = core["cvm"]
     operator = core["operator_address"]
     policy = core["execution_policy"]
-    for label, observed in (
-        ("DiligenceRoom developer", contracts["diligence_room"]["developer"]),
+    operator_bindings = [
         ("ChallengeRegistry owner", contracts["challenge_registry"]["owner"]),
         (
             "TinkerAccountEncumbrance owner",
@@ -1528,7 +1608,25 @@ def _validate_cross_bindings(core: dict[str, Any]) -> None:
         ),
         ("ComputeCreditVault owner", contracts["compute_credit_vault"]["owner"]),
         ("EmailOracleAuth owner", contracts["email_oracle_auth"]["owner"]),
-    ):
+    ]
+    diligence_developer = contracts["diligence_room"]["developer"]
+    if diligence_developer_policy == "historical-operator-v2":
+        operator_bindings.insert(
+            0,
+            ("DiligenceRoom developer", diligence_developer),
+        )
+    elif diligence_developer_policy == "permanent-distinct-v3":
+        if diligence_developer in {
+            operator,
+            contracts["diligence_room"]["address"],
+        }:
+            _fail(
+                "DiligenceRoom permanent developer must differ from the "
+                "deployment operator and room contract"
+            )
+    else:
+        _fail("final release authority core uses an unsupported developer policy")
+    for label, observed in operator_bindings:
         if observed != operator:
             _fail(f"{label} must equal operator_address")
     if cvm["tee_identity"] == operator:
@@ -1586,6 +1684,11 @@ def _validate_cross_bindings(core: dict[str, Any]) -> None:
     control_plane_roles = [
         operator,
         cvm["tee_identity"],
+        *(
+            [diligence_developer]
+            if diligence_developer_policy == "permanent-distinct-v3"
+            else []
+        ),
         contracts["diligence_room"]["result_verifier"],
         contracts["diligence_room"]["attestation_verifier"],
         contracts["compute_credit_vault"]["developer"],
@@ -1653,8 +1756,15 @@ def _validate_cross_bindings(core: dict[str, Any]) -> None:
         _fail("control-plane roles must not equal the rollback anchor contract")
 
 
-def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
-    """Validate and return a fresh normalized pre-anchor authority artifact."""
+def _normalize_final_release_authority_core_version(
+    value: Any,
+    *,
+    schema: str,
+    requested_feature_keys: tuple[str, ...],
+    normalize_https_origin: Callable[[Any, str], str],
+    diligence_developer_policy: str,
+) -> dict[str, Any]:
+    """Validate one exact version and return a fresh normalized artifact."""
 
     _validate_json_tree(value)
     parsed = _exact_record(value, _TOP_LEVEL_KEYS, "final release authority core")
@@ -1670,7 +1780,7 @@ def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
     contracts = _normalize_contracts(parsed["contracts"])
     normalized = {
         "schema": _exact_string(
-            parsed["schema"], EXECUTION_POLICY_RELEASE_CORE_SCHEMA, "schema"
+            parsed["schema"], schema, "schema"
         ),
         "release_sha": release,
         "network": {
@@ -1694,7 +1804,11 @@ def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
             parsed["cvm_launch_intent_sha256"], "cvm_launch_intent_sha256"
         ),
         "contracts": contracts,
-        "cvm": _normalize_cvm(parsed["cvm"], release),
+        "cvm": _normalize_cvm(
+            parsed["cvm"],
+            release,
+            normalize_https_origin,
+        ),
         "arena_registry_bindings": _normalize_arena_registry_bindings(
             parsed["arena_registry_bindings"],
             contracts["challenge_registry"]["expected_challenge_count"],
@@ -1712,11 +1826,15 @@ def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
             ),
         },
         "requested_features": _normalize_requested_features(
-            parsed["requested_features"]
+            parsed["requested_features"],
+            requested_feature_keys,
         ),
         "execution_policy": _normalize_execution_policy(parsed["execution_policy"]),
     }
-    _validate_cross_bindings(normalized)
+    _validate_cross_bindings(
+        normalized,
+        diligence_developer_policy=diligence_developer_policy,
+    )
     encoded = _canonical_json(normalized)
     if len(encoded) > MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES:
         _fail(
@@ -1726,6 +1844,32 @@ def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def normalize_final_release_authority_core(value: Any) -> dict[str, Any]:
+    """Validate the frozen v3 compatibility authority for historical replay."""
+
+    return _normalize_final_release_authority_core_version(
+        value,
+        schema=FINAL_RELEASE_AUTHORITY_CORE_V3_SCHEMA,
+        requested_feature_keys=_REQUESTED_FEATURE_KEYS_V3,
+        normalize_https_origin=_current_public_https_origin_v3,
+        diligence_developer_policy="permanent-distinct-v3",
+    )
+
+
+def normalize_historical_final_release_authority_core_v2(
+    value: Any,
+) -> dict[str, Any]:
+    """Validate the frozen historical v2 wire format for offline replay."""
+
+    return _normalize_final_release_authority_core_version(
+        value,
+        schema=FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+        requested_feature_keys=_HISTORICAL_REQUESTED_FEATURE_KEYS_V2,
+        normalize_https_origin=_historical_https_origin_v2,
+        diligence_developer_policy="historical-operator-v2",
+    )
+
+
 normalize_execution_policy_release_core = normalize_final_release_authority_core
 
 
@@ -1733,6 +1877,14 @@ def canonical_final_release_authority_core_bytes(value: Any) -> bytes:
     """Return compact recursively key-sorted ensure-ASCII JSON without a newline."""
 
     return _canonical_json(normalize_final_release_authority_core(value))
+
+
+def canonical_historical_final_release_authority_core_v2_bytes(
+    value: Any,
+) -> bytes:
+    """Return canonical historical v2 bytes for offline replay only."""
+
+    return _canonical_json(normalize_historical_final_release_authority_core_v2(value))
 
 
 canonical_execution_policy_release_core_bytes = canonical_final_release_authority_core_bytes
@@ -1747,16 +1899,32 @@ def final_release_authority_core_digest(value: Any) -> str:
     return digest.hexdigest()
 
 
+def historical_final_release_authority_core_v2_digest(value: Any) -> str:
+    """Return the frozen historical v2 commitment for offline replay only."""
+
+    digest = hashlib.sha256()
+    digest.update(FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN)
+    digest.update(canonical_historical_final_release_authority_core_v2_bytes(value))
+    return digest.hexdigest()
+
+
 execution_policy_release_core_digest = final_release_authority_core_digest
 
 
 __all__ = [
     "FINAL_RELEASE_AUTHORITY_CORE_DOMAIN",
     "FINAL_RELEASE_AUTHORITY_CORE_SCHEMA",
+    "FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN",
+    "FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA",
+    "FINAL_RELEASE_AUTHORITY_CORE_V3_DOMAIN",
+    "FINAL_RELEASE_AUTHORITY_CORE_V3_SCHEMA",
     "MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES",
     "FinalReleaseAuthorityCoreValidationError",
     "canonical_final_release_authority_core_bytes",
     "final_release_authority_core_digest",
+    "canonical_historical_final_release_authority_core_v2_bytes",
+    "historical_final_release_authority_core_v2_digest",
+    "normalize_historical_final_release_authority_core_v2",
     "normalize_final_release_authority_core",
     "EXECUTION_POLICY_RELEASE_CORE_DOMAIN",
     "EXECUTION_POLICY_RELEASE_CORE_SCHEMA",

@@ -18,6 +18,8 @@ import {
 } from "./release-reviewer-authority-core.mjs";
 import {
   freshContractDeploymentReceiptDigest,
+  historicalFreshContractDeploymentReceiptV3Digest,
+  normalizeHistoricalFreshContractDeploymentReceiptV3,
   normalizeFreshContractDeploymentReceipt,
 } from "./cvm-launch-intent-core.mjs";
 import {
@@ -48,9 +50,19 @@ import {
 import {
   normalizeReleaseManifestSigstoreVerificationReceipt,
   releaseManifestSigstoreVerificationReceiptSha256,
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA as
+    HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
+  cvmReleaseDescriptorSetReceiptSha256 as
+    historicalCvmReleaseDescriptorSetReceiptSha256,
+  normalizeCvmReleaseDescriptorSetReceipt as
+    normalizeHistoricalCvmReleaseDescriptorSetReceipt,
+} from "./release-manifest-descriptor-historical-core.mjs";
+import {
+  CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA as
+    CURRENT_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
   cvmReleaseDescriptorSetReceiptSha256,
   normalizeCvmReleaseDescriptorSetReceipt,
-} from "./release-manifest-descriptor-historical-core.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
 import {
   assertHistoricallyVerifiedComputeWorkloadActivationObservation,
   computeWorkloadActivationObservationSha256,
@@ -71,8 +83,14 @@ import {
   projectHistoricalLiveActivationExpectedContext,
   projectHistoricalLiveActivationFrontendBinding,
 } from "./release-authority-historical-core.mjs";
-import { normalizeFinalReleaseAuthorityCore } from "./execution-policy-release-core.mjs";
 import {
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  normalizeHistoricalFinalReleaseAuthorityCoreV2,
+  normalizeFinalReleaseAuthorityCore,
+} from "./execution-policy-release-core-v3-historical.mjs";
+import {
+  FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
   FRONTEND_BUILD_RAW_PRIVATE_INPUT_FLAGS,
   assertHistoricalLiveActivationFinalCvmsMatchCandidate,
   assertFrontendBuildCandidateLineage,
@@ -87,9 +105,12 @@ import {
   validateHistoricalFinalReleaseAuthorityCoreBinding,
 } from "../web/scripts/frontend-release-historical-core.mjs";
 import {
-  PHALA_SEVEN_CVM_HISTORICAL_EVIDENCE_CONTEXT_SCHEMA,
-  reconstructPhalaSevenCvmHistoricalEvidenceSet,
-} from "./phala-seven-cvm-historical-evidence-core.mjs";
+  reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority,
+} from "./phala-seven-cvm-historical-release-verification-authority.mjs";
+import {
+  phalaSevenCvmVerifiedEvidenceSetSha256,
+  replayPersistedHistoricalPhalaSevenCvmEvidence,
+} from "./phala-seven-cvm-verifier-evidence.mjs";
 import {
   projectExternalFiveEvidenceFilesFromExact37ByKey,
   projectExternalFiveHistoricalQvlAuthority,
@@ -126,9 +147,24 @@ export const EXACT37_MODEL_A_INPUT_FLAGS = Object.freeze([
 ]);
 
 export const EXACT37_MODEL_A_HISTORICAL_STATUS =
-  "historical_authority_validated_live_chain_and_external_evidence_pending";
+  "historical_authority_and_recorded_time_dcap_validated_live_chain_and_external_evidence_pending";
+export const EXACT35_MODEL_A_PREBUILD_STATUS =
+  "historical_l_r_signed_b_o_and_recorded_time_dcap_authority_validated_current_release_checks_pending";
 export const EXACT37_MODEL_A_INCOMPLETE_REASON =
-  "Model-A exact-37 remains sealed pending current Base Sepolia state proofs, authenticated KMS/restart continuity, and a positive real 37-file known-answer vector";
+  "Model-A exact-37 historical replay cannot itself authorize live traffic; current Base Sepolia, external evidence, clean-source, and reproducible-build checks remain mandatory";
+
+export const EXACT35_MODEL_A_INPUT_FLAGS = Object.freeze([
+  ...FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
+]);
+if (JSON.stringify(EXACT35_MODEL_A_INPUT_FLAGS)
+    !== JSON.stringify(EXACT37_MODEL_A_INPUT_FLAGS.filter(
+      (flag) => ![
+        "--live-activation-authority",
+        "--frontend-build-candidate-receipt",
+      ].includes(flag),
+    ))) {
+  throw new TypeError("exact-35 and exact-37 Model-A input recipes drifted");
+}
 
 const RAW14_FLAGS = Object.freeze(EXACT37_MODEL_A_INPUT_FLAGS.slice(11, 25));
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
@@ -227,47 +263,47 @@ function keyForFlag(flag) {
   return flag.slice(2).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
 }
 
-export function normalizeExact37ModelAInputSet(value) {
+function normalizeExactModelAInputSet(value, inputFlags, label) {
   const parsed = exact(
     value,
     ["artifactPaths", "byFlag", "byKey", "entries", "totalBytes"],
-    "exact-37 Model-A stable input set",
+    `${label} stable input set`,
   );
-  const expectedKeys = EXACT37_MODEL_A_INPUT_FLAGS.map(keyForFlag);
+  const expectedKeys = inputFlags.map(keyForFlag);
   const sourceEntries = assertDenseDataArray(
     parsed.entries,
-    EXACT37_MODEL_A_INPUT_FLAGS.length,
-    "exact-37 Model-A input entries",
+    inputFlags.length,
+    `${label} input entries`,
   );
   const byFlag = exact(
     parsed.byFlag,
-    EXACT37_MODEL_A_INPUT_FLAGS,
-    "exact-37 Model-A by-flag projection",
+    inputFlags,
+    `${label} by-flag projection`,
   );
   const byKey = exact(
     parsed.byKey,
     expectedKeys,
-    "exact-37 Model-A by-key projection",
+    `${label} by-key projection`,
   );
   const artifactPaths = exact(
     parsed.artifactPaths,
     ["byFlag", "byKey", "entries"],
-    "exact-37 Model-A artifact paths",
+    `${label} artifact paths`,
   );
   const artifactPathsByFlag = exact(
     artifactPaths.byFlag,
-    EXACT37_MODEL_A_INPUT_FLAGS,
-    "exact-37 Model-A artifact paths by flag",
+    inputFlags,
+    `${label} artifact paths by flag`,
   );
   const artifactPathsByKey = exact(
     artifactPaths.byKey,
     expectedKeys,
-    "exact-37 Model-A artifact paths by key",
+    `${label} artifact paths by key`,
   );
   assertDenseDataArray(
     artifactPaths.entries,
-    EXACT37_MODEL_A_INPUT_FLAGS.length,
-    "exact-37 Model-A artifact path entries",
+    inputFlags.length,
+    `${label} artifact path entries`,
   );
   const entries = sourceEntries.map((raw, index) => {
     const entry = exactInputEntry(raw, [
@@ -275,7 +311,7 @@ export function normalizeExact37ModelAInputSet(value) {
       "rawSha256", "text", "value",
     ],
       `exact-37 Model-A entry ${index}`);
-    const expectedFlag = EXACT37_MODEL_A_INPUT_FLAGS[index];
+    const expectedFlag = inputFlags[index];
     const expectedKey = keyForFlag(expectedFlag);
     const text = entry.text;
     if (entry.flag !== expectedFlag || entry.key !== expectedKey
@@ -335,6 +371,39 @@ export function normalizeExact37ModelAInputSet(value) {
   });
 }
 
+export function normalizeExact37ModelAInputSet(value) {
+  return normalizeExactModelAInputSet(
+    value,
+    EXACT37_MODEL_A_INPUT_FLAGS,
+    "exact-37 Model-A",
+  );
+}
+
+export function normalizeExact35ModelAPrebuildInputSet(value) {
+  return normalizeExactModelAInputSet(
+    value,
+    EXACT35_MODEL_A_INPUT_FLAGS,
+    "exact-35 Model-A prebuild",
+  );
+}
+
+/**
+ * Preserve the authenticated historical v2 wire format without allowing it
+ * through current activation-facing v3 normalization.
+ */
+export function normalizeExactModelAFinalReleaseAuthorityCore(
+  value,
+  { expectedCoreSchema = FINAL_RELEASE_AUTHORITY_CORE_SCHEMA } = {},
+) {
+  if (expectedCoreSchema === FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA) {
+    return normalizeHistoricalFinalReleaseAuthorityCoreV2(value);
+  }
+  if (expectedCoreSchema === FINAL_RELEASE_AUTHORITY_CORE_SCHEMA) {
+    return normalizeFinalReleaseAuthorityCore(value);
+  }
+  fail("Model-A expected final release authority core schema is unsupported");
+}
+
 function reviewerRoleSeparation(intent) {
   return Object.freeze({
     deploymentRoleAddresses: Object.freeze([...new Set([
@@ -376,52 +445,14 @@ function assertReviewerStatusActiveAt(status, instantMs, label) {
   }
 }
 
-function projectRaw14HistoricalFiles(exactInputs) {
-  return Object.fromEntries(RAW14_FLAGS.map((flag) => {
+function projectRaw14HistoricalTranscriptFiles(exactInputs) {
+  return RAW14_FLAGS.map((flag) => {
     const entry = exactInputs.byKey[keyForFlag(flag)];
-    return [flag, {
-      value: entry.value,
-      sha256: entry.rawSha256,
-      size: entry.byteLength,
-    }];
-  }));
-}
-
-function projectRaw14HistoricalEvidenceContext({
-  launchReceipt,
-  historicalRuntimeBinding,
-  releaseCore,
-  releaseCoreSha256,
-  historicalTranscriptFileSetSha256,
-}) {
-  return {
-    schema: PHALA_SEVEN_CVM_HISTORICAL_EVIDENCE_CONTEXT_SCHEMA,
-    historical_runtime_binding: historicalRuntimeBinding,
-    release_core_sha256: releaseCoreSha256,
-    independent_metering_policy_set_hash:
-      releaseCore.contracts.compute_credit_vault.metering_policy_set_hash,
-    historical_transcript_file_set_sha256:
-      historicalTranscriptFileSetSha256,
-    launch_completed_at: launchReceipt.completed_at,
-    domains: launchReceipt.domains.map((entry) => ({
-      domain: entry.domain,
-      machine_evidence_kind: entry.machine_evidence_kind,
-      machine_evidence_sha256: entry.machine_evidence_sha256,
-      machine_evidence_verified_at: entry.machine_evidence_verified_at,
-      tdx_attestation_evidence_sha256:
-        entry.tdx_attestation_evidence_sha256,
-      tdx_attestation_verification_receipt_sha256:
-        entry.tdx_attestation_verification_receipt_sha256,
-      tdx_measurement_authority_sha256:
-        entry.tdx_measurement_authority_sha256,
-      qvl_release_policy_sha256: entry.qvl_release_policy_sha256,
-      qvl_verification_receipt_sha256:
-        entry.qvl_verification_receipt_sha256,
-      qvl_identity_sha256: entry.qvl_identity_sha256,
-      tee_identity: entry.tee_identity,
-      bound_contract_address: entry.bound_contract_address,
-    })),
-  };
+    return Object.freeze({
+      flag,
+      text: `${JSON.stringify(entry.value, null, 2)}\n`,
+    });
+  });
 }
 
 function assertEqual(actual, expected, label) {
@@ -468,28 +499,91 @@ function assertFrontendLineage(manifest, expected) {
   }
 }
 
+export function normalizeExact37FreshContractDescriptorAuthorityTuple({
+  descriptorReceipt,
+  freshContractDeploymentReceipt,
+  expectedDeploymentIntentSha256,
+  expectedReviewerAuthorityGenesisAcceptanceSha256,
+} = {}) {
+  const descriptorSchema = descriptorReceipt?.schema;
+  const currentAuthorityTuple =
+    descriptorSchema === CURRENT_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA;
+  if (!currentAuthorityTuple
+    && descriptorSchema !== HISTORICAL_CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA) {
+    fail("descriptor/fresh-contract receipt authority tuple schema is unsupported");
+  }
+  const descriptors = currentAuthorityTuple
+    ? normalizeCvmReleaseDescriptorSetReceipt(descriptorReceipt)
+    : normalizeHistoricalCvmReleaseDescriptorSetReceipt(descriptorReceipt);
+  const baseFreshReceiptAuthorityPins = {
+    expectedDeploymentIntentSha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256,
+  };
+  const freshReceiptAuthorityPins = currentAuthorityTuple
+    ? {
+      ...baseFreshReceiptAuthorityPins,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        descriptors.tinker_account_binding_ceremony_receipt_sha256,
+    }
+    : baseFreshReceiptAuthorityPins;
+  const contract = currentAuthorityTuple
+    ? normalizeFreshContractDeploymentReceipt(
+      freshContractDeploymentReceipt,
+      freshReceiptAuthorityPins,
+    )
+    : normalizeHistoricalFreshContractDeploymentReceiptV3(
+      freshContractDeploymentReceipt,
+      freshReceiptAuthorityPins,
+    );
+  const contractSha256 = `sha256:${currentAuthorityTuple
+    ? freshContractDeploymentReceiptDigest(
+      contract,
+      freshReceiptAuthorityPins,
+    )
+    : historicalFreshContractDeploymentReceiptV3Digest(
+      contract,
+      freshReceiptAuthorityPins,
+    )}`;
+  const descriptorSetSha256 = currentAuthorityTuple
+    ? cvmReleaseDescriptorSetReceiptSha256(descriptors)
+    : historicalCvmReleaseDescriptorSetReceiptSha256(descriptors);
+  return Object.freeze({
+    authority_tuple: currentAuthorityTuple ? "current" : "historical",
+    contract,
+    contract_sha256: contractSha256,
+    descriptor_set: descriptors,
+    descriptor_set_sha256: descriptorSetSha256,
+    fresh_receipt_authority_pins: Object.freeze({
+      ...freshReceiptAuthorityPins,
+    }),
+  });
+}
+
 /**
  * Model-A historical authority validation.
  *
- * No filesystem, network, Date.now, current DCAP, or current QVL operation is
- * performed here. Epoch-one reviewer validity is evaluated only against the
- * caller's explicit validationTimeMs; exact37 has no status-history input and
- * therefore rejects all later epochs. The five external files have their
- * historical schemas, signatures, and B/R/O/C/D lineage replayed, while their
- * current chain, KMS, and restart claims remain a downstream proof boundary.
+ * No network, Date.now, current-QVL, or freshness-renewal operation is
+ * performed here. The exact private transcript reruns DCAP at each recorded
+ * second against its persisted collateral and must reproduce signed R's v5
+ * evidence-set commitment. Epoch-one reviewer validity is evaluated only
+ * against the caller's explicit validationTimeMs; exact37 has no
+ * status-history input and therefore rejects all later epochs. The five
+ * external files have their historical schemas, signatures, and B/R/O/C/D
+ * lineage replayed, while their current chain, KMS, and restart claims remain
+ * a downstream proof boundary.
  */
-export async function validateExact37ModelAHistoricalAuthority({
+async function validateExactModelAHistoricalAuthority({
   inputs,
   validationTimeMs,
   reviewerStatusHistory,
   frontendBuildReproduction,
+  authorityStage,
+  expectedCoreSchema,
 } = {}) {
-  // Keep the standalone draft sealed as well as the CLI. Historical replay is
-  // not current Base Sepolia consensus, KMS-registration, restart-continuity,
-  // or positive real-input known-answer evidence, and must never be mistaken
-  // for deployment or live-traffic authority.
-  fail(EXACT37_MODEL_A_INCOMPLETE_REASON);
-
+  if (authorityStage !== "live" && authorityStage !== "prebuild") {
+    fail("Model-A authority stage must be live or prebuild");
+  }
+  const live = authorityStage === "live";
   if (!Number.isSafeInteger(validationTimeMs) || validationTimeMs < 1
     || validationTimeMs > 4_102_444_800_000
     || validationTimeMs % 1_000 !== 0) {
@@ -499,16 +593,26 @@ export async function validateExact37ModelAHistoricalAuthority({
     || reviewerStatusHistory.length !== 0) {
     fail("Model-A exact-37 requires the explicit empty epoch-1 reviewer history");
   }
-  const reproduction = exact(
-    frontendBuildReproduction,
-    REQUIRED_REPRODUCTION_FIELDS,
-    "frontend D reproduction",
-  );
-  const exactInputs = normalizeExact37ModelAInputSet(inputs);
+  const reproduction = live
+    ? exact(
+      frontendBuildReproduction,
+      REQUIRED_REPRODUCTION_FIELDS,
+      "frontend D reproduction",
+    )
+    : null;
+  if (!live && frontendBuildReproduction !== undefined) {
+    fail("Model-A prebuild validation must not accept a post-D reproduction");
+  }
+  const exactInputs = live
+    ? normalizeExact37ModelAInputSet(inputs)
+    : normalizeExact35ModelAPrebuildInputSet(inputs);
   const input = Object.fromEntries(
     Object.entries(exactInputs.byKey).map(([key, entry]) => [key, entry.value]),
   );
-  const releaseCore = normalizeFinalReleaseAuthorityCore(input.releaseCore);
+  const releaseCore = normalizeExactModelAFinalReleaseAuthorityCore(
+    input.releaseCore,
+    { expectedCoreSchema },
+  );
   const coreSha256 = historicalFinalReleaseAuthorityCoreSha256(releaseCore);
 
   const intentValidation = validateDeploymentIntentCore(input.deploymentIntent);
@@ -564,14 +668,16 @@ export async function validateExact37ModelAHistoricalAuthority({
     reviewer_authority_current_status_expires_at: carriedStatus.expires_at,
     ...activeReviewerAuthority,
   };
-  const contract = normalizeFreshContractDeploymentReceipt(input.contractReceipt, {
-    expectedDeploymentIntentSha256: intentSha256,
-    expectedReviewerAuthorityGenesisAcceptanceSha256: acceptanceSha256,
-  });
-  const contractSha256 = `sha256:${freshContractDeploymentReceiptDigest(contract, {
-    expectedDeploymentIntentSha256: intentSha256,
-    expectedReviewerAuthorityGenesisAcceptanceSha256: acceptanceSha256,
-  })}`;
+  const freshContractDescriptorTuple =
+    normalizeExact37FreshContractDescriptorAuthorityTuple({
+      descriptorReceipt: input.cvmDescriptorSetReceipt,
+      freshContractDeploymentReceipt: input.contractReceipt,
+      expectedDeploymentIntentSha256: intentSha256,
+      expectedReviewerAuthorityGenesisAcceptanceSha256: acceptanceSha256,
+    });
+  const descriptors = freshContractDescriptorTuple.descriptor_set;
+  const contract = freshContractDescriptorTuple.contract;
+  const contractSha256 = freshContractDescriptorTuple.contract_sha256;
   const bootstrapAuthority = normalizeBootstrapPublicEnvironmentAuthority(
     input.bootstrapAuthority,
   );
@@ -633,6 +739,45 @@ export async function validateExact37ModelAHistoricalAuthority({
   const transcriptSha256 = phalaSevenCvmHistoricalTranscriptFileSetSha256(
     historicalTranscript,
   );
+  const persistenceReceiptSha256 = digest(
+    launchReceipt.historical_transcript_persistence_receipt_sha256,
+    "historical L transcript persistence receipt",
+  );
+  if (launchReceipt.private_historical_transcript_persisted !== true
+    || launchReceipt
+      .private_historical_transcript_contains_raw_quote_and_collateral !== true
+    || launchReceipt.raw_quote_publicly_disclosed !== false
+    || launchReceipt.raw_collateral_publicly_disclosed !== false
+    || launchReceipt.raw_secret_egress !== false) {
+    fail(
+      "historical L does not prove the private exact-14 quote/collateral persistence boundary",
+    );
+  }
+  assertEqual(
+    launchReceipt.historical_transcript_file_set_sha256,
+    transcriptSha256,
+    "historical L exact-14 transcript file set",
+  );
+  if (JSON.stringify(launchReceipt.transcript_file_set)
+      !== JSON.stringify(historicalTranscript)) {
+    fail("historical L exact-14 transcript file-set bytes drifted");
+  }
+  assertEqual(
+    launchReceipt.phala_recovery_directory_identity_anchor_sha256,
+    runtimeAuthority.phala_recovery_directory_identity_anchor_sha256,
+    "historical L/R recovery-directory identity anchor",
+  );
+  assertEqual(
+    launchReceipt.phala_recovery_directory_identity_anchor_sha256,
+    executor.phala_recovery_directory_identity_anchor_sha256,
+    "historical L/executor recovery-directory identity anchor",
+  );
+  assertEqual(
+    launchReceipt.machine_verifier_evidence_set_sha256,
+    runtimeAuthority.post_measurement_activation_plan
+      .seven_cvm_verified_evidence_set_sha256,
+    "historical L/R verified evidence set",
+  );
   const stageOneSignedAtMs = Date.parse(input.ceremonyAuthorization?.review?.signed_at);
   const stageOneExpiresAtMs = Date.parse(input.ceremonyAuthorization?.review?.expires_at);
   assertReviewerStatusActiveAt(
@@ -668,15 +813,18 @@ export async function validateExact37ModelAHistoricalAuthority({
     stageOne,
     stageOneOptions,
   );
+  assertEqual(
+    stageOne.pre_ceremony_runtime_authority_sha256,
+    runtimeAuthoritySha256,
+    "historical signed B/R persistence-carrying authority",
+  );
 
   const sigstore = normalizeReleaseManifestSigstoreVerificationReceipt(
     input.imageReleaseSigstoreVerificationReceipt,
   );
   const sigstoreSha256 = releaseManifestSigstoreVerificationReceiptSha256(sigstore);
-  const descriptors = normalizeCvmReleaseDescriptorSetReceipt(
-    input.cvmDescriptorSetReceipt,
-  );
-  const descriptorSetSha256 = cvmReleaseDescriptorSetReceiptSha256(descriptors);
+  const descriptorSetSha256 =
+    freshContractDescriptorTuple.descriptor_set_sha256;
   for (const artifact of [bootstrapAuthority, signedAReceipt, launchReceipt, sigstore, descriptors]) {
     assertEqual(artifact.release_sha, runtimeAuthority.release_sha, "historical release SHA");
   }
@@ -723,16 +871,58 @@ export async function validateExact37ModelAHistoricalAuthority({
       `bootstrap/descriptor ${binding.domain}`);
   }
 
-  const historicalMachineEvidence = reconstructPhalaSevenCvmHistoricalEvidenceSet({
-    rawArtifacts: projectRaw14HistoricalFiles(exactInputs),
-    historicalEvidenceContext: projectRaw14HistoricalEvidenceContext({
-      launchReceipt,
-      historicalRuntimeBinding,
-      releaseCore,
-      releaseCoreSha256: coreSha256,
-      historicalTranscriptFileSetSha256: transcriptSha256,
-    }),
-    recoverPersonalSigner: recoverIndependentEip191PersonalSignerFromRawDigest,
+  const historicalReleaseVerificationAuthority =
+    await reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority({
+      releaseVerificationAuthority: launch.release_verification_authority,
+      signedAReconstructionInput: {
+        authorization: input.bootstrapAuthorization,
+        authorizationFileIdentity: {
+          sha256: exactInputs.byKey.bootstrapAuthorization.rawSha256,
+          size: exactInputs.byKey.bootstrapAuthorization.byteLength,
+        },
+        bootstrapAuthority,
+        bootstrapAuthorityFileIdentity: {
+          sha256: exactInputs.byKey.bootstrapAuthority.rawSha256,
+          size: exactInputs.byKey.bootstrapAuthority.byteLength,
+        },
+        persistedReceipt: signedAReceipt,
+        reviewerAuthority: activeReviewerAuthority,
+      },
+      launchCompletionReceipt: launchReceipt,
+      persistedRuntimeAuthority: runtimeAuthority,
+      persistedCeremonyAuthorization: stageOne,
+      ceremonyAuthorizationDependencies: {
+        deploymentIntent: intent,
+        freshContractDeploymentReceipt: contract,
+        reviewerGenesis: input.reviewerAuthorityGenesis,
+        reviewerGenesisAcceptance: input.reviewerAuthorityGenesisAcceptance,
+        stageBReviewerStatusHistory: reviewerStatusHistory,
+      },
+      executorFinalState: executor,
+      descriptorSetReceipt: descriptors,
+      historicalTranscriptFileSet: historicalTranscript,
+    });
+  const historicalMachineReplay =
+    await replayPersistedHistoricalPhalaSevenCvmEvidence({
+      releaseAuthority: historicalReleaseVerificationAuthority,
+      rawTranscriptFiles:
+        projectRaw14HistoricalTranscriptFiles(exactInputs),
+      executorFinalState: executor,
+    });
+  const historicalMachineEvidence = Object.freeze({
+    seven_cvm_verified_evidence_set_sha256:
+      phalaSevenCvmVerifiedEvidenceSetSha256(
+        historicalMachineReplay.evidenceSet,
+      ),
+    evidence_set: historicalMachineReplay.evidenceSet,
+    qvl_identity_evidence: historicalMachineReplay.qvlIdentityEvidence,
+    workload_verdict_evidence:
+      historicalMachineReplay.workloadVerdictEvidence,
+    historical_corroboration: historicalMachineReplay.corroboration,
+    recorded_time_dcap_reverified: true,
+    persisted_collateral_revalidated: true,
+    historical_release_verification_authority:
+      historicalReleaseVerificationAuthority,
   });
   assertEqual(
     historicalMachineEvidence.seven_cvm_verified_evidence_set_sha256,
@@ -843,6 +1033,85 @@ export async function validateExact37ModelAHistoricalAuthority({
   const browserBinding =
     projectComputeWorkloadBrowserBindingFromHistoricalObservation(historicalOReplay);
   const browserBindingSha256 = computeWorkloadBrowserBindingSha256(browserBinding);
+
+  if (!live) {
+    const candidate = normalizeHistoricalFrontendReleaseCandidate(input.release, {
+      authorityStage: "prebuild",
+    });
+    assertEqual(candidate.release_sha, runtimeAuthority.release_sha,
+      "prebuild candidate release");
+    assertEqual(candidate.deployment_intent_sha256, intentSha256,
+      "prebuild candidate deployment intent");
+    assertEqual(candidate.operator_policy.runtime_authority_dependency_sha256,
+      runtimeAuthoritySha256, "prebuild candidate R");
+    assertEqual(candidate.operator_policy.ceremony_authorization_sha256,
+      stageOneSha256, "prebuild candidate signed B");
+    const releaseCoreBinding = validateHistoricalFinalReleaseAuthorityCoreBinding({
+      candidateValue: candidate,
+      coreValue: releaseCore,
+      runtimeAuthorityValue: persistedRuntimeAuthority,
+      authenticatedRuntimeAuthoritySha256: runtimeAuthoritySha256,
+      authorityStage: "prebuild",
+      expectedCoreSchema,
+    });
+    assertEqual(releaseCoreBinding.coreSha256, coreSha256,
+      "historical prebuild final release authority core");
+    const semanticLineage = Object.freeze({
+      release_core_sha256: coreSha256,
+      deployment_intent_sha256: intentSha256,
+      fresh_contract_deployment_receipt_sha256: contractSha256,
+      reviewer_authority_genesis_sha256: genesisSha256,
+      reviewer_authority_genesis_acceptance_sha256: acceptanceSha256,
+      bootstrap_authority_sha256: bootstrapAuthoritySha256,
+      bootstrap_authorization_sha256: phalaNonLiveBootstrapSigningDigest(
+        input.bootstrapAuthorization,
+        { bootstrapAuthority },
+      ),
+      bootstrap_authorization_receipt_sha256: signedAReceiptSha256,
+      seven_cvm_launch_completion_receipt_sha256: launchSha256,
+      historical_transcript_file_set_sha256: transcriptSha256,
+      qvl_measurement_policy_set_sha256:
+        historicalO.lineage.qvl_measurement_policy_set_sha256,
+      runtime_authority_dependency_sha256: runtimeAuthoritySha256,
+      ceremony_authorization_sha256: stageOneSha256,
+      compute_workload_activation_observation_sha256: observationSha256,
+    });
+    return Object.freeze({
+      status: EXACT35_MODEL_A_PREBUILD_STATUS,
+      releaseSha: candidate.release_sha,
+      candidate,
+      authorityBinding: Object.freeze({
+        deploymentIntentSha256: intentSha256,
+        reviewerAuthorityGenesisAcceptanceSha256: acceptanceSha256,
+        ceremonyAuthorizationSha256: stageOneSha256,
+        runtimeAuthorityDependencySha256: runtimeAuthoritySha256,
+      }),
+      semanticLineage,
+      authorityRoots: Object.freeze({
+        contract_release_set_sha256: contractSha256,
+        cvm_release_set_sha256: launchSha256,
+        qvl_measurement_policy_set_sha256:
+          historicalO.lineage.qvl_measurement_policy_set_sha256,
+      }),
+      normalizedArtifacts: Object.freeze({
+        intent, genesis, acceptance, contract, bootstrapAuthority,
+        signedAReceipt, executor, launchReceipt, runtimeAuthority,
+        stageOne, historicalO, reviewerReconstruction, historicalOReplay,
+        historicalMachineEvidence, releaseCore,
+      }),
+      historicalTranscript,
+      persistenceReceiptSha256,
+      current_clock_consulted_for_historical_a_l_r_o: false,
+      historical_freshness_renewed: false,
+      production_brand_minted_for_historical_a_l_r: false,
+      liveTrafficAuthorized: false,
+      downstreamLiveEvidenceBoundary: Object.freeze({
+        required: true,
+        truth_status:
+          "current_chain_external_evidence_reproducible_D_and_signed_C_must_still_validate",
+      }),
+    });
+  }
 
   const normalizedManifest = normalizeFrontendBuildInputManifest(
     reproduction.inputManifest,
@@ -974,6 +1243,7 @@ export async function validateExact37ModelAHistoricalAuthority({
     coreValue: releaseCore,
     runtimeAuthorityValue: persistedRuntimeAuthority,
     authenticatedRuntimeAuthoritySha256: runtimeAuthoritySha256,
+    expectedCoreSchema,
   });
   assertEqual(releaseCoreBinding.coreSha256, coreSha256,
     "historical final release authority core");
@@ -1069,13 +1339,17 @@ export async function validateExact37ModelAHistoricalAuthority({
       signedAReceipt, executor, launchReceipt, runtimeAuthority,
       stageOne, activationExecutionReceipt, historicalO, buildReceipt, stageTwo,
       reviewerReconstruction, historicalOReplay, historicalMachineEvidence,
+      historicalReleaseVerificationAuthority,
       externalFiveHistoricalEvidence, releaseCore,
     }),
     historicalTranscript,
+    persistenceReceiptSha256,
     frontendBinding,
     dependencyGraph,
     dependencyGraphSha256,
     current_clock_consulted_for_historical_a_l_r_o: false,
+    recorded_time_dcap_replayed_from_private_exact14: true,
+    persisted_intel_collateral_revalidated: true,
     historical_freshness_renewed: false,
     production_brand_minted_for_historical_a_l_r: false,
     liveTrafficAuthorized: false,
@@ -1089,5 +1363,65 @@ export async function validateExact37ModelAHistoricalAuthority({
         "historical_external_signatures_and_byte_lineage_validated_but_current_chain_kms_and_restart_proofs_not_authenticated_here",
       historicalEvidence: externalFiveHistoricalEvidence,
     }),
+  });
+}
+
+export async function validateExact35ModelAPrebuildAuthority({
+  inputs,
+  validationTimeMs,
+  reviewerStatusHistory,
+} = {}) {
+  return validateExactModelAHistoricalAuthority({
+    inputs,
+    validationTimeMs,
+    reviewerStatusHistory,
+    authorityStage: "prebuild",
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  });
+}
+
+export async function validateExact37ModelAHistoricalAuthority({
+  inputs,
+  validationTimeMs,
+  reviewerStatusHistory,
+  frontendBuildReproduction,
+} = {}) {
+  return validateExactModelAHistoricalAuthority({
+    inputs,
+    validationTimeMs,
+    reviewerStatusHistory,
+    frontendBuildReproduction,
+    authorityStage: "live",
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  });
+}
+
+export async function validateExact35ModelAHistoricalV2PrebuildAuthority({
+  inputs,
+  validationTimeMs,
+  reviewerStatusHistory,
+} = {}) {
+  return validateExactModelAHistoricalAuthority({
+    inputs,
+    validationTimeMs,
+    reviewerStatusHistory,
+    authorityStage: "prebuild",
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  });
+}
+
+export async function validateExact37ModelAHistoricalV2Authority({
+  inputs,
+  validationTimeMs,
+  reviewerStatusHistory,
+  frontendBuildReproduction,
+} = {}) {
+  return validateExactModelAHistoricalAuthority({
+    inputs,
+    validationTimeMs,
+    reviewerStatusHistory,
+    frontendBuildReproduction,
+    authorityStage: "live",
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
   });
 }

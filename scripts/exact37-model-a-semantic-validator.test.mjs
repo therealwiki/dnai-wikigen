@@ -6,11 +6,20 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  EXACT35_MODEL_A_INPUT_FLAGS,
   EXACT37_MODEL_A_INPUT_FLAGS,
-  EXACT37_MODEL_A_INCOMPLETE_REASON,
+  normalizeExact35ModelAPrebuildInputSet,
   normalizeExact37ModelAInputSet,
+  normalizeExactModelAFinalReleaseAuthorityCore,
   validateExact37ModelAHistoricalAuthority,
 } from "./exact37-model-a-semantic-validator.mjs";
+import {
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+} from "./execution-policy-release-core-v3-historical.mjs";
+import {
+  knownVector,
+} from "./execution-policy-release-core-v3-historical.fixture.mjs";
 
 function keyForFlag(flag) {
   return flag.slice(2).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
@@ -95,7 +104,7 @@ function stableInputSet({ hostileBytesAccessor = false } = {}) {
   };
 }
 
-test("the incomplete exact-37 standalone API fails before consuming caller data", async () => {
+test("the exact-37 API validates its explicit clock before consuming caller data", async () => {
   let touched = false;
   const hostile = Object.defineProperty({}, "entries", {
     enumerable: true,
@@ -106,10 +115,79 @@ test("the incomplete exact-37 standalone API fails before consuming caller data"
   });
   await assert.rejects(
     validateExact37ModelAHistoricalAuthority({ inputs: hostile }),
-    (error) => error instanceof TypeError
-      && error.message === EXACT37_MODEL_A_INCOMPLETE_REASON,
+    /explicit bounded whole-second validationTimeMs/,
   );
   assert.equal(touched, false);
+});
+
+test("the exact-35 prebuild recipe is the exact acyclic projection", () => {
+  assert.equal(EXACT35_MODEL_A_INPUT_FLAGS.length, 35);
+  assert.deepEqual(
+    EXACT35_MODEL_A_INPUT_FLAGS,
+    EXACT37_MODEL_A_INPUT_FLAGS.filter((flag) => ![
+      "--live-activation-authority",
+      "--frontend-build-candidate-receipt",
+    ].includes(flag)),
+  );
+  const full = stableInputSet();
+  const retained = full.value.entries.filter(({ flag }) => (
+    EXACT35_MODEL_A_INPUT_FLAGS.includes(flag)
+  ));
+  const paths = retained.map(({ flag, key, filePath }) => ({ flag, key, filePath }));
+  const prebuild = {
+    artifactPaths: {
+      entries: paths,
+      byFlag: Object.fromEntries(paths.map((entry) => [entry.flag, entry.filePath])),
+      byKey: Object.fromEntries(paths.map((entry) => [entry.key, entry.filePath])),
+    },
+    entries: retained,
+    byFlag: Object.fromEntries(retained.map((entry) => [entry.flag, entry])),
+    byKey: Object.fromEntries(retained.map((entry) => [entry.key, entry])),
+    totalBytes: retained.reduce((sum, entry) => sum + entry.byteLength, 0),
+  };
+  assert.equal(normalizeExact35ModelAPrebuildInputSet(prebuild).entries.length, 35);
+});
+
+test("exact-35 and exact-37 share an explicit frozen-v3 or historical-v2 core boundary", () => {
+  const current = knownVector();
+  assert.equal(
+    normalizeExactModelAFinalReleaseAuthorityCore(current).schema,
+    FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  );
+
+  const historical = structuredClone(current);
+  historical.schema = FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA;
+  historical.contracts.diligence_room.developer =
+    historical.operator_address;
+  delete historical.requested_features.tinker_customer;
+  delete historical.requested_features.collaboration;
+  assert.throws(
+    () => normalizeExactModelAFinalReleaseAuthorityCore(historical),
+    /schema/,
+  );
+  const replayed = normalizeExactModelAFinalReleaseAuthorityCore(historical, {
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  });
+  assert.equal(replayed.schema, FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA);
+  assert.equal(
+    Object.hasOwn(replayed.requested_features, "tinker_customer"),
+    false,
+  );
+
+  const ambiguous = structuredClone(historical);
+  ambiguous.requested_features.tinker_customer = false;
+  assert.throws(
+    () => normalizeExactModelAFinalReleaseAuthorityCore(ambiguous, {
+      expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+    }),
+    /requested_features/,
+  );
+  const unknown = structuredClone(current);
+  unknown.schema = "dnai.final-release-authority-core.v4";
+  assert.throws(
+    () => normalizeExactModelAFinalReleaseAuthorityCore(unknown),
+    /schema/,
+  );
 });
 
 test("the exact-37 loader snapshots canonical text without executing bytes accessors", () => {
@@ -143,27 +221,42 @@ test("the exact-37 loader rejects carried-value accessors and custom prototypes"
   assert.equal(custom.wasBytesAccessorTouched(), false);
 });
 
-test("the sealed exact-37 validator has a static historical-replay-only closure", () => {
+test("the exact-37 validator has an explicit recorded-time DCAP replay closure", () => {
   const entrypoint = fileURLToPath(
     new URL("./exact37-model-a-semantic-validator.mjs", import.meta.url),
   );
   const { sources, externalImports } = staticImportClosure(entrypoint);
   const entrypointSource = sources.get(entrypoint);
   const basenames = new Set([...sources.keys()].map((file) => path.basename(file)));
-  assert.equal(sources.size, 31, "historical closure file count drifted");
+  assert.equal(sources.size, 53, "dual current/historical DCAP closure file count drifted");
   assert.match(
     entrypointSource,
     /TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256[\s\S]*?main\.machine_evidence_sha256/,
     "exact-37 must cross-bind signed R's main-runtime evidence commitment",
   );
+  assert.match(
+    entrypointSource,
+    /reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority/,
+    "exact-37 must authenticate signed A, L, R, and B before replay",
+  );
+  assert.match(
+    entrypointSource,
+    /replayPersistedHistoricalPhalaSevenCvmEvidence/,
+    "exact-37 must rerun recorded-time DCAP from the private transcript",
+  );
 
   for (const required of [
+    "canonical-public-https-url-core.mjs",
     "release-reviewer-authority-core.mjs",
     "phala-nonlive-bootstrap-authorization-core.mjs",
     "phala-seven-cvm-launch-completion-core.mjs",
     "pre-ceremony-runtime-authority-core.mjs",
-    "phala-seven-cvm-historical-evidence-core.mjs",
+    "phala-seven-cvm-historical-release-verification-authority.mjs",
+    "phala-seven-cvm-verifier-evidence.mjs",
+    "phala-seven-cvm-opened-fd-runtime-core.mjs",
     "release-manifest-descriptor-historical-core.mjs",
+    "cvm-descriptor-runtime-authority-v1-policy.mjs",
+    "cvm-release-descriptor-set-v3.mjs",
     "release-authority-historical-core.mjs",
     "compute-workload-activation-observation-core.mjs",
     "frontend-release-historical-core.mjs",
@@ -173,18 +266,9 @@ test("the sealed exact-37 validator has a static historical-replay-only closure"
     assert.equal(basenames.has(required), true, `historical closure omits ${required}`);
   }
   for (const forbidden of [
-    "release-authority-signature-verifier.mjs",
-    "release-authority-current-reviewer-facade.mjs",
-    "release-reviewer-authority-genesis.mjs",
-    "release-reviewer-authority-genesis-acceptance.mjs",
-    "phala-nonlive-bootstrap-authorization.mjs",
     "phala-seven-cvm-launch-completion.mjs",
     "pre-ceremony-runtime-authority.mjs",
     "compute-workload-activation-observation.mjs",
-    "phala-seven-cvm-verifier-evidence.mjs",
-    "phala-seven-cvm-historical-release-verification-authority.mjs",
-    "release-manifest-sigstore-verifier.mjs",
-    "cvm-release-descriptor-set.mjs",
     "release-ceremony-authorization.mjs",
     "release-authority-stages.mjs",
     "frontend-build-candidate-core.mjs",
@@ -200,31 +284,36 @@ test("the sealed exact-37 validator has a static historical-replay-only closure"
       "@noble/curves/secp256k1",
       "@noble/hashes/sha3",
       "@noble/hashes/utils",
+      "node:child_process",
       "node:crypto",
+      "node:fs",
+      "node:fs/promises",
+      "node:os",
+      "node:path",
+      "node:url",
       "node:util",
     ],
   );
   for (const [file, source] of sources) {
     for (const forbidden of [
-      /\bDate\.now\s*\(/,
-      /\bWeakMap\b/,
       /\bfetch\s*\(/,
-      /\bprocess\s*(?:\.|\[)/,
-      /\bimport\s*\(/,
-      /\brequire\s*\(/,
       /\bWebSocket\b/,
       /\bXMLHttpRequest\b/,
-      /\brandomBytes\s*\(/,
-      /\brandomUUID\s*\(/,
-      /\bgetRandomValues\s*\(/,
-      /\bviem\b/,
-      /["']node:(?:child_process|fs|os|path|process|net|http|https)["']/,
+      /["']node:(?:net|http|https)["']/,
     ]) {
-      assert.equal(
-        forbidden.test(source),
-        false,
-        `${path.basename(file)} contains ambient authority ${forbidden}`,
-      );
+      assert.equal(forbidden.test(source), false,
+        `${path.basename(file)} contains network authority ${forbidden}`);
     }
+  }
+  const historicalAuthoritySource = sources.get(fileURLToPath(
+    new URL(
+      "./phala-seven-cvm-historical-release-verification-authority.mjs",
+      import.meta.url,
+    ),
+  ));
+  for (const source of [entrypointSource, historicalAuthoritySource]) {
+    assert.doesNotMatch(source, /\bDate\.now\s*\(/);
+    assert.doesNotMatch(source, /\bfetch\s*\(/);
+    assert.doesNotMatch(source, /\brandomBytes\s*\(/);
   }
 });

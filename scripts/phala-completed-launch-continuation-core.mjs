@@ -26,13 +26,13 @@ import {
 } from "./phala-seven-cvm-launch-completion-core.mjs";
 
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_SCHEMA =
-  "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v1";
+  "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v2";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-completed-seven-cvm-launch-continuity-receipt/v1\0";
+  "dnai-wikigen/phala-completed-seven-cvm-launch-continuity-receipt/v2\0";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_STATUS =
-  "current_authenticated_read_only_exact_seven_cvm_continuity_reconciled";
+  "recorded_time_dcap_replayed_and_current_authenticated_read_only_exact_seven_cvm_continuity_reconciled";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_TRUTH =
-  "current_authenticated_phala_account_info_attestation_and_signed_environment_key_observations_match_immutable_historical_L_without_refreshing_L_machine_evidence_or_mutation_authority";
+  "signed_a_l_r_b_exact14_recorded_time_dcap_and_persisted_collateral_replay_matches_immutable_historical_L_and_current_authenticated_phala_account_info_attestation_and_signed_environment_key_observations_without_freshness_renewal_or_mutation_authority";
 
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const BARE_SHA256 = /^(?!0{64}$)[0-9a-f]{64}$/;
@@ -89,6 +89,7 @@ const RECEIPT_FIELDS = Object.freeze([
   "domains",
   "executor_final_state_sha256",
   "historical_evidence_refreshed",
+  "historical_freshness_renewed",
   "historical_transcript_file_set_sha256",
   "launch_completion_receipt_sha256",
   "launch_completion_raw_file_sha256",
@@ -97,10 +98,12 @@ const RECEIPT_FIELDS = Object.freeze([
   "mutation_methods_called",
   "nonlive_bootstrap_authorization_receipt_sha256",
   "post_measurement_mutation_observed",
+  "persisted_intel_collateral_revalidated",
   "production_target_authority_sha256",
   "raw_quote_external_egress",
   "raw_secret_egress",
   "release_sha",
+  "recorded_time_dcap_replayed",
   "schema",
   "seven_cvm_verified_evidence_set_sha256",
   "started_at",
@@ -384,29 +387,52 @@ function normalizeCurrentDomain(value, domain, index, historical, stateBinding,
   return normalized;
 }
 
-function normalizeHistoricalEvidence(value, launch) {
+function normalizeHistoricalEvidence(value, launch, launchSha256) {
   assertCanonicalPlainDataGraph(value, {
     label: "historical seven-CVM evidence reconstruction",
   });
-  if (!isRecord(value)
-    || value.schema !== "dnai.phala-seven-cvm-historical-evidence-reconstruction.v1"
-    || value.truth_status
-      !== "raw14_protocol_and_signatures_replayed_against_authenticated_historical_L_R_roots_without_dcap_collateral_or_freshness_renewal"
-    || value.all_seven_historical_evidence_roots_reconstructed !== true
-    || value.raw14_canonical_bytes_recomputed !== true
-    || value.workload_eip191_signatures_replayed !== true
-    || value.dcap_reverified !== false
-    || value.intel_collateral_revalidated !== false
-    || value.freshness_renewed !== false
-    || value.production_brand_minted !== false
-    || value.live_traffic_authorized !== false
-    || value.seven_cvm_verified_evidence_set_sha256
+  const parsed = exactRecord(value, [
+    "all_seven_recorded_time_dcap_replayed",
+    "freshness_renewed",
+    "historical_transcript_file_set_sha256",
+    "launch_completion_receipt_sha256",
+    "live_traffic_authorized",
+    "persisted_intel_collateral_revalidated",
+    "production_live_brand_minted",
+    "raw_collateral_publicly_disclosed",
+    "raw_quote_publicly_disclosed",
+    "raw_secret_egress",
+    "release_verification_authority_sha256",
+    "schema",
+    "seven_cvm_verified_evidence_set_sha256",
+    "truth_status",
+    "workload_eip191_signatures_replayed",
+  ], "recorded-time historical seven-CVM replay summary");
+  if (parsed.schema !== "dnai.phala-seven-cvm-recorded-time-dcap-replay.v1"
+    || parsed.truth_status
+      !== "signed_a_l_r_b_authority_exact14_protocol_signatures_recorded_time_dcap_and_persisted_intel_collateral_replayed_without_freshness_renewal_or_live_authority"
+    || parsed.all_seven_recorded_time_dcap_replayed !== true
+    || parsed.persisted_intel_collateral_revalidated !== true
+    || parsed.workload_eip191_signatures_replayed !== true
+    || parsed.freshness_renewed !== false
+    || parsed.production_live_brand_minted !== false
+    || parsed.live_traffic_authorized !== false
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false
+    || parsed.launch_completion_receipt_sha256
+      !== launchSha256
+    || parsed.release_verification_authority_sha256
+      !== launch.release_verification_authority_sha256
+    || parsed.seven_cvm_verified_evidence_set_sha256
       !== launch.machine_verifier_evidence_set_sha256
-    || value.historical_transcript_file_set_sha256
+    || parsed.historical_transcript_file_set_sha256
       !== launch.historical_transcript_file_set_sha256) {
-    throw new TypeError("historical seven-CVM proof set differs from immutable L or refreshes authority");
+    throw new TypeError(
+      "recorded-time historical seven-CVM replay differs from immutable L or refreshes authority",
+    );
   }
-  return value;
+  return parsed;
 }
 
 function mutationTimes(state, launchByDomain) {
@@ -470,6 +496,7 @@ export function createPhalaCompletedLaunchContinuityReceipt(input = {}) {
   const historicalEvidence = normalizeHistoricalEvidence(
     parsed.historicalEvidenceReconstruction,
     launch,
+    launchSha256,
   );
   if (launch.executor_final_state_sha256 !== stateSha256
     || launch.release_sha !== state.release_sha
@@ -568,7 +595,10 @@ export function createPhalaCompletedLaunchContinuityReceipt(input = {}) {
     mutation_methods_called: false,
     launch_completion_refreshed: false,
     historical_evidence_refreshed: false,
+    historical_freshness_renewed: false,
     post_measurement_mutation_observed: false,
+    recorded_time_dcap_replayed: true,
+    persisted_intel_collateral_revalidated: true,
     automatic_retry_authorized: false,
     live_traffic_authorized: false,
     raw_quote_external_egress: false,
@@ -596,7 +626,10 @@ export function normalizePhalaCompletedLaunchContinuityReceipt(value) {
     || parsed.mutation_methods_called !== false
     || parsed.launch_completion_refreshed !== false
     || parsed.historical_evidence_refreshed !== false
+    || parsed.historical_freshness_renewed !== false
     || parsed.post_measurement_mutation_observed !== false
+    || parsed.recorded_time_dcap_replayed !== true
+    || parsed.persisted_intel_collateral_revalidated !== true
     || parsed.automatic_retry_authorized !== false
     || parsed.live_traffic_authorized !== false
     || parsed.raw_quote_external_egress !== false

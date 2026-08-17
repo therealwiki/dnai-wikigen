@@ -57,12 +57,12 @@ const PRODUCT_MODES = [
   {
     tag: "ARENA",
     title: "Sealed Bio challenges",
-    copy: "Let humans and agents compete on synthetic public tasks while holdouts and exact rewards stay inside a bounded evaluation queue.",
+    copy: "Send ciphertext to a release-gated challenge service and compare bounded public projections. Each result stays modeled until its exact row carries worker-reported provenance.",
     accent: "mint",
     icon: Trophy,
     cta: "Enter the challenge arena",
     route: "arena" as RouteKey,
-    state: "MODELED QUEUE",
+    state: "LIVE-CAPABLE INGRESS · EXECUTION PER ROW",
   },
   {
     tag: "MARKET",
@@ -77,22 +77,22 @@ const PRODUCT_MODES = [
   {
     tag: "REWARD",
     title: "Private reward lab",
-    copy: "Let optimizers learn from a sealed verifier while only bounded reward bands leave the enclave.",
+    copy: "Evaluate strict bundles through the release-gated operator or explore the separate browser simulator. Neither surface upgrades producer evidence into TDX verification.",
     accent: "gold",
     icon: FlaskConical,
     cta: "Run the safeguards lab",
     route: "lab" as RouteKey,
-    state: "BROWSER MODEL",
+    state: "OPERATOR RELEASE-GATED · SIMULATOR MODELED",
   },
   {
     tag: "NETWORK",
     title: "Multi-owner collaboration",
-    copy: "Fan one request across independent policies, consent grants, and royalty ledgers—fail-closed.",
+    copy: "Coordinate owner authority, execute one bounded run, fund purpose-separated wallet rails, and settle pull-payment royalties through source-implemented gates. This unsigned/dev release keeps mutations closed; its failure lab remains modeled.",
     accent: "mint",
     icon: Network,
     cta: "Compose a collaboration",
     route: "collaborate" as RouteKey,
-    state: "ROADMAP",
+    state: "PRODUCT RAILS IMPLEMENTED · CURRENT RELEASE CLOSED",
   },
 ];
 

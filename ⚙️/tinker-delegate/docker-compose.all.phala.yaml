@@ -107,12 +107,142 @@ services:
       ORACLE_OTP_REPLAY_KEY_PATH: email/otp_replay
       ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
       ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+      # Release-bound identity for the disabled-by-default internal Human
+      # Review notification route. The historical image remains non-activatable
+      # for delivery until a fresh release supplies the complete reviewed lane.
+      ORACLE_REVIEW_NOTIFICATION_CALLER_IDENTITY: tinker-delegate.review-operations
+      ORACLE_REVIEW_NOTIFICATION_SMTP_PORT: "465"
+      ORACLE_REVIEW_NOTIFICATION_SMTP_TIMEOUT_SECONDS: "10"
+      ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_PATH: /data/review_notification_receipts.json
+      ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_KEY: ""
+      ORACLE_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH: email/review_notification_receipts
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       retries: 5
       timeout: 5s
       start_period: 180s
+
+  # These two one-shot services are measured into the canonical main-CVM
+  # descriptor but are absent from the initial service set. They may run only
+  # under the separately reviewed account-genesis phase. The ordinary oracle
+  # above keeps automatic genesis disabled, and the ordinary delegate below
+  # keeps signup bootstrap disabled.
+  mailbox-genesis:
+    image: ghcr.io/g-structure/dnai-wikigen/tee-email-oracle@sha256:ac5d30a8150d840dcbef28f87444fa1916e99fc301c4287db281a9f0d3d48401
+    platform: linux/amd64
+    command: ["email-oracle", "genesis-profile"]
+    profiles: ["mailbox-genesis"]
+    restart: "no"
+    ulimits:
+      core: 0
+    depends_on:
+      neko:
+        condition: service_healthy
+    networks:
+      - tee-net
+    volumes:
+      - oracle-data:/data
+      - tinker-genesis-handoff:/handoff
+      - mailbox-genesis-evidence:/evidence
+      - tinker-account-genesis-evidence:/account-evidence:ro
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      ORACLE_CRED_STORE_PATH: /data/credentials.enc
+      ORACLE_CRED_STORE_KEY: ""
+      ORACLE_CDP_URL: http://neko:9222
+      ORACLE_USE_BROWSER_FALLBACK: ${ORACLE_USE_BROWSER_FALLBACK:-true}
+      ORACLE_AUTO_GENESIS: "false"
+      ORACLE_COCKLI_DOMAIN: ${ORACLE_DOMAIN:-cock.email}
+      ORACLE_API_HOST: 0.0.0.0
+      ORACLE_API_PORT: "8000"
+      ORACLE_PRODUCTION_RELEASE: "false"
+      ORACLE_DSTACK_ENABLED: "true"
+      ORACLE_DSTACK_KEY_PATH: email/creds
+      ORACLE_RUNTIME_AUTH_REQUIRED: "true"
+      ORACLE_RUNTIME_AUTH_TOKEN: ""
+      ORACLE_RUNTIME_AUTH_KEY_PATH: oracle/runtime-auth
+      ORACLE_AUTH_REQUIRED: "false"
+      ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT: "false"
+      ORACLE_CREDENTIAL_PROVISIONING_TOKEN: ""
+      ORACLE_OTP_REPLAY_STORE_PATH: /data/genesis_otp_replay.enc
+      ORACLE_OTP_REPLAY_STORE_KEY: ""
+      ORACLE_OTP_REPLAY_KEY_PATH: email/genesis_otp_replay
+      ORACLE_GENESIS_EVIDENCE_DIRECTORY: /evidence/mailbox-genesis
+      ORACLE_GENESIS_HANDOFF_PATH: /handoff/mailbox-genesis/signup-mailbox.enc
+      ORACLE_GENESIS_ACCOUNT_RETIREMENT_PATH: /account-evidence/tinker-account-genesis/retirement.json
+      ORACLE_GENESIS_ACCOUNT_TIMEOUT_SECONDS: "900"
+      ORACLE_GENESIS_RELEASE_SHA: ""
+      ORACLE_GENESIS_DEPLOYMENT_INTENT_SHA256: ""
+      ORACLE_GENESIS_AUTHORIZATION_SHA256: ${TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256:-}
+      ORACLE_GENESIS_MAIN_QVL_VERDICT_SHA256: ${TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256:-}
+      ORACLE_GENESIS_MEASUREMENT_POLICY_SHA256: ${TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256:-}
+      ORACLE_GENESIS_MAIN_RUNTIME_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
+      ORACLE_GENESIS_MAIN_APP_ID: ${EMAIL_ORACLE_CONSUMER_APP_ID:?Release-bound main CVM TEE identity required}
+      ORACLE_GENESIS_MAIN_COMPOSE_HASH: ${EMAIL_ORACLE_CONSUMER_COMPOSE_HASH:?Release-bound main CVM compose hash required}
+      ORACLE_GENESIS_MAIN_OS_IMAGE_HASH: ${TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH:?Release-bound main CVM OS image hash required}
+      ORACLE_GENESIS_BINDING_CEREMONY_RECEIPT_SHA256: ""
+      ORACLE_GENESIS_ACCOUNT_BINDING_COMMITMENT: ""
+      ORACLE_GENESIS_REVIEWER_GENESIS_ACCEPTANCE_SHA256: ""
+      ORACLE_GENESIS_REVIEWER_CURRENT_STATUS_EPOCH: ""
+      ORACLE_GENESIS_REVIEWER_CURRENT_STATUS_SHA256: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      retries: 120
+      timeout: 3s
+      start_period: 15s
+
+  tinker-account-genesis:
+    image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
+    platform: linux/amd64
+    command: ["python", "-m", "tinker_delegate.account_genesis_profile"]
+    profiles: ["tinker-account-genesis"]
+    restart: "no"
+    ulimits:
+      core: 0
+    depends_on:
+      mailbox-genesis:
+        condition: service_healthy
+    networks:
+      - tee-net
+    volumes:
+      - delegate-data:/data
+      - tinker-genesis-handoff:/handoff:ro
+      - tinker-account-genesis-evidence:/evidence
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      TINKER_BROWSER_WS_ENDPOINT: ""
+      TINKER_CDP_URL: http://neko:9222
+      TINKER_ORACLE_URL: http://mailbox-genesis:8000
+      TINKER_ORACLE_AUTH_KEY_PATH: oracle/runtime-auth
+      TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_DSTACK_KEY_PATH: tinker/api_key
+      TINKER_BOOTSTRAP_SIGNUP: "false"
+      TINKER_BOOTSTRAP_FAIL_OPEN: "false"
+      TINKER_LOCAL_BROWSER_FALLBACK: "false"
+      TINKER_ACCOUNT_GENESIS_HANDOFF_PATH: /handoff/mailbox-genesis/signup-mailbox.enc
+      TINKER_ACCOUNT_GENESIS_EVIDENCE_DIRECTORY: /evidence/tinker-account-genesis
+      TINKER_ACCOUNT_BINDING_SHARE_ONE: ${TINKER_ACCOUNT_BINDING_SHARE_ONE:-}
+      TINKER_ACCOUNT_BINDING_SHARE_TWO: ${TINKER_ACCOUNT_BINDING_SHARE_TWO:-}
+      # The release renderer replaces this inert source-template value with the
+      # exact deployment-intent constructor commitment. It is never a mutable
+      # post-measurement input.
+      TINKER_ACCOUNT_BINDING_EXPECTED_COMMITMENT: ""
+      TINKER_ACCOUNT_GENESIS_RELEASE_SHA: ""
+      TINKER_ACCOUNT_GENESIS_DEPLOYMENT_INTENT_SHA256: ""
+      TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256: ${TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256:-}
+      TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256: ${TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256:-}
+      TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256: ${TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256:-}
+      TINKER_ACCOUNT_GENESIS_MAIN_RUNTIME_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
+      TINKER_ACCOUNT_GENESIS_MAIN_APP_ID: ${EMAIL_ORACLE_CONSUMER_APP_ID:?Release-bound main CVM TEE identity required}
+      TINKER_ACCOUNT_GENESIS_MAIN_COMPOSE_HASH: ${EMAIL_ORACLE_CONSUMER_COMPOSE_HASH:?Release-bound main CVM compose hash required}
+      TINKER_ACCOUNT_GENESIS_MAIN_OS_IMAGE_HASH: ${TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH:?Release-bound main CVM OS image hash required}
+      TINKER_ACCOUNT_GENESIS_BINDING_CEREMONY_RECEIPT_SHA256: ""
+      TINKER_ACCOUNT_GENESIS_REVIEWER_GENESIS_ACCEPTANCE_SHA256: ""
+      TINKER_ACCOUNT_GENESIS_REVIEWER_CURRENT_STATUS_EPOCH: ""
+      TINKER_ACCOUNT_GENESIS_REVIEWER_CURRENT_STATUS_SHA256: ""
+      DSTACK_ENABLED: "true"
 
   diligence-policy-init:
     image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
@@ -135,6 +265,36 @@ services:
       TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256: ${TINKER_DILIGENCE_EVALUATOR_RELEASE_MANIFEST_SHA256:?Reviewed Diligence evaluator release manifest SHA-256 required}
       TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT: ${TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT:?Reviewed Diligence evaluator policy-set root required}
 
+  # Networkless, fail-closed writer for the private release authority consumed
+  # by the wallet-owned customer runtime. At bootstrap the exact disabled
+  # marker makes this a no-write success. The reviewed final environment
+  # recreates it with canonical encrypted authority bytes and their digest.
+  tinker-customer-authority-init:
+    image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
+    platform: linux/amd64
+    command: ["tinker-customer-authority-init"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    volumes:
+      - tinker-customer-authority:/sealed/tinker-customer
+      - /var/run/dstack.sock:/var/run/dstack.sock
+    environment:
+      DSTACK_ENABLED: "true"
+      DSTACK_SIMULATOR_ENDPOINT: ""
+      TINKER_CUSTOMER_ENABLED: ${TINKER_CUSTOMER_ENABLED:-false}
+      TINKER_CUSTOMER_AUTHORITY_B64: ${TINKER_CUSTOMER_AUTHORITY_B64:-}
+      TINKER_CUSTOMER_AUTHORITY_PATH: /sealed/tinker-customer/authority.json
+      TINKER_CUSTOMER_AUTHORITY_SHA256: ${TINKER_CUSTOMER_AUTHORITY_SHA256:-}
+      TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY: ""
+      TINKER_CUSTOMER_SETTLEMENT_KEY_PATH: tinker/customer_settlement_evidence
+
   delegate:
     image: ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:262938c3620a2c4931b7ff0e5da1f321e564e2deade4550bd41104a3885f0b98
     platform: linux/amd64
@@ -146,6 +306,8 @@ services:
         condition: service_started
       diligence-policy-init:
         condition: service_completed_successfully
+      tinker-customer-authority-init:
+        condition: service_completed_successfully
     networks:
       tee-net:
         ipv4_address: 172.20.0.5
@@ -154,6 +316,7 @@ services:
     volumes:
       - delegate-data:/data
       - diligence-evaluator-policy:/sealed/diligence:ro
+      - tinker-customer-authority:/sealed/tinker-customer:ro
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
       TINKER_BROWSER_WS_ENDPOINT: ""
@@ -165,9 +328,9 @@ services:
       TINKER_RUNTIME_AUTH_KEY_PATH: ${TINKER_RUNTIME_AUTH_KEY_PATH:-tinker/runtime-auth}
       TINKER_CORS_ALLOWED_ORIGINS: ${TINKER_CORS_ALLOWED_ORIGINS:-}
       TINKER_WALLET_AUTH_KEY_PATH: ${TINKER_WALLET_AUTH_KEY_PATH:-tinker/wallet_auth}
-      TINKER_WALLET_AUTH_DOMAIN: ${TINKER_WALLET_AUTH_DOMAIN:-www.wikigen.me}
-      TINKER_WALLET_AUTH_URI: ${TINKER_WALLET_AUTH_URI:-https://www.wikigen.me}
-      TINKER_WALLET_AUTH_CHAIN_ID: ${TINKER_WALLET_AUTH_CHAIN_ID:-84532}
+      TINKER_WALLET_AUTH_DOMAIN: www.wikigen.me
+      TINKER_WALLET_AUTH_URI: https://www.wikigen.me
+      TINKER_WALLET_AUTH_CHAIN_ID: "84532"
       TINKER_WALLET_AUTH_RPC_URL: ${TINKER_WALLET_AUTH_RPC_URL:?Trusted Base Sepolia wallet-auth HTTPS RPC URL required}
       TINKER_WALLET_AUTH_RPC_URL_SECONDARY: ${TINKER_WALLET_AUTH_RPC_URL_SECONDARY:?Independent secondary Base Sepolia wallet-auth HTTPS RPC URL required}
       TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS: ${TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS:-3.0}
@@ -179,6 +342,65 @@ services:
       TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT: ${TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT:-256}
       TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS: ${TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS:-}
       TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER: ${TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER:-}
+      TINKER_COLLABORATION_ENABLED: ${TINKER_COLLABORATION_ENABLED:-false}
+      TINKER_COLLABORATION_WALLET_AUTH_SIGNING_KEY: ""
+      TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH: tinker/collaboration_wallet_auth
+      TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS: "300"
+      TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS: "600"
+      TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES: "1024"
+      TINKER_COLLABORATION_WALLET_AUTH_ISSUER: dnai-wikigen:collaboration-wallet-auth
+      TINKER_COLLABORATION_WALLET_AUTH_AUDIENCE: dnai-wikigen:collaboration-console
+      TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS: "300"
+      TINKER_COLLABORATION_STORE_PATH: /data/collaboration_state.json
+      TINKER_COLLABORATION_STORE_INTEGRITY_KEY: ""
+      TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH: tinker/collaboration_store_integrity
+      TINKER_COLLABORATION_EXECUTION_ENABLED: ${TINKER_COLLABORATION_EXECUTION_ENABLED:-false}
+      TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH: /data/collaboration_execution.json
+      TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY: ""
+      TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH: tinker/collaboration_execution_journal_integrity
+      TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH: /data/collaboration_royalty_settlement.json
+      TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY: ""
+      TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH: tinker/collaboration_royalty_settlement_store
+      TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH: /data/collaboration_execution_worker_heartbeat.json
+      TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY: ""
+      TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH: tinker/collaboration_execution_worker_heartbeat
+      TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS: "30"
+      TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA: ${TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA:-}
+      TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256: ${TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256:-}
+      TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS: "300"
+      TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS: ${TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS:-900}
+      TINKER_ROYALTY_DISTRIBUTOR_ADDRESS: ${TINKER_ROYALTY_DISTRIBUTOR_ADDRESS:-}
+      TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH: ${TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH:-}
+      TINKER_ROYALTY_OWNER_ADDRESS: ${TINKER_ROYALTY_OWNER_ADDRESS:-}
+      TINKER_ROYALTY_AUTHORITY_NONCE: ${TINKER_ROYALTY_AUTHORITY_NONCE:-}
+      TINKER_ROYALTY_SETTLEMENT_VERIFIER: ${TINKER_ROYALTY_SETTLEMENT_VERIFIER:-}
+      TINKER_ROYALTY_QVL_VERIFIER: ${TINKER_ROYALTY_QVL_VERIFIER:-}
+      TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR: ${TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR:-}
+      TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT: ${TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT:-}
+      TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT: ${TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT:-}
+      TINKER_ROYALTY_QVL_POLICY_COMMITMENT: ${TINKER_ROYALTY_QVL_POLICY_COMMITMENT:-}
+      TINKER_ROYALTY_QVL_SIGNER_KEY_ID: ${TINKER_ROYALTY_QVL_SIGNER_KEY_ID:-}
+      TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH: ${TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH:-}
+      TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256: ${TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256:-}
+      TINKER_ROYALTY_MAIN_RUNTIME_COMPOSE_HASH: ${TINKER_ARENA_WORKER_COMPOSE_HASH:?prepare-derived value required before CVM commit}
+      TINKER_ROYALTY_MAIN_RUNTIME_APP_ID: ${TINKER_ARENA_WORKER_APP_ID:?prepare-derived value required before CVM commit}
+      TINKER_ROYALTY_MAIN_RUNTIME_OS_IMAGE_HASH: ${TINKER_ARENA_WORKER_OS_IMAGE_HASH:?prepare-derived value required before CVM commit}
+      TINKER_REVIEW_QUEUE_PATH: ${TINKER_REVIEW_QUEUE_PATH:-/data/review_queue.json}
+      TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY: ""
+      TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY_PATH: ${TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY_PATH:-tinker/review_queue_integrity}
+      TINKER_REVIEW_AUTHORITY_POLICY_JSON: ${TINKER_REVIEW_AUTHORITY_POLICY_JSON:?Encrypted canonical review authority policy JSON required}
+      TINKER_REVIEW_AUTHORITY_POLICY_SHA256: ${TINKER_REVIEW_AUTHORITY_POLICY_SHA256:?Review authority policy digest required}
+      TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON: ${TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON:?Encrypted canonical active-reviewer projection required}
+      TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256: ${TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256:?Active-reviewer projection digest required}
+      TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256: ${TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256:?Reviewer genesis-acceptance digest required}
+      TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH: ${TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH:?Reviewer current-status epoch required}
+      TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256: ${TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256:?Reviewer current-status digest required}
+      TINKER_REVIEW_AUTHORITY_CHALLENGE_TTL_SECONDS: ${TINKER_REVIEW_AUTHORITY_CHALLENGE_TTL_SECONDS:-300}
+      TINKER_REVIEW_AUTHORITY_MAX_PENDING_CHALLENGES: ${TINKER_REVIEW_AUTHORITY_MAX_PENDING_CHALLENGES:-1024}
+      TINKER_REVIEW_TICKET_TTL_SECONDS: ${TINKER_REVIEW_TICKET_TTL_SECONDS:-86400}
+      TINKER_REVIEW_QUEUE_READ_LIMIT_WINDOW_SECONDS: ${TINKER_REVIEW_QUEUE_READ_LIMIT_WINDOW_SECONDS:-60}
+      TINKER_REVIEW_QUEUE_READ_PEER_LIMIT: ${TINKER_REVIEW_QUEUE_READ_PEER_LIMIT:-120}
+      TINKER_REVIEW_QUEUE_READ_MAX_PEERS: ${TINKER_REVIEW_QUEUE_READ_MAX_PEERS:-4096}
       TINKER_ARENA_WALLET_AUTH_KEY_PATH: ${TINKER_ARENA_WALLET_AUTH_KEY_PATH:-tinker/arena_wallet_auth}
       TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS: ${TINKER_ARENA_WALLET_AUTH_CHALLENGE_TTL_SECONDS:-300}
       TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS: ${TINKER_ARENA_WALLET_AUTH_TOKEN_TTL_SECONDS:-300}
@@ -191,6 +413,9 @@ services:
       TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_BLOCK_AGE_SECONDS:-300}
       TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS: ${TINKER_ARENA_REGISTRY_MAX_FUTURE_BLOCK_SKEW_SECONDS:-30}
       TINKER_ARENA_STORE_PATH: ${TINKER_ARENA_STORE_PATH:-/data/arena_state.json}
+      TINKER_ARENA_STORE_INTEGRITY_KEY: ""
+      TINKER_ARENA_STORE_INTEGRITY_KEY_PATH: tinker/arena_store_integrity
+      TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED: "false"
       TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_STORE_PATH:-/data/arena_candidates}
       TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH: ${TINKER_ARENA_CANDIDATE_INGRESS_KEY_PATH:-tinker/arena_candidate_ingress}
       TINKER_ARENA_CANDIDATE_INGRESS_LOCAL_KEY_FILE: ""
@@ -202,12 +427,23 @@ services:
       TINKER_COMPUTE_STORE_PATH: ${TINKER_COMPUTE_STORE_PATH:-/data/compute_console_state.json}
       TINKER_COMPUTE_STORE_INTEGRITY_KEY: ""
       TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH: ${TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH:-tinker/compute_store_integrity}
+      TINKER_CUSTOMER_ENABLED: ${TINKER_CUSTOMER_ENABLED:-false}
+      TINKER_CUSTOMER_AUTHORITY_PATH: /sealed/tinker-customer/authority.json
+      TINKER_CUSTOMER_AUTHORITY_SHA256: ${TINKER_CUSTOMER_AUTHORITY_SHA256:-}
+      TINKER_CUSTOMER_STORE_PATH: /data/tinker-customer/state.json
+      TINKER_CUSTOMER_STORE_INTEGRITY_KEY: ""
+      TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH: tinker/customer_store_integrity
+      TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY: ""
+      TINKER_CUSTOMER_CREDENTIAL_KEY_PATH: tinker/customer_credentials
+      TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY: ""
+      TINKER_CUSTOMER_SETTLEMENT_KEY_PATH: tinker/customer_settlement_evidence
       TINKER_COMPUTE_WORKLOAD_INGRESS_STORE_PATH: /data/compute_workload_ingress
       TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY: ""
       TINKER_COMPUTE_WORKLOAD_INGRESS_INTEGRITY_KEY_PATH: tinker/compute_workload_ingress_integrity
       TINKER_COMPUTE_WORKLOAD_INGRESS_KEY_PATH: tinker/compute_workload_ingress
       TINKER_COMPUTE_WORKLOAD_INGRESS_LOCAL_KEY_FILE: ""
       TINKER_COMPUTE_WORKLOAD_INGRESS_PRIVATE_KEY_HEX: ""
+      TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED: ${TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED:-false}
       TINKER_COMPUTE_WORKLOAD_QVL_URL: ${TINKER_COMPUTE_WORKLOAD_QVL_URL:?Dedicated Compute workload QVL HTTPS /verify URL required}
       TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN: ${TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN:?Dedicated Compute workload QVL bearer required}
       TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS: ${TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS:?Dedicated Compute workload QVL verifier required}
@@ -219,12 +455,35 @@ services:
       TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH: ${TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH:?Fresh ComputeCreditVault runtime code hash required}
       TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256: ${TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256:?Fresh contract deployment receipt SHA-256 required}
       TINKER_COMPUTE_WORKLOAD_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
+      TINKER_MAIN_RUNTIME_CVM_ID: ${TINKER_COMPUTE_WORKLOAD_CVM_ID:?Canonical main runtime CVM ID required}
       TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256: ${TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256:?Signed seven-CVM deployment intent required}
+      TINKER_RELEASE_DEPLOYMENT_INTENT_SHA256: ${TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256:?Signed seven-CVM deployment intent required}
       TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256: ${TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256:-}
+      TINKER_RELEASE_AUTHORITY_SHA256: ${TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256:-}
       TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE: ${TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE:?Release ceremony nonce required}
+      TINKER_RELEASE_CEREMONY_NONCE: ${TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE:?Release ceremony nonce required}
       TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256: ${TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256:?Signed QVL measurement-policy set required}
       TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256: ${TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256:?Linked Compute-workload QVL measurement policy required}
       TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256: ${TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256:-}
+      TINKER_COMPUTE_VAULT_COMPOSE_HASH: ${TINKER_COMPUTE_VAULT_COMPOSE_HASH:?Compute execution compose hash required}
+      TINKER_COMPUTE_METERING_POLICY_SET_HASH: ${TINKER_COMPUTE_METERING_POLICY_SET_HASH:-}
+      TINKER_COMPUTE_PROVIDER_EXECUTION_ENABLED: "true"
+      TINKER_COMPUTE_PROVIDER_ADAPTER_ID: tinker_sdk_0_22_7_at_most_once_v1
+      TINKER_COMPUTE_PROVIDER_SDK_VERSION: "0.22.7"
+      TINKER_COMPUTE_PROVIDER_SDK_SOURCE_SHA256: sha256:3ab30e85f4d1ae21ab4a8b415d382e719decd3abb31e61f6e481e8e5296dac62
+      TINKER_COMPUTE_PROVIDER_REQUEST_CONTRACT_SHA256: sha256:15f112c2e285ba2463d36fe32a47f78eda40f7ca81d7b49f6d51dc4378feef0d
+      TINKER_COMPUTE_PROVIDER_BASE_URL_SHA256: sha256:e3ae09c22c856fa175bfbeded8819e1665f39c235869a15e3e0729bfb4f39533
+      TINKER_COMPUTE_PROVIDER_TOKENIZER_PATH: /opt/dnai/qwen3-8b-tokenizer
+      TINKER_COMPUTE_PROVIDER_TOKENIZER_RELEASE_SHA256: sha256:d933156af48aa90a117025537b4291c2e72b62ad14ddcfa7d77f3258928cd2e0
+      TINKER_COMPUTE_PROVIDER_RESULT_KEY_PATH: tinker/compute_provider_result
+      TINKER_COMPUTE_PROVIDER_STATUS_PATH: /data/compute_provider_status.json
+      TINKER_COMPUTE_PROVIDER_STATUS_KEY_PATH: tinker/compute_provider_status
+      TINKER_COMPUTE_PROVIDER_STATUS_INTEGRITY_KEY: ""
+      TINKER_COMPUTE_PROVIDER_STATUS_TTL_SECONDS: "30"
+      TINKER_COMPUTE_PROVIDER_REQUEST_TIMEOUT_SECONDS: "120.0"
+      TINKER_TELEMETRY: "0"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       TINKER_EXECUTION_POLICY_STORE_PATH: ${TINKER_EXECUTION_POLICY_STORE_PATH:-/data/execution_policy_state.json}
       TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: ""
       TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH: ${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}
@@ -251,6 +510,7 @@ services:
       TINKER_DILIGENCE_ROOM_ADDRESS: ${TINKER_DILIGENCE_ROOM_ADDRESS:?Reviewed DiligenceRoom address required}
       TINKER_CHAIN_CONTRACT_ADDRESS: ${TINKER_CHAIN_CONTRACT_ADDRESS:?DiligenceRoom address required}
       TINKER_API_KEY_STORE_PATH: /data/tinker_api_key.enc
+      TINKER_CLIENT_CONFIG_STORE_PATH: /data/tinker_client_config.enc
       TINKER_DSTACK_KEY_PATH: ${TINKER_DSTACK_KEY_PATH:-tinker/api_key}
       TINKER_BROWSER_SESSION_STORE_PATH: /data/browser_session.enc
       TINKER_BROWSER_SESSION_KEY_PATH: ${TINKER_BROWSER_SESSION_KEY_PATH:-tinker/browser_session}
@@ -285,9 +545,15 @@ volumes:
   oracle-data:
   delegate-data:
   diligence-evaluator-policy:
+  tinker-customer-authority:
+  tinker-genesis-handoff:
+  mailbox-genesis-evidence:
+  tinker-account-genesis-evidence:
 
 networks:
   tee-net:
     ipam:
       config:
         - subnet: 172.20.0.0/24
+  collaboration-execution-egress:
+    driver: bridge

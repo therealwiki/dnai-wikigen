@@ -1,11 +1,30 @@
 import { createHash } from "node:crypto";
+import { URL as NodeURL } from "node:url";
 
 import { ethereumKeccak256Hex } from "./ethereum-keccak.mjs";
+import { canonicalPublicHttpsOrigin } from "./canonical-public-https-url-core.mjs";
+import {
+  normalizeRoyaltyReleaseAuthority,
+  normalizeRoyaltyReleaseState,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
 
-export const FINAL_RELEASE_AUTHORITY_CORE_SCHEMA =
+export const FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA =
   "dnai.final-release-authority-core.v2";
-export const FINAL_RELEASE_AUTHORITY_CORE_DOMAIN =
+export const FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN =
   "dnai-wikigen/final-release-authority-core/v2\0";
+export const FINAL_RELEASE_AUTHORITY_CORE_V3_SCHEMA =
+  "dnai.final-release-authority-core.v3";
+export const FINAL_RELEASE_AUTHORITY_CORE_V3_DOMAIN =
+  "dnai-wikigen/final-release-authority-core/v3\0";
+export const FINAL_RELEASE_AUTHORITY_CORE_V4_SCHEMA =
+  "dnai.final-release-authority-core.v4";
+export const FINAL_RELEASE_AUTHORITY_CORE_V4_DOMAIN =
+  "dnai-wikigen/final-release-authority-core/v4\0";
+export const FINAL_RELEASE_AUTHORITY_CORE_SCHEMA =
+  FINAL_RELEASE_AUTHORITY_CORE_V4_SCHEMA;
+export const FINAL_RELEASE_AUTHORITY_CORE_DOMAIN =
+  FINAL_RELEASE_AUTHORITY_CORE_V4_DOMAIN;
 export const MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES = 65_536;
 export const DILIGENCE_EVALUATOR_POLICY_SET_TYPE =
   "DiligenceRoomEvaluatorPolicySet(bytes32[3] evaluatorPolicies)";
@@ -28,8 +47,11 @@ const APPROVER_ROOT_DOMAIN =
 const CANONICALIZATION_VERSION = "policy-kernel-canonicalization/v2";
 const APPROVAL_SCHEMA = "dnai-wikigen/execution-policy-approval/v3";
 const API_SCHEMA_VERSION = 3;
-const STORE_SCHEMA_VERSION = 5;
-const ROLLBACK_ANCHOR_SCHEMA = "dnai.execution-policy-rollback-anchor.v1";
+const HISTORICAL_STORE_SCHEMA_VERSION = 5;
+const STORE_SCHEMA_VERSION = 6;
+const HISTORICAL_ROLLBACK_ANCHOR_SCHEMA =
+  "dnai.execution-policy-rollback-anchor.v1";
+const ROLLBACK_ANCHOR_SCHEMA = "dnai.execution-policy-rollback-anchor.v2";
 const ANCHOR_VERIFICATION_MODEL =
   "single_rpc_reported_finalized_with_confirmation_depth";
 const ANCHOR_WRITER_CUSTODY =
@@ -44,9 +66,92 @@ const CHALLENGE_VERSION_REVIEW_DELAY_SECONDS = 172_800;
 const MAX_GENESIS_CHALLENGES = 32;
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
-const DNS_OR_IPV4_HOSTNAME = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+const HISTORICAL_DNS_OR_IPV4_HOSTNAME_V2 =
+  /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+const PHALA_APP_ID = /^(?!0{40}$)[0-9a-f]{40}$/;
+const CVM_ID = /^[a-z0-9][a-z0-9._:-]{7,127}$/;
 
-const TOP_LEVEL_KEYS = Object.freeze([
+export const FINAL_RELEASE_SHARED_LINEAGE_SCHEMA =
+  "dnai.final-release-shared-lineage.v1";
+export const ROYALTY_SETTLEMENT_RELEASE_BINDING_TEMPLATE_SCHEMA =
+  "dnai.royalty-settlement-release-binding-template.v1";
+export const COLLABORATION_EXECUTION_RELEASE_AUTHORITY_SCHEMA =
+  "dnai.collaboration-execution-release-authority.v1";
+export const COMPUTE_WORKLOAD_WALLET_ADOPTION_RELEASE_DECISION_SCHEMA =
+  "dnai.compute-workload-wallet-adoption-release-decision.v1";
+export const EXECUTION_POLICY_RELEASE_MARKER_GENESIS_SCHEMA =
+  "dnai.execution-policy-release-marker-genesis.v1";
+export const EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN =
+  "dnai-wikigen/execution-policy/final-release-authority/v1";
+export const EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH =
+  ethereumKeccak256Hex(Buffer.from(
+    EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN,
+    "utf8",
+  ));
+export const EXECUTION_POLICY_STORE_V6_CONTRACT = Object.freeze({
+  surface: "execution_policy_store",
+  schema_version: 6,
+  payload_fields: Object.freeze([
+    "sequence",
+    "records",
+    "royalty_confirmations",
+  ]),
+  policy_record_kind: "execution_policy_decision_v2",
+  royalty_record_kind: "royalty_settlement_anchor_v1",
+  local_record_sequence_semantics: "one_based_contiguous_local_sequence",
+  previous_record_digest_field: "previous_record_digest",
+  royalty_chain_sequence_field: "chain_sequence",
+  royalty_authorization_plan_schema:
+    "dnai.royalty-settlement-authorization-plan.v2",
+  royalty_wallet_plan_record_schema:
+    "dnai.royalty-settlement-wallet-plan-record.v1",
+  royalty_confirmation_schema:
+    "dnai.royalty-settlement-anchor-confirmation.v1",
+  royalty_sponsor_dto_schema:
+    "dnai.collaboration.royalty-settlement-wallet-plan.v1",
+});
+export const EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY = Object.freeze({
+  schema: EXECUTION_POLICY_RELEASE_MARKER_GENESIS_SCHEMA,
+  required: true,
+  resource_domain: EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN,
+  resource_hash: EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
+  decision_environment_key: "TINKER_RELEASE_AUTHORITY_SHA256",
+  decision_semantics: "exact_final_release_authority_core_sha256",
+  anchor_binding_semantics:
+    "rollback_anchor_target_contract_writer_and_writer_release_commitment",
+  marker_chain_sequence: 1,
+  local_store_first_sequence: 1,
+  chain_sequence_offset: 1,
+  first_local_record_chain_sequence: 2,
+  royalty_anchor_sequence_semantics:
+    "onchain_global_sequence_including_release_marker",
+});
+export const EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY_SCHEMA =
+  "dnai.execution-policy-anchor-writer-gas-reserve.v1";
+export const EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY = Object.freeze({
+  schema: EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY_SCHEMA,
+  release_marker_transaction_count: 1,
+  expected_subsequent_anchor_count: 32,
+  maximum_gas_per_transaction: 500_000,
+  reviewed_max_fee_per_gas_wei: "2000000000",
+  minimum_reserve_wei: "33000000000000000",
+});
+
+const COLLABORATION_EXECUTION_SERVICE = "collaboration-execution-worker";
+const COLLABORATION_EXECUTION_PROFILE = "collaboration-execution";
+const AUTHENTICATED_WORKER_HEARTBEAT_CLAIM =
+  "authenticated_worker_presence_not_tdx_attestation";
+const ROYALTY_SETTLEMENT_SIGNER_KEY_PATH =
+  "tinker/collaboration_royalty_settlement_signer";
+const ROYALTY_SETTLEMENT_SIGNER_CUSTODY =
+  "dstack_derived_main_runtime_royalty_settlement_signer";
+const ROYALTY_QVL_SIGNER_KEY_PATH_PREFIX =
+  "dnai-wikigen/attestation-qvl/royalty-settlement-signer/v1";
+const ROYALTY_QVL_SIGNER_CUSTODY =
+  "dstack_derived_diligence_qvl_royalty_settlement_signer";
+const ROYALTY_MAX_AUTHORIZATION_LIFETIME_SECONDS = 600;
+
+const HISTORICAL_TOP_LEVEL_KEYS_V2_V3 = Object.freeze([
   "schema",
   "release_sha",
   "network",
@@ -59,6 +164,31 @@ const TOP_LEVEL_KEYS = Object.freeze([
   "wallet_auth",
   "requested_features",
   "execution_policy",
+]);
+
+const TOP_LEVEL_KEYS_V4 = Object.freeze([
+  "schema",
+  "release_sha",
+  "network",
+  "operator_address",
+  "deployment_intent_sha256",
+  "cvm_launch_intent_sha256",
+  "seven_cvm_release_verification_authority_sha256",
+  "shared_release_lineage",
+  "contracts",
+  "cvm",
+  "arena_registry_bindings",
+  "wallet_auth",
+  "requested_features",
+  "execution_policy",
+  "royalty_release_authority",
+  "royalty_release_active_state",
+  "royalty_release_active_state_sha256",
+  "royalty_release_history_sha256",
+  "royalty_release_history_receipt_sha256",
+  "royalty_settlement_release_binding_template",
+  "collaboration_execution",
+  "compute_workload_wallet_adoption",
 ]);
 
 const CONTRACT_KEYS = Object.freeze([
@@ -139,7 +269,7 @@ const RUNTIME_CONTROL_EXPECTATIONS = Object.freeze({
   raw_secret_egress_prohibited: true,
 });
 
-const REQUESTED_FEATURE_KEYS = Object.freeze([
+const HISTORICAL_REQUESTED_FEATURE_KEYS_V2 = Object.freeze([
   "contract_writes",
   "artifact_upload",
   "compute_console",
@@ -149,7 +279,26 @@ const REQUESTED_FEATURE_KEYS = Object.freeze([
   "arena_submission",
 ]);
 
-const EXECUTION_POLICY_KEYS = Object.freeze([
+const REQUESTED_FEATURE_KEYS_V3 = Object.freeze([
+  "contract_writes",
+  "artifact_upload",
+  "compute_console",
+  "tinker_customer",
+  "collaboration",
+  "compute_vault_funding",
+  "compute_vault_authorization",
+  "compute_workload_upload",
+  "arena_submission",
+]);
+
+const REQUESTED_FEATURE_KEYS_V4 = Object.freeze([
+  ...REQUESTED_FEATURE_KEYS_V3,
+  "collaboration_execution",
+  "royalty_settlement",
+  "compute_workload_wallet_adoption",
+]);
+
+const HISTORICAL_EXECUTION_POLICY_KEYS = Object.freeze([
   "canonicalization_version",
   "approval_schema",
   "api_schema_version",
@@ -159,7 +308,21 @@ const EXECUTION_POLICY_KEYS = Object.freeze([
   "rollback_anchor_target",
 ]);
 
-const ROLLBACK_ANCHOR_TARGET_KEYS = Object.freeze([
+const EXECUTION_POLICY_KEYS_V4 = Object.freeze([
+  ...HISTORICAL_EXECUTION_POLICY_KEYS,
+  "store_contract",
+  "release_marker_genesis",
+]);
+
+const EXECUTION_POLICY_STORE_V6_CONTRACT_KEYS = Object.freeze(
+  Object.keys(EXECUTION_POLICY_STORE_V6_CONTRACT),
+);
+
+const EXECUTION_POLICY_RELEASE_MARKER_GENESIS_KEYS = Object.freeze(
+  Object.keys(EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY),
+);
+
+const HISTORICAL_ROLLBACK_ANCHOR_TARGET_KEYS = Object.freeze([
   "schema",
   "chain_id",
   "contract_address",
@@ -175,6 +338,15 @@ const ROLLBACK_ANCHOR_TARGET_KEYS = Object.freeze([
   "independent_rpc_quorum_verified",
   "consensus_proof_verified",
 ]);
+
+const ROLLBACK_ANCHOR_TARGET_KEYS = Object.freeze([
+  ...HISTORICAL_ROLLBACK_ANCHOR_TARGET_KEYS,
+  "writer_gas_reserve_policy",
+]);
+
+const ANCHOR_WRITER_GAS_RESERVE_POLICY_KEYS = Object.freeze(
+  Object.keys(EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY),
+);
 
 export class FinalReleaseAuthorityCoreValidationError extends TypeError {}
 export const ExecutionPolicyReleaseCoreValidationError =
@@ -334,6 +506,20 @@ function releaseSha(value, label) {
   return value;
 }
 
+function phalaAppId(value, label) {
+  if (typeof value !== "string" || !PHALA_APP_ID.test(value)) {
+    fail(`${label} must be a nonzero lowercase 40-character Phala app ID`);
+  }
+  return value;
+}
+
+function cvmId(value, label) {
+  if (typeof value !== "string" || !CVM_ID.test(value)) {
+    fail(`${label} must be a canonical CVM ID`);
+  }
+  return value;
+}
+
 function address(value, label) {
   if (
     typeof value !== "string"
@@ -407,11 +593,11 @@ function walletConnectProjectId(value, label) {
   return value;
 }
 
-function httpsOrigin(value, label) {
+function historicalHttpsOriginV2(value, label) {
   assertString(value, label, 512);
   let parsed;
   try {
-    parsed = new URL(value);
+    parsed = new NodeURL(value);
   } catch {
     fail(`${label} must be a canonical HTTPS origin`);
   }
@@ -423,12 +609,21 @@ function httpsOrigin(value, label) {
     || parsed.hash
     || parsed.pathname !== "/"
     || parsed.hostname !== parsed.hostname.toLowerCase()
-    || !DNS_OR_IPV4_HOSTNAME.test(parsed.hostname)
+    || !HISTORICAL_DNS_OR_IPV4_HOSTNAME_V2.test(parsed.hostname)
     || parsed.origin !== value
   ) {
     fail(`${label} must be a canonical lowercase HTTPS origin without a path`);
   }
   return value;
+}
+
+function currentPublicHttpsOriginV3(value, label) {
+  assertString(value, label, 512);
+  try {
+    return canonicalPublicHttpsOrigin(value, label);
+  } catch {
+    fail(`${label} must be a canonical HTTPS origin`);
+  }
 }
 
 function asciiJsonString(value) {
@@ -1276,7 +1471,12 @@ function normalizeComputeWorkloadIngress(value) {
   };
 }
 
-function normalizeCvm(value, release) {
+function normalizeCvm(
+  value,
+  release,
+  normalizeHttpsOrigin,
+  { requireCanonicalMainRuntimeIdentity = false } = {},
+) {
   const parsed = exactRecord(value, CVM_KEYS, "cvm");
   if (!Array.isArray(parsed.images) || parsed.images.length !== 3) {
     fail("cvm.images must contain exactly delegate, neko, and oracle");
@@ -1294,15 +1494,22 @@ function normalizeCvm(value, release) {
     fail("cvm.allowed_browser_origins must contain exactly three reviewed origins");
   }
   const origins = parsed.allowed_browser_origins
-    .map((entry, index) => httpsOrigin(entry, `cvm.allowed_browser_origins[${index}]`))
+    .map((entry, index) => normalizeHttpsOrigin(
+      entry,
+      `cvm.allowed_browser_origins[${index}]`,
+    ))
     .sort();
   if (origins.some((entry, index) => entry !== REQUIRED_BROWSER_ORIGINS[index])) {
     fail("cvm.allowed_browser_origins must equal the reviewed production origin set");
   }
 
   const normalized = {
-    app_id: assertString(parsed.app_id, "cvm.app_id", 128),
-    cvm_id: assertString(parsed.cvm_id, "cvm.cvm_id", 128),
+    app_id: requireCanonicalMainRuntimeIdentity
+      ? phalaAppId(parsed.app_id, "cvm.app_id")
+      : assertString(parsed.app_id, "cvm.app_id", 128),
+    cvm_id: requireCanonicalMainRuntimeIdentity
+      ? cvmId(parsed.cvm_id, "cvm.cvm_id")
+      : assertString(parsed.cvm_id, "cvm.cvm_id", 128),
     compose_hash: bareBytes32(parsed.compose_hash, "cvm.compose_hash"),
     local_compose_hash: bareBytes32(parsed.local_compose_hash, "cvm.local_compose_hash"),
     rendered_compose_sha256: bareBytes32(
@@ -1315,7 +1522,7 @@ function normalizeCvm(value, release) {
     public_sysinfo: boolean(parsed.public_sysinfo, "cvm.public_sysinfo"),
     public_tcbinfo: boolean(parsed.public_tcbinfo, "cvm.public_tcbinfo"),
     tee_identity: address(parsed.tee_identity, "cvm.tee_identity"),
-    delegate_url: httpsOrigin(parsed.delegate_url, "cvm.delegate_url"),
+    delegate_url: normalizeHttpsOrigin(parsed.delegate_url, "cvm.delegate_url"),
     images,
     allowed_browser_origins: origins,
     compute_workload_ingress: normalizeComputeWorkloadIngress(
@@ -1334,20 +1541,255 @@ function normalizeCvm(value, release) {
   return normalized;
 }
 
-function normalizeRequestedFeatures(value) {
-  const parsed = exactRecord(value, REQUESTED_FEATURE_KEYS, "requested_features");
+function normalizeRequestedFeatures(value, keys) {
+  const parsed = exactRecord(value, keys, "requested_features");
   const normalized = {};
-  for (const key of REQUESTED_FEATURE_KEYS) {
+  for (const key of keys) {
     normalized[key] = boolean(parsed[key], `requested_features.${key}`);
   }
   if (normalized.compute_vault_authorization && !normalized.compute_vault_funding) {
     fail("compute_vault_authorization requires compute_vault_funding");
   }
+  if (Object.hasOwn(normalized, "collaboration_execution")
+    && normalized.collaboration_execution
+    && (!normalized.collaboration
+      || !normalized.compute_workload_upload
+      || !normalized.compute_vault_authorization)) {
+    fail("collaboration_execution requires collaboration, compute_workload_upload, and compute_vault_authorization");
+  }
+  if (Object.hasOwn(normalized, "royalty_settlement")
+    && normalized.royalty_settlement
+    && (!normalized.collaboration_execution || !normalized.contract_writes)) {
+    fail("royalty_settlement requires collaboration_execution and contract_writes");
+  }
+  if (Object.hasOwn(normalized, "compute_workload_wallet_adoption")
+    && normalized.compute_workload_wallet_adoption
+    && (!normalized.compute_workload_upload
+      || !normalized.compute_vault_authorization)) {
+    fail("compute_workload_wallet_adoption requires compute_workload_upload and compute_vault_authorization");
+  }
   return normalized;
 }
 
-function normalizeExecutionPolicy(value) {
-  const parsed = exactRecord(value, EXECUTION_POLICY_KEYS, "execution_policy");
+function normalizeExecutionPolicyStoreV6Contract(value) {
+  const parsed = exactRecord(
+    value,
+    EXECUTION_POLICY_STORE_V6_CONTRACT_KEYS,
+    "execution_policy.store_contract",
+  );
+  if (!Array.isArray(parsed.payload_fields)
+    || parsed.payload_fields.length
+      !== EXECUTION_POLICY_STORE_V6_CONTRACT.payload_fields.length) {
+    fail("execution_policy.store_contract.payload_fields must be the exact v6 field order");
+  }
+  const payloadFields = parsed.payload_fields.map((field, index) => exactString(
+    field,
+    EXECUTION_POLICY_STORE_V6_CONTRACT.payload_fields[index],
+    `execution_policy.store_contract.payload_fields[${index}]`,
+  ));
+  return {
+    surface: exactString(
+      parsed.surface,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.surface,
+      "execution_policy.store_contract.surface",
+    ),
+    schema_version: integer(
+      parsed.schema_version,
+      "execution_policy.store_contract.schema_version",
+      EXECUTION_POLICY_STORE_V6_CONTRACT.schema_version,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.schema_version,
+    ),
+    payload_fields: payloadFields,
+    policy_record_kind: exactString(
+      parsed.policy_record_kind,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.policy_record_kind,
+      "execution_policy.store_contract.policy_record_kind",
+    ),
+    royalty_record_kind: exactString(
+      parsed.royalty_record_kind,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_record_kind,
+      "execution_policy.store_contract.royalty_record_kind",
+    ),
+    local_record_sequence_semantics: exactString(
+      parsed.local_record_sequence_semantics,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.local_record_sequence_semantics,
+      "execution_policy.store_contract.local_record_sequence_semantics",
+    ),
+    previous_record_digest_field: exactString(
+      parsed.previous_record_digest_field,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.previous_record_digest_field,
+      "execution_policy.store_contract.previous_record_digest_field",
+    ),
+    royalty_chain_sequence_field: exactString(
+      parsed.royalty_chain_sequence_field,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_chain_sequence_field,
+      "execution_policy.store_contract.royalty_chain_sequence_field",
+    ),
+    royalty_authorization_plan_schema: exactString(
+      parsed.royalty_authorization_plan_schema,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_authorization_plan_schema,
+      "execution_policy.store_contract.royalty_authorization_plan_schema",
+    ),
+    royalty_wallet_plan_record_schema: exactString(
+      parsed.royalty_wallet_plan_record_schema,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_wallet_plan_record_schema,
+      "execution_policy.store_contract.royalty_wallet_plan_record_schema",
+    ),
+    royalty_confirmation_schema: exactString(
+      parsed.royalty_confirmation_schema,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_confirmation_schema,
+      "execution_policy.store_contract.royalty_confirmation_schema",
+    ),
+    royalty_sponsor_dto_schema: exactString(
+      parsed.royalty_sponsor_dto_schema,
+      EXECUTION_POLICY_STORE_V6_CONTRACT.royalty_sponsor_dto_schema,
+      "execution_policy.store_contract.royalty_sponsor_dto_schema",
+    ),
+  };
+}
+
+function normalizeExecutionPolicyReleaseMarkerGenesis(value) {
+  const parsed = exactRecord(
+    value,
+    EXECUTION_POLICY_RELEASE_MARKER_GENESIS_KEYS,
+    "execution_policy.release_marker_genesis",
+  );
+  const normalized = {
+    schema: exactString(
+      parsed.schema,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.schema,
+      "execution_policy.release_marker_genesis.schema",
+    ),
+    required: boolean(
+      parsed.required,
+      "execution_policy.release_marker_genesis.required",
+    ),
+    resource_domain: exactString(
+      parsed.resource_domain,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.resource_domain,
+      "execution_policy.release_marker_genesis.resource_domain",
+    ),
+    resource_hash: exactString(
+      parsed.resource_hash,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.resource_hash,
+      "execution_policy.release_marker_genesis.resource_hash",
+    ),
+    decision_environment_key: exactString(
+      parsed.decision_environment_key,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.decision_environment_key,
+      "execution_policy.release_marker_genesis.decision_environment_key",
+    ),
+    decision_semantics: exactString(
+      parsed.decision_semantics,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.decision_semantics,
+      "execution_policy.release_marker_genesis.decision_semantics",
+    ),
+    anchor_binding_semantics: exactString(
+      parsed.anchor_binding_semantics,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.anchor_binding_semantics,
+      "execution_policy.release_marker_genesis.anchor_binding_semantics",
+    ),
+    marker_chain_sequence: integer(
+      parsed.marker_chain_sequence,
+      "execution_policy.release_marker_genesis.marker_chain_sequence",
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.marker_chain_sequence,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.marker_chain_sequence,
+    ),
+    local_store_first_sequence: integer(
+      parsed.local_store_first_sequence,
+      "execution_policy.release_marker_genesis.local_store_first_sequence",
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.local_store_first_sequence,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.local_store_first_sequence,
+    ),
+    chain_sequence_offset: integer(
+      parsed.chain_sequence_offset,
+      "execution_policy.release_marker_genesis.chain_sequence_offset",
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.chain_sequence_offset,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.chain_sequence_offset,
+    ),
+    first_local_record_chain_sequence: integer(
+      parsed.first_local_record_chain_sequence,
+      "execution_policy.release_marker_genesis.first_local_record_chain_sequence",
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.first_local_record_chain_sequence,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY.first_local_record_chain_sequence,
+    ),
+    royalty_anchor_sequence_semantics: exactString(
+      parsed.royalty_anchor_sequence_semantics,
+      EXECUTION_POLICY_RELEASE_MARKER_GENESIS_POLICY
+        .royalty_anchor_sequence_semantics,
+      "execution_policy.release_marker_genesis.royalty_anchor_sequence_semantics",
+    ),
+  };
+  if (!normalized.required
+    || normalized.marker_chain_sequence !== normalized.chain_sequence_offset
+    || normalized.first_local_record_chain_sequence
+      !== normalized.local_store_first_sequence + normalized.chain_sequence_offset) {
+    fail("execution-policy release marker genesis sequence contract is invalid");
+  }
+  return normalized;
+}
+
+function normalizeAnchorWriterGasReservePolicy(value) {
+  const label =
+    "execution_policy.rollback_anchor_target.writer_gas_reserve_policy";
+  const parsed = exactRecord(
+    value,
+    ANCHOR_WRITER_GAS_RESERVE_POLICY_KEYS,
+    label,
+  );
+  const expected = EXECUTION_POLICY_ANCHOR_WRITER_GAS_RESERVE_POLICY;
+  const normalized = {
+    schema: exactString(parsed.schema, expected.schema, `${label}.schema`),
+    release_marker_transaction_count: integer(
+      parsed.release_marker_transaction_count,
+      `${label}.release_marker_transaction_count`,
+      expected.release_marker_transaction_count,
+      expected.release_marker_transaction_count,
+    ),
+    expected_subsequent_anchor_count: integer(
+      parsed.expected_subsequent_anchor_count,
+      `${label}.expected_subsequent_anchor_count`,
+      expected.expected_subsequent_anchor_count,
+      expected.expected_subsequent_anchor_count,
+    ),
+    maximum_gas_per_transaction: integer(
+      parsed.maximum_gas_per_transaction,
+      `${label}.maximum_gas_per_transaction`,
+      expected.maximum_gas_per_transaction,
+      expected.maximum_gas_per_transaction,
+    ),
+    reviewed_max_fee_per_gas_wei: uint256Decimal(
+      parsed.reviewed_max_fee_per_gas_wei,
+      `${label}.reviewed_max_fee_per_gas_wei`,
+    ),
+    minimum_reserve_wei: uint256Decimal(
+      parsed.minimum_reserve_wei,
+      `${label}.minimum_reserve_wei`,
+    ),
+  };
+  const computedMinimum = (
+    BigInt(normalized.release_marker_transaction_count
+      + normalized.expected_subsequent_anchor_count)
+    * BigInt(normalized.maximum_gas_per_transaction)
+    * BigInt(normalized.reviewed_max_fee_per_gas_wei)
+  ).toString(10);
+  if (normalized.reviewed_max_fee_per_gas_wei
+      !== expected.reviewed_max_fee_per_gas_wei
+    || normalized.minimum_reserve_wei !== expected.minimum_reserve_wei
+    || normalized.minimum_reserve_wei !== computedMinimum) {
+    fail(`${label} must equal the exact computed release gas-reserve policy`);
+  }
+  return normalized;
+}
+
+function normalizeExecutionPolicy(value, { includeReleaseMarkerGenesis }) {
+  const parsed = exactRecord(
+    value,
+    includeReleaseMarkerGenesis
+      ? EXECUTION_POLICY_KEYS_V4
+      : HISTORICAL_EXECUTION_POLICY_KEYS,
+    "execution_policy",
+  );
   if (!Array.isArray(parsed.approver_hashes)) {
     fail("execution_policy.approver_hashes must be an array");
   }
@@ -1373,13 +1815,18 @@ function normalizeExecutionPolicy(value) {
 
   const anchor = exactRecord(
     parsed.rollback_anchor_target,
-    ROLLBACK_ANCHOR_TARGET_KEYS,
+    includeReleaseMarkerGenesis
+      ? ROLLBACK_ANCHOR_TARGET_KEYS
+      : HISTORICAL_ROLLBACK_ANCHOR_TARGET_KEYS,
     "execution_policy.rollback_anchor_target",
   );
+  const anchorSchema = includeReleaseMarkerGenesis
+    ? ROLLBACK_ANCHOR_SCHEMA
+    : HISTORICAL_ROLLBACK_ANCHOR_SCHEMA;
   const normalizedAnchor = {
     schema: exactString(
       anchor.schema,
-      ROLLBACK_ANCHOR_SCHEMA,
+      anchorSchema,
       "execution_policy.rollback_anchor_target.schema",
     ),
     chain_id: integer(
@@ -1445,6 +1892,11 @@ function normalizeExecutionPolicy(value) {
       anchor.consensus_proof_verified,
       "execution_policy.rollback_anchor_target.consensus_proof_verified",
     ),
+    ...(includeReleaseMarkerGenesis
+      ? { writer_gas_reserve_policy: normalizeAnchorWriterGasReservePolicy(
+        anchor.writer_gas_reserve_policy,
+      ) }
+      : {}),
   };
   if (
     normalizedAnchor.independent_rpc_quorum_verified
@@ -1453,7 +1905,10 @@ function normalizeExecutionPolicy(value) {
     fail("rollback anchor target must preserve the exact single-RPC trust classification");
   }
 
-  return {
+  const storeSchemaVersion = includeReleaseMarkerGenesis
+    ? STORE_SCHEMA_VERSION
+    : HISTORICAL_STORE_SCHEMA_VERSION;
+  const normalized = {
     canonicalization_version: exactString(
       parsed.canonicalization_version,
       CANONICALIZATION_VERSION,
@@ -1473,24 +1928,399 @@ function normalizeExecutionPolicy(value) {
     store_schema_version: integer(
       parsed.store_schema_version,
       "execution_policy.store_schema_version",
-      STORE_SCHEMA_VERSION,
-      STORE_SCHEMA_VERSION,
+      storeSchemaVersion,
+      storeSchemaVersion,
     ),
     approver_hashes: approverHashes,
     approver_root_hash: root,
     rollback_anchor_target: normalizedAnchor,
   };
+  if (includeReleaseMarkerGenesis) {
+    normalized.store_contract = normalizeExecutionPolicyStoreV6Contract(
+      parsed.store_contract,
+    );
+    if (normalized.store_contract.schema_version
+      !== normalized.store_schema_version) {
+      fail("execution-policy store version does not match its exact v6 contract");
+    }
+    normalized.release_marker_genesis =
+      normalizeExecutionPolicyReleaseMarkerGenesis(
+        parsed.release_marker_genesis,
+      );
+  }
+  return normalized;
 }
 
-function validateCrossBindings(core) {
+function normalizeSharedReleaseLineage(value) {
+  const parsed = exactRecord(value, [
+    "schema",
+    "release_sha",
+    "deployment_intent_sha256",
+    "cvm_launch_intent_sha256",
+    "seven_cvm_release_verification_authority_sha256",
+    "main_runtime_cvm_id",
+    "main_runtime_compose_hash",
+    "main_runtime_app_id",
+    "main_runtime_os_image_hash",
+  ], "shared_release_lineage");
+  return {
+    schema: exactString(
+      parsed.schema,
+      FINAL_RELEASE_SHARED_LINEAGE_SCHEMA,
+      "shared_release_lineage.schema",
+    ),
+    release_sha: releaseSha(
+      parsed.release_sha,
+      "shared_release_lineage.release_sha",
+    ),
+    deployment_intent_sha256: sha256Pin(
+      parsed.deployment_intent_sha256,
+      "shared_release_lineage.deployment_intent_sha256",
+    ),
+    cvm_launch_intent_sha256: sha256Pin(
+      parsed.cvm_launch_intent_sha256,
+      "shared_release_lineage.cvm_launch_intent_sha256",
+    ),
+    seven_cvm_release_verification_authority_sha256: sha256Pin(
+      parsed.seven_cvm_release_verification_authority_sha256,
+      "shared_release_lineage.seven_cvm_release_verification_authority_sha256",
+    ),
+    main_runtime_cvm_id: cvmId(
+      parsed.main_runtime_cvm_id,
+      "shared_release_lineage.main_runtime_cvm_id",
+    ),
+    main_runtime_compose_hash: bareBytes32(
+      parsed.main_runtime_compose_hash,
+      "shared_release_lineage.main_runtime_compose_hash",
+    ),
+    main_runtime_app_id: phalaAppId(
+      parsed.main_runtime_app_id,
+      "shared_release_lineage.main_runtime_app_id",
+    ),
+    main_runtime_os_image_hash: bareBytes32(
+      parsed.main_runtime_os_image_hash,
+      "shared_release_lineage.main_runtime_os_image_hash",
+    ),
+  };
+}
+
+function normalizeCanonicalRoyaltyAuthority(value) {
+  try {
+    return normalizeRoyaltyReleaseAuthority(value);
+  } catch (error) {
+    fail(`royalty_release_authority is invalid: ${error?.message ?? "unknown error"}`);
+  }
+}
+
+function normalizeCanonicalRoyaltyActiveState(value, authority) {
+  try {
+    return normalizeRoyaltyReleaseState(value, {
+      authority,
+      phase: "phase_two_active",
+    });
+  } catch (error) {
+    fail(`royalty_release_active_state is invalid: ${error?.message ?? "unknown error"}`);
+  }
+}
+
+function canonicalRoyaltyActiveStateSha256(value, authority) {
+  try {
+    return royaltyReleaseStateSha256(value, {
+      authority,
+      phase: "phase_two_active",
+    });
+  } catch (error) {
+    fail(`royalty_release_active_state_sha256 cannot be derived: ${error?.message ?? "unknown error"}`);
+  }
+}
+
+export function normalizeRoyaltySettlementReleaseBindingTemplate(value) {
+  const parsed = exactRecord(value, [
+    "schema",
+    "chain_id",
+    "distributor_address",
+    "distributor_runtime_code_hash",
+    "authority_nonce",
+    "settlement_verifier_address",
+    "settlement_verifier_key_path",
+    "settlement_verifier_custody",
+    "royalty_qvl_verifier_address",
+    "royalty_qvl_signer_key_id",
+    "royalty_qvl_signer_key_path",
+    "royalty_qvl_signer_custody",
+    "royalty_qvl_policy_template_sha256",
+    "qvl_release_policy_hash",
+    "measurement_policy_sha256",
+    "execution_policy_anchor_address",
+    "anchor_writer_release_commitment",
+    "release_policy_commitment",
+    "main_runtime_cvm_id",
+    "deployment_intent_sha256",
+    "ceremony_nonce",
+    "compose_hash",
+    "app_id",
+    "os_image_hash",
+    "max_authorization_lifetime_seconds",
+  ], "royalty_settlement_release_binding_template");
+  const qvlSignerKeyId = bytes32(
+    parsed.royalty_qvl_signer_key_id,
+    "royalty_settlement_release_binding_template.royalty_qvl_signer_key_id",
+  );
+  return {
+    schema: exactString(
+      parsed.schema,
+      ROYALTY_SETTLEMENT_RELEASE_BINDING_TEMPLATE_SCHEMA,
+      "royalty_settlement_release_binding_template.schema",
+    ),
+    chain_id: integer(
+      parsed.chain_id,
+      "royalty_settlement_release_binding_template.chain_id",
+      BASE_SEPOLIA_CHAIN_ID,
+      BASE_SEPOLIA_CHAIN_ID,
+    ),
+    distributor_address: address(
+      parsed.distributor_address,
+      "royalty_settlement_release_binding_template.distributor_address",
+    ),
+    distributor_runtime_code_hash: bytes32(
+      parsed.distributor_runtime_code_hash,
+      "royalty_settlement_release_binding_template.distributor_runtime_code_hash",
+    ),
+    authority_nonce: integer(
+      parsed.authority_nonce,
+      "royalty_settlement_release_binding_template.authority_nonce",
+      1,
+      MAX_SAFE_INTEGER,
+    ),
+    settlement_verifier_address: address(
+      parsed.settlement_verifier_address,
+      "royalty_settlement_release_binding_template.settlement_verifier_address",
+    ),
+    settlement_verifier_key_path: exactString(
+      parsed.settlement_verifier_key_path,
+      ROYALTY_SETTLEMENT_SIGNER_KEY_PATH,
+      "royalty_settlement_release_binding_template.settlement_verifier_key_path",
+    ),
+    settlement_verifier_custody: exactString(
+      parsed.settlement_verifier_custody,
+      ROYALTY_SETTLEMENT_SIGNER_CUSTODY,
+      "royalty_settlement_release_binding_template.settlement_verifier_custody",
+    ),
+    royalty_qvl_verifier_address: address(
+      parsed.royalty_qvl_verifier_address,
+      "royalty_settlement_release_binding_template.royalty_qvl_verifier_address",
+    ),
+    royalty_qvl_signer_key_id: qvlSignerKeyId,
+    royalty_qvl_signer_key_path: exactString(
+      parsed.royalty_qvl_signer_key_path,
+      `${ROYALTY_QVL_SIGNER_KEY_PATH_PREFIX}/${qvlSignerKeyId.slice(2)}`,
+      "royalty_settlement_release_binding_template.royalty_qvl_signer_key_path",
+    ),
+    royalty_qvl_signer_custody: exactString(
+      parsed.royalty_qvl_signer_custody,
+      ROYALTY_QVL_SIGNER_CUSTODY,
+      "royalty_settlement_release_binding_template.royalty_qvl_signer_custody",
+    ),
+    royalty_qvl_policy_template_sha256: sha256Pin(
+      parsed.royalty_qvl_policy_template_sha256,
+      "royalty_settlement_release_binding_template.royalty_qvl_policy_template_sha256",
+    ),
+    qvl_release_policy_hash: bytes32(
+      parsed.qvl_release_policy_hash,
+      "royalty_settlement_release_binding_template.qvl_release_policy_hash",
+    ),
+    measurement_policy_sha256: sha256Pin(
+      parsed.measurement_policy_sha256,
+      "royalty_settlement_release_binding_template.measurement_policy_sha256",
+    ),
+    execution_policy_anchor_address: address(
+      parsed.execution_policy_anchor_address,
+      "royalty_settlement_release_binding_template.execution_policy_anchor_address",
+    ),
+    anchor_writer_release_commitment: bytes32(
+      parsed.anchor_writer_release_commitment,
+      "royalty_settlement_release_binding_template.anchor_writer_release_commitment",
+    ),
+    release_policy_commitment: bytes32(
+      parsed.release_policy_commitment,
+      "royalty_settlement_release_binding_template.release_policy_commitment",
+    ),
+    main_runtime_cvm_id: cvmId(
+      parsed.main_runtime_cvm_id,
+      "royalty_settlement_release_binding_template.main_runtime_cvm_id",
+    ),
+    deployment_intent_sha256: sha256Pin(
+      parsed.deployment_intent_sha256,
+      "royalty_settlement_release_binding_template.deployment_intent_sha256",
+    ),
+    ceremony_nonce: bytes32(
+      parsed.ceremony_nonce,
+      "royalty_settlement_release_binding_template.ceremony_nonce",
+    ),
+    compose_hash: bytes32(
+      parsed.compose_hash,
+      "royalty_settlement_release_binding_template.compose_hash",
+    ),
+    app_id: phalaAppId(
+      parsed.app_id,
+      "royalty_settlement_release_binding_template.app_id",
+    ),
+    os_image_hash: bareBytes32(
+      parsed.os_image_hash,
+      "royalty_settlement_release_binding_template.os_image_hash",
+    ),
+    max_authorization_lifetime_seconds: integer(
+      parsed.max_authorization_lifetime_seconds,
+      "royalty_settlement_release_binding_template.max_authorization_lifetime_seconds",
+      ROYALTY_MAX_AUTHORIZATION_LIFETIME_SECONDS,
+      ROYALTY_MAX_AUTHORIZATION_LIFETIME_SECONDS,
+    ),
+  };
+}
+
+function normalizeCollaborationExecutionAuthority(value) {
+  const parsed = exactRecord(value, [
+    "schema",
+    "service",
+    "profile",
+    "enabled",
+    "release_sha",
+    "release_verification_sha256",
+    "authenticated_worker_required",
+    "heartbeat_claim_required",
+    "heartbeat_claim_semantics",
+    "tdx_attestation_claimed",
+  ], "collaboration_execution");
+  const normalized = {
+    schema: exactString(
+      parsed.schema,
+      COLLABORATION_EXECUTION_RELEASE_AUTHORITY_SCHEMA,
+      "collaboration_execution.schema",
+    ),
+    service: exactString(
+      parsed.service,
+      COLLABORATION_EXECUTION_SERVICE,
+      "collaboration_execution.service",
+    ),
+    profile: exactString(
+      parsed.profile,
+      COLLABORATION_EXECUTION_PROFILE,
+      "collaboration_execution.profile",
+    ),
+    enabled: boolean(
+      parsed.enabled,
+      "collaboration_execution.enabled",
+    ),
+    release_sha: releaseSha(
+      parsed.release_sha,
+      "collaboration_execution.release_sha",
+    ),
+    release_verification_sha256: sha256Pin(
+      parsed.release_verification_sha256,
+      "collaboration_execution.release_verification_sha256",
+    ),
+    authenticated_worker_required: boolean(
+      parsed.authenticated_worker_required,
+      "collaboration_execution.authenticated_worker_required",
+    ),
+    heartbeat_claim_required: boolean(
+      parsed.heartbeat_claim_required,
+      "collaboration_execution.heartbeat_claim_required",
+    ),
+    heartbeat_claim_semantics: exactString(
+      parsed.heartbeat_claim_semantics,
+      AUTHENTICATED_WORKER_HEARTBEAT_CLAIM,
+      "collaboration_execution.heartbeat_claim_semantics",
+    ),
+    tdx_attestation_claimed: boolean(
+      parsed.tdx_attestation_claimed,
+      "collaboration_execution.tdx_attestation_claimed",
+    ),
+  };
+  if (!normalized.authenticated_worker_required
+    || !normalized.heartbeat_claim_required
+    || normalized.tdx_attestation_claimed) {
+    fail("collaboration_execution must require an authenticated heartbeat without claiming TDX attestation");
+  }
+  return normalized;
+}
+
+function normalizeComputeWorkloadWalletAdoption(value) {
+  const parsed = exactRecord(value, [
+    "schema",
+    "enabled",
+    "device_spend_authority",
+    "credential_uploader_attribution_preserved",
+    "device_ciphertext_upload_authority_preserved",
+    "wallet_funding_authority_required",
+    "workload_dispatch_authority_required",
+  ], "compute_workload_wallet_adoption");
+  const normalized = {
+    schema: exactString(
+      parsed.schema,
+      COMPUTE_WORKLOAD_WALLET_ADOPTION_RELEASE_DECISION_SCHEMA,
+      "compute_workload_wallet_adoption.schema",
+    ),
+    enabled: boolean(
+      parsed.enabled,
+      "compute_workload_wallet_adoption.enabled",
+    ),
+    device_spend_authority: boolean(
+      parsed.device_spend_authority,
+      "compute_workload_wallet_adoption.device_spend_authority",
+    ),
+    credential_uploader_attribution_preserved: boolean(
+      parsed.credential_uploader_attribution_preserved,
+      "compute_workload_wallet_adoption.credential_uploader_attribution_preserved",
+    ),
+    device_ciphertext_upload_authority_preserved: boolean(
+      parsed.device_ciphertext_upload_authority_preserved,
+      "compute_workload_wallet_adoption.device_ciphertext_upload_authority_preserved",
+    ),
+    wallet_funding_authority_required: boolean(
+      parsed.wallet_funding_authority_required,
+      "compute_workload_wallet_adoption.wallet_funding_authority_required",
+    ),
+    workload_dispatch_authority_required: boolean(
+      parsed.workload_dispatch_authority_required,
+      "compute_workload_wallet_adoption.workload_dispatch_authority_required",
+    ),
+  };
+  if (normalized.device_spend_authority
+    || !normalized.credential_uploader_attribution_preserved
+    || !normalized.device_ciphertext_upload_authority_preserved
+    || !normalized.wallet_funding_authority_required
+    || !normalized.workload_dispatch_authority_required) {
+    fail("compute_workload_wallet_adoption must preserve uploader attribution and prohibit device spend authority");
+  }
+  return normalized;
+}
+
+function validateCrossBindings(core, { diligenceDeveloperPolicy }) {
   const { contracts, cvm, operator_address: operator, execution_policy: policy } = core;
-  for (const [label, observed] of [
-    ["DiligenceRoom developer", contracts.diligence_room.developer],
+  const operatorBindings = [
     ["ChallengeRegistry owner", contracts.challenge_registry.owner],
     ["TinkerAccountEncumbrance owner", contracts.tinker_account_encumbrance.owner],
     ["ComputeCreditVault owner", contracts.compute_credit_vault.owner],
     ["EmailOracleAuth owner", contracts.email_oracle_auth.owner],
-  ]) {
+  ];
+  if (diligenceDeveloperPolicy === "historical-operator-v2") {
+    operatorBindings.unshift([
+      "DiligenceRoom developer",
+      contracts.diligence_room.developer,
+    ]);
+  } else if (diligenceDeveloperPolicy === "permanent-distinct-v3"
+    || diligenceDeveloperPolicy === "permanent-distinct-v4") {
+    if (
+      contracts.diligence_room.developer === operator
+      || contracts.diligence_room.developer === contracts.diligence_room.address
+    ) {
+      fail("DiligenceRoom permanent developer must differ from the deployment operator and room contract");
+    }
+  } else {
+    fail("final release authority core uses an unsupported developer policy");
+  }
+  for (const [label, observed] of operatorBindings) {
     if (observed !== operator) fail(`${label} must equal operator_address`);
   }
   if (cvm.tee_identity === operator) fail("cvm.tee_identity must differ from operator_address");
@@ -1542,6 +2372,10 @@ function validateCrossBindings(core) {
   const controlPlaneRoles = [
     operator,
     cvm.tee_identity,
+    ...(diligenceDeveloperPolicy === "permanent-distinct-v3"
+      || diligenceDeveloperPolicy === "permanent-distinct-v4"
+      ? [contracts.diligence_room.developer]
+      : []),
     contracts.diligence_room.result_verifier,
     contracts.diligence_room.attestation_verifier,
     contracts.compute_credit_vault.developer,
@@ -1607,20 +2441,138 @@ function validateCrossBindings(core) {
   }
 }
 
+function validateV4CrossBindings(core) {
+  const lineage = core.shared_release_lineage;
+  const royalty = core.royalty_release_authority;
+  const template = core.royalty_settlement_release_binding_template;
+  const anchor = core.execution_policy.rollback_anchor_target;
+  const sevenCvmSha = core.seven_cvm_release_verification_authority_sha256;
+
+  if (lineage.release_sha !== core.release_sha
+    || lineage.deployment_intent_sha256 !== core.deployment_intent_sha256
+    || lineage.cvm_launch_intent_sha256 !== core.cvm_launch_intent_sha256
+    || lineage.seven_cvm_release_verification_authority_sha256 !== sevenCvmSha
+    || lineage.main_runtime_cvm_id !== core.cvm.cvm_id
+    || lineage.main_runtime_compose_hash !== core.cvm.compose_hash
+    || lineage.main_runtime_app_id !== core.cvm.app_id
+    || lineage.main_runtime_os_image_hash !== core.cvm.os_image_hash) {
+    fail("shared_release_lineage must exactly bind the release, deployment, seven-CVM authority, and main-runtime identity");
+  }
+
+  if (core.collaboration_execution.release_sha !== core.release_sha
+    || core.collaboration_execution.release_verification_sha256 !== sevenCvmSha
+    || core.collaboration_execution.enabled
+      !== core.requested_features.collaboration_execution) {
+    fail("collaboration_execution must bind the release, seven-CVM verification authority, and signed feature decision");
+  }
+  if (core.compute_workload_wallet_adoption.enabled
+    !== core.requested_features.compute_workload_wallet_adoption) {
+    fail("compute_workload_wallet_adoption.enabled must equal the signed requested feature");
+  }
+
+  if (royalty.chain_id !== core.network.chain_id
+    || royalty.distributor_address !== core.contracts.royalty_distributor.address
+    || royalty.owner !== core.operator_address
+    || royalty.execution_policy_anchor !== anchor.contract_address
+    || royalty.anchor_writer !== anchor.writer_address
+    || royalty.anchor_writer_release_commitment
+      !== anchor.writer_release_commitment) {
+    fail("royalty_release_authority must exactly bind the reviewed contract, owner, and execution-policy anchor");
+  }
+  const activeStateSha = canonicalRoyaltyActiveStateSha256(
+    core.royalty_release_active_state,
+    royalty,
+  );
+  if (core.royalty_release_active_state_sha256 !== activeStateSha) {
+    fail("royalty_release_active_state_sha256 must equal the canonical active-state digest");
+  }
+  if (new Set([
+    core.royalty_release_active_state_sha256,
+    core.royalty_release_history_sha256,
+    core.royalty_release_history_receipt_sha256,
+  ]).size !== 3) {
+    fail("Royalty active-state, history, and H receipt digests must be distinct");
+  }
+
+  if (template.chain_id !== core.network.chain_id
+    || template.distributor_address !== core.contracts.royalty_distributor.address
+    || template.distributor_runtime_code_hash
+      !== core.contracts.royalty_distributor.runtime_code_hash
+    || template.authority_nonce !== royalty.authority_nonce
+    || template.settlement_verifier_address !== royalty.settlement_verifier
+    || template.royalty_qvl_verifier_address !== royalty.qvl_verifier
+    || template.execution_policy_anchor_address
+      !== royalty.execution_policy_anchor
+    || template.anchor_writer_release_commitment
+      !== royalty.anchor_writer_release_commitment
+    || template.release_policy_commitment
+      !== royalty.release_policy_commitment
+    || template.main_runtime_cvm_id !== core.cvm.cvm_id
+    || template.deployment_intent_sha256 !== core.deployment_intent_sha256
+    || template.compose_hash !== `0x${core.cvm.compose_hash}`
+    || template.app_id !== core.cvm.app_id
+    || template.os_image_hash !== core.cvm.os_image_hash) {
+    fail("royalty settlement release-binding template must exactly bind canonical Royalty and main-runtime authority");
+  }
+  if (new Set([
+    template.royalty_qvl_policy_template_sha256,
+    template.measurement_policy_sha256,
+    core.deployment_intent_sha256,
+    sevenCvmSha,
+  ]).size !== 4) {
+    fail("Royalty QVL template, measurement, deployment, and seven-CVM commitments must be domain-distinct");
+  }
+
+  const royaltySigners = [
+    royalty.settlement_verifier,
+    royalty.qvl_verifier,
+  ];
+  const forbiddenSignerRoles = new Set([
+    core.operator_address,
+    core.cvm.tee_identity,
+    core.contracts.diligence_room.developer,
+    core.contracts.diligence_room.result_verifier,
+    core.contracts.diligence_room.attestation_verifier,
+    core.contracts.compute_credit_vault.developer,
+    core.contracts.compute_credit_vault.metering_verifier,
+    core.contracts.compute_credit_vault.metering_qvl_verifier,
+    anchor.writer_address,
+    ...Object.values(core.contracts).map((entry) => entry.address),
+  ]);
+  if (royaltySigners.some((signer) => forbiddenSignerRoles.has(signer))) {
+    fail("Royalty settlement and QVL signers must be independent from Diligence, metering, governance, TEE, anchor, and contract roles");
+  }
+}
+
 /**
  * Validate and normalize the exact pre-anchor release-core artifact.
  *
  * The returned object is a fresh JSON value. Unordered image/origin sets are
  * sorted; semantically ordered approver hashes must already be sorted/unique.
  */
-export function normalizeFinalReleaseAuthorityCore(value) {
+function normalizeFinalReleaseAuthorityCoreVersion(
+  value,
+  {
+    schema,
+    topLevelKeys,
+    requestedFeatureKeys,
+    normalizeHttpsOrigin,
+    diligenceDeveloperPolicy,
+    requireCanonicalMainRuntimeIdentity = false,
+    includeV4Bindings = false,
+  },
+) {
   assertJsonTree(value);
-  const parsed = exactRecord(value, TOP_LEVEL_KEYS, "final release authority core");
+  const parsed = exactRecord(
+    value,
+    topLevelKeys,
+    "final release authority core",
+  );
   const release = releaseSha(parsed.release_sha, "release_sha");
   const network = exactRecord(parsed.network, ["chain_id", "public_rpc_url"], "network");
   const contracts = normalizeContracts(parsed.contracts);
   const normalized = {
-    schema: exactString(parsed.schema, EXECUTION_POLICY_RELEASE_CORE_SCHEMA, "schema"),
+    schema: exactString(parsed.schema, schema, "schema"),
     release_sha: release,
     network: {
       chain_id: integer(
@@ -1645,7 +2597,9 @@ export function normalizeFinalReleaseAuthorityCore(value) {
       "cvm_launch_intent_sha256",
     ),
     contracts,
-    cvm: normalizeCvm(parsed.cvm, release),
+    cvm: normalizeCvm(parsed.cvm, release, normalizeHttpsOrigin, {
+      requireCanonicalMainRuntimeIdentity,
+    }),
     arena_registry_bindings: normalizeArenaRegistryBindings(
       parsed.arena_registry_bindings,
       contracts.challenge_registry,
@@ -1669,10 +2623,59 @@ export function normalizeFinalReleaseAuthorityCore(value) {
         ),
       };
     })(),
-    requested_features: normalizeRequestedFeatures(parsed.requested_features),
-    execution_policy: normalizeExecutionPolicy(parsed.execution_policy),
+    requested_features: normalizeRequestedFeatures(
+      parsed.requested_features,
+      requestedFeatureKeys,
+    ),
+    execution_policy: normalizeExecutionPolicy(parsed.execution_policy, {
+      includeReleaseMarkerGenesis: includeV4Bindings,
+    }),
   };
-  validateCrossBindings(normalized);
+  if (includeV4Bindings) {
+    const royaltyAuthority = normalizeCanonicalRoyaltyAuthority(
+      parsed.royalty_release_authority,
+    );
+    const royaltyActiveState = normalizeCanonicalRoyaltyActiveState(
+      parsed.royalty_release_active_state,
+      royaltyAuthority,
+    );
+    Object.assign(normalized, {
+      seven_cvm_release_verification_authority_sha256: sha256Pin(
+        parsed.seven_cvm_release_verification_authority_sha256,
+        "seven_cvm_release_verification_authority_sha256",
+      ),
+      shared_release_lineage: normalizeSharedReleaseLineage(
+        parsed.shared_release_lineage,
+      ),
+      royalty_release_authority: royaltyAuthority,
+      royalty_release_active_state: royaltyActiveState,
+      royalty_release_active_state_sha256: sha256Pin(
+        parsed.royalty_release_active_state_sha256,
+        "royalty_release_active_state_sha256",
+      ),
+      royalty_release_history_sha256: sha256Pin(
+        parsed.royalty_release_history_sha256,
+        "royalty_release_history_sha256",
+      ),
+      royalty_release_history_receipt_sha256: sha256Pin(
+        parsed.royalty_release_history_receipt_sha256,
+        "royalty_release_history_receipt_sha256",
+      ),
+      royalty_settlement_release_binding_template:
+        normalizeRoyaltySettlementReleaseBindingTemplate(
+          parsed.royalty_settlement_release_binding_template,
+        ),
+      collaboration_execution: normalizeCollaborationExecutionAuthority(
+        parsed.collaboration_execution,
+      ),
+      compute_workload_wallet_adoption:
+        normalizeComputeWorkloadWalletAdoption(
+          parsed.compute_workload_wallet_adoption,
+        ),
+    });
+  }
+  validateCrossBindings(normalized, { diligenceDeveloperPolicy });
+  if (includeV4Bindings) validateV4CrossBindings(normalized);
   const encoded = canonicalBytesOfNormalized(normalized);
   if (encoded.length > MAX_FINAL_RELEASE_AUTHORITY_CORE_BYTES) {
     fail(
@@ -1682,12 +2685,45 @@ export function normalizeFinalReleaseAuthorityCore(value) {
   return normalized;
 }
 
+/**
+ * Validate the current v4 authority. Historical v2/v3 values are never
+ * accepted through this activation-facing entry point.
+ */
+export function normalizeFinalReleaseAuthorityCore(value) {
+  return normalizeFinalReleaseAuthorityCoreVersion(value, {
+    schema: FINAL_RELEASE_AUTHORITY_CORE_V4_SCHEMA,
+    topLevelKeys: TOP_LEVEL_KEYS_V4,
+    requestedFeatureKeys: REQUESTED_FEATURE_KEYS_V4,
+    normalizeHttpsOrigin: currentPublicHttpsOriginV3,
+    diligenceDeveloperPolicy: "permanent-distinct-v4",
+    requireCanonicalMainRuntimeIdentity: true,
+    includeV4Bindings: true,
+  });
+}
+
+/** Validate the frozen historical v2 wire format for offline replay only. */
+export function normalizeHistoricalFinalReleaseAuthorityCoreV2(value) {
+  return normalizeFinalReleaseAuthorityCoreVersion(value, {
+    schema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+    topLevelKeys: HISTORICAL_TOP_LEVEL_KEYS_V2_V3,
+    requestedFeatureKeys: HISTORICAL_REQUESTED_FEATURE_KEYS_V2,
+    normalizeHttpsOrigin: historicalHttpsOriginV2,
+    diligenceDeveloperPolicy: "historical-operator-v2",
+  });
+}
+
 export const normalizeExecutionPolicyReleaseCore =
   normalizeFinalReleaseAuthorityCore;
 
 /** Return compact recursively key-sorted ensure-ASCII JSON with no newline. */
 export function canonicalFinalReleaseAuthorityCoreBytes(value) {
   return canonicalBytesOfNormalized(normalizeFinalReleaseAuthorityCore(value));
+}
+
+export function canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes(value) {
+  return canonicalBytesOfNormalized(
+    normalizeHistoricalFinalReleaseAuthorityCoreV2(value),
+  );
 }
 
 export const canonicalExecutionPolicyReleaseCoreBytes =
@@ -1699,11 +2735,24 @@ export function canonicalFinalReleaseAuthorityCoreArtifactText(value) {
   return `${JSON.stringify(recursivelySortedJsonValue(normalized), null, 2)}\n`;
 }
 
+export function canonicalHistoricalFinalReleaseAuthorityCoreV2ArtifactText(value) {
+  const normalized = normalizeHistoricalFinalReleaseAuthorityCoreV2(value);
+  return `${JSON.stringify(recursivelySortedJsonValue(normalized), null, 2)}\n`;
+}
+
 /** Return the bare lowercase SHA-256 final release authority commitment. */
 export function finalReleaseAuthorityCoreDigest(value) {
   return createHash("sha256")
     .update(FINAL_RELEASE_AUTHORITY_CORE_DOMAIN, "utf8")
     .update(canonicalFinalReleaseAuthorityCoreBytes(value))
+    .digest("hex");
+}
+
+/** Return the frozen historical v2 commitment for offline replay only. */
+export function historicalFinalReleaseAuthorityCoreV2Digest(value) {
+  return createHash("sha256")
+    .update(FINAL_RELEASE_AUTHORITY_CORE_V2_DOMAIN, "utf8")
+    .update(canonicalHistoricalFinalReleaseAuthorityCoreV2Bytes(value))
     .digest("hex");
 }
 

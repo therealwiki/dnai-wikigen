@@ -29,7 +29,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from cryptography.exceptions import InvalidTag
@@ -46,6 +46,8 @@ from tinker_delegate.result_verifier import (
 
 
 WORKLOAD_INGRESS_SCHEMA_VERSION = 1
+WORKLOAD_PUBLIC_SCHEMA_VERSION = 2
+WORKLOAD_INDEX_SCHEMA_VERSION = 2
 WORKLOAD_INGRESS_ALGORITHM = "X25519-HKDF-SHA256-AES-256-GCM"
 WORKLOAD_INGRESS_ENCODING = "base64url-nopad"
 WORKLOAD_INGRESS_CONTEXT = "compute_workload_ingress"
@@ -63,6 +65,12 @@ WORKLOAD_RECIPIENT_ATTESTATION_DOMAIN = (
 )
 WORKLOAD_STORE_MAC_DOMAIN = b"dnai-wikigen/compute-workload-store/v1\0"
 WORKLOAD_BLOB_HASH_DOMAIN = b"dnai-wikigen/compute-workload-envelope/v1\0"
+WORKLOAD_EXECUTION_BINDING_DOMAIN = (
+    b"dnai-wikigen/compute-workload-execution-binding/v1\0"
+)
+WORKLOAD_DISPATCH_CLAIM_DOMAIN = (
+    b"dnai-wikigen/compute-workload-dispatch-claim/v1\0"
+)
 WORKLOAD_DSTACK_KEY_PATH = "tinker/compute_workload_ingress"
 WORKLOAD_INTEGRITY_DSTACK_KEY_PATH = (
     "tinker/compute_workload_ingress_integrity"
@@ -1151,10 +1159,16 @@ class ComputeWorkloadPrincipal:
 
     @property
     def project_commitment(self) -> str:
-        return _sha256(
-            b"dnai-wikigen/compute-workload-project/v1\0"
-            + self.project_id.encode("ascii")
-        )
+        return compute_workload_project_commitment(self.project_id)
+
+
+def compute_workload_project_commitment(project_id: str) -> str:
+    if not isinstance(project_id, str) or not _RESOURCE_ID.fullmatch(project_id):
+        raise ComputeWorkloadIngressError("Compute workload project is invalid")
+    return _sha256(
+        b"dnai-wikigen/compute-workload-project/v1\0"
+        + project_id.encode("ascii")
+    )
 
 
 def compute_workload_idempotency_hash(
@@ -1324,6 +1338,148 @@ def compute_workload_aad(binding: ComputeWorkloadBinding) -> bytes:
     return encoded
 
 
+def compute_workload_execution_binding_payload(
+    workload_id: str,
+    binding: ComputeWorkloadBinding,
+    envelope: "ComputeWorkloadEnvelope",
+) -> dict[str, str]:
+    """Project one immutable ciphertext/source binding for wallet adoption.
+
+    The actor remains the principal that authenticated the original encrypted
+    upload.  A later wallet-funded dispatch claims this exact commitment; it
+    never rewrites the AES-GCM AAD or promotes a device credential into a
+    spending principal.
+    """
+
+    if not isinstance(workload_id, str) or not _WORKLOAD_ID.fullmatch(workload_id):
+        raise ComputeWorkloadIngressError("Compute workload ID is malformed")
+    if not isinstance(binding, ComputeWorkloadBinding) or not isinstance(
+        envelope, ComputeWorkloadEnvelope
+    ):
+        raise ComputeWorkloadIngressError(
+            "Compute workload execution binding inputs are invalid"
+        )
+    _verify_binding_envelope(binding, envelope)
+    return {
+        "schema": "dnai.compute.workload-execution-binding.v1",
+        "workload_id": workload_id,
+        "project_commitment": binding.project_commitment,
+        "actor_kind": binding.actor_kind,
+        "actor_commitment": binding.actor_commitment,
+        "aad_sha256": envelope.aad_sha256,
+        "manifest_commitment": binding.manifest_commitment,
+        "workload_commitment": binding.workload_commitment,
+        "recipient_key_id": binding.recipient_key_id,
+        "recipient_release_commitment": binding.recipient_release_commitment,
+    }
+
+
+def compute_workload_execution_binding_commitment(
+    workload_id: str,
+    binding: ComputeWorkloadBinding,
+    envelope: "ComputeWorkloadEnvelope",
+) -> str:
+    return _sha256(
+        WORKLOAD_EXECUTION_BINDING_DOMAIN
+        + _canonical_json(
+            compute_workload_execution_binding_payload(
+                workload_id,
+                binding,
+                envelope,
+            )
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ComputeWorkloadDispatchClaim:
+    job_id: str
+    intent_commitment: str
+    funding_wallet: str
+    execution_binding_commitment: str
+
+    _FIELDS = frozenset(
+        {
+            "schema",
+            "job_id",
+            "intent_commitment",
+            "funding_wallet",
+            "execution_binding_commitment",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.job_id, str)
+            or not _BYTES32.fullmatch(self.job_id)
+            or self.job_id == "0x" + "0" * 64
+            or not isinstance(self.intent_commitment, str)
+            or not _BYTES32.fullmatch(self.intent_commitment)
+            or self.intent_commitment == "0x" + "0" * 64
+            or not isinstance(self.funding_wallet, str)
+            or not _ADDRESS.fullmatch(self.funding_wallet.lower())
+            or int(self.funding_wallet[2:], 16) == 0
+            or not isinstance(self.execution_binding_commitment, str)
+            or not _SHA256.fullmatch(self.execution_binding_commitment)
+        ):
+            raise ComputeWorkloadIngressError(
+                "Compute workload dispatch claim is malformed"
+            )
+        object.__setattr__(self, "job_id", self.job_id.lower())
+        object.__setattr__(
+            self,
+            "intent_commitment",
+            self.intent_commitment.lower(),
+        )
+        object.__setattr__(self, "funding_wallet", self.funding_wallet.lower())
+
+    @property
+    def commitment(self) -> str:
+        return _sha256(
+            WORKLOAD_DISPATCH_CLAIM_DOMAIN + _canonical_json(self.to_dict())
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema": "dnai.compute.workload-dispatch-claim.v1",
+            "job_id": self.job_id,
+            "intent_commitment": self.intent_commitment,
+            "funding_wallet": self.funding_wallet,
+            "execution_binding_commitment": (
+                self.execution_binding_commitment
+            ),
+        }
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, Any],
+    ) -> "ComputeWorkloadDispatchClaim":
+        _exact_keys(value, cls._FIELDS, label="Compute workload dispatch claim")
+        if value.get("schema") != "dnai.compute.workload-dispatch-claim.v1":
+            raise ComputeWorkloadIngressError(
+                "Compute workload dispatch claim schema is invalid"
+            )
+        return cls(
+            job_id=_string(value["job_id"], label="claim job ID", maximum=66),
+            intent_commitment=_string(
+                value["intent_commitment"],
+                label="claim intent commitment",
+                maximum=66,
+            ),
+            funding_wallet=_string(
+                value["funding_wallet"],
+                label="claim funding wallet",
+                maximum=42,
+            ),
+            execution_binding_commitment=_string(
+                value["execution_binding_commitment"],
+                label="claim execution binding",
+                maximum=71,
+            ),
+        )
+
+
 @dataclass(frozen=True, repr=False)
 class ComputeWorkloadEnvelope:
     schema_version: int
@@ -1478,6 +1634,8 @@ class ComputeWorkloadIngressResult:
     key_id: str
     activation_commitment: str
     recipient_release_commitment: str
+    source_kind: str
+    execution_binding_commitment: str
     created: bool
     _idempotency_hash: str = field(repr=False)
     _request_hash: str = field(repr=False)
@@ -1485,7 +1643,7 @@ class ComputeWorkloadIngressResult:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "surface": "compute_workload_ingress_receipt",
-            "schema_version": WORKLOAD_INGRESS_SCHEMA_VERSION,
+            "schema_version": WORKLOAD_PUBLIC_SCHEMA_VERSION,
             "workload_id": self.workload_id,
             "workload_schema": self.manifest.schema,
             "workload_commitment": self.workload_commitment,
@@ -1495,6 +1653,26 @@ class ComputeWorkloadIngressResult:
             "key_id": self.key_id,
             "activation_commitment": self.activation_commitment,
             "recipient_release_commitment": self.recipient_release_commitment,
+            "execution_binding": {
+                "schema": "dnai.compute.workload-execution-binding.v1",
+                "commitment": self.execution_binding_commitment,
+                "source_kind": self.source_kind,
+                "wallet_adoption_required": self.source_kind == "credential",
+                "device_spending_authority": False,
+            },
+            "dispatch_adoption": {
+                "state": (
+                    "wallet_adoption_required"
+                    if self.source_kind == "credential"
+                    else "available_for_wallet_dispatch"
+                ),
+                "wallet_adoption_eligible": True,
+                "dispatch_claimed": False,
+                "claim_commitment": None,
+                "funding_authority": "wallet_required",
+                "device_spending_authority": False,
+                "direct_deletion_allowed": True,
+            },
             "created": self.created,
             "idempotent_replay": not self.created,
             "ciphertext_egress": False,
@@ -1511,16 +1689,42 @@ class StoredComputeWorkload:
     workload_id: str
     binding: ComputeWorkloadBinding
     envelope: ComputeWorkloadEnvelope = field(repr=False)
+    lifecycle: str = "sealed"
+    dispatch_claim: ComputeWorkloadDispatchClaim | None = None
+
+    @property
+    def execution_binding_commitment(self) -> str:
+        return compute_workload_execution_binding_commitment(
+            self.workload_id,
+            self.binding,
+            self.envelope,
+        )
 
 
 @dataclass(frozen=True, repr=False)
 class ComputeWorkloadExecutionLease:
-    """In-boundary one-shot plaintext view; deliberately not serializable."""
+    """In-boundary replay-safe plaintext view; deliberately not serializable.
+
+    The ciphertext remains durably sealed while this lease is open so an
+    ambiguous provider response can be held for separately attested
+    reconciliation. It never authorizes an automatic provider replay, even
+    with the same dispatch key. ``reauthenticate`` must be called immediately
+    before the one at-most-once provider attempt; it re-reads the authenticated
+    envelope and obtains a fresh recipient-QVL activation without exposing
+    either the plaintext or the quote.
+    """
 
     workload_id: str
     manifest: ComputeWorkloadManifest
     plaintext: bytearray = field(repr=False)
     validated: ValidatedComputeWorkload = field(repr=False)
+    _reauthenticate: Callable[[], ValidatedComputeWorkload] = field(
+        repr=False,
+        compare=False,
+    )
+
+    def reauthenticate(self) -> ValidatedComputeWorkload:
+        return self._reauthenticate()
 
     def __repr__(self) -> str:
         return (
@@ -1554,6 +1758,9 @@ class _IndexRecord:
     activation_commitment: str
     recipient_release_commitment: str
     lifecycle: str
+    dispatch_claim: ComputeWorkloadDispatchClaim | None
+    dispatch_claim_commitment: str
+    release_checkpoint_commitment: str
 
     _FIELDS = frozenset(
         {
@@ -1575,6 +1782,9 @@ class _IndexRecord:
             "activation_commitment",
             "recipient_release_commitment",
             "lifecycle",
+            "dispatch_claim",
+            "dispatch_claim_commitment",
+            "release_checkpoint_commitment",
         }
     )
 
@@ -1605,9 +1815,49 @@ class _IndexRecord:
             SFT_JSONL_WORKLOAD_SCHEMA,
         }:
             raise ComputeWorkloadIngressCorrupt("Compute workload index schema is invalid")
-        if self.lifecycle not in {"sealed", "deleting"}:
+        if self.lifecycle not in {
+            "sealed",
+            "dispatch_claimed",
+            "deleting",
+            "deleting_after_checkpoint",
+            "released",
+        }:
             raise ComputeWorkloadIngressCorrupt(
                 "Compute workload lifecycle is invalid"
+            )
+        if self.lifecycle in {"sealed", "deleting"}:
+            if (
+                self.dispatch_claim is not None
+                or self.dispatch_claim_commitment != ""
+                or self.release_checkpoint_commitment != ""
+            ):
+                raise ComputeWorkloadIngressCorrupt(
+                    "unclaimed Compute workload contains dispatch state"
+                )
+        else:
+            if (
+                not isinstance(self.dispatch_claim, ComputeWorkloadDispatchClaim)
+                or not isinstance(self.dispatch_claim_commitment, str)
+                or not _SHA256.fullmatch(self.dispatch_claim_commitment)
+                or not hmac.compare_digest(
+                    self.dispatch_claim_commitment,
+                    self.dispatch_claim.commitment,
+                )
+            ):
+                raise ComputeWorkloadIngressCorrupt(
+                    "claimed Compute workload dispatch binding is invalid"
+                )
+        if self.lifecycle == "dispatch_claimed":
+            if self.release_checkpoint_commitment != "":
+                raise ComputeWorkloadIngressCorrupt(
+                    "claimed Compute workload contains a release checkpoint"
+                )
+        elif self.lifecycle in {"deleting_after_checkpoint", "released"} and (
+            not isinstance(self.release_checkpoint_commitment, str)
+            or not _SHA256.fullmatch(self.release_checkpoint_commitment)
+        ):
+            raise ComputeWorkloadIngressCorrupt(
+                "released Compute workload checkpoint is invalid"
             )
         _integer(
             self.ciphertext_bytes,
@@ -1617,12 +1867,33 @@ class _IndexRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {key: getattr(self, key) for key in sorted(self._FIELDS)}
+        result = {key: getattr(self, key) for key in sorted(self._FIELDS)}
+        result["dispatch_claim"] = (
+            self.dispatch_claim.to_dict()
+            if self.dispatch_claim is not None
+            else None
+        )
+        return result
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "_IndexRecord":
         _exact_keys(value, cls._FIELDS, label="Compute workload index record")
-        return cls(**dict(value))
+        fields = dict(value)
+        dispatch_claim = fields.get("dispatch_claim")
+        if dispatch_claim is not None:
+            if not isinstance(dispatch_claim, Mapping):
+                raise ComputeWorkloadIngressCorrupt(
+                    "Compute workload dispatch claim is invalid"
+                )
+            try:
+                fields["dispatch_claim"] = (
+                    ComputeWorkloadDispatchClaim.from_mapping(dispatch_claim)
+                )
+            except ComputeWorkloadIngressError as exc:
+                raise ComputeWorkloadIngressCorrupt(
+                    "Compute workload dispatch claim is invalid"
+                ) from exc
+        return cls(**fields)
 
 
 def _secure_directory(path: Path) -> None:
@@ -1750,12 +2021,15 @@ class ComputeWorkloadIngressStore:
         self.blob_dir = self.root_dir / "envelopes"
         self.index_path = self.root_dir / "index.json"
         self.lock_path = self.root_dir / "index.lock"
+        self.execution_lock_path = self.root_dir / "execution.lock"
         self._integrity_key = bytes(integrity_key)
         self._thread_lock = threading.RLock()
+        self._execution_thread_lock = threading.RLock()
         _secure_directory(self.root_dir)
         self._root_fd = _open_secure_directory(self.root_dir)
         self._blob_fd = -1
         self._lock_fd = -1
+        self._execution_lock_fd = -1
         try:
             try:
                 os.mkdir("envelopes", mode=0o700, dir_fd=self._root_fd)
@@ -1764,7 +2038,8 @@ class ComputeWorkloadIngressStore:
                 pass
             _secure_directory(self.blob_dir)
             self._blob_fd = _open_secure_directory(self.blob_dir)
-            self._lock_fd = self._open_lock_file()
+            self._lock_fd = self._open_lock_file("index.lock")
+            self._execution_lock_fd = self._open_lock_file("execution.lock")
         except Exception:
             self.close()
             raise
@@ -1778,7 +2053,12 @@ class ComputeWorkloadIngressStore:
             self._verify_records(records)
 
     def close(self) -> None:
-        for name in ("_lock_fd", "_blob_fd", "_root_fd"):
+        for name in (
+            "_execution_lock_fd",
+            "_lock_fd",
+            "_blob_fd",
+            "_root_fd",
+        ):
             descriptor = getattr(self, name, -1)
             if isinstance(descriptor, int) and descriptor >= 0:
                 try:
@@ -1850,6 +2130,9 @@ class ComputeWorkloadIngressStore:
             activation_commitment=binding.activation_commitment,
             recipient_release_commitment=binding.recipient_release_commitment,
             lifecycle="sealed",
+            dispatch_claim=None,
+            dispatch_claim_commitment="",
+            release_checkpoint_commitment="",
         )
         with self._exclusive_lock():
             records = self._recover_deletions(self._load_index())
@@ -1859,8 +2142,17 @@ class ComputeWorkloadIngressStore:
                     raise ComputeWorkloadIngressConflict(
                         "Compute workload Idempotency-Key was reused for a different envelope"
                     )
+                if existing.lifecycle not in {"sealed", "dispatch_claimed"}:
+                    raise ComputeWorkloadIngressConflict(
+                        "Compute workload Idempotency-Key names an already released envelope"
+                    )
                 self._load_blob(existing)
-                return self._result(existing, binding.manifest, created=False)
+                return self._result(
+                    existing,
+                    binding,
+                    envelope,
+                    created=False,
+                )
             if any(
                 hmac.compare_digest(item.nonce_fingerprint, envelope.nonce_fingerprint)
                 for item in records.values()
@@ -1883,7 +2175,12 @@ class ComputeWorkloadIngressStore:
                 except OSError:
                     pass
                 raise
-            return self._result(record, binding.manifest, created=True)
+            return self._result(
+                record,
+                binding,
+                envelope,
+                created=True,
+            )
 
     def get_for_project(
         self,
@@ -1902,7 +2199,8 @@ class ComputeWorkloadIngressStore:
             matches = [
                 item
                 for item in records.values()
-                if item.workload_id == workload_id and item.lifecycle == "sealed"
+                if item.workload_id == workload_id
+                and item.lifecycle in {"sealed", "dispatch_claimed"}
             ]
             if len(matches) != 1 or not hmac.compare_digest(
                 matches[0].project_commitment, project_commitment
@@ -1913,7 +2211,131 @@ class ComputeWorkloadIngressStore:
                 workload_id=workload_id,
                 binding=binding,
                 envelope=envelope,
+                lifecycle=matches[0].lifecycle,
+                dispatch_claim=matches[0].dispatch_claim,
             )
+
+    def claim_for_dispatch(
+        self,
+        workload_id: str,
+        *,
+        project_commitment: str,
+        job_id: str,
+        intent_commitment: str,
+        funding_wallet: str,
+        execution_binding_commitment: str,
+    ) -> tuple[ComputeWorkloadDispatchClaim, bool]:
+        """Bind one sealed ciphertext to exactly one wallet-funded job.
+
+        The claim is stored beside the authenticated ciphertext index.  It is
+        deliberately distinct from the source principal in the AES-GCM AAD:
+        the credential remains the uploader while the wallet becomes only the
+        bounded on-chain funding authority.
+        """
+
+        if not isinstance(workload_id, str) or not _WORKLOAD_ID.fullmatch(workload_id):
+            raise ComputeWorkloadIngressError("Compute workload ID is malformed")
+        if not isinstance(project_commitment, str) or not _SHA256.fullmatch(
+            project_commitment
+        ):
+            raise ComputeWorkloadIngressError(
+                "Compute workload project binding is malformed"
+            )
+        claim = ComputeWorkloadDispatchClaim(
+            job_id=job_id,
+            intent_commitment=intent_commitment,
+            funding_wallet=funding_wallet,
+            execution_binding_commitment=execution_binding_commitment,
+        )
+        with self._exclusive_lock():
+            records = self._recover_deletions(self._load_index())
+            matches = [
+                item for item in records.values() if item.workload_id == workload_id
+            ]
+            if len(matches) != 1 or not hmac.compare_digest(
+                matches[0].project_commitment,
+                project_commitment,
+            ):
+                raise ComputeWorkloadIngressError("Compute workload was not found")
+            record = matches[0]
+            if record.lifecycle == "dispatch_claimed":
+                if record.dispatch_claim != claim or not hmac.compare_digest(
+                    record.dispatch_claim_commitment,
+                    claim.commitment,
+                ):
+                    raise ComputeWorkloadIngressConflict(
+                        "Compute workload is claimed by a different dispatch"
+                    )
+                return claim, False
+            if record.lifecycle != "sealed":
+                raise ComputeWorkloadIngressConflict(
+                    "Compute workload is no longer available for dispatch"
+                )
+            for other in records.values():
+                if (
+                    other.dispatch_claim is not None
+                    and other.workload_id != workload_id
+                    and hmac.compare_digest(other.dispatch_claim.job_id, claim.job_id)
+                ):
+                    raise ComputeWorkloadIngressConflict(
+                        "Compute dispatch job already claims another workload"
+                    )
+            binding, envelope = self._load_blob(record)
+            actual_execution_binding = (
+                compute_workload_execution_binding_commitment(
+                    workload_id,
+                    binding,
+                    envelope,
+                )
+            )
+            if not hmac.compare_digest(
+                actual_execution_binding,
+                claim.execution_binding_commitment,
+            ):
+                raise ComputeWorkloadIngressConflict(
+                    "Compute workload execution binding does not match"
+                )
+            claimed = dict(records)
+            claimed[record.idempotency_hash] = replace(
+                record,
+                lifecycle="dispatch_claimed",
+                dispatch_claim=claim,
+                dispatch_claim_commitment=claim.commitment,
+            )
+            self._persist_index(claimed)
+            return claim, True
+
+    def get_claimed_for_execution(
+        self,
+        workload_id: str,
+        *,
+        project_commitment: str,
+        claim: ComputeWorkloadDispatchClaim,
+    ) -> StoredComputeWorkload:
+        if not isinstance(claim, ComputeWorkloadDispatchClaim):
+            raise ComputeWorkloadIngressError(
+                "Compute workload execution claim is invalid"
+            )
+        stored = self.get_for_project(
+            workload_id,
+            project_commitment=project_commitment,
+        )
+        if (
+            stored.lifecycle != "dispatch_claimed"
+            or stored.dispatch_claim != claim
+            or not hmac.compare_digest(
+                compute_workload_execution_binding_commitment(
+                    stored.workload_id,
+                    stored.binding,
+                    stored.envelope,
+                ),
+                claim.execution_binding_commitment,
+            )
+        ):
+            raise ComputeWorkloadIngressUnavailable(
+                "Compute workload dispatch claim is unavailable"
+            )
+        return stored
 
     def consume_ciphertext_for_project(
         self,
@@ -1941,7 +2363,7 @@ class ComputeWorkloadIngressStore:
             matches = [
                 item
                 for item in records.values()
-                if item.workload_id == workload_id and item.lifecycle == "sealed"
+                if item.workload_id == workload_id
             ]
             if len(matches) != 1 or not hmac.compare_digest(
                 matches[0].project_commitment,
@@ -1949,6 +2371,12 @@ class ComputeWorkloadIngressStore:
             ):
                 raise ComputeWorkloadIngressError("Compute workload was not found")
             record = matches[0]
+            if record.lifecycle == "dispatch_claimed":
+                raise ComputeWorkloadIngressConflict(
+                    "Compute workload is claimed by a wallet-funded dispatch"
+                )
+            if record.lifecycle != "sealed":
+                raise ComputeWorkloadIngressError("Compute workload was not found")
             binding, envelope = self._load_blob(record)
             deleting = dict(records)
             deleting[record.idempotency_hash] = replace(
@@ -1968,7 +2396,108 @@ class ComputeWorkloadIngressStore:
                 workload_id=workload_id,
                 binding=binding,
                 envelope=envelope,
+                lifecycle="sealed",
+                dispatch_claim=None,
             )
+
+    def release_ciphertext_after_checkpoint(
+        self,
+        workload_id: str,
+        *,
+        project_commitment: str,
+        actor_commitment: str,
+        release_checkpoint_commitment: str,
+    ) -> bool:
+        """Fail closed for the pre-claim release route.
+
+        Version-two index state requires every checkpointed release to retain
+        the exact wallet-funded dispatch claim.  Keeping this legacy method as
+        an explicit rejection prevents an older caller from converting an
+        unclaimed ``sealed`` record into release state.
+        """
+
+        del (
+            workload_id,
+            project_commitment,
+            actor_commitment,
+            release_checkpoint_commitment,
+        )
+        raise ComputeWorkloadIngressUnavailable(
+            "Compute workload release requires a confirmed dispatch claim"
+        )
+
+    def release_claimed_ciphertext_after_checkpoint(
+        self,
+        workload_id: str,
+        *,
+        project_commitment: str,
+        claim: ComputeWorkloadDispatchClaim,
+        release_checkpoint_commitment: str,
+    ) -> bool:
+        """Release only the ciphertext claimed by one exact dispatch tuple."""
+
+        if not isinstance(workload_id, str) or not _WORKLOAD_ID.fullmatch(workload_id):
+            raise ComputeWorkloadIngressError("Compute workload ID is malformed")
+        if (
+            not isinstance(project_commitment, str)
+            or not _SHA256.fullmatch(project_commitment)
+            or not isinstance(claim, ComputeWorkloadDispatchClaim)
+            or not isinstance(release_checkpoint_commitment, str)
+            or not _SHA256.fullmatch(release_checkpoint_commitment)
+        ):
+            raise ComputeWorkloadIngressError(
+                "Compute workload claimed release binding is malformed"
+            )
+        with self._exclusive_lock():
+            records = self._recover_deletions(self._load_index())
+            matches = [
+                item for item in records.values() if item.workload_id == workload_id
+            ]
+            if len(matches) != 1:
+                raise ComputeWorkloadIngressError("Compute workload was not found")
+            record = matches[0]
+            if (
+                not hmac.compare_digest(record.project_commitment, project_commitment)
+                or record.dispatch_claim != claim
+                or not hmac.compare_digest(
+                    record.dispatch_claim_commitment,
+                    claim.commitment,
+                )
+            ):
+                raise ComputeWorkloadIngressError("Compute workload was not found")
+            if record.lifecycle == "released":
+                if not hmac.compare_digest(
+                    record.release_checkpoint_commitment,
+                    release_checkpoint_commitment,
+                ):
+                    raise ComputeWorkloadIngressConflict(
+                        "Compute workload release checkpoint does not match"
+                    )
+                return False
+            if record.lifecycle != "dispatch_claimed":
+                raise ComputeWorkloadIngressCorrupt(
+                    "Compute workload claimed release recovery is incomplete"
+                )
+            self._load_blob(record)
+            deleting = dict(records)
+            deleting[record.idempotency_hash] = replace(
+                record,
+                lifecycle="deleting_after_checkpoint",
+                release_checkpoint_commitment=release_checkpoint_commitment,
+            )
+            self._persist_index(deleting)
+            try:
+                os.unlink(f"{record.object_id}.json", dir_fd=self._blob_fd)
+                _fsync_directory_fd(self._blob_fd)
+            except FileNotFoundError:
+                pass
+            released = dict(deleting)
+            released[record.idempotency_hash] = replace(
+                deleting[record.idempotency_hash],
+                lifecycle="released",
+            )
+            self._persist_index(released)
+            return True
 
     def public_metadata(
         self,
@@ -1982,7 +2511,7 @@ class ComputeWorkloadIngressStore:
         )
         return {
             "surface": "compute_workload_metadata",
-            "schema_version": WORKLOAD_INGRESS_SCHEMA_VERSION,
+            "schema_version": WORKLOAD_PUBLIC_SCHEMA_VERSION,
             "workload_id": stored.workload_id,
             "workload_schema": stored.binding.manifest.schema,
             "operation": stored.binding.manifest.operation,
@@ -2002,6 +2531,42 @@ class ComputeWorkloadIngressStore:
             "recipient_release_commitment": (
                 stored.binding.recipient_release_commitment
             ),
+            "execution_binding": {
+                "schema": "dnai.compute.workload-execution-binding.v1",
+                "commitment": compute_workload_execution_binding_commitment(
+                    stored.workload_id,
+                    stored.binding,
+                    stored.envelope,
+                ),
+                "source_kind": stored.binding.actor_kind,
+                "wallet_adoption_required": (
+                    stored.binding.actor_kind == "credential"
+                ),
+                "device_spending_authority": False,
+            },
+            "dispatch_adoption": {
+                "state": (
+                    "claimed_by_wallet_dispatch"
+                    if stored.lifecycle == "dispatch_claimed"
+                    else "wallet_adoption_required"
+                    if stored.binding.actor_kind == "credential"
+                    else "available_for_wallet_dispatch"
+                ),
+                "wallet_adoption_eligible": stored.lifecycle == "sealed",
+                "dispatch_claimed": stored.lifecycle == "dispatch_claimed",
+                "claim_commitment": (
+                    stored.dispatch_claim.commitment
+                    if stored.dispatch_claim is not None
+                    else None
+                ),
+                "funding_authority": (
+                    "onchain_wallet_job"
+                    if stored.lifecycle == "dispatch_claimed"
+                    else "wallet_required"
+                ),
+                "device_spending_authority": False,
+                "direct_deletion_allowed": stored.lifecycle == "sealed",
+            },
             "ciphertext_egress": False,
             "raw_prompt_egress": False,
             "raw_examples_egress": False,
@@ -2013,13 +2578,14 @@ class ComputeWorkloadIngressStore:
     def _result(
         self,
         record: _IndexRecord,
-        manifest: ComputeWorkloadManifest,
+        binding: ComputeWorkloadBinding,
+        envelope: ComputeWorkloadEnvelope,
         *,
         created: bool,
     ) -> ComputeWorkloadIngressResult:
         return ComputeWorkloadIngressResult(
             workload_id=record.workload_id,
-            manifest=manifest,
+            manifest=binding.manifest,
             workload_commitment=record.workload_commitment,
             manifest_commitment=record.manifest_commitment,
             ciphertext_sha256=record.ciphertext_sha256,
@@ -2027,16 +2593,28 @@ class ComputeWorkloadIngressStore:
             key_id=record.key_id,
             activation_commitment=record.activation_commitment,
             recipient_release_commitment=record.recipient_release_commitment,
+            source_kind=binding.actor_kind,
+            execution_binding_commitment=(
+                compute_workload_execution_binding_commitment(
+                    record.workload_id,
+                    binding,
+                    envelope,
+                )
+            ),
             created=created,
             _idempotency_hash=record.idempotency_hash,
             _request_hash=record.request_hash,
         )
 
-    def _open_lock_file(self) -> int:
+    def _open_lock_file(self, name: str) -> int:
+        if name not in {"index.lock", "execution.lock"}:
+            raise ComputeWorkloadIngressUnavailable(
+                "Compute workload lock file name is invalid"
+            )
         flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open("index.lock", flags, 0o600, dir_fd=self._root_fd)
+        descriptor = os.open(name, flags, 0o600, dir_fd=self._root_fd)
         try:
             metadata = os.fstat(descriptor)
             if (
@@ -2082,10 +2660,36 @@ class ComputeWorkloadIngressStore:
             fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
             self._thread_lock.release()
 
+    @contextmanager
+    def execution_lease(self) -> Iterator[None]:
+        """Serialize plaintext provider leases across worker processes."""
+
+        self._execution_thread_lock.acquire()
+        try:
+            metadata = os.fstat(self._execution_lock_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink != 1
+            ):
+                raise ComputeWorkloadIngressCorrupt(
+                    "Compute workload execution lock metadata changed"
+                )
+            fcntl.flock(self._execution_lock_fd, fcntl.LOCK_EX)
+        except Exception:
+            self._execution_thread_lock.release()
+            raise
+        try:
+            yield
+        finally:
+            fcntl.flock(self._execution_lock_fd, fcntl.LOCK_UN)
+            self._execution_thread_lock.release()
+
     def _index_body(self, records: Mapping[str, _IndexRecord]) -> dict[str, Any]:
         return {
-            "schema": "dnai.compute.workload-ingress-index.v1",
-            "schema_version": WORKLOAD_INGRESS_SCHEMA_VERSION,
+            "schema": "dnai.compute.workload-ingress-index.v2",
+            "schema_version": WORKLOAD_INDEX_SCHEMA_VERSION,
             "records": [
                 item.to_dict()
                 for item in sorted(records.values(), key=lambda entry: entry.idempotency_hash)
@@ -2192,8 +2796,8 @@ class ComputeWorkloadIngressStore:
         )
         _exact_keys(body, expected_fields, label="Compute workload index body")
         if (
-            body["schema"] != "dnai.compute.workload-ingress-index.v1"
-            or body["schema_version"] != WORKLOAD_INGRESS_SCHEMA_VERSION
+            body["schema"] != "dnai.compute.workload-ingress-index.v2"
+            or body["schema_version"] != WORKLOAD_INDEX_SCHEMA_VERSION
             or body["plaintext_persisted"] is not False
             or body["raw_prompt_persisted"] is not False
             or body["raw_examples_persisted"] is not False
@@ -2255,25 +2859,35 @@ class ComputeWorkloadIngressStore:
         _fsync_directory_fd(self._blob_fd)
 
     def _verify_records(self, records: Mapping[str, _IndexRecord]) -> None:
-        if any(item.lifecycle != "sealed" for item in records.values()):
+        if any(
+            item.lifecycle not in {"sealed", "dispatch_claimed", "released"}
+            for item in records.values()
+        ):
             raise ComputeWorkloadIngressCorrupt(
                 "Compute workload deletion recovery is incomplete"
             )
-        expected_files = {f"{item.object_id}.json" for item in records.values()}
+        expected_files = {
+            f"{item.object_id}.json"
+            for item in records.values()
+            if item.lifecycle in {"sealed", "dispatch_claimed"}
+        }
         actual_files = set(os.listdir(self._blob_fd))
         if actual_files != expected_files:
             raise ComputeWorkloadIngressCorrupt(
                 "Compute workload envelope directory contains unindexed state"
             )
         for record in records.values():
-            self._load_blob(record)
+            if record.lifecycle in {"sealed", "dispatch_claimed"}:
+                self._load_blob(record)
 
     def _recover_deletions(
         self,
         records: Mapping[str, _IndexRecord],
     ) -> dict[str, _IndexRecord]:
         deleting = [
-            record for record in records.values() if record.lifecycle == "deleting"
+            record
+            for record in records.values()
+            if record.lifecycle in {"deleting", "deleting_after_checkpoint"}
         ]
         if not deleting:
             return dict(records)
@@ -2284,7 +2898,13 @@ class ComputeWorkloadIngressStore:
                 _fsync_directory_fd(self._blob_fd)
             except FileNotFoundError:
                 pass
-            remaining.pop(record.idempotency_hash, None)
+            if record.lifecycle == "deleting":
+                remaining.pop(record.idempotency_hash, None)
+            else:
+                remaining[record.idempotency_hash] = replace(
+                    record,
+                    lifecycle="released",
+                )
         self._persist_index(remaining)
         return remaining
 
@@ -2589,10 +3209,246 @@ class ComputeWorkloadIngressService:
                 manifest=stored.binding.manifest,
                 plaintext=payload_plaintext,
                 validated=validated,
+                _reauthenticate=lambda: validated,
             )
         finally:
             _zero_bytearray(payload_plaintext)
             _zero_bytearray(sealed_plaintext)
+
+    def claim_for_dispatch(
+        self,
+        workload_id: str,
+        *,
+        project_id: str,
+        job_id: str,
+        intent_commitment: str,
+        funding_wallet: str,
+        source_kind: str,
+        execution_binding_commitment: str,
+        recipient_release_commitment: str,
+    ) -> tuple[ComputeWorkloadDispatchClaim, bool]:
+        """Claim an immutable source-bound envelope for one wallet job."""
+
+        if (
+            source_kind not in {"wallet", "credential"}
+            or not isinstance(execution_binding_commitment, str)
+            or not _SHA256.fullmatch(execution_binding_commitment)
+            or not isinstance(recipient_release_commitment, str)
+            or not _SHA256.fullmatch(recipient_release_commitment)
+        ):
+            raise ComputeWorkloadIngressError(
+                "Compute workload dispatch authority is malformed"
+            )
+        activation = self.current_activation()
+        project_commitment = compute_workload_project_commitment(project_id)
+        stored = self.store.get_for_project(
+            workload_id,
+            project_commitment=project_commitment,
+        )
+        actual_execution_binding = compute_workload_execution_binding_commitment(
+            stored.workload_id,
+            stored.binding,
+            stored.envelope,
+        )
+        if (
+            stored.binding.actor_kind != source_kind
+            or stored.binding.recipient_key_id != self.recipient.key_id
+            or stored.binding.recipient_release_commitment
+            != activation.recipient_release_commitment
+            or stored.binding.recipient_release_commitment
+            != recipient_release_commitment
+            or not hmac.compare_digest(
+                actual_execution_binding,
+                execution_binding_commitment,
+            )
+        ):
+            raise ComputeWorkloadIngressUnavailable(
+                "Compute workload dispatch binding is no longer current"
+            )
+        return self.store.claim_for_dispatch(
+            workload_id,
+            project_commitment=project_commitment,
+            job_id=job_id,
+            intent_commitment=intent_commitment,
+            funding_wallet=funding_wallet,
+            execution_binding_commitment=execution_binding_commitment,
+        )
+
+    @contextmanager
+    def lease_for_provider_execution(
+        self,
+        workload_id: str,
+        *,
+        project_id: str,
+        claim: ComputeWorkloadDispatchClaim,
+        source_kind: str,
+        recipient_release_commitment: str,
+    ) -> Iterator[ComputeWorkloadExecutionLease]:
+        """Open a non-destructive, exclusive provider-recovery lease.
+
+        The authenticated ciphertext remains in the store until
+        :meth:`release_after_usage_checkpoint` is called after the execution
+        journal has durably stored the exact bounded usage/result. This is the
+        only lease suitable for an idempotent external provider boundary.
+        """
+
+        if (
+            source_kind not in {"wallet", "credential"}
+            or not isinstance(recipient_release_commitment, str)
+            or not _SHA256.fullmatch(recipient_release_commitment)
+            or not isinstance(claim, ComputeWorkloadDispatchClaim)
+        ):
+            raise ComputeWorkloadIngressError(
+                "Compute workload execution authority is invalid"
+            )
+        project_commitment = compute_workload_project_commitment(project_id)
+        with self.store.execution_lease():
+            activation = self.current_activation()
+            stored = self.store.get_claimed_for_execution(
+                workload_id,
+                project_commitment=project_commitment,
+                claim=claim,
+            )
+            binding = stored.binding
+            if (
+                binding.actor_kind != source_kind
+                or binding.recipient_key_id != self.recipient.key_id
+                or binding.recipient_release_commitment
+                != activation.recipient_release_commitment
+                or binding.recipient_release_commitment
+                != recipient_release_commitment
+            ):
+                raise ComputeWorkloadIngressUnavailable(
+                    "Compute workload execution binding is no longer current"
+                )
+            envelope = stored.envelope
+            aad = _b64decode(
+                envelope.aad,
+                label="aad",
+                maximum_bytes=MAX_AAD_BYTES,
+            )
+            encrypted = EncryptedPayload(
+                ephemeral_public_key=_b64decode(
+                    envelope.ephemeral_public_key,
+                    label="ephemeral_public_key",
+                    maximum_bytes=X25519_PUBLIC_KEY_BYTES,
+                    exact_bytes=X25519_PUBLIC_KEY_BYTES,
+                ),
+                nonce=_b64decode(
+                    envelope.nonce,
+                    label="nonce",
+                    maximum_bytes=AES_GCM_NONCE_BYTES,
+                    exact_bytes=AES_GCM_NONCE_BYTES,
+                ),
+                ciphertext=_b64decode(
+                    envelope.ciphertext,
+                    label="ciphertext",
+                    maximum_bytes=MAX_CIPHERTEXT_BYTES,
+                ),
+            )
+            try:
+                raw_plaintext = self.recipient.keypair.decrypt(
+                    encrypted,
+                    info=WORKLOAD_HKDF_INFO,
+                    associated_data=aad,
+                    hkdf_salt=hashlib.sha256(aad).digest(),
+                )
+            except InvalidTag as exc:
+                raise ComputeWorkloadIngressError(
+                    "Compute workload ciphertext authentication failed"
+                ) from exc
+            sealed_plaintext = bytearray(raw_plaintext)
+            del raw_plaintext
+            payload_plaintext = bytearray()
+            try:
+                validated = validate_compute_workload_plaintext(
+                    binding.manifest,
+                    sealed_plaintext,
+                    expected_commitment=binding.workload_commitment,
+                )
+                _blinding, private_payload = _sealed_workload_parts(
+                    binding.manifest,
+                    sealed_plaintext,
+                )
+                payload_plaintext = bytearray(private_payload)
+                del private_payload
+
+                def _reauthenticate() -> ValidatedComputeWorkload:
+                    latest_activation = self.current_activation()
+                    latest = self.store.get_claimed_for_execution(
+                        workload_id,
+                        project_commitment=project_commitment,
+                        claim=claim,
+                    )
+                    if (
+                        latest.binding != binding
+                        or latest.envelope != envelope
+                        or latest.binding.actor_kind != source_kind
+                        or latest.binding.recipient_key_id
+                        != self.recipient.key_id
+                        or latest.binding.recipient_release_commitment
+                        != latest_activation.recipient_release_commitment
+                        or latest.binding.recipient_release_commitment
+                        != recipient_release_commitment
+                    ):
+                        raise ComputeWorkloadIngressUnavailable(
+                            "Compute workload execution lease changed"
+                        )
+                    return validate_compute_workload_plaintext(
+                        binding.manifest,
+                        sealed_plaintext,
+                        expected_commitment=binding.workload_commitment,
+                    )
+
+                yield ComputeWorkloadExecutionLease(
+                    workload_id=stored.workload_id,
+                    manifest=binding.manifest,
+                    plaintext=payload_plaintext,
+                    validated=validated,
+                    _reauthenticate=_reauthenticate,
+                )
+            finally:
+                _zero_bytearray(payload_plaintext)
+                _zero_bytearray(sealed_plaintext)
+
+    def release_after_usage_checkpoint(
+        self,
+        workload_id: str,
+        *,
+        project_id: str,
+        claim: ComputeWorkloadDispatchClaim,
+        release_checkpoint_commitment: str,
+    ) -> bool:
+        return self.store.release_claimed_ciphertext_after_checkpoint(
+            workload_id,
+            project_commitment=compute_workload_project_commitment(project_id),
+            claim=claim,
+            release_checkpoint_commitment=release_checkpoint_commitment,
+        )
+
+    def release_after_cancellation_checkpoint(
+        self,
+        workload_id: str,
+        *,
+        project_id: str,
+        claim: ComputeWorkloadDispatchClaim,
+        cancellation_checkpoint_commitment: str,
+    ) -> bool:
+        """Erase an unexecuted workload after a serialized wallet cancellation.
+
+        The caller must first commit the cancellation under the execution
+        journal's cross-process cycle lease. The store's durable tombstone then
+        makes a crash/retry at this boundary exact and no-clobber.
+        """
+
+        return self.store.release_claimed_ciphertext_after_checkpoint(
+            workload_id,
+            project_commitment=compute_workload_project_commitment(project_id),
+            claim=claim,
+            release_checkpoint_commitment=(
+                cancellation_checkpoint_commitment
+            ),
+        )
 
 
 def _verify_binding_envelope(

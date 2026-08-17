@@ -3,9 +3,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL as NodeURL } from "node:url";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./bootstrap-retirement.test.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const bootstrapPath = path.join(webDir, "public", "wikigen-bootstrap-v3.js");
 const indexPath = path.join(webDir, "index.html");
 const bootstrapSource = await readFile(bootstrapPath, "utf8");
@@ -28,7 +32,7 @@ function contextFor({
       },
     },
     Promise,
-    URL,
+    URL: NodeURL,
     window: {
       location: {
         hostname,

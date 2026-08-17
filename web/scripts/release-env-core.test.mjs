@@ -42,6 +42,7 @@ const RELEASE_MANIFEST_PATH = fileURLToPath(new URL(
 ));
 const SHA = "a".repeat(40);
 const OPERATOR = "0x1000000000000000000000000000000000000001";
+const DILIGENCE_GOVERNANCE = "0x1100000000000000000000000000000000000011";
 const RESULT_VERIFIER = "0x2000000000000000000000000000000000000002";
 const TEE = "0x3000000000000000000000000000000000000003";
 const DILIGENCE = "0x4000000000000000000000000000000000000004";
@@ -145,6 +146,8 @@ const LIVE_ACTIVATION_AUTHORITY_SHA256 = `sha256:${"2b".repeat(32)}`;
 const DEPLOYMENT_INTENT_SHA256 = `sha256:${"2c".repeat(32)}`;
 const REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256 =
   `sha256:${"2e".repeat(32)}`;
+const TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256 =
+  `sha256:${"36".repeat(32)}`;
 const CVM_LAUNCH_INTENT_COMMITMENT = "2f".repeat(32);
 const CVM_LAUNCH_INTENT_SHA256 = `sha256:${CVM_LAUNCH_INTENT_COMMITMENT}`;
 const CEREMONY_AUTHORIZATION_SHA256 = `sha256:${"2d".repeat(32)}`;
@@ -287,14 +290,14 @@ function generatedFreshSuiteLedger(phala) {
     ]),
   );
   const transactionPlan = [
-    ["diligenceRoom", "DiligenceRoom", "CREATE", "constructor(bool)", ZERO_ADDRESS, DILIGENCE],
+    ["diligenceRoom", "DiligenceRoom", "CREATE", "constructor(bool,address)", ZERO_ADDRESS, DILIGENCE],
     ["diligenceRoom", "DiligenceRoom", "CALL", "freezeFeeBps()", DILIGENCE, ZERO_ADDRESS],
     ["diligenceRoom", "DiligenceRoom", "CALL", "enableComputeSettlementPolicy()", DILIGENCE, ZERO_ADDRESS],
     ["diligenceRoom", "DiligenceRoom", "CALL", "setComposeApprovalRequired(bool)", DILIGENCE, ZERO_ADDRESS],
     ["diligenceRoom", "DiligenceRoom", "CALL", "setTeeIdentityApprovalRequired(bool)", DILIGENCE, ZERO_ADDRESS],
     ["diligenceRoom", "DiligenceRoom", "CALL", "freezeApprovalRequirements()", DILIGENCE, ZERO_ADDRESS],
     ["tinkerAccountEncumbrance", "TinkerAccountEncumbrance", "CREATE", "constructor(address,bytes32,bytes32,uint256,uint256)", ZERO_ADDRESS, ENCUMBRANCE],
-    ["royaltyDistributor", "RoyaltyDistributor", "CREATE", "constructor()", ZERO_ADDRESS, ROYALTY],
+    ["royaltyDistributor", "RoyaltyDistributor", "CREATE", "constructor(address)", ZERO_ADDRESS, ROYALTY],
     ["challengeRegistry", "ChallengeRegistry", "CREATE", "constructor(address)", ZERO_ADDRESS, CHALLENGE],
     ["computeCreditVault", "ComputeCreditVault", "CREATE", "constructor(address,address,uint16)", ZERO_ADDRESS, COMPUTE],
     ["computeCreditVault", "ComputeCreditVault", "CALL", "freezeDeveloperFee()", COMPUTE, ZERO_ADDRESS],
@@ -333,6 +336,8 @@ function generatedFreshSuiteLedger(phala) {
     "--arg", "deploymentIntentSha256", DEPLOYMENT_INTENT_SHA256,
     "--arg", "reviewerAuthorityGenesisAcceptanceSha256",
     REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256,
+    "--arg", "tinkerAccountBindingCeremonyReceiptSha256",
+    TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
     "--arg", "deploymentReviewEnvelopeSha256", DEPLOYMENT_REVIEW_ENVELOPE_SHA256,
     "--arg", "deploymentReviewEvidenceSha256", DEPLOYMENT_REVIEW_EVIDENCE_SHA256,
     "--argjson", "deploymentReceipts", JSON.stringify(deploymentReceipts),
@@ -341,6 +346,14 @@ function generatedFreshSuiteLedger(phala) {
     "--arg", "diligence", DILIGENCE,
     "--arg", "diligenceTx", transactionHash("1"),
     "--arg", "diligenceRuntimeCodeHash", keccak256(codes.diligence_room),
+    "--arg", "diligenceInitialDeveloper", OPERATOR,
+    "--arg", "diligenceGovernanceController", DILIGENCE_GOVERNANCE,
+    "--arg", "diligenceReleaseGovernanceController", DILIGENCE_GOVERNANCE,
+    "--arg", "diligenceProtocolFeeRecipient", DILIGENCE_GOVERNANCE,
+    "--arg", "diligenceDeveloper", OPERATOR,
+    "--arg", "diligencePendingDeveloper", ZERO_ADDRESS,
+    "--arg", "diligencePendingDeveloperAt", "0",
+    "--arg", "diligenceDeveloperTransferDelay", "172800",
     "--arg", "diligencePendingVerifier", ZERO_ADDRESS,
     "--arg", "diligencePendingVerifierAt", "0",
     "--argjson", "diligenceVerifierFrozen", "false",
@@ -404,6 +417,16 @@ function generatedFreshSuiteLedger(phala) {
     "--arg", "royalty", ROYALTY,
     "--arg", "royaltyTx", transactionHash("3"),
     "--arg", "royaltyRuntimeCodeHash", keccak256(codes.royalty_distributor),
+    "--arg", "royaltyOwner", OPERATOR,
+    "--arg", "royaltyPendingOwner", ZERO_ADDRESS,
+    "--argjson", "royaltyPaused", "true",
+    "--arg", "royaltySettlementVerifier", ZERO_ADDRESS,
+    "--arg", "royaltyQvlVerifier", ZERO_ADDRESS,
+    "--arg", "royaltyExecutionPolicyAnchor", ZERO_ADDRESS,
+    "--arg", "royaltyAnchorWriterRelease", `0x${"0".repeat(64)}`,
+    "--arg", "royaltyReleasePolicy", `0x${"0".repeat(64)}`,
+    "--arg", "royaltyAuthorityNonce", "0",
+    "--arg", "royaltyPendingAuthorityAt", "0",
     "--arg", "challenge", CHALLENGE,
     "--arg", "challengeTx", transactionHash("4"),
     "--arg", "challengeRuntimeCodeHash", keccak256(codes.challenge_registry),
@@ -1013,7 +1036,7 @@ async function fixture() {
       diligence_room: {
         address: DILIGENCE,
         runtime_code_hash: keccak256(codes.diligence_room),
-        developer: OPERATOR,
+        developer: DILIGENCE_GOVERNANCE,
         result_verifier: RESULT_VERIFIER,
         attestation_verifier: diligenceQvl.address.toLowerCase(),
         attestation_release_policy_hash: DILIGENCE_QVL_POLICY,
@@ -1346,7 +1369,7 @@ async function fixture() {
       canonicalization_version: "policy-kernel-canonicalization/v2",
       approval_schema: "dnai-wikigen/execution-policy-approval/v3",
       api_schema_version: 3,
-      store_schema_version: 5,
+      store_schema_version: 6,
       approval_domain: EXECUTION_POLICY_APPROVAL_DOMAIN,
       approval_domain_hash: EXECUTION_POLICY_APPROVAL_DOMAIN_HASH,
       approver_hashes: [...EXECUTION_POLICY_APPROVER_HASHES],
@@ -1393,6 +1416,8 @@ async function fixture() {
       contract_writes: true,
       artifact_upload: true,
       compute_console: true,
+      tinker_customer: false,
+      collaboration: false,
       compute_vault_funding: true,
       compute_vault_authorization: true,
       compute_workload_upload: false,
@@ -1435,6 +1460,10 @@ async function fixture() {
     contracts: {
       diligenceRoom: contractEntry("diligence_room", "deployed_fail_closed_pending_tee_binding", {
         developer: OPERATOR,
+        pendingDeveloper: ZERO_ADDRESS,
+        pendingDeveloperActivatesAt: 0,
+        developerTransferDelaySeconds: 172_800,
+        governanceHandoffStatus: "pending_final_authority_and_release_ceremony",
         resultVerifier: RESULT_VERIFIER,
         pendingResultVerifier: ZERO_ADDRESS,
         pendingResultVerifierActivatesAt: 0,
@@ -1469,7 +1498,24 @@ async function fixture() {
         policyState: "fail_closed_pending_cvm_binding",
       }),
       challengeRegistry: contractEntry("challenge_registry", "deployed_empty_active_registry", { owner: OPERATOR }),
-      royaltyDistributor: contractEntry("royalty_distributor", "deployed_ownerless_pull_payment_rail"),
+      royaltyDistributor: contractEntry(
+        "royalty_distributor",
+        "deployed_paused_unbound_pending_royalty_release",
+        {
+          owner: OPERATOR,
+          pendingOwner: "0x0000000000000000000000000000000000000000",
+          paused: true,
+          settlementVerifier: "0x0000000000000000000000000000000000000000",
+          qvlVerifier: "0x0000000000000000000000000000000000000000",
+          executionPolicyAnchor: "0x0000000000000000000000000000000000000000",
+          anchorWriterReleaseCommitment: `0x${"0".repeat(64)}`,
+          releasePolicyCommitment: `0x${"0".repeat(64)}`,
+          authorityNonce: 0,
+          pendingAuthorityActivatesAt: 0,
+          settlementReplayDomain: "global_settlement_id_and_global_settlement_nonce",
+          policyState: "settlements_fail_closed_pending_dual_signer_anchor_release",
+        },
+      ),
       tinkerAccountEncumbrance: contractEntry(
         "tinker_account_encumbrance",
         "deployed_exact_release_policy_frozen_active",
@@ -1968,7 +2014,12 @@ function fakeClient(candidate, overrides = {}) {
       const override = overrides.read?.[`${key}.${functionName}`];
       if (override !== undefined) return override;
       const values = {
-        "diligence_room.developer": OPERATOR,
+        "diligence_room.developer": DILIGENCE_GOVERNANCE,
+        "diligence_room.initialDeveloper": OPERATOR,
+        "diligence_room.releaseGovernanceController": DILIGENCE_GOVERNANCE,
+        "diligence_room.pendingDeveloper": ZERO_ADDRESS,
+        "diligence_room.pendingDeveloperActivatesAt": 0n,
+        "diligence_room.DEVELOPER_TRANSFER_DELAY": 172_800n,
         "diligence_room.resultVerifier": RESULT_VERIFIER,
         "diligence_room.attestationVerifier": diligenceQvl.address.toLowerCase(),
         "diligence_room.attestationReleasePolicyHash": DILIGENCE_QVL_POLICY,
@@ -2262,15 +2313,25 @@ test("builds only the allowlisted production Vite environment after every bindin
   assert.equal(env.VITE_ENABLE_CONTRACT_WRITES, "true");
   assert.equal(env.VITE_ENABLE_ARTIFACT_UPLOAD, "true");
   assert.equal(env.VITE_ENABLE_COMPUTE_CONSOLE, "true");
+  assert.equal(env.VITE_ENABLE_TINKER_CUSTOMER, "false");
+  assert.equal(env.VITE_ENABLE_COLLABORATION, "false");
   assert.equal(env.VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD, "false");
   assert.equal(env.VITE_COMPUTE_WORKLOAD_QVL_VERIFIER, "");
   assert.equal(env.VITE_COMPUTE_WORKLOAD_REVOKED_QUOTE_HASHES_JSON, "[]");
   assert.equal(env.VITE_ENABLE_COMPUTE_VAULT_FUNDING, "true");
   assert.equal(env.VITE_ENABLE_COMPUTE_VAULT_AUTHORIZATION, "true");
+  assert.equal(env.VITE_DILIGENCE_ROOM_INITIAL_DEVELOPER, OPERATOR.toLowerCase());
+  assert.equal(
+    env.VITE_DILIGENCE_ROOM_RELEASE_GOVERNANCE_CONTROLLER,
+    DILIGENCE_GOVERNANCE.toLowerCase(),
+  );
   assert.equal(env.VITE_COMPUTE_CREDIT_VAULT_ADDRESS, COMPUTE.toLowerCase());
   assert.equal(env.VITE_COMPUTE_VAULT_METERING_POLICY_SET_HASH, COMPUTE_POLICY_SET);
+  assert.equal(env.VITE_COMPUTE_VAULT_DEVELOPER_FEE_BPS, "100");
   assert.equal(env.VITE_COMPUTE_VAULT_ERC20_ASSET_ADDRESS, USDC.toLowerCase());
   assert.equal(env.VITE_COMPUTE_VAULT_NATIVE_RATE_POLICY_COMMITMENT, NATIVE_RATE_POLICY);
+  assert.equal(env.VITE_COMPUTE_VAULT_NATIVE_PROVIDER, COMPUTE_PROVIDER.toLowerCase());
+  assert.equal(env.VITE_COMPUTE_VAULT_ERC20_PROVIDER, COMPUTE_ERC20_PROVIDER.toLowerCase());
   assert.equal(env.VITE_ENABLE_ARENA_SUBMISSION, "true");
   assert.equal(
     env.VITE_ARENA_APPROVED_CHALLENGE_SET_SHA256,
@@ -2330,6 +2391,44 @@ test("builds only the allowlisted production Vite environment after every bindin
   assert.equal(serialized.split("\n").filter(Boolean).length, __test.ENV_KEYS.length);
   assert.doesNotMatch(serialized, /PRIVATE|SECRET|TOKEN=.+|PHALA_CLOUD_API_KEY/);
   assert.doesNotMatch(serialized, /VITE_ORACLE_URL|oracle\.example/);
+});
+
+test("Tinker customer and collaboration browser gates project independently from signed authority", async () => {
+  const baseline = await fixture();
+  assert.equal(baseline.candidate.requested_features.compute_console, true);
+  assert.equal(baseline.candidate.requested_features.tinker_customer, false);
+  assert.equal(baseline.candidate.requested_features.collaboration, false);
+  const baselineEnv = await build(baseline);
+  assert.equal(baselineEnv.VITE_ENABLE_COMPUTE_CONSOLE, "true");
+  assert.equal(baselineEnv.VITE_ENABLE_TINKER_CUSTOMER, "false");
+  assert.equal(baselineEnv.VITE_ENABLE_COLLABORATION, "false");
+
+  const tinkerOnly = await fixture();
+  tinkerOnly.candidate.requested_features.tinker_customer = true;
+  const tinkerEnv = await build(tinkerOnly);
+  assert.equal(tinkerEnv.VITE_ENABLE_TINKER_CUSTOMER, "true");
+  assert.equal(tinkerEnv.VITE_ENABLE_COLLABORATION, "false");
+
+  const collaborationOnly = await fixture();
+  collaborationOnly.candidate.requested_features.collaboration = true;
+  const collaborationEnv = await build(collaborationOnly);
+  assert.equal(collaborationEnv.VITE_ENABLE_TINKER_CUSTOMER, "false");
+  assert.equal(collaborationEnv.VITE_ENABLE_COLLABORATION, "true");
+
+  for (const key of ["tinker_customer", "collaboration"]) {
+    for (const invalid of [undefined, null, 0, 1, "false", "true"]) {
+      const malformed = await fixture();
+      if (invalid === undefined) {
+        delete malformed.candidate.requested_features[key];
+      } else {
+        malformed.candidate.requested_features[key] = invalid;
+      }
+      assert.throws(
+        () => normalizeReleaseCandidate(malformed.candidate),
+        /requested_features/,
+      );
+    }
+  }
 });
 
 test("Compute workload upload cannot project browser pins without authenticated historical O replay", async () => {
@@ -3797,6 +3896,40 @@ test("rejects mutable or evaluator-modulated settlement policy evidence", async 
   await assert.rejects(
     build(mutableChain, { read: { "diligence_room.computeSettlementPolicyEnabled": false } }),
     /settlement tariffs/,
+  );
+});
+
+test("release projection observes the immutable Diligence governance handoff identity", async () => {
+  const wrongInitialDeveloper = await fixture();
+  await assert.rejects(
+    build(wrongInitialDeveloper, {
+      read: {
+        "diligence_room.initialDeveloper":
+          "0x9999999999999999999999999999999999999999",
+      },
+    }),
+    /live DiligenceRoom initial developer mismatch/,
+  );
+
+  const wrongGovernanceController = await fixture();
+  await assert.rejects(
+    build(wrongGovernanceController, {
+      read: {
+        "diligence_room.releaseGovernanceController":
+          "0x9999999999999999999999999999999999999999",
+      },
+    }),
+    /live DiligenceRoom immutable release governance controller mismatch/,
+  );
+
+  const controllerNotAccepted = await fixture();
+  await assert.rejects(
+    build(controllerNotAccepted, {
+      read: {
+        "diligence_room.developer": OPERATOR,
+      },
+    }),
+    /live DiligenceRoom developer mismatch/,
   );
 });
 

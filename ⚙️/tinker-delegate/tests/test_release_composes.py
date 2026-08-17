@@ -2,6 +2,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -13,9 +14,17 @@ import tinker_delegate.release_composes as release_composes_module
 
 from tinker_delegate.release_composes import (
     BOOTSTRAP_DELEGATE_FAIL_CLOSED_KEYS,
+    COLLABORATION_EXECUTION_LITERAL_ENVIRONMENT,
+    COLLABORATION_EXECUTION_PROFILE,
+    COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_ENVIRONMENT_VALUE,
+    COLLABORATION_LITERAL_ENVIRONMENT,
+    COMPUTE_PROVIDER_LITERAL_ENVIRONMENT,
+    COMPUTE_WORKLOAD_WALLET_ADOPTION_ENVIRONMENT_VALUE,
     DEPLOYMENT_TOOLCHAIN_AUTHORITY,
     IMAGE_NAMES,
+    MAILBOX_GENESIS_PROFILE,
     MAIN_POST_MEASUREMENT_ENVIRONMENT_KEYS,
+    MAIN_POST_MEASUREMENT_FAIL_CLOSED_DEFAULTS,
     MAIN_SERVICES,
     METERING_POST_MEASUREMENT_ENVIRONMENT_KEYS,
     METERING_RUNTIME_PROFILE,
@@ -26,6 +35,9 @@ from tinker_delegate.release_composes import (
     QVL_RUNTIME_PROFILE,
     QVL_SERVICES,
     ReleaseComposeError,
+    ROYALTY_SETTLEMENT_RELEASE_DEFERRED_ENVIRONMENT,
+    TINKER_ACCOUNT_GENESIS_PROFILE,
+    TINKER_CUSTOMER_LITERAL_ENVIRONMENT,
     _load_yaml,
     _validate_late_environment_pass_through,
     _validate_production_oracle_environment,
@@ -188,6 +200,7 @@ def _intent() -> dict:
         },
         "staticContractInputs": {
             "computeCreditVault": {"developer": address(2)},
+            "diligenceRoom": {"governanceController": address(3)},
             "tinkerAccountEncumbrance": {"accountCommitment": word(10)},
         },
         "numericPolicy": {
@@ -225,6 +238,112 @@ def _canonical_json(value: dict) -> bytes:
 def _write_intent(root: Path, intent: dict | None = None) -> Path:
     path = root / "deployment-intent.json"
     path.write_bytes(_canonical_json(intent or _intent()))
+    return path
+
+
+def _write_account_binding_ceremony_receipt(
+    root: Path,
+    intent_path: Path,
+    *,
+    mutate=None,
+) -> Path:
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    reviewers = [
+        {
+            "address": f"0x{11:040x}",
+            "controller_id": "reviewer-alpha",
+        },
+        {
+            "address": f"0x{12:040x}",
+            "controller_id": "reviewer-beta",
+        },
+    ]
+    reviewer_hashes = sorted(
+        hashlib.sha256(
+            release_composes_module.EXECUTION_POLICY_REVIEWER_DOMAIN
+            + reviewer["address"].encode("ascii")
+        ).hexdigest()
+        for reviewer in reviewers
+    )
+    reviewer_root = hashlib.sha256(
+        release_composes_module.EXECUTION_POLICY_REVIEWER_ROOT_DOMAIN
+        + json.dumps(
+            reviewer_hashes,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
+    reviewer_set_sha256 = "sha256:" + hashlib.sha256(
+        release_composes_module.RELEASE_REVIEWER_SET_DOMAIN
+        + _canonical_json(reviewers)
+    ).hexdigest()
+    body = {
+        "account_commitment": intent["staticContractInputs"][
+            "tinkerAccountEncumbrance"
+        ]["accountCommitment"],
+        "attested_provider_binding_required": True,
+        "binding_chain_id": 84532,
+        "binding_commitment_typehash": (
+            "0x"
+            + release_composes_module.TINKER_ACCOUNT_BINDING_TYPEHASH.hex()
+        ),
+        "binding_scheme": "dnai.tinker-account-binding.v1",
+        "ceremony_sha256": "sha256:" + "31" * 32,
+        "deployment_intent_matched": True,
+        "deployment_intent_sha256": (
+            "sha256:" + hashlib.sha256(intent_path.read_bytes()).hexdigest()
+        ),
+        "environment_commitment_matched": True,
+        "historical_replay": False,
+        "intent_sha256": "sha256:" + "32" * 32,
+        "network_request_performed": False,
+        "provider_identifier_committed": False,
+        "provider_namespace": (
+            "0x" + release_composes_module.TINKER_PROVIDER_NAMESPACE.hex()
+        ),
+        "raw_binding_root_egress": False,
+        "raw_share_egress": False,
+        "remote_state_mutated": False,
+        "reviewer_authority_current_status_sha256": intent["release"][
+            "reviewerAuthorityCurrentStatusSha256"
+        ],
+        "reviewer_authority_genesis_acceptance_sha256": intent["release"][
+            "reviewerAuthorityGenesisAcceptanceSha256"
+        ],
+        "reviewer_root_hash": reviewer_root,
+        "reviewer_set_sha256": reviewer_set_sha256,
+        "schema": "dnai.tinker-account-binding-ceremony-receipt.v1",
+        "share_or_root_digest_published": False,
+        "signature_scheme": (
+            "eip191_personal_sign_secp256k1_low_s_65_byte"
+        ),
+        "signature_verification_subprocess_invoked": True,
+        "signers": [
+            {
+                **reviewer,
+                "signature_sha256": "sha256:"
+                + f"{41 + index:02x}" * 32,
+            }
+            for index, reviewer in enumerate(reviewers)
+        ],
+        "status": "tinker_account_binding_two_reviewer_ceremony_verified",
+        "truth_status": (
+            "opaque_attested_account_binding_handle_not_provider_identifier_"
+            "proof_requires_later_measured_provider_binding"
+        ),
+        "verified_signature_count": 2,
+    }
+    receipt = dict(body)
+    receipt[
+        "tinker_account_binding_ceremony_receipt_sha256"
+    ] = "sha256:" + hashlib.sha256(
+        release_composes_module.TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_DOMAIN
+        + _canonical_json(body)
+    ).hexdigest()
+    if mutate is not None:
+        mutate(receipt)
+    path = root / "tinker-account-binding-ceremony.receipt.json"
+    path.write_bytes(_canonical_json(receipt))
+    path.chmod(0o600)
     return path
 
 
@@ -272,7 +391,10 @@ def _metering_environment(intent_metering: dict) -> dict[str, str]:
     }
 
 
-def _fresh_contract_ledger(deployment_intent_sha256: str) -> dict:
+def _fresh_contract_ledger(
+    deployment_intent_sha256: str,
+    tinker_account_binding_ceremony_receipt_sha256: str,
+) -> dict:
     address = lambda value: f"0x{value:040x}"
     word = lambda value: f"0x{value:064x}"
     reviewer_genesis_acceptance_sha256 = "sha256:" + ("91" * 32)
@@ -300,7 +422,7 @@ def _fresh_contract_ledger(deployment_intent_sha256: str) -> dict:
         for index, name in enumerate(contract_names)
     }
     transaction_spec = (
-        ("diligenceRoom", "DiligenceRoom", "CREATE", "constructor(bool)"),
+        ("diligenceRoom", "DiligenceRoom", "CREATE", "constructor(bool,address)"),
         ("diligenceRoom", "DiligenceRoom", "CALL", "freezeFeeBps()"),
         (
             "diligenceRoom",
@@ -332,7 +454,7 @@ def _fresh_contract_ledger(deployment_intent_sha256: str) -> dict:
             "CREATE",
             "constructor(address,bytes32,bytes32,uint256,uint256)",
         ),
-        ("royaltyDistributor", "RoyaltyDistributor", "CREATE", "constructor()"),
+        ("royaltyDistributor", "RoyaltyDistributor", "CREATE", "constructor(address)"),
         (
             "challengeRegistry",
             "ChallengeRegistry",
@@ -472,6 +594,9 @@ def _fresh_contract_ledger(deployment_intent_sha256: str) -> dict:
                 "reviewerAuthorityGenesisAcceptanceSha256": (
                     reviewer_genesis_acceptance_sha256
                 ),
+                "tinkerAccountBindingCeremonyReceiptSha256": (
+                    tinker_account_binding_ceremony_receipt_sha256
+                ),
                 "keystoreAccount": "dev",
                 "runtimeCodeProof": (
                     "exact_creation_reexecution_match_all_contracts"
@@ -495,6 +620,9 @@ def _fresh_contract_ledger(deployment_intent_sha256: str) -> dict:
                 "deploymentIntentSha256": deployment_intent_sha256,
                 "reviewerAuthorityGenesisAcceptanceSha256": (
                     reviewer_genesis_acceptance_sha256
+                ),
+                "tinkerAccountBindingCeremonyReceiptSha256": (
+                    tinker_account_binding_ceremony_receipt_sha256
                 ),
                 "broadcastTransactionsSha256": broadcast_transactions_sha256,
             }
@@ -559,6 +687,40 @@ class ReleaseComposeTest(unittest.TestCase):
                     domain="fixture",
                 )
 
+        for feature_enable_key in (
+            "TINKER_COLLABORATION_ENABLED",
+            "TINKER_CUSTOMER_ENABLED",
+        ):
+            exact = f"${{{feature_enable_key}:-false}}"
+            fail_closed_boolean = {
+                "delegate": {
+                    "environment": {feature_enable_key: exact}
+                }
+            }
+            _validate_late_environment_pass_through(
+                fail_closed_boolean,
+                (feature_enable_key,),
+                domain="fixture",
+                fail_closed_defaults={feature_enable_key: "false"},
+            )
+            for invalid in (
+                f"${{{feature_enable_key}:-}}",
+                f"${{{feature_enable_key}:-true}}",
+                f"${{{feature_enable_key}-false}}",
+            ):
+                mutated = deepcopy(fail_closed_boolean)
+                mutated["delegate"]["environment"][feature_enable_key] = invalid
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "must use exact post-measurement",
+                ):
+                    _validate_late_environment_pass_through(
+                        mutated,
+                        (feature_enable_key,),
+                        domain="fixture",
+                        fail_closed_defaults={feature_enable_key: "false"},
+                    )
+
     def test_renders_seven_purpose_separated_digest_pinned_cvm_descriptors(self):
         manifest = _manifest()
         with TemporaryDirectory() as temporary:
@@ -568,17 +730,49 @@ class ReleaseComposeTest(unittest.TestCase):
             bundle_path = _write_bundle(root)
             deployment_intent = _intent()
             intent_path = _write_intent(root, deployment_intent)
+            ceremony_path = _write_account_binding_ceremony_receipt(
+                root,
+                intent_path,
+            )
+            ceremony_receipt = json.loads(
+                ceremony_path.read_text(encoding="utf-8")
+            )
             output = root / "release"
             result = render_release_composes(
                 manifest_path,
                 output,
                 manifest_attestation_bundle_path=bundle_path,
                 deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=ceremony_path,
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
 
             main = _load(result.main_compose)
+            release_composes_module._validate_reviewed_service_mounts(
+                main["services"],
+                release_composes_module.MAIN_RENDERED_SERVICE_MOUNTS,
+                domain="main",
+            )
+            named_volume_references = set()
+            for service in main["services"].values():
+                for mount in service.get("volumes", []):
+                    if isinstance(mount, dict):
+                        if mount.get("type") == "volume" and mount.get("source"):
+                            named_volume_references.add(mount["source"])
+                        continue
+                    if ":" not in mount:
+                        continue
+                    source = mount.split(":", 1)[0]
+                    if (
+                        source
+                        and not source.startswith(("/", ".", "~"))
+                        and "/" not in source
+                        and "\\" not in source
+                    ):
+                        named_volume_references.add(source)
+            self.assertIn("arena-worker-sealed", main["volumes"])
+            self.assertEqual(named_volume_references, set(main["volumes"]))
             qvls = {
                 "diligence_qvl_cvm": _load(result.diligence_qvl_compose),
                 "arena_qvl_cvm": _load(result.arena_qvl_compose),
@@ -787,6 +981,11 @@ class ReleaseComposeTest(unittest.TestCase):
                     "${TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256:-}"
                 ),
                 "TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED": "true",
+                "TINKER_ARENA_STORE_INTEGRITY_KEY": "",
+                "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH": (
+                    "tinker/arena_store_integrity"
+                ),
+                "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED": "false",
             }
             for name, value in expected_arena_authority.items():
                 self.assertEqual(arena_environment[name], value, name)
@@ -795,14 +994,91 @@ class ReleaseComposeTest(unittest.TestCase):
                 "TINKER_RELEASE_DEPLOYMENT_INTENT_SHA256",
                 "TINKER_RELEASE_AUTHORITY_SHA256",
                 "TINKER_RELEASE_CEREMONY_NONCE",
-                "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256",
             ):
                 holders = [
                     service_name
                     for service_name, service in main["services"].items()
                     if name in service.get("environment", {})
                 ]
-                self.assertEqual(holders, ["arena-worker"], name)
+                expected_holders = {
+                    "delegate",
+                    "arena-worker",
+                    "collaboration-execution-worker",
+                }
+                self.assertEqual(set(holders), expected_holders, name)
+            qvl_lineage_holders = [
+                service_name
+                for service_name, service in main["services"].items()
+                if "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256"
+                in service.get("environment", {})
+            ]
+            self.assertEqual(qvl_lineage_holders, ["arena-worker"])
+            for name in (
+                "TINKER_ARENA_STORE_INTEGRITY_KEY",
+                "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH",
+                "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED",
+            ):
+                holders = [
+                    service_name
+                    for service_name, service in main["services"].items()
+                    if name in service.get("environment", {})
+                ]
+                self.assertEqual(set(holders), {"delegate", "arena-worker"}, name)
+                self.assertEqual(
+                    main["services"]["delegate"]["environment"][name],
+                    arena_environment[name],
+                    name,
+                )
+
+            review_environment = main["services"]["delegate"]["environment"]
+            self.assertEqual(
+                review_environment["TINKER_REVIEW_QUEUE_PATH"],
+                "${TINKER_REVIEW_QUEUE_PATH:-/data/review_queue.json}",
+            )
+            self.assertEqual(
+                review_environment["TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY"],
+                "",
+            )
+            for name in (
+                "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+                "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+            ):
+                self.assertIn(name, review_environment)
+                self.assertIn(f"${{{name}:?", review_environment[name])
+            for name, value in {
+                **COLLABORATION_LITERAL_ENVIRONMENT,
+                **TINKER_CUSTOMER_LITERAL_ENVIRONMENT,
+            }.items():
+                self.assertEqual(review_environment[name], value, name)
+            self.assertFalse(
+                any(
+                    name.startswith("TINKER_ARENA_AGENT_")
+                    for name in review_environment
+                )
+            )
+            self.assertEqual(
+                review_environment["TINKER_COLLABORATION_ENABLED"],
+                "${TINKER_COLLABORATION_ENABLED:-false}",
+            )
+            self.assertEqual(
+                review_environment["TINKER_CUSTOMER_ENABLED"],
+                "${TINKER_CUSTOMER_ENABLED:-false}",
+            )
+            self.assertEqual(
+                review_environment["TINKER_CUSTOMER_AUTHORITY_SHA256"],
+                "${TINKER_CUSTOMER_AUTHORITY_SHA256:-}",
+            )
+            self.assertFalse(
+                any(
+                    name.startswith("TINKER_TINKER_CUSTOMER_")
+                    for name in review_environment
+                )
+            )
             heartbeat_environment = {
                 "TINKER_ARENA_WORKER_HEARTBEAT_PATH": (
                     "/data/arena_worker_heartbeat.json"
@@ -879,8 +1155,140 @@ class ReleaseComposeTest(unittest.TestCase):
             self.assertEqual(compute["profiles"], ["compute-execution"])
             self.assertEqual(
                 compute["x-dnai-capability-status"],
-                "disabled_provider_contract_unavailable",
+                "release_pinned_provider_runtime_gated",
             )
+            collaboration_execution = main["services"][
+                "collaboration-execution-worker"
+            ]
+            self.assertEqual(
+                collaboration_execution["profiles"],
+                [COLLABORATION_EXECUTION_PROFILE],
+            )
+            self.assertEqual(
+                collaboration_execution["x-dnai-capability-status"],
+                "signed_one_shot_collaboration_execution_gated",
+            )
+            self.assertEqual(
+                collaboration_execution["command"],
+                [
+                    "python",
+                    "-m",
+                    "tinker_delegate.collaboration_execution_worker",
+                ],
+            )
+            self.assertEqual(
+                collaboration_execution["networks"],
+                ["collaboration-execution-egress"],
+            )
+            collaboration_environment = collaboration_execution["environment"]
+            for name, value in COLLABORATION_EXECUTION_LITERAL_ENVIRONMENT.items():
+                self.assertEqual(collaboration_environment[name], value, name)
+            for name, value in (
+                ROYALTY_SETTLEMENT_RELEASE_DEFERRED_ENVIRONMENT.items()
+            ):
+                self.assertEqual(collaboration_environment[name], value, name)
+                if name.startswith("TINKER_ROYALTY_"):
+                    holders = [
+                        service_name
+                        for service_name, service in main["services"].items()
+                        if name in service.get("environment", {})
+                    ]
+                    self.assertEqual(
+                        set(holders),
+                        {"collaboration-execution-worker", "delegate"},
+                        name,
+                    )
+            self.assertEqual(
+                collaboration_environment[
+                    "TINKER_COLLABORATION_EXECUTION_ENABLED"
+                ],
+                "${TINKER_COLLABORATION_EXECUTION_ENABLED:-false}",
+            )
+            self.assertEqual(
+                collaboration_environment[
+                    "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED"
+                ],
+                COMPUTE_WORKLOAD_WALLET_ADOPTION_ENVIRONMENT_VALUE,
+            )
+            self.assertIn("delegate-data:/data", collaboration_execution["volumes"])
+            self.assertIn(
+                "/var/run/dstack.sock:/var/run/dstack.sock:ro",
+                collaboration_execution["volumes"],
+            )
+            for forbidden in (
+                "TINKER_API_KEY",
+                "TINKER_API_KEY_STORE_PATH",
+                "TINKER_CLIENT_CONFIG_STORE_PATH",
+                "TINKER_COMPUTE_METERING_AUTH_TOKEN",
+                "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+                "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+                "TINKER_QVL_AUTH_TOKEN",
+                "TINKER_ROYALTY_FUNDING_AUTHORIZATION_COMMITMENT",
+            ):
+                self.assertNotIn(forbidden, collaboration_environment)
+            self.assertFalse(
+                any(
+                    name.startswith("TINKER_COMPUTE_PROVIDER_")
+                    for name in collaboration_environment
+                )
+            )
+            egress_holders = [
+                name
+                for name, service in main["services"].items()
+                if "collaboration-execution-egress"
+                in release_composes_module._network_names(service)
+            ]
+            self.assertEqual(
+                egress_holders,
+                ["collaboration-execution-worker"],
+            )
+            self.assertEqual(
+                main["networks"]["collaboration-execution-egress"],
+                {"driver": "bridge"},
+            )
+            for service_name in ("delegate", "compute-execution-worker"):
+                environment = main["services"][service_name]["environment"]
+                for name, value in COMPUTE_PROVIDER_LITERAL_ENVIRONMENT.items():
+                    self.assertEqual(environment[name], value, name)
+                self.assertEqual(
+                    environment["TINKER_API_KEY_STORE_PATH"],
+                    "/data/tinker_api_key.enc",
+                )
+                self.assertEqual(
+                    environment["TINKER_CLIENT_CONFIG_STORE_PATH"],
+                    "/data/tinker_client_config.enc",
+                )
+                self.assertNotIn("TINKER_API_KEY", environment)
+            for service_name in (
+                "delegate",
+                "compute-execution-worker",
+                "collaboration-execution-worker",
+            ):
+                self.assertEqual(
+                    main["services"][service_name]["environment"][
+                        "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED"
+                    ],
+                    COMPUTE_WORKLOAD_WALLET_ADOPTION_ENVIRONMENT_VALUE,
+                )
+            royalty_safety_key = (
+                "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS"
+            )
+            royalty_safety_holders = [
+                service_name
+                for service_name, service in main["services"].items()
+                if royalty_safety_key in service.get("environment", {})
+            ]
+            self.assertEqual(
+                set(royalty_safety_holders),
+                {"delegate", "collaboration-execution-worker"},
+            )
+            for service_name in royalty_safety_holders:
+                self.assertEqual(
+                    main["services"][service_name]["environment"][
+                        royalty_safety_key
+                    ],
+                    COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_ENVIRONMENT_VALUE,
+                )
             writer_token = "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN"
             holders = [
                 name
@@ -963,10 +1371,12 @@ class ReleaseComposeTest(unittest.TestCase):
             for service_name in (
                 "oracle",
                 "delegate",
+                "tinker-customer-authority-init",
                 "arena-worker",
                 "anchor-writer-evidence",
                 "deal-runtime",
                 "compute-execution-worker",
+                "collaboration-execution-worker",
             ):
                 volumes = main["services"][service_name].get("volumes", [])
                 if any("dstack.sock" in str(volume) for volume in volumes):
@@ -1014,6 +1424,212 @@ class ReleaseComposeTest(unittest.TestCase):
             )
             self.assertIn("oracle-data", main["volumes"])
 
+            mailbox_genesis = main["services"]["mailbox-genesis"]
+            account_genesis = main["services"]["tinker-account-genesis"]
+            self.assertEqual(
+                mailbox_genesis["profiles"],
+                [MAILBOX_GENESIS_PROFILE],
+            )
+            self.assertEqual(
+                account_genesis["profiles"],
+                [TINKER_ACCOUNT_GENESIS_PROFILE],
+            )
+            for service in (mailbox_genesis, account_genesis):
+                self.assertEqual(service["restart"], "no")
+                self.assertTrue(service["read_only"])
+                self.assertEqual(service["cap_drop"], ["ALL"])
+                self.assertEqual(
+                    service["security_opt"],
+                    ["no-new-privileges:true"],
+                )
+                self.assertNotIn("ports", service)
+                self.assertEqual(set(service["networks"]), {"tee-net"})
+            self.assertEqual(
+                mailbox_genesis["command"],
+                ["email-oracle", "genesis-profile"],
+            )
+            self.assertEqual(
+                account_genesis["command"],
+                ["python", "-m", "tinker_delegate.account_genesis_profile"],
+            )
+            self.assertIn("oracle-data:/data", mailbox_genesis["volumes"])
+            self.assertNotIn("delegate-data:/data", mailbox_genesis["volumes"])
+            self.assertIn("delegate-data:/data", account_genesis["volumes"])
+            self.assertNotIn("oracle-data:/data", account_genesis["volumes"])
+            self.assertIn(
+                "tinker-genesis-handoff:/handoff",
+                mailbox_genesis["volumes"],
+            )
+            self.assertIn(
+                "tinker-genesis-handoff:/handoff:ro",
+                account_genesis["volumes"],
+            )
+            self.assertIn(
+                "mailbox-genesis-evidence:/evidence",
+                mailbox_genesis["volumes"],
+            )
+            self.assertIn(
+                "tinker-account-genesis-evidence:/account-evidence:ro",
+                mailbox_genesis["volumes"],
+            )
+            self.assertIn(
+                "tinker-account-genesis-evidence:/evidence",
+                account_genesis["volumes"],
+            )
+            self.assertNotIn(
+                "mailbox-genesis-evidence:/evidence",
+                account_genesis["volumes"],
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"]["ORACLE_AUTO_GENESIS"],
+                "false",
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"][
+                    "ORACLE_ALLOW_CREDENTIAL_PROVISIONING_ENDPOINT"
+                ],
+                "false",
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"]["ORACLE_AUTH_REQUIRED"],
+                "false",
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"][
+                    "ORACLE_RUNTIME_AUTH_REQUIRED"
+                ],
+                "true",
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"]["ORACLE_RUNTIME_AUTH_TOKEN"],
+                "",
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"][
+                    "ORACLE_RUNTIME_AUTH_KEY_PATH"
+                ],
+                "oracle/runtime-auth",
+            )
+            self.assertEqual(
+                account_genesis["environment"][
+                    "TINKER_ORACLE_AUTH_KEY_PATH"
+                ],
+                "oracle/runtime-auth",
+            )
+            self.assertEqual(
+                account_genesis["environment"]["TINKER_BOOTSTRAP_SIGNUP"],
+                "false",
+            )
+            self.assertEqual(
+                account_genesis["environment"]["TINKER_BOOTSTRAP_FAIL_OPEN"],
+                "false",
+            )
+            self.assertEqual(
+                account_genesis["environment"][
+                    "TINKER_ACCOUNT_BINDING_EXPECTED_COMMITMENT"
+                ],
+                deployment_intent["staticContractInputs"][
+                    "tinkerAccountEncumbrance"
+                ]["accountCommitment"],
+            )
+            self.assertNotIn(
+                "${",
+                account_genesis["environment"][
+                    "TINKER_ACCOUNT_BINDING_EXPECTED_COMMITMENT"
+                ],
+            )
+            self.assertEqual(
+                mailbox_genesis["environment"][
+                    "ORACLE_GENESIS_ACCOUNT_BINDING_COMMITMENT"
+                ],
+                deployment_intent["staticContractInputs"][
+                    "tinkerAccountEncumbrance"
+                ]["accountCommitment"],
+            )
+            self.assertEqual(
+                account_genesis["environment"][
+                    "TINKER_ACCOUNT_BINDING_SHARE_ONE"
+                ],
+                "${TINKER_ACCOUNT_BINDING_SHARE_ONE:-}",
+            )
+            self.assertEqual(
+                account_genesis["environment"][
+                    "TINKER_ACCOUNT_BINDING_SHARE_TWO"
+                ],
+                "${TINKER_ACCOUNT_BINDING_SHARE_TWO:-}",
+            )
+            for prefix, service in (
+                ("ORACLE_GENESIS_", mailbox_genesis),
+                ("TINKER_ACCOUNT_GENESIS_", account_genesis),
+            ):
+                environment = service["environment"]
+                self.assertEqual(environment[f"{prefix}RELEASE_SHA"], SHA)
+                self.assertEqual(
+                    environment[f"{prefix}DEPLOYMENT_INTENT_SHA256"],
+                    "sha256:"
+                    + hashlib.sha256(intent_path.read_bytes()).hexdigest(),
+                )
+                self.assertEqual(
+                    environment[
+                        f"{prefix}BINDING_CEREMONY_RECEIPT_SHA256"
+                    ],
+                    ceremony_receipt[
+                        "tinker_account_binding_ceremony_receipt_sha256"
+                    ],
+                )
+                self.assertEqual(
+                    environment[
+                        f"{prefix}REVIEWER_GENESIS_ACCEPTANCE_SHA256"
+                    ],
+                    deployment_intent["release"][
+                        "reviewerAuthorityGenesisAcceptanceSha256"
+                    ],
+                )
+                self.assertEqual(
+                    environment[f"{prefix}REVIEWER_CURRENT_STATUS_EPOCH"],
+                    str(
+                        deployment_intent["release"][
+                            "reviewerAuthorityCurrentStatusEpoch"
+                        ]
+                    ),
+                )
+                self.assertEqual(
+                    environment[f"{prefix}REVIEWER_CURRENT_STATUS_SHA256"],
+                    deployment_intent["release"][
+                        "reviewerAuthorityCurrentStatusSha256"
+                    ],
+                )
+            self.assertEqual(
+                main["services"]["delegate"]["environment"][
+                    "TINKER_BOOTSTRAP_SIGNUP"
+                ],
+                "false",
+            )
+            self.assertEqual(
+                main["services"]["delegate"]["environment"][
+                    "TINKER_BOOTSTRAP_FAIL_OPEN"
+                ],
+                "false",
+            )
+            self.assertIn("tinker-genesis-handoff", main["volumes"])
+            self.assertIn("mailbox-genesis-evidence", main["volumes"])
+            self.assertIn(
+                "tinker-account-genesis-evidence",
+                main["volumes"],
+            )
+            self.assertNotIn("tinker-genesis-evidence", main["volumes"])
+
+            self.assertEqual(
+                result.account_binding_ceremony_receipt.read_bytes(),
+                ceremony_path.read_bytes(),
+            )
+            self.assertEqual(
+                stat.S_IMODE(
+                    result.account_binding_ceremony_receipt.stat().st_mode
+                ),
+                0o600,
+            )
+
             topology = json.loads(result.topology.read_text(encoding="utf-8"))
             self.assertEqual(topology["schema"], "dnai.cvm-topology.v6")
             self.assertEqual(
@@ -1030,6 +1646,29 @@ class ReleaseComposeTest(unittest.TestCase):
                     "file": "dnai-deployment-intent-core.json",
                     "sha256": hashlib.sha256(intent_path.read_bytes()).hexdigest(),
                     "schema": "dnai.deployment-intent-core.v6",
+                },
+            )
+            self.assertEqual(
+                topology["tinkerAccountBindingCeremonyReceipt"],
+                {
+                    "file": (
+                        "tinker-account-binding-ceremony.receipt.json"
+                    ),
+                    "sha256": hashlib.sha256(
+                        ceremony_path.read_bytes()
+                    ).hexdigest(),
+                    "schema": (
+                        "dnai.tinker-account-binding-ceremony-receipt.v1"
+                    ),
+                    "tinkerAccountBindingCeremonyReceiptSha256": (
+                        ceremony_receipt[
+                            "tinker_account_binding_ceremony_receipt_sha256"
+                        ]
+                    ),
+                    "validation": (
+                        "python_structural_and_domain_digest_binding_"
+                        "requires_node_ceremony_check_replay"
+                    ),
                 },
             )
             self.assertEqual(result.image_manifest_attestation.read_bytes(), _bundle_bytes())
@@ -1107,6 +1746,91 @@ class ReleaseComposeTest(unittest.TestCase):
                 compose_bytes = (output / domain["compose"]).read_bytes()
                 self.assertEqual(domain["sha256"], hashlib.sha256(compose_bytes).hexdigest())
 
+    def test_account_binding_ceremony_receipt_is_exact_private_and_fresh(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            manifest_path = root / "input.json"
+            manifest_path.write_text(
+                json.dumps(_manifest()),
+                encoding="utf-8",
+            )
+            bundle_path = _write_bundle(root)
+            intent_path = _write_intent(root)
+            output = root / "release"
+
+            missing = root / "missing-ceremony-receipt.json"
+            with self.assertRaisesRegex(
+                ReleaseComposeError,
+                "ceremony receipt is unavailable",
+            ):
+                render_release_composes(
+                    manifest_path,
+                    output,
+                    manifest_attestation_bundle_path=bundle_path,
+                    deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=missing,
+                    expected_release_sha=SHA,
+                    repository_root=REPOSITORY_ROOT,
+                )
+
+            receipt_path = _write_account_binding_ceremony_receipt(
+                root,
+                intent_path,
+            )
+            receipt_path.chmod(0o644)
+            with self.assertRaisesRegex(
+                ReleaseComposeError,
+                "file authority is invalid",
+            ):
+                render_release_composes(
+                    manifest_path,
+                    output,
+                    manifest_attestation_bundle_path=bundle_path,
+                    deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=receipt_path,
+                    expected_release_sha=SHA,
+                    repository_root=REPOSITORY_ROOT,
+                )
+
+            receipt_path.chmod(0o600)
+            linked = root / "linked-ceremony-receipt.json"
+            linked.hardlink_to(receipt_path)
+            with self.assertRaisesRegex(
+                ReleaseComposeError,
+                "file authority is invalid",
+            ):
+                render_release_composes(
+                    manifest_path,
+                    output,
+                    manifest_attestation_bundle_path=bundle_path,
+                    deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=receipt_path,
+                    expected_release_sha=SHA,
+                    repository_root=REPOSITORY_ROOT,
+                )
+            linked.unlink()
+
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt[
+                "tinker_account_binding_ceremony_receipt_sha256"
+            ] = "sha256:" + "ff" * 32
+            receipt_path.write_bytes(_canonical_json(receipt))
+            receipt_path.chmod(0o600)
+            with self.assertRaisesRegex(
+                ReleaseComposeError,
+                "self-digest is invalid",
+            ):
+                render_release_composes(
+                    manifest_path,
+                    output,
+                    manifest_attestation_bundle_path=bundle_path,
+                    deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=receipt_path,
+                    expected_release_sha=SHA,
+                    repository_root=REPOSITORY_ROOT,
+                )
+            self.assertFalse(output.exists())
+
     def test_real_node_check_intent_receipt_is_consumed_and_bound_byte_for_byte(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -1135,7 +1859,7 @@ class ReleaseComposeTest(unittest.TestCase):
                     "reviewerAuthorityCurrentStatusSha256": (
                         "sha256:" + ("92" * 32)
                     ),
-                    "staticContractInputCount": 2,
+                    "staticContractInputCount": 3,
                 },
             )
             validated = validate_deployment_intent(
@@ -1154,6 +1878,9 @@ class ReleaseComposeTest(unittest.TestCase):
                 root / "release",
                 manifest_attestation_bundle_path=_write_bundle(root),
                 deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=(
+                    _write_account_binding_ceremony_receipt(root, intent_path)
+                ),
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
@@ -1186,11 +1913,22 @@ class ReleaseComposeTest(unittest.TestCase):
             manifest_path = root / "input.json"
             manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
             intent_path = _write_intent(root)
+            account_binding_ceremony_receipt_path = (
+                _write_account_binding_ceremony_receipt(root, intent_path)
+            )
+            account_binding_ceremony_receipt_sha256 = json.loads(
+                account_binding_ceremony_receipt_path.read_text(
+                    encoding="utf-8"
+                )
+            )["tinker_account_binding_ceremony_receipt_sha256"]
             rendered = render_release_composes(
                 manifest_path,
                 root / "release",
                 manifest_attestation_bundle_path=_write_bundle(root),
                 deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=(
+                    account_binding_ceremony_receipt_path
+                ),
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
@@ -1200,7 +1938,10 @@ class ReleaseComposeTest(unittest.TestCase):
             ledger_path = root / "base-sepolia.json"
             ledger_path.write_text(
                 json.dumps(
-                    _fresh_contract_ledger(deployment_intent_sha256),
+                    _fresh_contract_ledger(
+                        deployment_intent_sha256,
+                        account_binding_ceremony_receipt_sha256,
+                    ),
                     indent=2,
                 )
                 + "\n",
@@ -1217,6 +1958,8 @@ class ReleaseComposeTest(unittest.TestCase):
                     str(rendered.topology),
                     "--ledger",
                     str(ledger_path),
+                    "--tinker-account-binding-ceremony-receipt-sha256",
+                    account_binding_ceremony_receipt_sha256,
                     "--out",
                     str(launch_path),
                     "--contract-receipt-out",
@@ -1246,11 +1989,18 @@ class ReleaseComposeTest(unittest.TestCase):
             root = Path(temporary).resolve()
             manifest_path = root / "input.json"
             manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            intent_path = _write_intent(root)
             rendered = render_release_composes(
                 manifest_path,
                 root / "release",
                 manifest_attestation_bundle_path=_write_bundle(root),
-                deployment_intent_path=_write_intent(root),
+                deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=(
+                    _write_account_binding_ceremony_receipt(
+                        root,
+                        intent_path,
+                    )
+                ),
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
@@ -1299,6 +2049,9 @@ class ReleaseComposeTest(unittest.TestCase):
                 root / "one",
                 manifest_attestation_bundle_path=bundle_path,
                 deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=(
+                    _write_account_binding_ceremony_receipt(root, intent_path)
+                ),
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
@@ -1307,6 +2060,9 @@ class ReleaseComposeTest(unittest.TestCase):
                 root / "two",
                 manifest_attestation_bundle_path=bundle_path,
                 deployment_intent_path=intent_path,
+                account_binding_ceremony_receipt_path=(
+                    _write_account_binding_ceremony_receipt(root, intent_path)
+                ),
                 expected_release_sha=SHA,
                 repository_root=REPOSITORY_ROOT,
             )
@@ -1331,6 +2087,10 @@ class ReleaseComposeTest(unittest.TestCase):
                 (
                     first.deployment_intent,
                     second.deployment_intent,
+                ),
+                (
+                    first.account_binding_ceremony_receipt,
+                    second.account_binding_ceremony_receipt,
                 ),
                 (first.topology, second.topology),
             ):
@@ -1382,7 +2142,7 @@ class ReleaseComposeTest(unittest.TestCase):
             for name, value in (
                 ("deploymentIntentSha256", f"sha256:{'f' * 64}"),
                 ("releaseSha", "b" * 40),
-                ("staticContractInputCount", 3),
+                ("staticContractInputCount", 4),
                 ("dynamicRuntimeAuthorityCount", 1),
                 ("canonicalContractCount", True),
                 ("chainId", 84532.0),
@@ -1478,6 +2238,11 @@ class ReleaseComposeTest(unittest.TestCase):
             manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
             bundle_path = _write_bundle(root)
             output = root / "release"
+            canonical = _write_intent(root)
+            ceremony_receipt = _write_account_binding_ceremony_receipt(
+                root,
+                canonical,
+            )
 
             missing = root / "missing-intent.json"
             with self.assertRaisesRegex(ReleaseComposeError, "deployment intent"):
@@ -1486,11 +2251,11 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=missing,
+                    account_binding_ceremony_receipt_path=ceremony_receipt,
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
 
-            canonical = _write_intent(root)
             linked = root / "linked-intent.json"
             linked.symlink_to(canonical)
             with self.assertRaisesRegex(ReleaseComposeError, "deployment intent"):
@@ -1499,6 +2264,7 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=linked,
+                    account_binding_ceremony_receipt_path=ceremony_receipt,
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1511,6 +2277,7 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=compact,
+                    account_binding_ceremony_receipt_path=ceremony_receipt,
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1530,6 +2297,7 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=duplicate,
+                    account_binding_ceremony_receipt_path=ceremony_receipt,
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1541,12 +2309,18 @@ class ReleaseComposeTest(unittest.TestCase):
             manifest_path = root / "input.json"
             manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
             old_projection = _write_old_projection(root)
+            canonical = _write_intent(root)
+            ceremony_receipt = _write_account_binding_ceremony_receipt(
+                root,
+                canonical,
+            )
             with self.assertRaisesRegex(ReleaseComposeError, "checker rejected"):
                 render_release_composes(
                     manifest_path,
                     root / "release",
                     manifest_attestation_bundle_path=_write_bundle(root),
                     deployment_intent_path=old_projection,
+                    account_binding_ceremony_receipt_path=ceremony_receipt,
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1557,6 +2331,10 @@ class ReleaseComposeTest(unittest.TestCase):
                 for option in action.option_strings
             }
             self.assertIn("--deployment-intent", option_strings)
+            self.assertIn(
+                "--account-binding-ceremony-receipt",
+                option_strings,
+            )
             self.assertNotIn("--operator-policy-projection", option_strings)
 
     def test_deployment_intent_is_re_read_after_checker_to_close_toctou(self):
@@ -1607,6 +2385,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=_write_bundle(root),
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1626,6 +2410,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha="b" * 40,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1705,6 +2495,19 @@ class ReleaseComposeTest(unittest.TestCase):
         )
         self.assertIn("oracle-data", local_base["volumes"])
 
+    def test_collaboration_execution_worker_enters_only_via_current_overlay(self):
+        phala = _load_yaml(PROJECT_ROOT / "docker-compose.all.phala.yaml")
+        dstack = _load_yaml(
+            PROJECT_ROOT / "docker-compose.all.dstack.yaml",
+            overlay=True,
+        )
+
+        service_name = "collaboration-execution-worker"
+        self.assertNotIn(service_name, phala["services"])
+        self.assertIn(service_name, dstack["services"])
+        self.assertIn(service_name, release_composes_module.MAIN_OVERLAY_SERVICES)
+        self.assertIn(service_name, MAIN_SERVICES)
+
     def test_compose_loader_accepts_security_override_directive(self):
         dstack = _load_yaml(
             PROJECT_ROOT / "docker-compose.all.dstack.yaml",
@@ -1715,6 +2518,477 @@ class ReleaseComposeTest(unittest.TestCase):
             dstack["services"]["diligence-policy-init"]["security_opt"],
             ["no-new-privileges:true"],
         )
+
+    def test_overlay_named_volume_merge_fails_closed_on_template_drift(self):
+        def templates() -> tuple[dict, dict]:
+            main = {
+                "services": {
+                    "copied": {
+                        "volumes": [
+                            "shared:/shared",
+                            "sealed:/sealed",
+                        ],
+                    },
+                },
+                "volumes": {"shared": None},
+            }
+            overlay = {
+                "services": {
+                    "copied": {
+                        "volumes": [
+                            "shared:/shared",
+                            "sealed:/sealed",
+                        ],
+                    },
+                },
+                "volumes": {
+                    "shared": None,
+                    "sealed": None,
+                },
+            }
+            return main, overlay
+
+        main, overlay = templates()
+        release_composes_module._merge_overlay_named_volumes(
+            main,
+            overlay,
+            copied_service_names=("copied",),
+            domain="fixture",
+        )
+        release_composes_module._validate_named_volume_closure(
+            main,
+            domain="fixture",
+        )
+        self.assertEqual(main["volumes"], {"shared": None, "sealed": None})
+
+        main, overlay = templates()
+        overlay["volumes"]["shared"] = {"external": True}
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "conflicts with the base declaration",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+        main, overlay = templates()
+        overlay["volumes"].pop("shared")
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "must explicitly declare every referenced named volume.*shared",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+        main, overlay = templates()
+        overlay["volumes"].pop("sealed")
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "must explicitly declare every referenced named volume.*sealed",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+        main, overlay = templates()
+        overlay["volumes"]["sealed"] = {"external": True}
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "must use an engine-managed empty declaration",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+        main, overlay = templates()
+        overlay["volumes"] = ["sealed"]
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "top-level volumes must use mapping form",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+        for mount in (
+            "./host-secrets:/private",
+            "../host-secrets:/private",
+            "~/host-secrets:/private",
+            "relative/host-secrets:/private",
+            r"C:\host-secrets:/private",
+            "file:///host-secrets:/private",
+            "/absolute/host-secrets:/private",
+        ):
+            with self.subTest(short_bind=mount):
+                main, overlay = templates()
+                overlay["services"]["copied"]["volumes"].append(mount)
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "host bind|internal named volume",
+                ):
+                    release_composes_module._merge_overlay_named_volumes(
+                        main,
+                        overlay,
+                        copied_service_names=("copied",),
+                        domain="fixture",
+                    )
+
+        for mount in (
+            {
+                "type": "bind",
+                "source": "./host-secrets",
+                "target": "/private",
+            },
+            {
+                "type": "bind",
+                "source": "/absolute/host-secrets",
+                "target": "/private",
+                "read_only": True,
+            },
+            {
+                "type": "volume",
+                "source": "sealed",
+                "target": "relative-target",
+            },
+            {
+                "type": "volume",
+                "source": "sealed",
+                "target": "/sealed-copy",
+                "volume": {"nocopy": True},
+            },
+        ):
+            with self.subTest(long_mount=mount):
+                main, overlay = templates()
+                overlay["services"]["copied"]["volumes"].append(mount)
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "host bind|invalid named volume|unsupported mount type",
+                ):
+                    release_composes_module._merge_overlay_named_volumes(
+                        main,
+                        overlay,
+                        copied_service_names=("copied",),
+                        domain="fixture",
+                    )
+
+        main, overlay = templates()
+        overlay["services"]["copied"]["volumes"].append(
+            {
+                "type": "bind",
+                "source": "/var/run/dstack.sock",
+                "target": "/var/run/dstack.sock",
+                "read_only": True,
+            }
+        )
+        release_composes_module._merge_overlay_named_volumes(
+            main,
+            overlay,
+            copied_service_names=("copied",),
+            domain="fixture",
+        )
+        release_composes_module._validate_named_volume_closure(
+            main,
+            domain="fixture",
+        )
+
+        main, overlay = templates()
+        overlay["services"]["copied"]["volumes"].append(
+            "undeclared-internal:/private"
+        )
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "must explicitly declare every referenced named volume.*undeclared-internal",
+        ):
+            release_composes_module._merge_overlay_named_volumes(
+                main,
+                overlay,
+                copied_service_names=("copied",),
+                domain="fixture",
+            )
+
+    def test_overlay_services_keep_exact_reviewed_mount_authority(self):
+        overlay = _load_yaml(
+            PROJECT_ROOT / "docker-compose.all.dstack.yaml",
+            overlay=True,
+        )
+        services = overlay["services"]
+        release_composes_module._validate_reviewed_service_mounts(
+            services,
+            release_composes_module.MAIN_OVERLAY_TEMPLATE_MOUNTS,
+            domain="main dstack overlay",
+        )
+
+        mutations = (
+            (
+                "added mount",
+                lambda value: value["arena-worker"]["volumes"].append(
+                    "oracle-data:/private"
+                ),
+            ),
+            (
+                "missing mount",
+                lambda value: value["deal-runtime"]["volumes"].pop(),
+            ),
+            (
+                "retargeted mount",
+                lambda value: value["compute-execution-worker"]["volumes"].__setitem__(
+                    0,
+                    "delegate-data:/private",
+                ),
+            ),
+            (
+                "mode changed",
+                lambda value: value["arena-worker"]["volumes"].__setitem__(
+                    1,
+                    "arena-worker-sealed:/sealed:rw",
+                ),
+            ),
+            (
+                "cross-volume capture",
+                lambda value: value["arena-worker"]["volumes"].__setitem__(
+                    0,
+                    "diligence-evaluator-policy:/data",
+                ),
+            ),
+            (
+                "unreviewed socket",
+                lambda value: value["diligence-policy-init"]["volumes"].append(
+                    "/var/run/dstack.sock:/var/run/dstack.sock"
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                changed = deepcopy(services)
+                mutate(changed)
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "mount authority drifted",
+                ):
+                    release_composes_module._validate_reviewed_service_mounts(
+                        changed,
+                        release_composes_module.MAIN_OVERLAY_TEMPLATE_MOUNTS,
+                        domain="main dstack overlay",
+                    )
+
+        hardened = deepcopy(services)
+        for service_name in release_composes_module.MAIN_OVERLAY_SERVICES:
+            release_composes_module._make_dstack_socket_read_only(
+                hardened[service_name]
+            )
+        release_composes_module._validate_reviewed_service_mounts(
+            hardened,
+            release_composes_module.MAIN_RENDERED_OVERLAY_MOUNTS,
+            domain="main",
+        )
+
+    def test_every_main_service_keeps_exact_rendered_mount_authority(self):
+        expected = release_composes_module.MAIN_RENDERED_SERVICE_MOUNTS
+        self.assertEqual(set(expected), set(MAIN_SERVICES))
+        services = {
+            service_name: {"volumes": list(mounts)}
+            for service_name, mounts in expected.items()
+        }
+        release_composes_module._validate_reviewed_service_mounts(
+            services,
+            expected,
+            domain="main",
+        )
+        socket_holders = {
+            service_name
+            for service_name, mounts in expected.items()
+            if any("dstack.sock" in str(mount) for mount in mounts)
+        }
+        self.assertEqual(
+            socket_holders,
+            {
+                "oracle",
+                "delegate",
+                "tinker-customer-authority-init",
+                "arena-worker",
+                "anchor-writer-evidence",
+                "deal-runtime",
+                "compute-execution-worker",
+                "collaboration-execution-worker",
+                "review-operations",
+                "mailbox-genesis",
+                "tinker-account-genesis",
+            },
+        )
+
+        mutations = (
+            (
+                "added mount",
+                lambda value: value["oracle"]["volumes"].append(
+                    "delegate-data:/shadow"
+                ),
+            ),
+            (
+                "missing mount",
+                lambda value: value["delegate"]["volumes"].pop(),
+            ),
+            (
+                "retargeted mount",
+                lambda value: value["oracle"]["volumes"].__setitem__(
+                    0,
+                    "oracle-data:/private",
+                ),
+            ),
+            (
+                "mode changed",
+                lambda value: value["delegate"]["volumes"].__setitem__(
+                    1,
+                    "diligence-evaluator-policy:/sealed/diligence:rw",
+                ),
+            ),
+            (
+                "cross-volume capture",
+                lambda value: value["oracle"]["volumes"].__setitem__(
+                    0,
+                    "delegate-data:/data",
+                ),
+            ),
+            (
+                "unauthorized socket",
+                lambda value: value["neko"]["volumes"].append(
+                    "/var/run/dstack.sock:/var/run/dstack.sock:ro"
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                changed = deepcopy(services)
+                mutate(changed)
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "mount authority drifted",
+                ):
+                    release_composes_module._validate_reviewed_service_mounts(
+                        changed,
+                        expected,
+                        domain="main",
+                    )
+
+    def test_compute_admission_paths_and_adoption_have_exact_service_contracts(self):
+        services = {
+            service_name: {
+                "environment": {
+                    **release_composes_module._COMPUTE_ADMISSION_SHARED_ENVIRONMENT,
+                    "TINKER_COMPUTE_DISPATCH_STORE_PATH": dispatch_path,
+                }
+            }
+            for service_name, dispatch_path in (
+                release_composes_module._COMPUTE_DISPATCH_STORE_PATH_BY_SERVICE.items()
+            )
+        }
+        release_composes_module._validate_compute_admission_environment(
+            services
+        )
+
+        for service_name in services:
+            with self.subTest(service=service_name, mutation="dispatch path"):
+                changed = deepcopy(services)
+                changed[service_name]["environment"][
+                    "TINKER_COMPUTE_DISPATCH_STORE_PATH"
+                ] = "/data/unreviewed-dispatch.json"
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    rf"{service_name}.*exact reviewed dispatch journal path",
+                ):
+                    release_composes_module._validate_compute_admission_environment(
+                        changed
+                    )
+
+            with self.subTest(service=service_name, mutation="adoption value"):
+                changed = deepcopy(services)
+                changed[service_name]["environment"][
+                    "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED"
+                ] = "true"
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "WALLET_ADOPTION.*drifted",
+                ):
+                    release_composes_module._validate_compute_admission_environment(
+                        changed
+                    )
+
+        escaped = deepcopy(services)
+        escaped["unreviewed-service"] = {
+            "environment": {
+                "TINKER_COMPUTE_DISPATCH_STORE_PATH": (
+                    "/data/compute_exact_asset_dispatch.json"
+                ),
+                "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED": (
+                    COMPUTE_WORKLOAD_WALLET_ADOPTION_ENVIRONMENT_VALUE
+                ),
+            }
+        }
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "WALLET_ADOPTION.*escaped its exact services",
+        ):
+            release_composes_module._validate_compute_admission_environment(
+                escaped
+            )
+
+    def test_royalty_reservation_safety_has_exact_service_contract(self):
+        key = (
+            "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS"
+        )
+        services = {
+            service_name: {
+                "environment": {
+                    key: COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_ENVIRONMENT_VALUE
+                }
+            }
+            for service_name in (
+                "delegate",
+                "collaboration-execution-worker",
+            )
+        }
+        validate = (
+            release_composes_module
+            ._validate_collaboration_royalty_reservation_safety_environment
+        )
+        validate(services)
+
+        for service_name in services:
+            with self.subTest(service=service_name, mutation="unsafe value"):
+                changed = deepcopy(services)
+                changed[service_name]["environment"][key] = "60"
+                with self.assertRaisesRegex(
+                    ReleaseComposeError,
+                    "safety bound escaped its exact services",
+                ):
+                    validate(changed)
+
+        escaped = deepcopy(services)
+        escaped["unreviewed-service"] = {
+            "environment": {
+                key: COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_ENVIRONMENT_VALUE
+            }
+        }
+        with self.assertRaisesRegex(
+            ReleaseComposeError,
+            "safety bound escaped its exact services",
+        ):
+            validate(escaped)
 
     def test_manifest_attestation_bundle_is_required_bounded_and_no_follow(self):
         with TemporaryDirectory() as temporary:
@@ -1730,6 +3004,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=missing,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1743,6 +3023,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=linked,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1755,6 +3041,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=malformed,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1767,6 +3059,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=empty,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1787,6 +3085,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     root / "symlink-output",
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1802,6 +3106,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     root / "duplicate-output",
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1832,6 +3142,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )
@@ -1870,6 +3186,12 @@ class ReleaseComposeTest(unittest.TestCase):
                     output,
                     manifest_attestation_bundle_path=bundle_path,
                     deployment_intent_path=intent_path,
+                    account_binding_ceremony_receipt_path=(
+                        _write_account_binding_ceremony_receipt(
+                            root,
+                            intent_path,
+                        )
+                    ),
                     expected_release_sha=SHA,
                     repository_root=REPOSITORY_ROOT,
                 )

@@ -12,7 +12,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 from eth_account import Account
@@ -191,6 +191,21 @@ class SubmitResultReceipt:
             "raw_secret_egress": self.raw_secret_egress,
         }
         return payload
+
+
+@dataclass(frozen=True)
+class PreparedSubmissionAttempt:
+    """Public metadata durably journaled before raw transaction broadcast.
+
+    The raw signed transaction is intentionally absent.  Its Keccak hash,
+    signer nonce, and canonical bounded-result hash are enough to reconcile an
+    ambiguous send without creating a second signing or broadcast path.
+    """
+
+    tx_hash: str
+    nonce: int
+    result_hash: str
+    prepared_at: int
 
 
 class DstackEthereumSigner:
@@ -987,8 +1002,12 @@ class JsonRpcClient:
     def chain_id(self) -> int:
         return _parse_quantity(self.call("eth_chainId", []))
 
-    def nonce(self, address: str) -> int:
-        return _parse_quantity(self.call("eth_getTransactionCount", [address, "latest"]))
+    def nonce(self, address: str, block_tag: str = "latest") -> int:
+        if block_tag not in {"latest", "pending"}:
+            raise ChainSubmitterError("transaction-count block tag is invalid")
+        return _parse_quantity(
+            self.call("eth_getTransactionCount", [address, block_tag])
+        )
 
     def gas_price(self) -> int:
         return _parse_quantity(self.call("eth_gasPrice", []))
@@ -1001,6 +1020,22 @@ class JsonRpcClient:
 
     def send_raw_transaction(self, raw_transaction: bytes) -> str:
         return str(self.call("eth_sendRawTransaction", ["0x" + raw_transaction.hex()]))
+
+    def transaction_receipt(self, tx_hash: str) -> dict[str, Any] | None:
+        result = self.call("eth_getTransactionReceipt", [normalize_bytes32(tx_hash)])
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise ChainSubmitterError("transaction receipt response is invalid")
+        return result
+
+    def transaction_by_hash(self, tx_hash: str) -> dict[str, Any] | None:
+        result = self.call("eth_getTransactionByHash", [normalize_bytes32(tx_hash)])
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise ChainSubmitterError("transaction response is invalid")
+        return result
 
 
 class DiligenceRoomSubmitter:
@@ -1100,6 +1135,7 @@ class DiligenceRoomSubmitter:
         attestation_verifier_signature: str,
         compose_hash: str = "",
         signer_attestation: SignerAttestationEvidence | None = None,
+        before_broadcast: Callable[[PreparedSubmissionAttempt], None] | None = None,
     ) -> SubmitResultReceipt:
         if deal_id < 0:
             raise ChainSubmitterError("deal ID cannot be negative")
@@ -1254,7 +1290,25 @@ class DiligenceRoomSubmitter:
             raw = getattr(signed, "rawTransaction", None)
         if raw is None:
             raise ChainSubmitterError("signer did not return a raw transaction")
-        tx_hash = self.rpc.send_raw_transaction(bytes(raw))
+        raw_bytes = bytes(raw)
+        expected_tx_hash = "0x" + keccak(raw_bytes).hex()
+        if before_broadcast is not None:
+            before_broadcast(
+                PreparedSubmissionAttempt(
+                    tx_hash=expected_tx_hash,
+                    nonce=nonce,
+                    result_hash=submission_result_hash,
+                    prepared_at=int(time.time()),
+                )
+            )
+        returned_tx_hash = normalize_bytes32(
+            self.rpc.send_raw_transaction(raw_bytes)
+        )
+        if returned_tx_hash != expected_tx_hash:
+            raise ChainSubmitterError(
+                "JSON-RPC transaction hash does not match signed transaction"
+            )
+        tx_hash = expected_tx_hash
         return SubmitResultReceipt(
             submitted=True,
             tx_hash=tx_hash,

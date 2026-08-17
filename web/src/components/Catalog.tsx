@@ -46,7 +46,18 @@ export function Catalog() {
       <div class="grid">
         <For each={shown()}>
           {(app) => (
-            <article class={`card ${app.gated ? "restricted" : ""}`}>
+            <article
+              class={`card ${app.gated ? "restricted" : ""}`}
+              data-product-state={app.gated ? "modeled" : "roadmap"}
+            >
+              <div class="catalog-card-state">
+                <span class={`feature-state ${app.gated ? "modeled" : "roadmap"}`}>
+                  {app.gated ? "MODELED DENY EXAMPLE" : "ROADMAP CONCEPT"}
+                </span>
+                <small>{app.gated
+                  ? "Browser policy example · not a deployed enforcement claim"
+                  : "No live service directory or health-data intake"}</small>
+              </div>
               <h3>{app.name}</h3>
               <Show when={app.gated}>
                 <span class="chip crimson">

@@ -54,8 +54,16 @@ import {
   readPhalaPinnedPrivateFile,
 } from "./phala-pinned-private-directory.mjs";
 import {
-  reconstructPhalaSevenCvmHistoricalEvidenceSet,
-} from "./phala-seven-cvm-historical-evidence-core.mjs";
+  reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority,
+} from "./phala-seven-cvm-historical-release-verification-authority.mjs";
+import {
+  phalaSevenCvmVerifiedEvidenceSetSha256,
+  replayPersistedHistoricalPhalaSevenCvmEvidence,
+} from "./phala-seven-cvm-verifier-evidence.mjs";
+import {
+  normalizePreCeremonyRuntimeAuthority,
+  projectPreCeremonyRuntimeAuthorityHistoricalLaunchBinding,
+} from "./pre-ceremony-runtime-authority-core.mjs";
 import {
   reconstructPersistedPhalaSevenCvmLaunchCompletionHistoricalDependency,
 } from "./phala-seven-cvm-launch-completion-core.mjs";
@@ -72,29 +80,32 @@ import {
 } from "./phala-completed-launch-continuation-core.mjs";
 
 export const PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_SCHEMA =
-  "dnai.phala-completed-seven-cvm-launch-continuation-capability.v1";
+  "dnai.phala-completed-seven-cvm-launch-continuation-capability.v2";
 export const PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_STATUS =
-  "current_continuity_reconciled_pending_one_shot_evidence_session_adoption";
+  "recorded_time_dcap_and_current_continuity_reconciled_pending_one_shot_evidence_session_adoption";
 export const PHALA_COMPLETED_LAUNCH_CONTINUATION_CAPABILITY_TRUTH =
-  "opaque_same_process_one_shot_capability_for_historical_L_and_current_nonmutating_continuity_not_serializable_launch_or_live_authority";
+  "opaque_same_process_one_shot_capability_for_signed_a_l_r_b_exact14_recorded_time_dcap_historical_L_and_current_nonmutating_continuity_not_serializable_launch_or_live_authority";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_SUFFIX =
   ".completed-launch-continuity-receipt.json";
 
 const CAPABILITY_DOMAIN =
-  "dnai-wikigen/phala-completed-seven-cvm-launch-continuation-capability/v1\0";
+  "dnai-wikigen/phala-completed-seven-cvm-launch-continuation-capability/v2\0";
 const MAX_L_BYTES = 4 * 1024 * 1024;
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const CAPABILITIES = new WeakMap();
 const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 
 const RESUME_FIELDS = Object.freeze([
+  "ceremonyAuthorizationDependencies",
   "compatibilityReceipt",
-  "historicalEvidenceContext",
   "historicalSignedA",
   "launchCompletionReceiptPath",
+  "persistedCeremonyAuthorization",
+  "persistedRuntimeAuthority",
   "productionTargetAuthority",
   "recoveryDirectory",
   "sdkWireTransformStagingReceipt",
+  "descriptorSetReceipt",
 ]);
 const HISTORICAL_A_FIELDS = Object.freeze([
   "authorization",
@@ -228,21 +239,6 @@ function buildPostureProjection(raw, cvmId) {
   };
 }
 
-function rawArtifactsFromTranscriptEntries(entries) {
-  return Object.fromEntries(entries.map((entry) => {
-    let value;
-    try { value = JSON.parse(entry.text); } catch {
-      throw new TypeError(`${entry.flag} persisted historical transcript is not JSON`);
-    }
-    const bytes = Buffer.from(entry.text, "utf8");
-    return [entry.flag, Object.freeze({
-      value,
-      sha256: sha256(bytes),
-      size: bytes.length,
-    })];
-  }));
-}
-
 function assertTargetMatchesHistoricalLaunch(target, targetSha256, state, launch) {
   if (targetSha256 !== state.target_authority_sha256
     || targetSha256 !== launch.production_target_authority_sha256
@@ -304,6 +300,9 @@ function publicCapability(receipt, receiptSha256) {
     launch_completion_receipt_sha256:
       receipt.launch_completion_receipt_sha256,
     continuity_receipt_sha256: receiptSha256,
+    recorded_time_dcap_replayed: true,
+    persisted_intel_collateral_revalidated: true,
+    historical_freshness_renewed: false,
     historical_launch_refreshed: false,
     historical_evidence_refreshed: false,
     capability_serialized: false,
@@ -329,6 +328,9 @@ function assertCapabilityIntegrity(value, { requireUnconsumed = false } = {}) {
       !== phalaCompletedLaunchContinuityReceiptSha256(state.continuityReceipt)
     || value.launch_completion_receipt_sha256
       !== state.continuityReceipt.launch_completion_receipt_sha256
+    || value.recorded_time_dcap_replayed !== true
+    || value.persisted_intel_collateral_revalidated !== true
+    || value.historical_freshness_renewed !== false
     || value.historical_launch_refreshed !== false
     || value.historical_evidence_refreshed !== false
     || value.capability_serialized !== false
@@ -460,8 +462,13 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     normalizeBootstrapPublicEnvironmentAuthority(
       historicalAInput.bootstrapAuthority,
     );
-  const runtimeBinding = parsed.historicalEvidenceContext
-    ?.historical_runtime_binding;
+  const persistedRuntimeAuthority = normalizePreCeremonyRuntimeAuthority(
+    parsed.persistedRuntimeAuthority,
+  );
+  const runtimeBinding =
+    projectPreCeremonyRuntimeAuthorityHistoricalLaunchBinding(
+      persistedRuntimeAuthority,
+    );
   const historicalLaunch =
     reconstructPersistedPhalaSevenCvmLaunchCompletionHistoricalDependency({
       persistedReceipt: persistedL,
@@ -496,16 +503,55 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     readDurablyPersistedPhalaSevenCvmHistoricalTranscriptTextEntries(
       transcriptReceipt,
     );
-  const historicalEvidence = reconstructPhalaSevenCvmHistoricalEvidenceSet({
-    rawArtifacts: rawArtifactsFromTranscriptEntries(transcriptEntries),
-    historicalEvidenceContext: parsed.historicalEvidenceContext,
-  });
-  if (historicalEvidence.launch_completion_receipt_sha256
-      !== historicalLaunch.receipt_sha256
-    || historicalEvidence.seven_cvm_verified_evidence_set_sha256
+  const historicalReleaseVerificationAuthority =
+    await reconstructPersistedHistoricalPhalaSevenCvmReleaseVerificationAuthority({
+      releaseVerificationAuthority:
+        historicalLaunch.release_verification_authority,
+      signedAReconstructionInput: historicalAInput,
+      launchCompletionReceipt: historicalLaunch.receipt,
+      persistedRuntimeAuthority,
+      persistedCeremonyAuthorization: parsed.persistedCeremonyAuthorization,
+      ceremonyAuthorizationDependencies:
+        parsed.ceremonyAuthorizationDependencies,
+      executorFinalState: state,
+      descriptorSetReceipt: parsed.descriptorSetReceipt,
+      historicalTranscriptFileSet: transcriptReceipt.transcript_file_set,
+    });
+  const historicalMachineReplay =
+    await replayPersistedHistoricalPhalaSevenCvmEvidence({
+      releaseAuthority: historicalReleaseVerificationAuthority,
+      rawTranscriptFiles: transcriptEntries,
+      executorFinalState: state,
+    });
+  const historicalEvidenceSetSha256 =
+    phalaSevenCvmVerifiedEvidenceSetSha256(
+      historicalMachineReplay.evidenceSet,
+    );
+  if (historicalEvidenceSetSha256
       !== historicalLaunch.receipt.machine_verifier_evidence_set_sha256) {
     throw new Error("historical raw14 proof reconstruction differs from immutable L");
   }
+  const historicalEvidence = deepFreezeCanonicalPlainDataGraph({
+    schema: "dnai.phala-seven-cvm-recorded-time-dcap-replay.v1",
+    truth_status:
+      "signed_a_l_r_b_authority_exact14_protocol_signatures_recorded_time_dcap_and_persisted_intel_collateral_replayed_without_freshness_renewal_or_live_authority",
+    launch_completion_receipt_sha256: historicalLaunch.receipt_sha256,
+    release_verification_authority_sha256:
+      historicalLaunch.release_verification_authority_sha256,
+    seven_cvm_verified_evidence_set_sha256:
+      historicalEvidenceSetSha256,
+    historical_transcript_file_set_sha256:
+      historicalLaunch.receipt.historical_transcript_file_set_sha256,
+    all_seven_recorded_time_dcap_replayed: true,
+    persisted_intel_collateral_revalidated: true,
+    workload_eip191_signatures_replayed: true,
+    freshness_renewed: false,
+    production_live_brand_minted: false,
+    live_traffic_authorized: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+  }, { label: "recorded-time seven-CVM historical replay summary" });
 
   const compatibility = normalizePhalaCompatibilityReceipt(
     parsed.compatibilityReceipt,
@@ -805,7 +851,13 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
       historical_transcript_persistence_receipt: transcriptReceipt,
       historical_transcript_text_entries: transcriptEntries,
       historical_evidence_reconstruction: historicalEvidence,
-      historical_evidence_set: historicalEvidence.evidence_set,
+      historical_evidence_set: historicalMachineReplay.evidenceSet,
+      historical_qvl_identity_evidence:
+        historicalMachineReplay.qvlIdentityEvidence,
+      historical_workload_verdict_evidence:
+        historicalMachineReplay.workloadVerdictEvidence,
+      historical_release_verification_authority:
+        historicalReleaseVerificationAuthority,
       production_target_authority_evidence: Object.freeze({
         compatibilityReceipt: compatibility,
         sdkWireTransformStagingReceipt: staging,
@@ -845,45 +897,3 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     continuityReceiptSha256: receiptSha256,
   });
 }
-
-function isExactNodeTestEntrypoint() {
-  const entrypoint = process.argv[1];
-  if (process.env.NODE_TEST_CONTEXT !== "child-v8"
-    || typeof entrypoint !== "string" || !entrypoint.endsWith(".test.mjs")) {
-    return false;
-  }
-  try {
-    return path.resolve(entrypoint) === fs.realpathSync.native(entrypoint);
-  } catch {
-    return false;
-  }
-}
-
-function createSyntheticCompletedLaunchContinuationCapability(input = {}) {
-  if (!isExactNodeTestEntrypoint()) {
-    throw new Error(
-      "synthetic completed-launch continuation is available only inside node --test",
-    );
-  }
-  const parsed = exactRecord(input, [
-    "continuityReceipt",
-    "dependencies",
-  ], "synthetic completed-launch continuation input");
-  const receipt = normalizePhalaCompletedLaunchContinuityReceipt(
-    parsed.continuityReceipt,
-  );
-  const receiptSha256 = phalaCompletedLaunchContinuityReceiptSha256(receipt);
-  const capability = publicCapability(receipt, receiptSha256);
-  CAPABILITIES.set(capability, {
-    consumed: false,
-    runtimeAdopted: false,
-    publicDigest: capabilityDigest(capability),
-    continuityReceipt: receipt,
-    dependencies: Object.freeze({ ...parsed.dependencies }),
-  });
-  return capability;
-}
-
-export const __test = Object.freeze({
-  createSyntheticCompletedLaunchContinuationCapability,
-});

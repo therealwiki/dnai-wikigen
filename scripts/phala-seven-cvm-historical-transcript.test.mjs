@@ -41,10 +41,13 @@ test("historical transcript schema, domain, exact order, and digest KAT are froz
     "dnai-wikigen/seven-cvm-historical-transcript-file-set/v2\0",
   );
   assert.equal(PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.length, 14);
-  assert.equal(PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES, 1024 * 1024);
+  assert.equal(
+    PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES,
+    2 * 1024 * 1024,
+  );
   assert.equal(
     PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES,
-    8 * 1024 * 1024,
+    16 * 1024 * 1024,
   );
   const value = createPhalaSevenCvmHistoricalTranscriptFileSet(
     fileIdentityByFlag(),

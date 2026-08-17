@@ -14,8 +14,9 @@ training example is not reflected into the response.
 
 - Network: wallet messages require Base Sepolia chain ID `84532`.
 - Compute wallet scope: `compute:console`.
-- Compute credential scopes: `jobs:create`, `jobs:read`, `challenge:submit`,
-  `submissions:read`, and `receipts:read`.
+- Compute credential scopes: `jobs:create`, `jobs:read`, `workloads:create`,
+  `workloads:delete`, `challenge:submit`, `submissions:read`, and
+  `receipts:read`.
 - The deal, Arena, Compute-wallet, Compute-credential, proxy, and runtime token
   domains have different JWT headers, issuers/audiences, and dstack key paths.
 - Device binding means encrypted credential delivery to an X25519 public key.
@@ -23,7 +24,8 @@ training example is not reflected into the response.
 - Project credits are non-transferable, non-redeemable, off-chain service
   credits. One credit has a nominal display value of one US cent; it is not an
   on-chain token or a claim on the upstream provider account.
-- The current job backend records and reserves work but does not dispatch it.
+- The legacy closed-loop service-credit job backend records and reserves work
+  but does not dispatch it.
   Training is labeled `existing_tinker_training_proxy`; inference is labeled
   `future_inference_proxy`; both retain `dispatch_status: not_dispatched`.
 - Internal settlement is `provisional_internal_metering`, not a provider
@@ -288,6 +290,44 @@ Configured-runtime transitions are:
   `operator_canceled`, or `dispatch_unavailable`. This returns the entire open
   reservation.
 
+## Sealed workload custody and terminal unlink
+
+`GET /compute/projects/{project_id}/workloads/{workload_id}` returns bounded
+metadata for an authenticated project member and never returns ciphertext.
+`DELETE /compute/projects/{project_id}/workloads/{workload_id}` is limited to
+an owner, admin, or developer wallet, or a credential explicitly issued the
+project-scoped `workloads:delete` capability, acting on a still-sealed,
+unconsumed workload.
+After the authenticated request is authorized, the workload store first writes
+a durable `deleting` checkpoint/tombstone, then unlinks the indexed ciphertext
+object; crash recovery finishes that unlink before removing the tombstone.
+
+An exact successful DELETE response states `deleted: true`,
+`ciphertext_egress: false`, `raw_workload_egress: false`, and
+`provider_dispatch_performed: false`. Here, `deleted: true` means terminal
+server unlink: the sealed envelope is no longer retrievable through this
+service. It does not claim an overwrite, destruction of every storage or backup
+copy, or proof of physical-media sanitization.
+
+The browser's **Clear local binding only** control is separate. It clears
+tab-local receipt and retry state, sends no DELETE request, and does not change
+server custody.
+
+The upload receipt is schema version 2. Its public
+`dnai.compute.workload-execution-binding.v1` projection commits to the
+immutable uploader kind (`wallet` or `credential`) and the authenticated
+project/actor binding. It also returns the stable recipient-release commitment
+needed for an exact dispatch-intent v3 authorization. A credential can upload
+ciphertext but has `device_spending_authority: false` and cannot create an
+exact-asset dispatch intent.
+
+When `TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED` is active in the measured
+release, a wallet-authenticated owner, admin, or developer in that same project
+may fund and claim a credential-originated workload. Viewers, outsiders,
+credential bearers, and wallets from another project fail closed. A
+wallet-originated workload may be dispatched only by the wallet that uploaded
+it; the API provides no implicit ownership transfer.
+
 ## Separate exact-asset dispatch intents
 
 The exact-asset execution journal is not the service-credit job store above.
@@ -298,15 +338,60 @@ wallet-authenticated project metadata:
   intent only when the release capability explicitly permits the mutation.
 - `GET /compute/projects/{project_id}/dispatch-intents/{job_reference}` returns
   one bounded lifecycle status. There is intentionally no public list route.
+- `POST /compute/projects/{project_id}/dispatch-intents/{job_reference}/cancel`
+  terminally stops only an unstarted intent and, after a durable checkpoint,
+  asks the workload store to terminally unlink its still-unconsumed sealed
+  envelope so it is no longer retrievable through this service.
+- `GET /compute/projects/{project_id}/dispatch-intents/{job_reference}/usage-receipt`
+  returns independently signed exact-asset evidence only after settlement.
 
 The creation model binds the canonical project and job IDs, wallet, exact
 asset, authorization nonce, maximum base-unit debit, authorization deadline,
 rate-policy commitment, compose hash, compiled operation/model/recipe, result
-policy, and resource ceilings. It has no prompt, examples, dataset, arbitrary
-program, output, payment receipt, or provider-credential field. The response
-always states `legacy_credit_ledger_mutated: false` and
-`provider_authoritative: false`.
+policy, resource ceilings, immutable workload source, execution-binding
+commitment, stable recipient-release commitment, and authorization context. It
+has no prompt, examples, dataset, arbitrary program, output, payment receipt,
+or provider-credential field. All request models reject extra fields. In
+particular, a caller cannot submit `authorization_kind` or
+`authorization_context_commitment`: this route always derives a
+`dnai.compute.standalone-authorization-context.v1` commitment and creates a
+`dnai.compute.dispatch-intent.v3` intent with kind `standalone`. The separate
+collaboration execution service is the only creator of a
+`dnai.compute.collaboration-one-shot-authorization-context.v1` context. It
+derives that context from a non-circular execution Basis, the complete fresh
+owner-grant set, the exact owner allocation, and the exact vault/workload tuple.
+That same state deterministically derives one
+`RoyaltyDistributor.FundingReservationRequest`; the sponsor must escrow its
+exact native/ERC-20 amount before provider handoff. Under the service's claim
+lock, the worker uses one RPC-reported finalized EIP-1898 block to match the
+exact active reservation and exact Compute job before calling the private
+in-process admission seam. Aggregate distributor balance, ERC-20 allowance, a
+DTO, or a heartbeat is not funding authority. There is no public HTTP field or
+route that can synthesize the one-shot context. The response always states
+`legacy_credit_ledger_mutated: false` and `provider_authoritative: false`.
 
+After bounded execution, the Collaboration service derives and anchors the
+exact settlement decision on demand, obtains purpose-separated main-runtime and
+independent Royalty-QVL authorizations, and persists the exact sponsor-wallet
+plan. The wallet, not the server, signs and broadcasts the zero-value
+`settleReserved` call. The worker then reconciles the finalized receipt and the
+contract's permanent reservation-settlement fields. Direct
+`distributeNative` / `distributeERC20` calls remain compatibility-only. This
+sequence is implemented and tested in source but is not evidence of an
+activated Base Sepolia contract, Phala CVM, Intel TDX quote, independent QVL
+verdict, sponsor deposit, provider execution, settlement, or Cloudflare
+release.
+
+Intent creation is a journal-first, recoverable claim protocol. The journal
+first persists `workload_claim_pending`, the ingress index atomically commits
+one `dnai.compute.workload-dispatch-claim.v1`, and the journal then confirms the
+claim before the intent becomes actionable. Retrying after either crash window
+finishes that exact claim; changing the job, funding wallet, intent, source,
+execution binding, or recipient release conflicts. Status, cancellation, and
+settled usage recovery reconstruct the exact stored claim. A claimed workload
+cannot be directly consumed or deleted by a second path.
+
+When provider execution is not activated,
 `GET /compute/funding-capabilities` includes this fail-closed descriptor:
 
 ```json
@@ -316,10 +401,44 @@ always states `legacy_credit_ledger_mutated: false` and
     "provider_dispatch": false,
     "independent_metering": false,
     "settlement": false,
+    "credential_workload_wallet_adoption": false,
+    "wallet_adoption_authority": "project_owner_admin_developer",
+    "wallet_source_transfer_supported": false,
+    "device_spending_authority": false,
     "exact_asset_only": true,
     "mutation_route": null,
     "status_route_template": "/compute/projects/{project_id}/dispatch-intents/{job_reference}",
-    "reason": "idempotent_tinker_provider_adapter_unavailable"
+    "status_recovery_by_job_reference": true,
+    "automatic_provider_redispatch": false,
+    "provider": {
+      "schema": "dnai.compute.provider-capability.v1",
+      "source_present": true,
+      "release_configured": false,
+      "provider_dispatch": false,
+      "allowed_operations": ["inference", "training"],
+      "allowed_result_policies": ["bounded_summary_receipt"],
+      "adapter_id": "tinker_sdk_0_22_7_at_most_once_v1",
+      "sdk_version": "0.22.7",
+      "sdk_source_sha256": "sha256:3ab30e85f4d1ae21ab4a8b415d382e719decd3abb31e61f6e481e8e5296dac62",
+      "request_contract_sha256": "sha256:15f112c2e285ba2463d36fe32a47f78eda40f7ca81d7b49f6d51dc4378feef0d",
+      "base_url_sha256": "sha256:e3ae09c22c856fa175bfbeded8819e1665f39c235869a15e3e0729bfb4f39533",
+      "provider_release_sha256": "sha256:4264a2226ac9c850d8f053c98ac90d0f6dcbc58702919899384a9b2442b35631",
+      "idempotency_header_role": "request_commitment_only",
+      "idempotent_provider_replay_claimed": false,
+      "automatic_provider_redispatch": false,
+      "adapter_contract": {
+        "at_most_once_attempt_checkpoint": true,
+        "terminal_ambiguity_hold": true,
+        "ambiguous_outcome_ciphertext_retained": true
+      },
+      "runtime_guarantees": {
+        "at_most_once_attempt_checkpoint": false,
+        "terminal_ambiguity_hold": false,
+        "ambiguous_outcome_ciphertext_retained": false
+      },
+      "reason": "provider_execution_not_enabled"
+    },
+    "reason": "provider_execution_not_enabled"
   }
 }
 ```
@@ -327,25 +446,80 @@ always states `legacy_credit_ledger_mutated: false` and
 The SolidJS client parses this object with an exact-key schema. It will not
 POST unless metadata creation, provider dispatch, independent metering, and
 settlement are all explicitly enabled, the mutation route is the compiled
-route, and the selected project's `provider_dispatch_enabled` flag is also
-true. Unknown fields, dependency inversions, or optimistic partial upgrades
-fail closed. Status reads remain available to project members while mutation is
-disabled.
+route, the exact provider release is present, its authenticated process
+heartbeat is fresh, and the selected project's `provider_dispatch_enabled` flag
+is also true. Unknown fields, nested release drift, dependency inversions,
+invented replay guarantees, or optimistic partial upgrades fail closed. The
+heartbeat is process-presence evidence only, not TDX evidence. Status reads
+remain available to project members while mutation is disabled.
+The current provider release accepts only `bounded_summary_receipt`; a
+`score_band_hash` workload remains a compiled metadata shape but is rejected
+before intent creation because this adapter cannot execute that result policy.
 
 The status stages are `intent_created`, `start_prepared`, `start_broadcast`,
-`start_confirmed`, `provider_dispatching`, `usage_finalized`,
+`start_confirmed`, `provider_dispatching`, `provider_attempt_checkpointed`,
+`provider_outcome_ambiguous`, `usage_finalized`, `workload_released`,
 `metering_pending`, `metering_decided`, `settlement_prepared`,
-`settlement_broadcast`, `settled`, and `blocked`. The public record exposes no
-provider identifier, private workload, exact timing, actual debit, or meter
-signature. Its intent commitment and bounded lifecycle flags are not a
-provider-authoritative invoice.
+`settlement_broadcast`, `settled`, and `blocked`. The exact-key public record
+also exposes only a bounded result commitment/class, the provider-boundary
+ambiguity flag, and ciphertext release/retention flags. It explicitly says
+`idempotent_provider_replay_claimed: false` and
+`automatic_provider_redispatch: false`. It exposes no provider identifier,
+private workload, exact timing, actual debit, or meter signature. Its bounded
+authorization projection exposes the kind/context commitment and the workload
+authority projection exposes the original source, exact execution binding,
+recipient release, funding wallet, and `device_spending_authority: false`.
+Its intent commitment and lifecycle flags are not a provider-authoritative
+invoice. A terminal ambiguity hold means only that the local at-most-once
+attempt may have crossed the provider boundary; it does not prove provider
+acceptance. Ciphertext remains encrypted and retained for separately attested
+reconciliation, with no plaintext-review route and no automatic redispatch.
 
-There is no dispatch-journal cancellation route. Before CVM start, the owning
-wallet may call the vault's `cancelJob` only after a pinned onchain read proves
-state `Authorized`. After the signed deadline, anyone may call `expireJob` only
-after the vault proves state `Authorized` or `Started`. The frontend therefore
-hands users to the onchain vault tracker for both exits instead of inferring an
-action from journal status alone.
+### Cancel a dispatch before execution starts
+
+```http
+POST /compute/projects/{project_id}/dispatch-intents/{job_reference}/cancel
+Authorization: Bearer <wallet-scoped-compute-token>
+Idempotency-Key: <caller-stable-key>
+Content-Type: application/json
+
+{"reason":"user_requested_before_provider_start"}
+```
+
+Only the intent-creating wallet with owner, admin, or developer membership can
+call this route. It succeeds only at the exact `intent_created` boundary and is
+serialized against the worker's execution-cycle lease. The service first
+commits a terminal journal checkpoint and then idempotently drives the workload
+store's terminal unlink of the sealed workload ciphertext. The cancellation
+receipt reports `workload_ciphertext_released: true`; this means the envelope is
+no longer retrievable through this service, not that physical media or every
+storage or backup copy was sanitized. Exact replay returns the same bounded
+cancellation receipt; another key conflicts. No raw workload or credential is
+accepted or returned.
+
+This API cancellation does **not** broadcast `ComputeCreditVault.cancelJob` and
+does not release on-chain exact-asset capacity. The receipt therefore states
+`onchain_cancel_required: true`, `vault_authorization_released: false`, and
+`exact_asset_capacity_released: false`. The owning wallet must separately call
+the vault after a pinned read proves state `Authorized`. After the signed
+deadline, anyone may call `expireJob` only after the vault proves state
+`Authorized` or `Started`.
+
+### Read the settled exact-asset usage receipt
+
+```http
+GET /compute/projects/{project_id}/dispatch-intents/{job_reference}/usage-receipt
+Authorization: Bearer <wallet-scoped-compute-token>
+```
+
+Any current project member can read this route, but only after the journal is
+exactly `settled`; earlier states return `409`. The response is `no-store` and
+revalidates the frozen provider release, bounded provider usage/result, signed
+usage envelope, distinct independent-meter and QVL signatures, confirmed Base
+Sepolia settlement transaction hash, debit, compute units, evidence hash, and
+receipt expiry. It never includes raw prompt/examples/output, provider IDs,
+provider-authoritative invoicing, or raw signed transaction bytes. Historical
+receipt reads do not depend on a current provider heartbeat.
 
 ## Funding boundaries: service credits versus exact-asset capacity
 
@@ -375,6 +549,10 @@ Production CVMs leave explicit keys empty and derive these separate paths:
 - `TINKER_COMPUTE_CREDENTIAL_KEY_PATH=tinker/compute_credentials`
 - `TINKER_COMPUTE_STORE_INTEGRITY_KEY_PATH=tinker/compute_store_integrity`
 - `TINKER_COMPUTE_STORE_PATH=/data/compute_console_state.json`
+- `TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED=false` locally and in the
+  example environment. The reviewed production release must bind its intended
+  value as a measured descriptor literal shared by the delegate and execution
+  worker; it is not a mutable browser or operator capability.
 - `TINKER_WALLET_AUTH_RPC_URL=<primary HTTPS Base Sepolia JSON-RPC>` and
   `TINKER_WALLET_AUTH_RPC_URL_SECONDARY=<independent HTTPS Base Sepolia JSON-RPC>`
   are encrypted bootstrap secrets required by production compose to enable

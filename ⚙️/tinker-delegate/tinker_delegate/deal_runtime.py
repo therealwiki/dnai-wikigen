@@ -14,11 +14,13 @@ runtime journal or emitted in cycle summaries.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import ipaddress
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -34,6 +36,7 @@ from tinker_delegate.chain_submitter import (
     DiligenceRoomSubmitter,
     DstackEthereumSigner,
     JsonRpcClient,
+    PreparedSubmissionAttempt,
     SignerAttestationEvidence,
     SignerUnavailable,
     SubmitResultReceipt,
@@ -88,6 +91,7 @@ from tinker_delegate.qvl_freshness import (
 BASE_SEPOLIA_CHAIN_ID = 84_532
 LOCAL_CHAIN_IDS = frozenset({1_337, 31_337})
 RUNTIME_SCHEMA = "dnai.deal-runtime.v1"
+RUNTIME_STATE_SCHEMA = "dnai.deal-runtime-state.v2"
 QVL_REQUEST_SCHEMA = VERIFICATION_REQUEST_SCHEMA
 TX_HASH_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -155,6 +159,10 @@ class SubmissionRejected(DealRuntimeError):
 
 class SubmissionUncertain(DealRuntimeError):
     """Broadcast outcome is ambiguous and must not be retried automatically."""
+
+
+class SubmissionRetryable(DealRuntimeError):
+    """A submission failed before any signed transaction could be broadcast."""
 
 
 class DealAlreadySubmitted(DealRuntimeError):
@@ -417,6 +425,32 @@ class InternalDealApi:
             or payload["state"] != "pending_artifact"
         ):
             raise ControlPlaneError("funded_context_response_invalid")
+
+    def quarantine_reorg(self, deal_id: str) -> None:
+        """Destroy private state after canonical block-hash divergence."""
+
+        normalized_deal_id = _normalize_deal_id(deal_id)
+        response = self._request(
+            "POST",
+            f"deal/{normalized_deal_id}/chain-reorg",
+        )
+        if response.status_code != 200:
+            raise ControlPlaneRetryable("reorg_quarantine_unavailable")
+        payload = _strict_json_object(response, surface="reorg_quarantine")
+        if (
+            set(payload)
+            != {
+                "deal_id",
+                "quarantined",
+                "seller_reupload_required",
+                "raw_secret_egress",
+            }
+            or payload["deal_id"] != normalized_deal_id
+            or payload["quarantined"] is not True
+            or payload["seller_reupload_required"] is not True
+            or payload["raw_secret_egress"] is not False
+        ):
+            raise ControlPlaneError("reorg_quarantine_response_invalid")
 
     def _request(
         self,
@@ -712,6 +746,16 @@ class SubmissionOutcome:
     result_hash: str
 
 
+@dataclass(frozen=True)
+class SubmissionReconciliation:
+    """Exact-hash result of reconciling one already-signed transaction."""
+
+    status: str
+    receipt_block: int | None = None
+    receipt_block_hash: str = ""
+    receipt_status: int | None = None
+
+
 class ResultCoordinator(Protocol):
     def funded_context(self, deal_id: str) -> dict[str, Any]:
         """Read immutable public chain context for API rehydration."""
@@ -719,8 +763,22 @@ class ResultCoordinator(Protocol):
     def inspect(self, deal_id: str) -> str:
         """Return funded, submitted, resolved, or unavailable."""
 
-    def submit(self, evaluation: BoundedEvaluation) -> SubmissionOutcome:
+    def submit(
+        self,
+        evaluation: BoundedEvaluation,
+        *,
+        before_broadcast: Callable[[PreparedSubmissionAttempt], None] | None = None,
+    ) -> SubmissionOutcome:
         """Authorize and broadcast the exact bounded result."""
+
+    def reconcile_submission(
+        self,
+        *,
+        deal_id: str,
+        tx_hash: str,
+        nonce: int,
+    ) -> SubmissionReconciliation:
+        """Inspect only the exact prepared hash/nonce; never rebroadcast."""
 
 
 class ProductionResultCoordinator:
@@ -875,7 +933,12 @@ class ProductionResultCoordinator:
             "artifact_hash": normalize_bytes32(deal.artifact_hash),
         }
 
-    def submit(self, evaluation: BoundedEvaluation) -> SubmissionOutcome:
+    def submit(
+        self,
+        evaluation: BoundedEvaluation,
+        *,
+        before_broadcast: Callable[[PreparedSubmissionAttempt], None] | None = None,
+    ) -> SubmissionOutcome:
         # Re-read the permanently frozen trust pair immediately before every
         # settlement. Startup validation alone is insufficient across a long-
         # lived process or an accidentally changed RPC target.
@@ -932,6 +995,14 @@ class ProductionResultCoordinator:
         except ResultVerifierError as exc:
             raise SubmissionRejected("result_authorization_rejected") from exc
 
+        prepared_attempt: PreparedSubmissionAttempt | None = None
+
+        def checkpoint(attempt: PreparedSubmissionAttempt) -> None:
+            nonlocal prepared_attempt
+            prepared_attempt = attempt
+            if before_broadcast is not None:
+                before_broadcast(attempt)
+
         try:
             receipt: SubmitResultReceipt = self.submitter.submit_result(
                 deal_id=deal_id,
@@ -940,15 +1011,98 @@ class ProductionResultCoordinator:
                 authorization_expiry=authorization.authorization_expiry,
                 verifier_signature=authorization.verifier_signature,
                 signer_attestation=packet.evidence,
+                before_broadcast=checkpoint,
             )
         except httpx.TransportError as exc:
             # The remote node may have accepted the raw transaction before the
             # connection failed.  Automatic retry could replace or duplicate a
             # pending submission, so hand control to chain observation.
-            raise SubmissionUncertain("submission_broadcast_uncertain") from exc
+            if prepared_attempt is not None:
+                raise SubmissionUncertain(
+                    "submission_broadcast_uncertain"
+                ) from exc
+            raise SubmissionRetryable(
+                "submission_prebroadcast_transport_unavailable"
+            ) from exc
         except ChainSubmitterError as exc:
             raise SubmissionRejected("chain_submission_rejected") from exc
         return SubmissionOutcome(tx_hash=receipt.tx_hash, result_hash=receipt.result_hash)
+
+    def reconcile_submission(
+        self,
+        *,
+        deal_id: str,
+        tx_hash: str,
+        nonce: int,
+    ) -> SubmissionReconciliation:
+        """Reconcile an ambiguous broadcast without signing or sending again."""
+
+        normalized_hash = _optional_tx_hash(tx_hash)
+        if not normalized_hash:
+            raise SubmissionRejected("submission_attempt_hash_required")
+        if isinstance(nonce, bool) or not isinstance(nonce, int) or nonce < 0:
+            raise SubmissionRejected("submission_attempt_nonce_invalid")
+
+        receipt = self.rpc.transaction_receipt(normalized_hash)
+        if receipt is not None:
+            receipt_hash = _optional_tx_hash(str(receipt.get("transactionHash") or ""))
+            block_hash = _optional_nonzero_bytes32(
+                str(receipt.get("blockHash") or "")
+            )
+            block_number = _rpc_quantity(receipt.get("blockNumber"), "receipt block")
+            status = _rpc_quantity(receipt.get("status"), "receipt status")
+            if (
+                receipt_hash != normalized_hash
+                or status not in (0, 1)
+            ):
+                raise SubmissionRejected("submission_receipt_invalid")
+            if status == 0:
+                return SubmissionReconciliation(
+                    status="confirmed_revert",
+                    receipt_block=block_number,
+                    receipt_block_hash=block_hash,
+                    receipt_status=0,
+                )
+            # A success receipt alone is insufficient when RPC views disagree:
+            # also require the contract state to reflect submission/resolution.
+            disposition = self.inspect(_normalize_deal_id(deal_id))
+            if disposition not in {"submitted", "resolved"}:
+                return SubmissionReconciliation(status="rpc_views_inconsistent")
+            return SubmissionReconciliation(
+                status="confirmed_success",
+                receipt_block=block_number,
+                receipt_block_hash=block_hash,
+                receipt_status=1,
+            )
+
+        transaction = self.rpc.transaction_by_hash(normalized_hash)
+        if transaction is not None:
+            observed_hash = _optional_tx_hash(str(transaction.get("hash") or ""))
+            observed_nonce = _rpc_quantity(transaction.get("nonce"), "transaction nonce")
+            observed_from = normalize_address(str(transaction.get("from") or ""))
+            observed_to = normalize_address(str(transaction.get("to") or ""))
+            if (
+                observed_hash != normalized_hash
+                or observed_nonce != nonce
+                or observed_from != normalize_address(self.submitter.signer.address)
+                or observed_to != normalize_address(self.submitter.contract_address)
+            ):
+                raise SubmissionRejected("submission_transaction_binding_invalid")
+            return SubmissionReconciliation(status="pending_exact_transaction")
+
+        latest_nonce = self.rpc.nonce(
+            normalize_address(self.submitter.signer.address),
+            "latest",
+        )
+        pending_nonce = self.rpc.nonce(
+            normalize_address(self.submitter.signer.address),
+            "pending",
+        )
+        if latest_nonce > nonce:
+            return SubmissionReconciliation(status="nonce_consumed_without_exact_hash")
+        if pending_nonce > nonce:
+            return SubmissionReconciliation(status="pending_nonce_without_exact_hash")
+        return SubmissionReconciliation(status="exact_transaction_not_found")
 
 
 @dataclass
@@ -961,6 +1115,14 @@ class DealRuntimeRecord:
     funded_log_index: int | None = None
     submission_tx_hash: str = ""
     result_hash: str = ""
+    submission_nonce: int | None = None
+    submission_attempt_tx_hash: str = ""
+    submission_attempt_result_hash: str = ""
+    submission_prepared_at: int | None = None
+    submission_receipt_block: int | None = None
+    submission_receipt_block_hash: str = ""
+    submission_receipt_status: int | None = None
+    reconciliation_state: str = ""
     attempt_count: int = 0
     last_reason: str = ""
 
@@ -974,6 +1136,14 @@ class DealRuntimeRecord:
             "funded_log_index": self.funded_log_index,
             "submission_tx_hash": self.submission_tx_hash,
             "result_hash": self.result_hash,
+            "submission_nonce": self.submission_nonce,
+            "submission_attempt_tx_hash": self.submission_attempt_tx_hash,
+            "submission_attempt_result_hash": self.submission_attempt_result_hash,
+            "submission_prepared_at": self.submission_prepared_at,
+            "submission_receipt_block": self.submission_receipt_block,
+            "submission_receipt_block_hash": self.submission_receipt_block_hash,
+            "submission_receipt_status": self.submission_receipt_status,
+            "reconciliation_state": self.reconciliation_state,
             "attempt_count": self.attempt_count,
             "last_reason": self.last_reason,
             "raw_secret_egress": False,
@@ -981,7 +1151,7 @@ class DealRuntimeRecord:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DealRuntimeRecord":
-        expected = {
+        legacy_expected = {
             "deal_id",
             "stage",
             "evaluation",
@@ -994,6 +1164,28 @@ class DealRuntimeRecord:
             "last_reason",
             "raw_secret_egress",
         }
+        expected = legacy_expected | {
+            "submission_nonce",
+            "submission_attempt_tx_hash",
+            "submission_attempt_result_hash",
+            "submission_prepared_at",
+            "submission_receipt_block",
+            "submission_receipt_block_hash",
+            "submission_receipt_status",
+            "reconciliation_state",
+        }
+        if set(payload) == legacy_expected:
+            payload = {
+                **payload,
+                "submission_nonce": None,
+                "submission_attempt_tx_hash": "",
+                "submission_attempt_result_hash": "",
+                "submission_prepared_at": None,
+                "submission_receipt_block": None,
+                "submission_receipt_block_hash": "",
+                "submission_receipt_status": None,
+                "reconciliation_state": "",
+            }
         if set(payload) != expected or payload.get("raw_secret_egress") is not False:
             raise RuntimeStateError("deal runtime record shape is invalid")
         deal_id = _normalize_deal_id(payload["deal_id"])
@@ -1019,6 +1211,38 @@ class DealRuntimeRecord:
         funded_tx_hash = _optional_tx_hash(payload["funded_tx_hash"])
         submission_tx_hash = _optional_tx_hash(payload["submission_tx_hash"])
         result_hash = _optional_nonzero_bytes32(payload["result_hash"])
+        submission_nonce = _optional_nonnegative_int(
+            payload["submission_nonce"], "submission_nonce"
+        )
+        submission_attempt_tx_hash = _optional_tx_hash(
+            payload["submission_attempt_tx_hash"]
+        )
+        submission_attempt_result_hash = _optional_nonzero_bytes32(
+            payload["submission_attempt_result_hash"]
+        )
+        submission_prepared_at = _optional_nonnegative_int(
+            payload["submission_prepared_at"], "submission_prepared_at"
+        )
+        submission_receipt_block = _optional_nonnegative_int(
+            payload["submission_receipt_block"],
+            "submission_receipt_block",
+        )
+        submission_receipt_block_hash = _optional_nonzero_bytes32(
+            payload["submission_receipt_block_hash"]
+        )
+        submission_receipt_status = payload["submission_receipt_status"]
+        if submission_receipt_status not in (None, 0, 1):
+            raise RuntimeStateError(
+                "deal runtime submission receipt status is invalid"
+            )
+        reconciliation_state = payload["reconciliation_state"]
+        if (
+            not isinstance(reconciliation_state, str)
+            or len(reconciliation_state) > 80
+        ):
+            raise RuntimeStateError(
+                "deal runtime reconciliation state is invalid"
+            )
         last_reason = payload["last_reason"]
         if not isinstance(last_reason, str) or len(last_reason) > 80:
             raise RuntimeStateError("deal runtime reason code is invalid")
@@ -1031,35 +1255,140 @@ class DealRuntimeRecord:
             funded_log_index=funded_log_index,
             submission_tx_hash=submission_tx_hash,
             result_hash=result_hash,
+            submission_nonce=submission_nonce,
+            submission_attempt_tx_hash=submission_attempt_tx_hash,
+            submission_attempt_result_hash=submission_attempt_result_hash,
+            submission_prepared_at=submission_prepared_at,
+            submission_receipt_block=submission_receipt_block,
+            submission_receipt_block_hash=submission_receipt_block_hash,
+            submission_receipt_status=submission_receipt_status,
+            reconciliation_state=reconciliation_state,
             attempt_count=attempt_count,
             last_reason=last_reason,
+        )
+
+
+@dataclass(frozen=True)
+class BlockCheckpoint:
+    """Canonical hash endpoints for one completely journaled scan range."""
+
+    from_block: int
+    to_block: int
+    from_block_hash: str
+    to_block_hash: str
+    event_deal_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_block": self.from_block,
+            "to_block": self.to_block,
+            "from_block_hash": self.from_block_hash,
+            "to_block_hash": self.to_block_hash,
+            "event_deal_ids": list(self.event_deal_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "BlockCheckpoint":
+        if not isinstance(payload, dict) or set(payload) != {
+            "from_block",
+            "to_block",
+            "from_block_hash",
+            "to_block_hash",
+            "event_deal_ids",
+        }:
+            raise RuntimeStateError("block checkpoint shape is invalid")
+        from_block = _nonnegative_int(payload["from_block"], "from_block")
+        to_block = _nonnegative_int(payload["to_block"], "to_block")
+        if to_block < from_block:
+            raise RuntimeStateError("block checkpoint range is invalid")
+        deal_ids = payload["event_deal_ids"]
+        if (
+            not isinstance(deal_ids, list)
+            or len(deal_ids) > 10_000
+            or len(set(deal_ids)) != len(deal_ids)
+        ):
+            raise RuntimeStateError("block checkpoint deal IDs are invalid")
+        normalized_ids = tuple(
+            sorted(
+                (_normalize_deal_id(value) for value in deal_ids),
+                key=int,
+            )
+        )
+        return cls(
+            from_block=from_block,
+            to_block=to_block,
+            from_block_hash=_required_nonzero_bytes32(
+                payload["from_block_hash"],
+                "from block hash",
+            ),
+            to_block_hash=_required_nonzero_bytes32(
+                payload["to_block_hash"],
+                "to block hash",
+            ),
+            event_deal_ids=normalized_ids,
         )
 
 
 class DealRuntimeStateStore:
     """Atomic durable journal containing only public/bounded deal state."""
 
-    schema_version = 1
+    schema_version = 2
+    max_checkpoints = 128
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self.checkpoints: list[BlockCheckpoint] = []
+        self.scan_anchor_block: int | None = None
 
     def load(self) -> dict[str, DealRuntimeRecord]:
         if not self.path.exists():
+            self.checkpoints = []
+            self.scan_anchor_block = None
             return {}
+        self._require_safe_existing_file()
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeStateError("deal runtime state could not be loaded") from exc
         if not isinstance(payload, dict):
             raise RuntimeStateError("deal runtime state must be an object")
-        if set(payload) != {"schema", "schema_version", "deals", "raw_secret_egress"}:
-            raise RuntimeStateError("deal runtime state shape is invalid")
+        legacy = (
+            set(payload)
+            == {"schema", "schema_version", "deals", "raw_secret_egress"}
+            and payload.get("schema") == RUNTIME_SCHEMA
+            and payload.get("schema_version") == 1
+        )
+        if legacy:
+            self.checkpoints = []
+            self.scan_anchor_block = None
+        else:
+            if set(payload) != {
+                "schema",
+                "schema_version",
+                "deals",
+                "block_checkpoints",
+                "scan_anchor_block",
+                "raw_secret_egress",
+            }:
+                raise RuntimeStateError("deal runtime state shape is invalid")
+            if (
+                payload["schema"] != RUNTIME_STATE_SCHEMA
+                or payload["schema_version"] != self.schema_version
+                or not isinstance(payload["block_checkpoints"], list)
+                or len(payload["block_checkpoints"]) > self.max_checkpoints
+            ):
+                raise RuntimeStateError("deal runtime state header is invalid")
+            self.checkpoints = [
+                BlockCheckpoint.from_dict(item)
+                for item in payload["block_checkpoints"]
+            ]
+            self.scan_anchor_block = _optional_nonnegative_int(
+                payload["scan_anchor_block"],
+                "scan_anchor_block",
+            )
         if (
-            payload["schema"] != RUNTIME_SCHEMA
-            or payload["schema_version"] != self.schema_version
-            or payload["raw_secret_egress"] is not False
-            or not isinstance(payload["deals"], dict)
+            payload.get("raw_secret_egress") is not False
+            or not isinstance(payload.get("deals"), dict)
         ):
             raise RuntimeStateError("deal runtime state header is invalid")
         records: dict[str, DealRuntimeRecord] = {}
@@ -1074,13 +1403,19 @@ class DealRuntimeStateStore:
 
     def save(self, records: dict[str, DealRuntimeRecord]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            self._require_safe_existing_file()
         payload = {
-            "schema": RUNTIME_SCHEMA,
+            "schema": RUNTIME_STATE_SCHEMA,
             "schema_version": self.schema_version,
             "deals": {
                 deal_id: records[deal_id].to_dict()
                 for deal_id in sorted(records, key=lambda value: int(value))
             },
+            "block_checkpoints": [
+                checkpoint.to_dict() for checkpoint in self.checkpoints
+            ],
+            "scan_anchor_block": self.scan_anchor_block,
             "raw_secret_egress": False,
         }
         encoded = json.dumps(payload, sort_keys=True, indent=2) + "\n"
@@ -1100,6 +1435,96 @@ class DealRuntimeStateStore:
             raise
         os.replace(temporary, self.path)
         os.chmod(self.path, 0o600)
+        directory_fd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _require_safe_existing_file(self) -> None:
+        try:
+            info = self.path.lstat()
+        except OSError as exc:
+            raise RuntimeStateError(
+                "deal runtime state metadata is unavailable"
+            ) from exc
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise RuntimeStateError("deal runtime state file is unsafe")
+
+
+class DealRuntimeSingleWriterLease:
+    """Kernel-enforced exclusive lease for one deal-runtime state file."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self._fd: int | None = None
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def acquire(self) -> None:
+        if self._fd is not None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            info = self.path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                raise RuntimeStateError("deal runtime lease file is unsafe")
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(self.path, flags, 0o600)
+        except OSError as exc:
+            raise RuntimeStateError("deal runtime lease is unavailable") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeStateError("deal runtime lease file is unsafe")
+            os.fchmod(fd, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeStateError(
+                    "deal runtime single-writer lease is already held"
+                ) from exc
+            marker = (
+                json.dumps(
+                    {
+                        "schema": "dnai.deal-runtime-lease.v1",
+                        "pid": os.getpid(),
+                        "acquired_at": int(time.time()),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("ascii")
+            os.ftruncate(fd, 0)
+            os.write(fd, marker)
+            os.fsync(fd)
+            self._fd = fd
+        except Exception:
+            os.close(fd)
+            raise
+
+    def release(self) -> None:
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -1124,7 +1549,7 @@ class RuntimeCycleSummary:
             "scanned_from_block": self.scanned_from_block,
             "scanned_to_block": self.scanned_to_block,
             "cursor_advanced": self.cursor_advanced,
-            "reorg_policy": "confirmed_blocks_only",
+            "reorg_policy": "confirmed_block_hash_checkpoint_full_rewind",
             "event_count": self.event_count,
             "funded_observed": self.funded_observed,
             "evaluated": self.evaluated,
@@ -1154,6 +1579,7 @@ class DealRuntimeService:
         start_block: int | None = None,
         confirmations: int = 2,
         max_deals_per_cycle: int = 25,
+        lease: DealRuntimeSingleWriterLease | None = None,
     ):
         if confirmations < 0:
             raise DealRuntimeError("confirmations cannot be negative")
@@ -1169,37 +1595,52 @@ class DealRuntimeService:
         self.confirmations = confirmations
         self.max_deals_per_cycle = max_deals_per_cycle
         self.records = state_store.load()
+        self.checkpoints = list(state_store.checkpoints)
+        self.scan_anchor_block = state_store.scan_anchor_block
+        self.lease = lease or DealRuntimeSingleWriterLease(
+            state_store.path.with_suffix(state_store.path.suffix + ".lock")
+        )
 
     def run_once(self) -> RuntimeCycleSummary:
-        scan = self._scan_confirmed_events()
-        work = self._process_deals()
-        counts = self._stage_counts()
-        return RuntimeCycleSummary(
-            scanned_from_block=scan["from_block"],
-            scanned_to_block=scan["to_block"],
-            cursor_advanced=scan["cursor_advanced"],
-            event_count=scan["event_count"],
-            funded_observed=scan["funded_observed"],
-            evaluated=work["evaluated"],
-            submitted=work["submitted"],
-            resolved=counts[RuntimeStage.RESOLVED],
-            awaiting_artifact=counts[RuntimeStage.WAITING_ARTIFACT],
-            awaiting_execution_policy=counts[RuntimeStage.AWAITING_EXECUTION_POLICY],
-            awaiting_qvl=counts[RuntimeStage.AWAITING_QVL],
-            retryable=(
-                counts[RuntimeStage.RETRYABLE]
-                + counts[RuntimeStage.EVALUATOR_UNAVAILABLE]
-                + counts[RuntimeStage.SUBMISSION_UNCERTAIN]
-            ),
-            terminal_failures=(
-                counts[RuntimeStage.EVALUATION_FAILED]
-                + counts[RuntimeStage.SUBMISSION_REJECTED]
-            ),
-        )
+        acquired_here = not self.lease.held
+        if acquired_here:
+            self.lease.acquire()
+        try:
+            scan = self._scan_confirmed_events()
+            work = self._process_deals()
+            counts = self._stage_counts()
+            return RuntimeCycleSummary(
+                scanned_from_block=scan["from_block"],
+                scanned_to_block=scan["to_block"],
+                cursor_advanced=scan["cursor_advanced"],
+                event_count=scan["event_count"],
+                funded_observed=scan["funded_observed"],
+                evaluated=work["evaluated"],
+                submitted=work["submitted"],
+                resolved=counts[RuntimeStage.RESOLVED],
+                awaiting_artifact=counts[RuntimeStage.WAITING_ARTIFACT],
+                awaiting_execution_policy=counts[
+                    RuntimeStage.AWAITING_EXECUTION_POLICY
+                ],
+                awaiting_qvl=counts[RuntimeStage.AWAITING_QVL],
+                retryable=(
+                    counts[RuntimeStage.RETRYABLE]
+                    + counts[RuntimeStage.EVALUATOR_UNAVAILABLE]
+                    + counts[RuntimeStage.SUBMISSION_UNCERTAIN]
+                ),
+                terminal_failures=(
+                    counts[RuntimeStage.EVALUATION_FAILED]
+                    + counts[RuntimeStage.SUBMISSION_REJECTED]
+                ),
+            )
+        finally:
+            if acquired_here:
+                self.lease.release()
 
     def _scan_confirmed_events(self) -> dict[str, Any]:
         cursor = self.cursor_store.load()
         self._validate_cursor_policy(cursor)
+        cursor = self._detect_and_compensate_reorg(cursor)
         if not self.dispatcher.created_context and cursor.created_deals:
             self.dispatcher._created = dict(cursor.created_deals)
 
@@ -1217,9 +1658,61 @@ class DealRuntimeService:
                 "funded_observed": 0,
             }
 
+        from_hash = self.source.block_hash(from_block)
+        to_hash_before = (
+            from_hash
+            if safe_tip == from_block
+            else self.source.block_hash(safe_tip)
+        )
         events = self.source.get_events(from_block, safe_tip)
+        for event in events:
+            observed = self.source.block_hash(event.block_number)
+            if event.block_hash and event.block_hash.lower() != observed.lower():
+                raise ChainWatcherError(
+                    "event block hash changed during confirmed scan"
+                )
+        to_hash_after = (
+            from_hash
+            if safe_tip == from_block
+            else self.source.block_hash(safe_tip)
+        )
+        if to_hash_before != to_hash_after:
+            raise ChainWatcherError(
+                "confirmed scan endpoint changed during observation"
+            )
         self.dispatcher.dispatch(events)
         funded_observed = self._observe_events(events)
+        checkpoint = BlockCheckpoint(
+            from_block=from_block,
+            to_block=safe_tip,
+            from_block_hash=_required_nonzero_bytes32(
+                from_hash,
+                "from block hash",
+            ),
+            to_block_hash=_required_nonzero_bytes32(
+                to_hash_after,
+                "to block hash",
+            ),
+            event_deal_ids=tuple(
+                sorted(
+                    {
+                        _normalize_deal_id(event.deal_id)
+                        for event in events
+                    },
+                    key=int,
+                )
+            ),
+        )
+        if self.scan_anchor_block is None:
+            self.scan_anchor_block = from_block
+        self.checkpoints.append(checkpoint)
+        if len(self.checkpoints) > self.state_store.max_checkpoints:
+            self.checkpoints = [
+                self.checkpoints[0],
+                *self.checkpoints[-(self.state_store.max_checkpoints - 1) :],
+            ]
+        self.state_store.checkpoints = list(self.checkpoints)
+        self.state_store.scan_anchor_block = self.scan_anchor_block
         # Journal first, cursor second.  A crash between the writes replays
         # idempotent API notifications; the inverse order could lose a funded
         # deal forever.
@@ -1239,6 +1732,72 @@ class DealRuntimeService:
             "event_count": len(events),
             "funded_observed": funded_observed,
         }
+
+    def _detect_and_compensate_reorg(
+        self,
+        cursor: ChainCursorState,
+    ) -> ChainCursorState:
+        """Detect canonical divergence and conservatively rewind all deal state."""
+
+        if not self.checkpoints:
+            checkpoint = None
+            mismatch = False
+        else:
+            checkpoint = self.checkpoints[-1]
+            canonical_hash = self.source.block_hash(checkpoint.to_block)
+            mismatch = canonical_hash != checkpoint.to_block_hash
+        for record in self.records.values():
+            if (
+                record.submission_receipt_block is not None
+                and record.submission_receipt_block_hash
+                and self.source.block_hash(record.submission_receipt_block)
+                != record.submission_receipt_block_hash
+            ):
+                mismatch = True
+                break
+        if not mismatch:
+            return cursor
+
+        # A hash mismatch means at least one prior event/control-plane
+        # notification may belong to an orphaned ancestry.  Do not attempt a
+        # partial semantic inverse of the contract state machine.  Quarantine
+        # every private active context, clear bounded projections, and rebuild
+        # from the original scan anchor on the canonical chain.
+        for deal_id in sorted(self.records, key=int):
+            self.control_plane.quarantine_reorg(deal_id)
+        rewind_to = (
+            self.scan_anchor_block
+            if self.scan_anchor_block is not None
+            else (
+                self.start_block
+                if self.start_block is not None
+                else (
+                    checkpoint.from_block
+                    if checkpoint is not None
+                    else 0
+                )
+            )
+        )
+        reset = ChainCursorState(
+            next_block=rewind_to,
+            created_deals={},
+            confirmations=max(cursor.confirmations, self.confirmations),
+            last_scanned_to_block=None,
+            contract_address=self.source.contract_address,
+        )
+        # Rewind the cursor before removing the mismatched checkpoint. A crash
+        # in between therefore re-enters this idempotent compensation path;
+        # the inverse order could lose the only evidence that an advanced
+        # cursor must be rebuilt.
+        self.cursor_store.save(reset)
+        self.records = {}
+        self.checkpoints = []
+        self.state_store.checkpoints = []
+        self.state_store.scan_anchor_block = rewind_to
+        self.scan_anchor_block = rewind_to
+        self.state_store.save(self.records)
+        self.dispatcher._created = {}
+        return reset
 
     def _validate_cursor_policy(self, cursor: ChainCursorState) -> None:
         if cursor.contract_address and (
@@ -1313,12 +1872,31 @@ class DealRuntimeService:
                 self.state_store.save(self.records)
                 evaluated += 1
 
-                outcome = self.result_coordinator.submit(evaluation)
-                record.stage = RuntimeStage.SUBMITTED
-                record.submission_tx_hash = _optional_tx_hash(outcome.tx_hash)
-                record.result_hash = _optional_nonzero_bytes32(outcome.result_hash)
-                record.last_reason = "result_broadcast"
-                submitted += 1
+                outcome = self.result_coordinator.submit(
+                    evaluation,
+                    before_broadcast=lambda attempt, target=record: (
+                        self._checkpoint_submission_attempt(target, attempt)
+                    ),
+                )
+                outcome_hash = _optional_tx_hash(outcome.tx_hash)
+                outcome_result_hash = _optional_nonzero_bytes32(
+                    outcome.result_hash
+                )
+                if (
+                    not record.submission_attempt_tx_hash
+                    or outcome_hash != record.submission_attempt_tx_hash
+                    or outcome_result_hash
+                    != record.submission_attempt_result_hash
+                ):
+                    raise SubmissionUncertain(
+                        "submission_return_binding_invalid"
+                    )
+                record.stage = RuntimeStage.SUBMISSION_UNCERTAIN
+                record.reconciliation_state = "broadcast_returned"
+                record.last_reason = "broadcast_returned_awaiting_receipt"
+                self._reconcile_uncertain_submission(record)
+                if record.stage == RuntimeStage.SUBMITTED:
+                    submitted += 1
             except ArtifactNotReady:
                 record.stage = RuntimeStage.WAITING_ARTIFACT
                 record.last_reason = "artifact_not_ready"
@@ -1362,13 +1940,118 @@ class DealRuntimeService:
             except SubmissionUncertain:
                 record.stage = RuntimeStage.SUBMISSION_UNCERTAIN
                 record.last_reason = "submission_broadcast_uncertain"
+            except SubmissionRetryable:
+                record.stage = RuntimeStage.RETRYABLE
+                record.last_reason = "submission_prebroadcast_unavailable"
             except (SubmissionRejected, ChainSubmitterError, ResultVerifierError):
-                record.stage = RuntimeStage.SUBMISSION_REJECTED
-                record.last_reason = "submission_policy_rejected"
+                if record.submission_attempt_tx_hash:
+                    record.stage = RuntimeStage.SUBMISSION_UNCERTAIN
+                    record.last_reason = "post_prepare_submission_uncertain"
+                else:
+                    record.stage = RuntimeStage.SUBMISSION_REJECTED
+                    record.last_reason = "submission_policy_rejected"
             self.state_store.save(self.records)
         return {"evaluated": evaluated, "submitted": submitted}
 
+    def _checkpoint_submission_attempt(
+        self,
+        record: DealRuntimeRecord,
+        attempt: PreparedSubmissionAttempt,
+    ) -> None:
+        """Durably record exact signed authority before any network send."""
+
+        tx_hash = _optional_tx_hash(attempt.tx_hash)
+        result_hash = _optional_nonzero_bytes32(attempt.result_hash)
+        nonce = _nonnegative_int(attempt.nonce, "submission nonce")
+        prepared_at = _nonnegative_int(
+            attempt.prepared_at,
+            "submission prepared_at",
+        )
+        if not tx_hash or not result_hash or prepared_at <= 0:
+            raise RuntimeStateError("prepared submission attempt is invalid")
+        if record.submission_attempt_tx_hash:
+            if (
+                record.submission_attempt_tx_hash == tx_hash
+                and record.submission_nonce == nonce
+                and record.submission_attempt_result_hash == result_hash
+            ):
+                return
+            raise RuntimeStateError(
+                "a different prepared submission attempt already exists"
+            )
+        record.submission_nonce = nonce
+        record.submission_attempt_tx_hash = tx_hash
+        record.submission_attempt_result_hash = result_hash
+        record.submission_prepared_at = prepared_at
+        record.stage = RuntimeStage.SUBMISSION_UNCERTAIN
+        record.reconciliation_state = "prepared_before_broadcast"
+        record.last_reason = "signed_transaction_prepared"
+        self.state_store.save(self.records)
+
     def _reconcile_uncertain_submission(self, record: DealRuntimeRecord) -> None:
+        if (
+            record.submission_attempt_tx_hash
+            and record.submission_nonce is not None
+        ):
+            try:
+                outcome = self.result_coordinator.reconcile_submission(
+                    deal_id=record.deal_id,
+                    tx_hash=record.submission_attempt_tx_hash,
+                    nonce=record.submission_nonce,
+                )
+            except Exception:
+                record.reconciliation_state = "rpc_unavailable"
+                record.last_reason = "submission_reconciliation_unavailable"
+                return
+            record.reconciliation_state = outcome.status
+            record.submission_receipt_block = outcome.receipt_block
+            record.submission_receipt_block_hash = (
+                _optional_nonzero_bytes32(outcome.receipt_block_hash)
+                if outcome.receipt_block_hash
+                else ""
+            )
+            record.submission_receipt_status = outcome.receipt_status
+            if outcome.status in {"confirmed_success", "confirmed_revert"}:
+                if (
+                    outcome.receipt_block is None
+                    or not outcome.receipt_block_hash
+                    or outcome.receipt_block
+                    > max(
+                        0,
+                        self.source.latest_block() - self.confirmations,
+                    )
+                    or self.source.block_hash(outcome.receipt_block)
+                    != outcome.receipt_block_hash
+                ):
+                    record.reconciliation_state = (
+                        "receipt_awaiting_confirmations"
+                    )
+                    record.last_reason = (
+                        "exact_submission_receipt_awaiting_confirmations"
+                    )
+                    return
+            if outcome.status == "confirmed_success":
+                record.stage = RuntimeStage.SUBMITTED
+                record.submission_tx_hash = (
+                    record.submission_attempt_tx_hash
+                )
+                record.result_hash = record.submission_attempt_result_hash
+                record.last_reason = "exact_submission_receipt_confirmed"
+            elif outcome.status == "confirmed_revert":
+                record.stage = RuntimeStage.SUBMISSION_REJECTED
+                record.last_reason = "exact_submission_receipt_reverted"
+            elif outcome.status == "pending_exact_transaction":
+                record.last_reason = "exact_submission_pending"
+            elif outcome.status == "nonce_consumed_without_exact_hash":
+                record.last_reason = "submission_nonce_consumed_manual_hold"
+            elif outcome.status == "pending_nonce_without_exact_hash":
+                record.last_reason = "submission_nonce_pending_manual_hold"
+            elif outcome.status == "rpc_views_inconsistent":
+                record.last_reason = "submission_rpc_views_inconsistent"
+            else:
+                record.last_reason = "exact_submission_not_found_manual_hold"
+            return
+
         try:
             disposition = self.result_coordinator.inspect(record.deal_id)
         except Exception:
@@ -1468,6 +2151,7 @@ def main(argv: list[str] | None = None) -> int:
     control_plane = None
     coordinator = None
     qvl_client = None
+    runtime = None
     try:
         auth_token = resolve_runtime_auth_token(settings)
         if not auth_token:
@@ -1568,6 +2252,9 @@ def main(argv: list[str] | None = None) -> int:
             confirmations=confirmations,
             max_deals_per_cycle=args.max_deals_per_cycle,
         )
+        # Hold the kernel lease for the entire process lifetime.  Per-cycle
+        # acquisition remains available for embedded/test callers.
+        runtime.lease.acquire()
         while True:
             print(json.dumps(runtime.run_once().to_public_dict(), sort_keys=True), flush=True)
             if args.once:
@@ -1616,6 +2303,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
+        if runtime is not None:
+            runtime.lease.release()
         if coordinator is not None:
             coordinator.close()
         if qvl_client is not None:
@@ -1714,6 +2403,31 @@ def _optional_nonzero_bytes32(value: Any) -> str:
         return normalize_bytes32(value)
     except ChainSubmitterError as exc:
         raise RuntimeStateError("result hash is invalid") from exc
+
+
+def _required_nonzero_bytes32(value: Any, field: str) -> str:
+    normalized = _optional_nonzero_bytes32(value)
+    if not normalized:
+        raise RuntimeStateError(f"{field} is required")
+    return normalized
+
+
+def _rpc_quantity(value: Any, field: str) -> int:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("0x")
+        or len(value) > 66
+    ):
+        raise SubmissionRejected(f"{field.replace(' ', '_')}_invalid")
+    try:
+        parsed = int(value, 16)
+    except ValueError as exc:
+        raise SubmissionRejected(
+            f"{field.replace(' ', '_')}_invalid"
+        ) from exc
+    if parsed < 0:
+        raise SubmissionRejected(f"{field.replace(' ', '_')}_invalid")
+    return parsed
 
 
 def _decode_nonempty_hex(value: str, *, field: str) -> bytes:

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import {
   RELEASE_CEREMONY_LOCK_PROTOCOL,
-} from "./release-ceremony-lock.mjs";
+} from "./release-ceremony-lock-protocol-core.mjs";
 import {
   CVM_LAUNCH_DOMAINS,
 } from "./cvm-launch-intent-core.mjs";
@@ -62,12 +62,10 @@ export {
   RELEASE_CEREMONY_MUTATION_WRITERS,
   RELEASE_CEREMONY_TRANSACTION_PLAN_SCHEMA,
   ReleaseAuthorityValidationError,
-  assertFreshProductionCeremonyAuthorizationCore,
   canonicalCeremonyAuthorizationCoreArtifactText,
   ceremonyAuthorizationCoreDigest,
   ceremonyAuthorizationCoreSha256,
   ceremonyAuthorizationReviewSigningPayload,
-  ceremonyAuthorizationReviewSigningPayloadForProduction,
   ceremonyAuthorizationReviewSubjectSha256,
   frontendBuildCandidateAuthorityBindingFromCeremonyAuthorization,
   normalizeCeremonyAuthorizationCore,
@@ -99,11 +97,56 @@ import {
 import {
   frontendBuildCandidateReceiptSha256,
   normalizeFrontendBuildCandidateReceipt,
-} from "../web/scripts/frontend-build-candidate-core.mjs";
+} from "./frontend-build-candidate-receipt-core.mjs";
 import {
   normalizePhalaPostMeasurementActivationExecutionReceipt,
   phalaPostMeasurementActivationExecutionReceiptSha256,
 } from "./phala-post-measurement-activation-receipt-core.mjs";
+import {
+  ROYALTY_AUTHORITY_TIMELOCK_SECONDS,
+  ROYALTY_RELEASE_EXECUTION_MODES,
+  ROYALTY_RELEASE_HISTORY_DOMAIN,
+  ROYALTY_RELEASE_HISTORY_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_V2_DOMAIN,
+  ROYALTY_RELEASE_HISTORY_V2_SCHEMA,
+  normalizeRoyaltyReleaseAuthority,
+  normalizeRoyaltyReleaseState,
+  royaltyReleaseMutationCalldataSha256,
+  royaltyReleaseMutationEvent,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
+import {
+  normalizeRoyaltyReleaseHistory as normalizeRoyaltyReleaseHistoryCore,
+  normalizeRoyaltyReleaseHistoryReceipt,
+  projectRoyaltyReleaseHistoryReceipt,
+  royaltyReleaseHistorySha256 as royaltyReleaseHistorySha256Core,
+  royaltyReleaseHistoryReceiptSha256,
+} from "./royalty-release-history-receipt-core.mjs";
+export {
+  ROYALTY_RELEASE_HISTORY_RECEIPT_DOMAIN,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_V2_DOMAIN,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_V2_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_TRUTH_STATUS,
+  normalizeRoyaltyReleaseHistoryReceipt,
+  projectRoyaltyReleaseHistoryReceipt,
+  royaltyReleaseHistoryReceiptSha256,
+} from "./royalty-release-history-receipt-core.mjs";
+export {
+  ROYALTY_AUTHORITY_TIMELOCK_SECONDS,
+  ROYALTY_RELEASE_AUTHORITY_SCHEMA,
+  ROYALTY_RELEASE_EXECUTION_MODES,
+  ROYALTY_RELEASE_HISTORY_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_V2_DOMAIN,
+  ROYALTY_RELEASE_HISTORY_V2_SCHEMA,
+  ROYALTY_RELEASE_STATE_SCHEMA,
+  normalizeRoyaltyReleaseAuthority,
+  normalizeRoyaltyReleaseState,
+  royaltyReleaseMutationCalldataSha256,
+  royaltyReleaseMutationEvent,
+  royaltyReleasePolicyCommitment,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
 
 export const CEREMONY_TRANSACTION_RPC_OBSERVATION_SCHEMA =
   "dnai.base-sepolia-transaction-rpc-observation.v1";
@@ -122,14 +165,13 @@ export const EXECUTION_POLICY_ANCHOR_RPC_READ_SCHEMA =
 export const EXECUTION_POLICY_ANCHOR_RPC_READ_DOMAIN =
   "dnai-wikigen/execution-policy-anchor-rpc-read/v1\0";
 export const LIVE_ACTIVATION_FRONTEND_BINDING_SCHEMA =
-  "dnai.live-activation-frontend-binding.v3";
+  "dnai.live-activation-frontend-binding.v4";
 export const LIVE_ACTIVATION_FRONTEND_BINDING_DOMAIN =
-  "dnai-wikigen/live-activation-frontend-binding/v3\0";
+  "dnai-wikigen/live-activation-frontend-binding/v4\0";
 export const LIVE_ACTIVATION_FRONTEND_BINDING_TRUTH_STATUS =
   "derived_from_signed_live_activation_not_standalone_authority";
-
 export const DEPRECATED_FINAL_RELEASE_AUTHORITY_WRAPPER_SCHEMA =
-  "dnai.final-release-authority-core.v3";
+  "dnai.deprecated-final-release-authority-wrapper.v1";
 export const DEPRECATED_FINAL_RELEASE_AUTHORITY_WRAPPER_STATUS =
   CEREMONY_AUTHORIZATION_CORE_STATUS;
 
@@ -167,7 +209,7 @@ export const RELEASE_CONTRACT_STATE_KEYS = Object.freeze([
 const CONTROL_ROLE_BY_CONTRACT = Object.freeze({
   diligence_room: "developer",
   tinker_account_encumbrance: "owner",
-  royalty_distributor: "immutable_no_owner",
+  royalty_distributor: "owner",
   challenge_registry: "owner",
   compute_credit_vault: "owner",
   email_oracle_auth: "owner",
@@ -183,6 +225,8 @@ const STAGE_TWO_DEPENDENCY_KINDS = Object.freeze([
   "ceremony_ledger_revision_chain",
   "common_finalized_state",
   "contract_configuration_set",
+  "royalty_release_history",
+  "royalty_release_history_receipt",
   "challenge_genesis",
   "final_cvm_state",
   "cvm_measurements",
@@ -398,7 +442,9 @@ function normalizeReceiptLog(value, index) {
   };
 }
 
-export function normalizeCeremonyReceiptRpcObservation(value) {
+export function normalizeCeremonyReceiptRpcObservation(value, {
+  expectedStatus = 1,
+} = {}) {
   const parsed = exact(value, [
     "block_hash", "block_number", "chain_id", "contract_address",
     "cumulative_gas_used", "effective_gas_price_wei", "from", "gas_used",
@@ -412,7 +458,13 @@ export function normalizeCeremonyReceiptRpcObservation(value) {
   );
   integer(parsed.chain_id, "ceremony receipt chain ID", CHAIN_ID, CHAIN_ID);
   integer(parsed.transaction_type, "ceremony receipt transaction type", 2, 2);
-  integer(parsed.status, "ceremony receipt status", 1, 1);
+  integer(expectedStatus, "expected ceremony receipt status", 0, 1);
+  integer(
+    parsed.status,
+    "ceremony receipt status",
+    expectedStatus,
+    expectedStatus,
+  );
   const contractAddress = address(
     parsed.contract_address,
     "ceremony receipt contract address",
@@ -466,10 +518,10 @@ export function normalizeCeremonyReceiptRpcObservation(value) {
   };
 }
 
-export function ceremonyReceiptRpcObservationSha256(value) {
+export function ceremonyReceiptRpcObservationSha256(value, options) {
   return domainDigest(
     CEREMONY_RECEIPT_RPC_OBSERVATION_DOMAIN,
-    normalizeCeremonyReceiptRpcObservation(value),
+    normalizeCeremonyReceiptRpcObservation(value, options),
   );
 }
 
@@ -640,6 +692,236 @@ function normalizeCommonFinalizedState(value) {
   return normalized;
 }
 
+function normalizeRoyaltyReleaseStateEvidence(value, {
+  authority,
+  phase,
+  commonFinalizedState,
+}) {
+  const parsed = exact(value, [
+    "phase", "primary_rpc_block", "primary_rpc_block_sha256",
+    "primary_rpc_id_sha256", "primary_rpc_state", "primary_rpc_state_sha256",
+    "secondary_rpc_block", "secondary_rpc_block_sha256",
+    "secondary_rpc_id_sha256", "secondary_rpc_state",
+    "secondary_rpc_state_sha256",
+  ], `royalty ${phase} state evidence`);
+  exactString(parsed.phase, phase, `royalty ${phase} evidence phase`);
+  const primaryRpcId = sha256(
+    parsed.primary_rpc_id_sha256,
+    `royalty ${phase} primary RPC identity`,
+  );
+  const secondaryRpcId = sha256(
+    parsed.secondary_rpc_id_sha256,
+    `royalty ${phase} secondary RPC identity`,
+  );
+  if (primaryRpcId === secondaryRpcId
+    || primaryRpcId !== commonFinalizedState.primary_rpc_id_sha256
+    || secondaryRpcId !== commonFinalizedState.secondary_rpc_id_sha256) {
+    fail(`royalty ${phase} state does not use the common dual-RPC authority`);
+  }
+  const primaryBlock = normalizeCommonFinalizedBlockRpcObservation(
+    parsed.primary_rpc_block,
+  );
+  const secondaryBlock = normalizeCommonFinalizedBlockRpcObservation(
+    parsed.secondary_rpc_block,
+  );
+  const primaryBlockSha = commonFinalizedBlockRpcObservationSha256(primaryBlock);
+  const secondaryBlockSha = commonFinalizedBlockRpcObservationSha256(secondaryBlock);
+  if (parsed.primary_rpc_block_sha256 !== primaryBlockSha
+    || parsed.secondary_rpc_block_sha256 !== secondaryBlockSha
+    || primaryBlockSha !== secondaryBlockSha) {
+    fail(`royalty ${phase} finalized block observations disagree`);
+  }
+  const primaryState = normalizeRoyaltyReleaseState(parsed.primary_rpc_state, {
+    authority,
+    phase,
+  });
+  const secondaryState = normalizeRoyaltyReleaseState(parsed.secondary_rpc_state, {
+    authority,
+    phase,
+  });
+  const primaryStateSha = royaltyReleaseStateSha256(primaryState, {
+    authority,
+    phase,
+  });
+  const secondaryStateSha = royaltyReleaseStateSha256(secondaryState, {
+    authority,
+    phase,
+  });
+  if (parsed.primary_rpc_state_sha256 !== primaryStateSha
+    || parsed.secondary_rpc_state_sha256 !== secondaryStateSha
+    || primaryStateSha !== secondaryStateSha
+    || JSON.stringify(primaryState) !== JSON.stringify(secondaryState)) {
+    fail(`royalty ${phase} independent RPC state observations disagree`);
+  }
+  if (primaryState.block_number !== primaryBlock.block_number
+    || primaryState.block_hash !== primaryBlock.block_hash
+    || primaryState.block_timestamp !== primaryBlock.block_timestamp) {
+    fail(`royalty ${phase} state is not bound to its canonical block`);
+  }
+  if (phase === "phase_two_active"
+    && (primaryBlockSha !== commonFinalizedState.primary_rpc_block_sha256
+      || secondaryBlockSha !== commonFinalizedState.secondary_rpc_block_sha256)) {
+    fail("active RoyaltyDistributor state must use the exact common finalized block");
+  }
+  if (primaryBlock.block_number > commonFinalizedState.primary_rpc_block.block_number) {
+    fail(`royalty ${phase} state is newer than the common finalized state`);
+  }
+  return {
+    phase,
+    primary_rpc_id_sha256: primaryRpcId,
+    secondary_rpc_id_sha256: secondaryRpcId,
+    primary_rpc_block: primaryBlock,
+    primary_rpc_block_sha256: primaryBlockSha,
+    secondary_rpc_block: secondaryBlock,
+    secondary_rpc_block_sha256: secondaryBlockSha,
+    primary_rpc_state: primaryState,
+    primary_rpc_state_sha256: primaryStateSha,
+    secondary_rpc_state: secondaryState,
+    secondary_rpc_state_sha256: secondaryStateSha,
+  };
+}
+
+function normalizeRoyaltyReleaseMutationEvidence(value, {
+  authority,
+  operation,
+  commonFinalizedState,
+}) {
+  const parsed = exact(value, [
+    "operation", "primary_rpc_block", "primary_rpc_block_sha256",
+    "primary_rpc_id_sha256", "primary_rpc_receipt",
+    "primary_rpc_receipt_sha256", "primary_rpc_transaction",
+    "primary_rpc_transaction_sha256", "secondary_rpc_block",
+    "secondary_rpc_block_sha256", "secondary_rpc_id_sha256",
+    "secondary_rpc_receipt", "secondary_rpc_receipt_sha256",
+    "secondary_rpc_transaction", "secondary_rpc_transaction_sha256",
+  ], `royalty ${operation} mutation evidence`);
+  exactString(parsed.operation, operation, `royalty ${operation} operation`);
+  const primaryRpcId = sha256(
+    parsed.primary_rpc_id_sha256,
+    `royalty ${operation} primary RPC identity`,
+  );
+  const secondaryRpcId = sha256(
+    parsed.secondary_rpc_id_sha256,
+    `royalty ${operation} secondary RPC identity`,
+  );
+  if (primaryRpcId === secondaryRpcId
+    || primaryRpcId !== commonFinalizedState.primary_rpc_id_sha256
+    || secondaryRpcId !== commonFinalizedState.secondary_rpc_id_sha256) {
+    fail(`royalty ${operation} does not use the common dual-RPC authority`);
+  }
+  const primaryTransaction = normalizeCeremonyTransactionRpcObservation(
+    parsed.primary_rpc_transaction,
+  );
+  const secondaryTransaction = normalizeCeremonyTransactionRpcObservation(
+    parsed.secondary_rpc_transaction,
+  );
+  const primaryReceipt = normalizeCeremonyReceiptRpcObservation(
+    parsed.primary_rpc_receipt,
+  );
+  const secondaryReceipt = normalizeCeremonyReceiptRpcObservation(
+    parsed.secondary_rpc_receipt,
+  );
+  const primaryBlock = normalizeCommonFinalizedBlockRpcObservation(
+    parsed.primary_rpc_block,
+  );
+  const secondaryBlock = normalizeCommonFinalizedBlockRpcObservation(
+    parsed.secondary_rpc_block,
+  );
+  const primaryTransactionSha = ceremonyTransactionRpcObservationSha256(
+    primaryTransaction,
+  );
+  const secondaryTransactionSha = ceremonyTransactionRpcObservationSha256(
+    secondaryTransaction,
+  );
+  const primaryReceiptSha = ceremonyReceiptRpcObservationSha256(primaryReceipt);
+  const secondaryReceiptSha = ceremonyReceiptRpcObservationSha256(secondaryReceipt);
+  const primaryBlockSha = commonFinalizedBlockRpcObservationSha256(primaryBlock);
+  const secondaryBlockSha = commonFinalizedBlockRpcObservationSha256(secondaryBlock);
+  if (parsed.primary_rpc_transaction_sha256 !== primaryTransactionSha
+    || parsed.secondary_rpc_transaction_sha256 !== secondaryTransactionSha
+    || parsed.primary_rpc_receipt_sha256 !== primaryReceiptSha
+    || parsed.secondary_rpc_receipt_sha256 !== secondaryReceiptSha
+    || parsed.primary_rpc_block_sha256 !== primaryBlockSha
+    || parsed.secondary_rpc_block_sha256 !== secondaryBlockSha
+    || primaryTransactionSha !== secondaryTransactionSha
+    || primaryReceiptSha !== secondaryReceiptSha
+    || primaryBlockSha !== secondaryBlockSha) {
+    fail(`royalty ${operation} dual-RPC transaction evidence disagrees`);
+  }
+  const expectedInputSha = royaltyReleaseMutationCalldataSha256(
+    operation,
+    authority,
+  );
+  if (primaryTransaction.from !== authority.owner
+    || primaryTransaction.to !== authority.distributor_address
+    || primaryTransaction.value_wei !== "0"
+    || primaryTransaction.input_sha256 !== expectedInputSha
+    || primaryTransaction.transaction_hash !== primaryReceipt.transaction_hash
+    || primaryTransaction.block_number !== primaryReceipt.block_number
+    || primaryTransaction.block_hash !== primaryReceipt.block_hash
+    || primaryTransaction.transaction_index !== primaryReceipt.transaction_index
+    || primaryTransaction.from !== primaryReceipt.from
+    || primaryTransaction.to !== primaryReceipt.to
+    || primaryTransaction.block_number !== primaryBlock.block_number
+    || primaryTransaction.block_hash !== primaryBlock.block_hash
+    || primaryBlock.block_number > commonFinalizedState.primary_rpc_block.block_number) {
+    fail(`royalty ${operation} transaction, receipt, block, or calldata is invalid`);
+  }
+  return {
+    operation,
+    primary_rpc_id_sha256: primaryRpcId,
+    secondary_rpc_id_sha256: secondaryRpcId,
+    primary_rpc_transaction: primaryTransaction,
+    primary_rpc_transaction_sha256: primaryTransactionSha,
+    secondary_rpc_transaction: secondaryTransaction,
+    secondary_rpc_transaction_sha256: secondaryTransactionSha,
+    primary_rpc_receipt: primaryReceipt,
+    primary_rpc_receipt_sha256: primaryReceiptSha,
+    secondary_rpc_receipt: secondaryReceipt,
+    secondary_rpc_receipt_sha256: secondaryReceiptSha,
+    primary_rpc_block: primaryBlock,
+    primary_rpc_block_sha256: primaryBlockSha,
+    secondary_rpc_block: secondaryBlock,
+    secondary_rpc_block_sha256: secondaryBlockSha,
+  };
+}
+
+function mutationPrecedes(left, right) {
+  return left.primary_rpc_transaction.block_number
+      < right.primary_rpc_transaction.block_number
+    || (left.primary_rpc_transaction.block_number
+        === right.primary_rpc_transaction.block_number
+      && left.primary_rpc_transaction.transaction_index
+        < right.primary_rpc_transaction.transaction_index);
+}
+
+function assertRoyaltyMutationEvent(mutation, authority, pendingActivatesAt = 0) {
+  const expected = royaltyReleaseMutationEvent(mutation.operation, authority, {
+    pendingAuthorityActivatesAt: pendingActivatesAt,
+  });
+  const logs = mutation.primary_rpc_receipt.logs;
+  if (logs.length !== 1
+    || logs[0].address !== expected.address
+    || JSON.stringify(logs[0].topics) !== JSON.stringify(expected.topics)
+    || logs[0].data !== expected.data) {
+    fail(`royalty ${mutation.operation} receipt does not contain the exact release event`);
+  }
+}
+
+export function normalizeRoyaltyReleaseHistory(value, {
+  contracts,
+  commonFinalizedState,
+}) {
+  return normalizeRoyaltyReleaseHistoryCore(value, {
+    contracts,
+    commonFinalizedState,
+  });
+}
+
+export function normalizedRoyaltyReleaseHistorySha256(value, options) {
+  return royaltyReleaseHistorySha256Core(value, options);
+}
+
 function normalizeContractEntries(value) {
   if (!Array.isArray(value) || value.length !== RELEASE_CONTRACT_STATE_KEYS.length) {
     fail("contract state must contain the exact seven-contract suite");
@@ -652,9 +934,7 @@ function normalizeContractEntries(value) {
     const key = RELEASE_CONTRACT_STATE_KEYS[index];
     exactString(contract.contract_key, key, `contract state ${index} key`);
     exactString(contract.control_role, CONTROL_ROLE_BY_CONTRACT[key], `contract state ${key} control role`);
-    const allowZero = key === "royalty_distributor";
-    const controlAddress = address(contract.control_address, `${key} control address`, { allowZero });
-    if (allowZero !== (controlAddress === ZERO_ADDRESS)) fail("RoyaltyDistributor alone must use immutable_no_owner with zero control address");
+    const controlAddress = address(contract.control_address, `${key} control address`);
     return {
       contract_key: key,
       address: address(contract.address, `${key} address`),
@@ -754,6 +1034,7 @@ function contractConfigurationSetPayload({
   deploymentIntentSha256,
   reviewerGenesisAcceptanceSha256,
   executionPolicyAnchorCommitment,
+  royaltyReleaseHistorySha256,
 }) {
   return {
     contracts,
@@ -761,6 +1042,7 @@ function contractConfigurationSetPayload({
     deployment_intent_sha256: deploymentIntentSha256,
     reviewer_authority_genesis_acceptance_sha256: reviewerGenesisAcceptanceSha256,
     execution_policy_anchor_commitment: executionPolicyAnchorCommitment,
+    royalty_release_history_sha256: royaltyReleaseHistorySha256,
   };
 }
 
@@ -772,7 +1054,8 @@ function normalizeContractState(value, {
   const parsed = exact(value, [
     "challenge_genesis_sha256", "configuration_set_sha256", "contracts",
     "deployment_intent_sha256", "execution_policy_anchor_commitment",
-    "reviewer_authority_genesis_acceptance_sha256",
+    "reviewer_authority_genesis_acceptance_sha256", "royalty_release_history",
+    "royalty_release_history_receipt_sha256", "royalty_release_history_sha256",
   ], "contract state");
   const contracts = normalizeContractEntries(parsed.contracts);
   const challengeGenesis = sha256(parsed.challenge_genesis_sha256, "challenge genesis digest");
@@ -794,14 +1077,38 @@ function normalizeContractState(value, {
       commonFinalizedState,
     },
   );
+  const royaltyReleaseHistory = normalizeRoyaltyReleaseHistory(
+    parsed.royalty_release_history,
+    { contracts, commonFinalizedState },
+  );
+  const royaltyHistorySha = normalizedRoyaltyReleaseHistorySha256(
+    royaltyReleaseHistory,
+    { contracts, commonFinalizedState },
+  );
+  if (parsed.royalty_release_history_sha256 !== royaltyHistorySha) {
+    fail("royalty release history digest is invalid");
+  }
+  const royaltyHistoryReceipt = projectRoyaltyReleaseHistoryReceipt({
+    contracts,
+    commonFinalizedState,
+    royaltyReleaseHistory,
+  });
+  const royaltyHistoryReceiptSha = royaltyReleaseHistoryReceiptSha256(
+    royaltyHistoryReceipt,
+  );
+  if (parsed.royalty_release_history_receipt_sha256
+      !== royaltyHistoryReceiptSha) {
+    fail("royalty release history receipt digest is invalid");
+  }
   const expectedConfiguration = domainDigest(
-    "dnai-wikigen/live-contract-configuration-set/v2\0",
+    "dnai-wikigen/live-contract-configuration-set/v3\0",
     contractConfigurationSetPayload({
       contracts,
       challengeGenesisSha256: challengeGenesis,
       deploymentIntentSha256: deploymentIntentSha,
       reviewerGenesisAcceptanceSha256: reviewerAcceptanceSha,
       executionPolicyAnchorCommitment: anchorCommitment,
+      royaltyReleaseHistorySha256: royaltyHistorySha,
     }),
   );
   if (parsed.configuration_set_sha256 !== expectedConfiguration) {
@@ -813,6 +1120,9 @@ function normalizeContractState(value, {
     deployment_intent_sha256: deploymentIntentSha,
     reviewer_authority_genesis_acceptance_sha256: reviewerAcceptanceSha,
     execution_policy_anchor_commitment: anchorCommitment,
+    royalty_release_history: royaltyReleaseHistory,
+    royalty_release_history_sha256: royaltyHistorySha,
+    royalty_release_history_receipt_sha256: royaltyHistoryReceiptSha,
     configuration_set_sha256: expectedConfiguration,
   };
 }
@@ -860,6 +1170,8 @@ export function liveContractConfigurationSetSha256({
   deploymentIntentSha256,
   reviewerGenesisAcceptanceSha256,
   executionPolicyAnchorCommitment,
+  royaltyReleaseHistory,
+  commonFinalizedState,
 }) {
   const normalizedContracts = normalizeContractEntries(contracts);
   const challengeGenesis = sha256(challengeGenesisSha256, "challenge genesis digest");
@@ -876,14 +1188,30 @@ export function liveContractConfigurationSetSha256({
       reviewerGenesisAcceptanceSha256: reviewerAcceptance,
     },
   );
+  const normalizedCommonState = normalizeCommonFinalizedState(commonFinalizedState);
+  const normalizedRoyaltyHistory = normalizeRoyaltyReleaseHistory(
+    royaltyReleaseHistory,
+    {
+      contracts: normalizedContracts,
+      commonFinalizedState: normalizedCommonState,
+    },
+  );
+  const royaltyHistorySha = normalizedRoyaltyReleaseHistorySha256(
+    normalizedRoyaltyHistory,
+    {
+      contracts: normalizedContracts,
+      commonFinalizedState: normalizedCommonState,
+    },
+  );
   return domainDigest(
-    "dnai-wikigen/live-contract-configuration-set/v2\0",
+    "dnai-wikigen/live-contract-configuration-set/v3\0",
     contractConfigurationSetPayload({
       contracts: normalizedContracts,
       challengeGenesisSha256: challengeGenesis,
       deploymentIntentSha256: deploymentIntent,
       reviewerGenesisAcceptanceSha256: reviewerAcceptance,
       executionPolicyAnchorCommitment: anchorCommitment,
+      royaltyReleaseHistorySha256: royaltyHistorySha,
     }),
   );
 }
@@ -1092,6 +1420,10 @@ function stageTwoDependencies(body) {
     ceremony_ledger_revision_chain: body.ceremony_finalization.revision_chain_sha256,
     common_finalized_state: commonStateDependencySha256(body.common_finalized_state),
     contract_configuration_set: body.contract_state.configuration_set_sha256,
+    royalty_release_history:
+      body.contract_state.royalty_release_history_sha256,
+    royalty_release_history_receipt:
+      body.contract_state.royalty_release_history_receipt_sha256,
     challenge_genesis: body.contract_state.challenge_genesis_sha256,
     final_cvm_state: finalCvmStateSha256,
     cvm_measurements: body.post_ceremony_evidence.cvm_measurements_sha256,
@@ -1483,6 +1815,8 @@ export function normalizeLiveActivationFrontendBinding(value) {
     "live_activation_authority_sha256",
     "qvl_policy_bundle_sha256", "release_sha",
     "reviewer_authority_genesis_acceptance_sha256",
+    "royalty_release_active_state", "royalty_release_authority",
+    "royalty_release_history_receipt_sha256", "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256", "schema", "tdx_attestation_bundle_sha256",
     "truth_status",
   ], "live activation frontend binding");
@@ -1518,14 +1852,44 @@ export function normalizeLiveActivationFrontendBinding(value) {
       reviewerGenesisAcceptanceSha256: reviewerAcceptanceSha,
     },
   );
+  const royaltyHistorySha = sha256(
+    parsed.royalty_release_history_sha256,
+    "frontend binding royalty release history digest",
+  );
+  const royaltyHistoryReceiptSha = sha256(
+    parsed.royalty_release_history_receipt_sha256,
+    "frontend binding royalty release history receipt digest",
+  );
+  const royaltyAuthority = normalizeRoyaltyReleaseAuthority(
+    parsed.royalty_release_authority,
+  );
+  const royaltyActiveState = normalizeRoyaltyReleaseState(
+    parsed.royalty_release_active_state,
+    { authority: royaltyAuthority, phase: "phase_two_active" },
+  );
+  const royaltyContract = contracts.find((entry) =>
+    entry.contract_key === "royalty_distributor");
+  const anchorContract = contracts.find((entry) =>
+    entry.contract_key === "execution_policy_anchor");
+  if (!royaltyContract || !anchorContract
+    || royaltyAuthority.distributor_address !== royaltyContract.address
+    || royaltyAuthority.owner !== royaltyContract.control_address
+    || royaltyAuthority.execution_policy_anchor !== anchorContract.address
+    || royaltyActiveState.block_number
+      !== anchorCommitment.primary_rpc_read.block_number
+    || royaltyActiveState.block_hash
+      !== anchorCommitment.primary_rpc_read.block_hash) {
+    fail("frontend binding RoyaltyDistributor authority or active poststate drifted");
+  }
   const expectedContractConfigurationSha = domainDigest(
-    "dnai-wikigen/live-contract-configuration-set/v2\0",
+    "dnai-wikigen/live-contract-configuration-set/v3\0",
     contractConfigurationSetPayload({
       contracts,
       challengeGenesisSha256: challengeGenesisSha,
       deploymentIntentSha256: deploymentIntentSha,
       reviewerGenesisAcceptanceSha256: reviewerAcceptanceSha,
       executionPolicyAnchorCommitment: anchorCommitment,
+      royaltyReleaseHistorySha256: royaltyHistorySha,
     }),
   );
   if (parsed.contract_configuration_set_sha256 !== expectedContractConfigurationSha) {
@@ -1565,6 +1929,10 @@ export function normalizeLiveActivationFrontendBinding(value) {
     contract_configuration_set_sha256: expectedContractConfigurationSha,
     contracts,
     execution_policy_anchor_commitment: anchorCommitment,
+    royalty_release_authority: royaltyAuthority,
+    royalty_release_active_state: royaltyActiveState,
+    royalty_release_history_sha256: royaltyHistorySha,
+    royalty_release_history_receipt_sha256: royaltyHistoryReceiptSha,
     challenge_genesis_sha256: challengeGenesisSha,
     final_cvms: normalizeFinalCvms(parsed.final_cvms),
     cvm_measurements_sha256: sha256(
@@ -1624,6 +1992,15 @@ export function projectLiveActivationFrontendBinding(value, options) {
     contracts: liveActivation.contract_state.contracts,
     execution_policy_anchor_commitment:
       liveActivation.contract_state.execution_policy_anchor_commitment,
+    royalty_release_authority:
+      liveActivation.contract_state.royalty_release_history.authority,
+    royalty_release_active_state:
+      liveActivation.contract_state.royalty_release_history.phase_two
+        .poststate.primary_rpc_state,
+    royalty_release_history_sha256:
+      liveActivation.contract_state.royalty_release_history_sha256,
+    royalty_release_history_receipt_sha256:
+      liveActivation.contract_state.royalty_release_history_receipt_sha256,
     challenge_genesis_sha256: liveActivation.contract_state.challenge_genesis_sha256,
     final_cvms: liveActivation.post_ceremony_evidence.final_cvms,
     cvm_measurements_sha256:

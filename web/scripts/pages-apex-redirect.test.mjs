@@ -18,7 +18,11 @@ import {
   CLOUDFLARE_MODELED_PREVIEW_BRANCH,
 } from "./deploy-cloudflare-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./pages-apex-redirect.test.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 
 test("edge host policy matches the exact Cloudflare release branches", () => {
   assert.equal(CANONICAL_HOSTNAME, "www.wikigen.me");
@@ -227,6 +231,36 @@ test("modeled-preview direct routes canonicalize to a hash without escaping the 
     response?.headers.get("location"),
     "https://modeled-preview.wikigenme.pages.dev/#/verify?source=review",
   );
+});
+
+test("not-found and every Compute tab survive direct-path canonicalization exactly", () => {
+  const notFound = canonicalHashRouteRedirect(new Request(
+    "https://www.wikigen.me/not-found?source=typed-route",
+  ));
+  assert.equal(notFound?.status, 308);
+  assert.equal(
+    notFound?.headers.get("location"),
+    "https://www.wikigen.me/#/not-found?source=typed-route",
+  );
+
+  for (const tab of [
+    "overview",
+    "workloads",
+    "funding",
+    "dispatch",
+    "jobs",
+    "credentials",
+  ]) {
+    const response = canonicalHashRouteRedirect(new Request(
+      `https://www.wikigen.me/compute?tab=${tab}`,
+    ));
+    assert.equal(response?.status, 308, tab);
+    assert.equal(
+      response?.headers.get("location"),
+      `https://www.wikigen.me/#/compute?tab=${tab}`,
+      tab,
+    );
+  }
 });
 
 test("strict Arena deep links redirect only when challenge, semver, and query are valid", () => {

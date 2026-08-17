@@ -19,7 +19,7 @@ import re
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -32,15 +32,25 @@ from tinker_delegate.policy_kernel import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 EXECUTION_POLICY_APPROVAL_SCHEMA = (
     "dnai-wikigen/execution-policy-approval/v3"
 )
 EXECUTION_POLICY_API_SCHEMA_VERSION = 3
 STORE_SURFACE = "execution_policy_store"
 ZERO_DECISION_HASH = "0" * 64
+ZERO_RECORD_DIGEST = "0" * 64
+POLICY_RECORD_KIND = "execution_policy_decision_v2"
+ROYALTY_RECORD_KIND = "royalty_settlement_anchor_v1"
+ROYALTY_CONFIRMATION_SCHEMA = "dnai.royalty-settlement-anchor-confirmation.v1"
 EXECUTION_SURFACES = frozenset(
-    {"deal_evaluation", "arena_execution", "compute_dispatch"}
+    {
+        "deal_evaluation",
+        "arena_execution",
+        "compute_dispatch",
+        "review_queue_state",
+        "collaboration_state",
+    }
 )
 MAX_RECORDS = 20_000
 MAX_STORE_BYTES = 8 * 1024 * 1024
@@ -368,10 +378,14 @@ class ExecutionPolicyStore:
     """Single-process append-only decision store with HMAC integrity."""
 
     _ROOT_FIELDS = frozenset({"surface", "schema_version", "payload", "integrity"})
-    _PAYLOAD_FIELDS = frozenset({"sequence", "records"})
-    _RECORD_FIELDS = frozenset(
+    _PAYLOAD_FIELDS = frozenset(
+        {"sequence", "records", "royalty_confirmations"}
+    )
+    _POLICY_RECORD_FIELDS = frozenset(
         {
+            "record_kind",
             "sequence",
+            "previous_record_digest",
             "surface",
             "resource_id_hash",
             "decision",
@@ -390,6 +404,22 @@ class ExecutionPolicyStore:
             "decision_hash",
         }
     )
+    _ROYALTY_RECORD_FIELDS = frozenset(
+        {
+            "record_kind",
+            "sequence",
+            "chain_sequence",
+            "previous_record_digest",
+            "resource_id_hash",
+            "decision_hash",
+            "recorded_at",
+            "authorization_expires_at",
+            "settlement_scope",
+            "plan_commitment",
+            "anchor_status",
+            "wallet_plan",
+        }
+    )
 
     def __init__(self, path: str | Path, *, integrity_key: bytes) -> None:
         self.path = Path(path)
@@ -403,7 +433,11 @@ class ExecutionPolicyStore:
             if self.path.exists():
                 self._state = self._load()
             else:
-                self._state = {"sequence": 0, "records": []}
+                self._state = {
+                    "sequence": 0,
+                    "records": [],
+                    "royalty_confirmations": {},
+                }
                 self._persist(self._state)
 
     def append(
@@ -500,7 +534,9 @@ class ExecutionPolicyStore:
                 )
             sequence = int(self._state["sequence"]) + 1
             core = {
+                "record_kind": POLICY_RECORD_KIND,
                 "sequence": sequence,
+                "previous_record_digest": self._record_chain_head_locked(),
                 "surface": normalized_surface,
                 "resource_id_hash": resource_hash,
                 "decision": decision,
@@ -520,7 +556,7 @@ class ExecutionPolicyStore:
             record = {
                 **core,
                 "decision_hash": _hash_json(
-                    "execution_policy_decision", core
+                    "execution_policy_decision_v2", core
                 ),
             }
             candidate = copy.deepcopy(self._state)
@@ -536,6 +572,118 @@ class ExecutionPolicyStore:
             self._persist(candidate)
             self._state = candidate
             return self._public_record(record)
+
+    def append_royalty_wallet_plan(
+        self,
+        *,
+        wallet_plan: Any,
+        chain_sequence: int,
+        recorded_at: int,
+        replace_expired: bool,
+    ) -> dict[str, Any]:
+        """Persist one exact signed/calldata plan before any anchor broadcast.
+
+        The caller cannot supply anchor hashes or a sequence independently: the
+        complete strict wallet-plan object is reconstructed and both hashes are
+        recomputed by its authorization core.  Replacement is permitted only
+        after the previous current plan for this resource has expired; the
+        on-chain reservation/nonce liveness check remains the orchestrator's
+        mandatory finalized precondition.
+        """
+
+        from tinker_delegate.royalty_settlement_wallet_plan import (
+            RoyaltySettlementWalletPlan,
+            RoyaltySettlementWalletPlanError,
+        )
+
+        if not isinstance(wallet_plan, RoyaltySettlementWalletPlan):
+            raise ExecutionPolicyStoreError(
+                "exact royalty settlement wallet plan is required"
+            )
+        prepared_at = _timestamp(recorded_at, "recorded_at")
+        expected_chain_sequence = _integer(
+            chain_sequence,
+            "royalty chain sequence",
+            minimum=2,
+        )
+        if not isinstance(replace_expired, bool):
+            raise ExecutionPolicyStoreError(
+                "royalty settlement replacement flag is invalid"
+            )
+        try:
+            persisted_plan = wallet_plan.to_persistence_dict()
+            # Reconstruct before locking so an invalid/mutable adapter can
+            # never enter the shared global sequence.
+            checked = RoyaltySettlementWalletPlan.from_persistence_dict(
+                persisted_plan
+            )
+        except RoyaltySettlementWalletPlanError as exc:
+            raise ExecutionPolicyStoreError(str(exc)) from exc
+        if checked.authorized_plan.authorization_expires_at <= prepared_at:
+            raise ExecutionPolicyStoreError(
+                "royalty settlement plan is already expired"
+            )
+
+        with self._lock:
+            if len(self._state["records"]) >= MAX_RECORDS:
+                raise ExecutionPolicyStoreError("execution policy store is full")
+            sequence = int(self._state["sequence"]) + 1
+            if (
+                expected_chain_sequence != sequence + 1
+                or checked.anchor_sequence != expected_chain_sequence
+            ):
+                raise ExecutionPolicyStoreError(
+                    "royalty settlement anchor sequence does not include the release marker"
+                )
+            resource_hash = checked.anchor_resource_hash[2:]
+            decision_hash = checked.anchor_decision_hash[2:]
+            previous = self._latest_royalty_record_locked(resource_hash)
+            if previous is None:
+                if replace_expired:
+                    raise ExecutionPolicyStoreError(
+                        "royalty settlement replacement has no prior plan"
+                    )
+            else:
+                if not replace_expired:
+                    raise ExecutionPolicyStoreError(
+                        "royalty settlement resource already has a plan"
+                    )
+                if previous["authorization_expires_at"] > prepared_at:
+                    raise ExecutionPolicyStoreError(
+                        "royalty settlement plan is not expired"
+                    )
+                prior_plan = RoyaltySettlementWalletPlan.from_persistence_dict(
+                    previous["wallet_plan"]
+                )
+                if self._royalty_replacement_basis(prior_plan) != (
+                    self._royalty_replacement_basis(checked)
+                ):
+                    raise ExecutionPolicyStoreError(
+                        "royalty settlement replacement changed immutable authority"
+                    )
+            record = {
+                "record_kind": ROYALTY_RECORD_KIND,
+                "sequence": sequence,
+                "chain_sequence": expected_chain_sequence,
+                "previous_record_digest": self._record_chain_head_locked(),
+                "resource_id_hash": resource_hash,
+                "decision_hash": decision_hash,
+                "recorded_at": prepared_at,
+                "authorization_expires_at": (
+                    checked.authorized_plan.authorization_expires_at
+                ),
+                "settlement_scope": checked.authorized_plan.settlement_scope,
+                "plan_commitment": checked.plan_commitment,
+                "anchor_status": "prepared",
+                "wallet_plan": persisted_plan,
+            }
+            candidate = copy.deepcopy(self._state)
+            candidate["sequence"] = sequence
+            candidate["records"].append(record)
+            self._validate_state(candidate)
+            self._persist(candidate)
+            self._state = candidate
+            return self._public_royalty_record(record)
 
     def refresh(self) -> None:
         """Reload and authenticate the journal while an external lease is held.
@@ -567,6 +715,22 @@ class ExecutionPolicyStore:
                 return self._public_record(record)
         return None
 
+    def history(
+        self, *, surface: str, resource_id: str
+    ) -> tuple[dict[str, Any], ...]:
+        """Return one resource's complete bounded, hash-only decision chain."""
+
+        normalized_surface = _surface(surface)
+        resource_hash = execution_resource_hash(normalized_surface, resource_id)
+        with self._lock:
+            return tuple(
+                self._public_record(record)
+                for record in self._state["records"]
+                if record.get("record_kind") == POLICY_RECORD_KIND
+                and record["surface"] == normalized_surface
+                and hmac.compare_digest(record["resource_id_hash"], resource_hash)
+            )
+
     def latest_decision_hash(self, *, surface: str, resource_id: str) -> str:
         normalized_surface = _surface(surface)
         resource_hash = execution_resource_hash(normalized_surface, resource_id)
@@ -595,22 +759,229 @@ class ExecutionPolicyStore:
                     "sequence": record["sequence"],
                     "resource_id_hash": record["resource_id_hash"],
                     "decision_hash": record["decision_hash"],
+                    **(
+                        {"chain_sequence": record["chain_sequence"]}
+                        if record.get("record_kind") == ROYALTY_RECORD_KIND
+                        else {}
+                    ),
                 }
                 for record in self._state["records"]
             )
+
+    def royalty_wallet_plan(
+        self,
+        *,
+        plan_commitment: str,
+    ) -> Any | None:
+        """Restore one exact persisted plan without making a finality claim."""
+
+        from tinker_delegate.royalty_settlement_wallet_plan import (
+            RoyaltySettlementWalletPlan,
+        )
+
+        commitment = _prefixed_hash_value(
+            plan_commitment, "royalty plan commitment"
+        )
+        with self._lock:
+            for record in reversed(self._state["records"]):
+                if (
+                    record.get("record_kind") == ROYALTY_RECORD_KIND
+                    and hmac.compare_digest(record["plan_commitment"], commitment)
+                ):
+                    return RoyaltySettlementWalletPlan.from_persistence_dict(
+                        copy.deepcopy(record["wallet_plan"])
+                    )
+        return None
+
+    def latest_royalty_wallet_plan(
+        self,
+        *,
+        anchor_resource_hash: str,
+    ) -> Any | None:
+        """Restore the newest immutable plan for one opaque Royalty resource."""
+
+        from tinker_delegate.royalty_settlement_wallet_plan import (
+            RoyaltySettlementWalletPlan,
+        )
+
+        resource = _prefixed_hash_value(
+            anchor_resource_hash, "royalty anchor resource"
+        )[2:]
+        with self._lock:
+            record = self._latest_royalty_record_locked(resource)
+            if record is None:
+                return None
+            return RoyaltySettlementWalletPlan.from_persistence_dict(
+                copy.deepcopy(record["wallet_plan"])
+            )
+
+    def confirm_royalty_anchor(
+        self,
+        *,
+        plan_commitment: str,
+        snapshot: Any,
+        confirmed_at: int,
+    ) -> dict[str, Any]:
+        """Attach an exact finalized receipt without mutating the anchor record."""
+
+        from tinker_delegate.execution_policy_anchor import (
+            BASE_SEPOLIA_CHAIN_ID,
+            ExecutionPolicyAnchorSnapshot,
+        )
+
+        commitment = _prefixed_hash_value(
+            plan_commitment, "royalty plan commitment"
+        )
+        observed_at = _timestamp(confirmed_at, "confirmed_at")
+        if not isinstance(snapshot, ExecutionPolicyAnchorSnapshot):
+            raise ExecutionPolicyStoreError(
+                "finalized royalty anchor snapshot is required"
+            )
+        bounded = snapshot.to_bounded_dict()
+        with self._lock:
+            record = next(
+                (
+                    candidate
+                    for candidate in self._state["records"]
+                    if candidate.get("record_kind") == ROYALTY_RECORD_KIND
+                    and hmac.compare_digest(
+                        candidate["plan_commitment"], commitment
+                    )
+                ),
+                None,
+            )
+            if record is None:
+                raise ExecutionPolicyStoreError(
+                    "royalty settlement plan is not persisted"
+                )
+            if (
+                snapshot.chain_id != BASE_SEPOLIA_CHAIN_ID
+                or snapshot.resource_id_hash != record["resource_id_hash"]
+                or snapshot.resource_decision_head
+                != "0x" + record["decision_hash"]
+                or snapshot.resource_sequence != record["chain_sequence"]
+                or snapshot.decision_hash != record["decision_hash"]
+                or snapshot.decision_sequence != record["chain_sequence"]
+                or snapshot.global_sequence < record["chain_sequence"]
+                or observed_at < snapshot.block_timestamp
+            ):
+                raise ExecutionPolicyStoreError(
+                    "finalized royalty anchor snapshot does not match the plan"
+                )
+            confirmation = {
+                "schema": ROYALTY_CONFIRMATION_SCHEMA,
+                "plan_commitment": commitment,
+                "sequence": record["sequence"],
+                "chain_sequence": record["chain_sequence"],
+                "resource_id_hash": record["resource_id_hash"],
+                "decision_hash": record["decision_hash"],
+                "confirmed_at": observed_at,
+                "anchor_snapshot": bounded,
+            }
+            existing = self._state["royalty_confirmations"].get(commitment)
+            if existing is not None:
+                # The first exact finalized receipt is immutable.  Later
+                # sponsor reads may observe a newer global block/head after
+                # unrelated policy records, but the resource and decision
+                # sequence checks above still prove this same plan is the
+                # finalized resource head.  Do not rewrite first-observed
+                # finality or make idempotent GETs depend on their wall clock.
+                return copy.deepcopy(existing)
+            candidate = copy.deepcopy(self._state)
+            candidate["royalty_confirmations"][commitment] = confirmation
+            self._validate_state(candidate)
+            self._persist(candidate)
+            self._state = candidate
+            return copy.deepcopy(confirmation)
+
+    def royalty_anchor_confirmation(
+        self,
+        *,
+        plan_commitment: str,
+    ) -> dict[str, Any] | None:
+        commitment = _prefixed_hash_value(
+            plan_commitment, "royalty plan commitment"
+        )
+        with self._lock:
+            value = self._state["royalty_confirmations"].get(commitment)
+            return None if value is None else copy.deepcopy(value)
+
+    def anchor_record_kind(self, *, sequence: int) -> str:
+        checked = _integer(sequence, "sequence", minimum=1)
+        with self._lock:
+            if checked > len(self._state["records"]):
+                raise ExecutionPolicyStoreError(
+                    "execution policy sequence is missing"
+                )
+            return str(self._state["records"][checked - 1]["record_kind"])
 
     def _latest_record_locked(
         self, normalized_surface: str, resource_hash: str
     ) -> dict[str, Any] | None:
         for record in reversed(self._state["records"]):
             if (
-                record["surface"] == normalized_surface
+                record.get("record_kind") == POLICY_RECORD_KIND
+                and record["surface"] == normalized_surface
                 and hmac.compare_digest(
                     record["resource_id_hash"], resource_hash
                 )
             ):
                 return record
         return None
+
+    def _latest_royalty_record_locked(
+        self,
+        resource_hash: str,
+    ) -> dict[str, Any] | None:
+        for record in reversed(self._state["records"]):
+            if (
+                record.get("record_kind") == ROYALTY_RECORD_KIND
+                and hmac.compare_digest(record["resource_id_hash"], resource_hash)
+            ):
+                return record
+        return None
+
+    def _record_chain_head_locked(self) -> str:
+        if not self._state["records"]:
+            return ZERO_RECORD_DIGEST
+        return _hash_json("execution_policy_global_record_v1", self._state["records"][-1])
+
+    @staticmethod
+    def _royalty_replacement_basis(wallet_plan: Any) -> bytes:
+        plan = wallet_plan.authorized_plan
+        authorization = dict(plan._authorization_dict())
+        for mutable in (
+            "attestation_evidence_hash",
+            "anchor_decision_hash",
+            "anchor_sequence",
+            "expiry",
+        ):
+            authorization.pop(mutable)
+        return _canonical_json(
+            {
+                "chain_id": plan.chain_id,
+                "distributor_address": plan.distributor_address,
+                "authorization": authorization,
+                "anchor_resource_hash": plan.authorization.anchor_resource_hash,
+                "settlement_verifier_address": plan.settlement_verifier_address,
+                "qvl_verifier_address": plan.qvl_verifier_address,
+                "qvl_policy_commitment": plan.qvl_policy_commitment,
+                "qvl_verdict_verifier_address": plan.qvl_verdict_verifier_address,
+                "qvl_release_policy_hash": plan.qvl_release_policy_hash,
+                "report_data": plan.report_data,
+                "compose_hash": plan.compose_hash,
+                "app_id": plan.app_id,
+                "os_image_hash": plan.os_image_hash,
+                "recipients": [
+                    {
+                        "owner_address": recipient.owner_address,
+                        "amount": recipient.amount,
+                    }
+                    for recipient in wallet_plan.recipients
+                ],
+                "refund_after": wallet_plan.refund_after,
+            }
+        )
 
     def require_pass(
         self,
@@ -800,32 +1171,77 @@ class ExecutionPolicyStore:
                 raise ExecutionPolicyStoreCorrupt(
                     "execution policy sequence is invalid"
                 )
-            resource_heads: dict[tuple[str, str], str] = {}
+            policy_resource_heads: dict[tuple[str, str], str] = {}
+            previous_record_digest = ZERO_RECORD_DIGEST
             for expected_sequence, record in enumerate(records, start=1):
                 if not isinstance(record, dict):
                     raise ExecutionPolicyStoreCorrupt(
                         "execution policy record schema is invalid"
                     )
-                key = (record.get("surface"), record.get("resource_id_hash"))
-                expected_previous = resource_heads.get(
-                    key, ZERO_DECISION_HASH
+                if not hmac.compare_digest(
+                    _hash_value(
+                        record.get("previous_record_digest"),
+                        "previous_record_digest",
+                    ),
+                    previous_record_digest,
+                ):
+                    raise ExecutionPolicyStoreCorrupt(
+                        "execution policy global record chain is invalid"
+                    )
+                kind = record.get("record_kind")
+                if kind == POLICY_RECORD_KIND:
+                    key = (record.get("surface"), record.get("resource_id_hash"))
+                    expected_previous = policy_resource_heads.get(
+                        key, ZERO_DECISION_HASH
+                    )
+                    self._validate_policy_record(
+                        record, expected_sequence, expected_previous
+                    )
+                    policy_resource_heads[key] = record["decision_hash"]
+                elif kind == ROYALTY_RECORD_KIND:
+                    self._validate_royalty_record(record, expected_sequence)
+                else:
+                    raise ExecutionPolicyStoreCorrupt(
+                        "execution policy record kind is invalid"
+                    )
+                previous_record_digest = _hash_json(
+                    "execution_policy_global_record_v1", record
                 )
-                self._validate_record(
-                    record, expected_sequence, expected_previous
+            confirmations = state["royalty_confirmations"]
+            if not isinstance(confirmations, dict) or len(confirmations) > len(records):
+                raise ExecutionPolicyStoreCorrupt(
+                    "royalty anchor confirmations are invalid"
                 )
-                resource_heads[key] = record["decision_hash"]
+            royalty_records = {
+                record["plan_commitment"]: record
+                for record in records
+                if record.get("record_kind") == ROYALTY_RECORD_KIND
+            }
+            for commitment, confirmation in confirmations.items():
+                if commitment not in royalty_records:
+                    raise ExecutionPolicyStoreCorrupt(
+                        "royalty anchor confirmation has no plan"
+                    )
+                self._validate_royalty_confirmation(
+                    confirmation,
+                    royalty_records[commitment],
+                )
         except ExecutionPolicyStoreCorrupt:
             raise
         except (ExecutionPolicyStoreError, TypeError, ValueError) as exc:
             raise ExecutionPolicyStoreCorrupt(str(exc)) from exc
 
-    def _validate_record(
+    def _validate_policy_record(
         self,
         record: Any,
         expected_sequence: int,
         expected_previous_decision_hash: str,
     ) -> None:
-        if not isinstance(record, dict) or set(record) != self._RECORD_FIELDS:
+        if (
+            not isinstance(record, dict)
+            or set(record) != self._POLICY_RECORD_FIELDS
+            or record.get("record_kind") != POLICY_RECORD_KIND
+        ):
             raise ExecutionPolicyStoreCorrupt(
                 "execution policy record schema is invalid"
             )
@@ -881,13 +1297,175 @@ class ExecutionPolicyStore:
         if expiry <= recorded or expiry - recorded > MAX_DECISION_TTL_SECONDS:
             raise ExecutionPolicyStoreCorrupt("execution policy expiry is invalid")
         core = {key: value for key, value in record.items() if key != "decision_hash"}
-        expected_hash = _hash_json("execution_policy_decision", core)
+        expected_hash = _hash_json("execution_policy_decision_v2", core)
         if not hmac.compare_digest(
             _hash_value(record["decision_hash"], "decision_hash"), expected_hash
         ):
             raise ExecutionPolicyStoreCorrupt(
                 "execution policy decision hash is invalid"
             )
+
+    def _validate_royalty_record(
+        self,
+        record: Any,
+        expected_sequence: int,
+    ) -> None:
+        from tinker_delegate.royalty_settlement_wallet_plan import (
+            RoyaltySettlementWalletPlan,
+            RoyaltySettlementWalletPlanError,
+        )
+
+        if (
+            not isinstance(record, dict)
+            or set(record) != self._ROYALTY_RECORD_FIELDS
+            or record.get("record_kind") != ROYALTY_RECORD_KIND
+        ):
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty settlement anchor record schema is invalid"
+            )
+        if _integer(record["sequence"], "sequence", minimum=1) != expected_sequence:
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty settlement anchor sequence is invalid"
+            )
+        if record["anchor_status"] != "prepared":
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty settlement anchor record is mutable"
+            )
+        recorded = _timestamp(record["recorded_at"], "recorded_at")
+        expires = _timestamp(
+            record["authorization_expires_at"], "authorization_expires_at"
+        )
+        if expires <= recorded:
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty settlement anchor record is expired"
+            )
+        try:
+            wallet_plan = RoyaltySettlementWalletPlan.from_persistence_dict(
+                record["wallet_plan"]
+            )
+        except RoyaltySettlementWalletPlanError as exc:
+            raise ExecutionPolicyStoreCorrupt(str(exc)) from exc
+        chain_sequence = _integer(
+            record["chain_sequence"],
+            "royalty chain sequence",
+            minimum=2,
+        )
+        if (
+            chain_sequence != expected_sequence + 1
+            or wallet_plan.anchor_sequence != chain_sequence
+            or wallet_plan.authorized_plan.authorization_expires_at != expires
+            or record["resource_id_hash"] != wallet_plan.anchor_resource_hash[2:]
+            or record["decision_hash"] != wallet_plan.anchor_decision_hash[2:]
+            or record["settlement_scope"]
+            != wallet_plan.authorized_plan.settlement_scope
+            or record["plan_commitment"] != wallet_plan.plan_commitment
+        ):
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty settlement anchor record does not match its exact plan"
+            )
+        _hash_value(record["resource_id_hash"], "resource_id_hash")
+        _hash_value(record["decision_hash"], "decision_hash")
+        _prefixed_hash_value(record["settlement_scope"], "settlement_scope")
+        _prefixed_hash_value(record["plan_commitment"], "plan_commitment")
+
+    def _validate_royalty_confirmation(
+        self,
+        confirmation: Any,
+        record: Mapping[str, Any],
+    ) -> None:
+        fields = {
+            "schema",
+            "plan_commitment",
+            "sequence",
+            "chain_sequence",
+            "resource_id_hash",
+            "decision_hash",
+            "confirmed_at",
+            "anchor_snapshot",
+        }
+        snapshot_fields = {
+            "schema",
+            "status",
+            "verification_model",
+            "chain_id",
+            "block_number",
+            "block_hash",
+            "block_timestamp",
+            "contract_address",
+            "runtime_code_hash",
+            "writer",
+            "writer_release_commitment",
+            "writer_rotations_frozen",
+            "paused",
+            "global_sequence",
+            "global_head",
+            "resource_id_hash",
+            "resource_decision_head",
+            "resource_sequence",
+            "decision_hash",
+            "decision_sequence",
+            "latest_block_number",
+            "rpc_finalized_block_number",
+            "rpc_finalized_block_hash",
+            "minimum_confirmation_depth",
+            "observed_confirmation_depth",
+            "independent_rpc_quorum_verified",
+            "consensus_proof_verified",
+            "opaque_commitments_only",
+            "raw_resource_id_egress",
+            "raw_policy_egress",
+        }
+        if not isinstance(confirmation, dict) or set(confirmation) != fields:
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty anchor confirmation schema is invalid"
+            )
+        snapshot = confirmation["anchor_snapshot"]
+        if not isinstance(snapshot, dict) or set(snapshot) != snapshot_fields:
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty anchor confirmation snapshot is invalid"
+            )
+        confirmed_at = _timestamp(confirmation["confirmed_at"], "confirmed_at")
+        if (
+            confirmation["schema"] != ROYALTY_CONFIRMATION_SCHEMA
+            or confirmation["plan_commitment"] != record["plan_commitment"]
+            or confirmation["sequence"] != record["sequence"]
+            or confirmation["chain_sequence"] != record["chain_sequence"]
+            or confirmation["resource_id_hash"] != record["resource_id_hash"]
+            or confirmation["decision_hash"] != record["decision_hash"]
+            or snapshot["schema"]
+            != "dnai-wikigen/execution-policy-anchor-status/v1"
+            or snapshot["status"]
+            != "rpc_reported_finalized_release_match"
+            or snapshot["chain_id"] != 84_532
+            or snapshot["resource_id_hash"] != record["resource_id_hash"]
+            or snapshot["resource_decision_head"]
+            != "0x" + record["decision_hash"]
+            or snapshot["resource_sequence"] != record["chain_sequence"]
+            or snapshot["decision_hash"] != record["decision_hash"]
+            or snapshot["decision_sequence"] != record["chain_sequence"]
+            or snapshot["global_sequence"] < record["chain_sequence"]
+            or confirmed_at < snapshot["block_timestamp"]
+            or snapshot["writer_rotations_frozen"] is not True
+            or snapshot["paused"] is not False
+            or snapshot["opaque_commitments_only"] is not True
+            or snapshot["raw_resource_id_egress"] is not False
+            or snapshot["raw_policy_egress"] is not False
+        ):
+            raise ExecutionPolicyStoreCorrupt(
+                "royalty anchor confirmation does not match its plan"
+            )
+        for field in (
+            "block_number",
+            "block_timestamp",
+            "global_sequence",
+            "resource_sequence",
+            "decision_sequence",
+            "latest_block_number",
+            "rpc_finalized_block_number",
+            "minimum_confirmation_depth",
+            "observed_confirmation_depth",
+        ):
+            _integer(snapshot[field], field, minimum=0)
 
     @staticmethod
     def _public_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -911,6 +1489,27 @@ class ExecutionPolicyStore:
             "decision_hash": record["decision_hash"],
             "raw_policy_egress": False,
             "raw_resource_id_egress": False,
+        }
+
+    @staticmethod
+    def _public_royalty_record(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "record_kind": ROYALTY_RECORD_KIND,
+            "sequence": record["sequence"],
+            "chain_sequence": record["chain_sequence"],
+            "resource_id_hash": record["resource_id_hash"],
+            "decision_hash": record["decision_hash"],
+            "recorded_at": record["recorded_at"],
+            "authorization_expires_at": record["authorization_expires_at"],
+            "settlement_scope": record["settlement_scope"],
+            "plan_commitment": record["plan_commitment"],
+            "anchor_status": "prepared",
+            "exact_plan_persisted": True,
+            "anchor_broadcast_performed": False,
+            "anchor_finality_verified": False,
+            "sponsor_plan_exposed": False,
+            "raw_quote_egress": False,
+            "raw_secret_egress": False,
         }
 
 
@@ -968,6 +1567,17 @@ def _integer(
 def _hash_value(value: Any, label: str) -> str:
     if not isinstance(value, str) or not _HASH_RE.fullmatch(value):
         raise ExecutionPolicyStoreError(f"{label} must be lowercase SHA-256 hex")
+    return value
+
+
+def _prefixed_hash_value(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("0x")
+        or not _HASH_RE.fullmatch(value[2:])
+        or int(value[2:], 16) == 0
+    ):
+        raise ExecutionPolicyStoreError(f"{label} must be nonzero bytes32")
     return value
 
 

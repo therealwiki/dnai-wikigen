@@ -2,7 +2,8 @@
 
 Responsibilities:
   1. Session factory — creates IsolatedTinkerSession per deal
-  2. Artifact ingress — receives artifact payloads, holds in memory
+  2. Artifact ingress — receives plaintext only in-TEE; active state is
+     optionally persisted as dstack-sealed ciphertext for restart recovery
   3. Agent orchestration — runs evaluator with session + artifact
   4. Output bounding — maps raw metrics to score bands
   5. Cleanup — destroys sessions on deal resolution
@@ -27,11 +28,16 @@ import tinker
 from eth_hash.auto import keccak
 
 from tinker_delegate.artifacts import (
+    ARTIFACT_RAW_MAX_BYTES,
     encode_artifact_wrapper,
     normalize_artifact_commitment_secret,
     normalize_artifact_hash,
     verify_artifact_commitment,
     zero_buffer,
+)
+from tinker_delegate.active_deal_recovery import (
+    ActiveDealRecoveryError,
+    ActiveDealRecoveryStore,
 )
 from tinker_delegate.cost_metering import reconcile_costs
 from tinker_delegate.destruction_record import DestructionEvidence, build_destruction_record
@@ -262,6 +268,7 @@ class DealContext:
     destruction_record: Optional[dict] = None
     retention_decision: Optional[dict] = None
     created_at: float = field(default_factory=time.time)
+    recovery_status: str = "live"
 
     def __post_init__(self) -> None:
         # Normalize once at construction. The field is write-once because every
@@ -305,6 +312,7 @@ class ControlPlane:
         source_ref: str = "source://tinker-account",
         source_scope: str = "tinker_compute",
         enable_tinker_session: bool = True,
+        active_deal_store: ActiveDealRecoveryStore | None = None,
     ):
         self._api_key = tinker_api_key
         self._project_id = project_id
@@ -322,6 +330,55 @@ class ControlPlane:
         self._source_ref = source_ref
         self._source_scope = source_scope
         self._enable_tinker_session = bool(enable_tinker_session)
+        self._active_deal_store = active_deal_store
+        if self._active_deal_store is not None:
+            self._recover_active_deals()
+
+    def _recover_active_deals(self) -> None:
+        """Restore authenticated private snapshots without resuming execution."""
+
+        store = getattr(self, "_active_deal_store", None)
+        if store is None:
+            return
+        recovered = store.load()
+        contexts: dict[str, DealContext] = {}
+        for deal_id, entry in recovered.items():
+            ctx = _deal_context_from_recovery_entry(deal_id, entry)
+            # A process died while evaluator code may have been running.  Never
+            # claim continuation of that execution or its upstream session.
+            # The sealed artifact remains available for a new, explicit run.
+            if ctx.state == DealState.EVALUATING:
+                ctx.state = DealState.PENDING_ARTIFACT
+                ctx.recovery_status = (
+                    "interrupted_evaluation_recovered_fresh_run_required"
+                )
+            elif ctx.state == DealState.EVALUATED:
+                ctx.recovery_status = "bounded_result_recovered"
+            elif ctx.artifact is not None:
+                ctx.recovery_status = "sealed_artifact_recovered"
+            else:
+                ctx.recovery_status = "seller_reupload_required"
+            # Live provider sessions are intentionally not serialized.  A fresh
+            # session is created only at the next authorized evaluation.
+            ctx.session = None
+            contexts[deal_id] = ctx
+        self._deals = contexts
+        # Persist the interrupted-evaluation demotion before serving traffic.
+        if recovered:
+            self._persist_active_deals()
+
+    def _persist_active_deals(self) -> None:
+        """Seal the exact active private state, if production recovery is on."""
+
+        store = getattr(self, "_active_deal_store", None)
+        if store is None:
+            return
+        entries = {
+            deal_id: _deal_context_to_recovery_entry(ctx)
+            for deal_id, ctx in self._deals.items()
+            if ctx.state != DealState.RESOLVED
+        }
+        store.save(entries)
 
     def _create_service_client(self) -> Any:
         """Create a Tinker ServiceClient with the sealed API key."""
@@ -398,6 +455,16 @@ class ControlPlane:
             session=session,
         )
         self._deals[deal_id] = ctx
+        try:
+            self._persist_active_deals()
+        except Exception:
+            self._deals.pop(deal_id, None)
+            if session is not None:
+                try:
+                    session.cleanup()
+                except Exception:
+                    pass
+            raise
         self._append_run_metadata(
             make_run_metadata_event(
                 "deal_funded",
@@ -457,6 +524,15 @@ class ControlPlane:
             ctx.artifact = bytearray(artifact)
             ctx.artifact_commitment_secret = normalized_secret
             secret_transferred = True
+            try:
+                self._persist_active_deals()
+            except Exception:
+                zero_buffer(ctx.artifact)
+                zero_buffer(ctx.artifact_commitment_secret)
+                ctx.artifact = None
+                ctx.artifact_commitment_secret = None
+                ctx.artifact_hash = ""
+                raise
             self._append_run_metadata(
                 make_run_metadata_event(
                     "artifact_received",
@@ -504,9 +580,19 @@ class ControlPlane:
             getattr(evaluator_fn, "requires_tinker_session", True)
         )
         if requires_tinker_session:
+            if ctx.session is None and self._enable_tinker_session:
+                self._authorize_source_use()
+                ctx.session = IsolatedTinkerSession(
+                    self._create_service_client(),
+                    deal_id,
+                )
             assert ctx.session is not None, "No session"
 
         ctx.state = DealState.EVALUATING
+        # This write is the restart boundary.  A crash after it never looks
+        # like a completed evaluation: recovery demotes EVALUATING to an
+        # explicit fresh-evaluation state while retaining only sealed bytes.
+        self._persist_active_deals()
 
         try:
             # Recompute at the last possible point before evaluator code sees
@@ -583,6 +669,7 @@ class ControlPlane:
 
             ctx.result = result
             ctx.state = DealState.EVALUATED
+            self._persist_active_deals()
             self._append_run_metadata(
                 make_run_metadata_event(
                     "evaluation_completed",
@@ -622,6 +709,7 @@ class ControlPlane:
                 zero_buffer(ctx.artifact_commitment_secret)
                 ctx.artifact_commitment_secret = None
             ctx.state = DealState.RESOLVED
+            self._persist_active_deals()
             self._append_run_metadata(
                 make_run_metadata_event(
                     "evaluation_failed",
@@ -709,11 +797,57 @@ class ControlPlane:
             fields["destruction_record_hash"] = record.record_hash
 
         ctx.state = DealState.RESOLVED
+        self._persist_active_deals()
         self._append_run_metadata(
             make_run_metadata_event(
                 "deal_resolved",
                 deal_id,
                 **fields,
+                **self._cleanup_metadata_fields(ctx.cleanup_attestation),
+            )
+        )
+
+    def on_chain_reorg(self, deal_id: str) -> None:
+        """Quarantine private state invalidated by a canonical-chain rewrite.
+
+        Reorg compensation never attempts to reinterpret an orphaned funded
+        context.  It tears down the session, zeroes private bytes, deletes the
+        sealed active entry, and requires the canonical funded notification
+        plus a fresh seller upload before evaluation can run again.
+        """
+
+        ctx = self._deals.pop(str(deal_id), None)
+        if ctx is None:
+            store = getattr(self, "_active_deal_store", None)
+            if store is not None:
+                store.destroy(str(deal_id))
+            retention_store = getattr(self, "_retention_store", None)
+            if retention_store is not None:
+                retention_store.destroy(str(deal_id))
+            return
+        if ctx.session is not None:
+            try:
+                ctx.cleanup_attestation = ctx.session.cleanup()
+            except Exception:
+                ctx.cleanup_attestation = None
+        if ctx.artifact is not None:
+            zero_buffer(ctx.artifact)
+            ctx.artifact = None
+        if ctx.artifact_commitment_secret is not None:
+            zero_buffer(ctx.artifact_commitment_secret)
+            ctx.artifact_commitment_secret = None
+        ctx.result = None
+        ctx.state = DealState.RESOLVED
+        ctx.recovery_status = "reorg_quarantined_seller_reupload_required"
+        retention_store = getattr(self, "_retention_store", None)
+        if retention_store is not None:
+            retention_store.destroy(str(deal_id))
+        self._persist_active_deals()
+        self._append_run_metadata(
+            make_run_metadata_event(
+                "deal_reorg_quarantined",
+                str(deal_id),
+                seller_reupload_required=True,
                 **self._cleanup_metadata_fields(ctx.cleanup_attestation),
             )
         )
@@ -759,6 +893,7 @@ class ControlPlane:
         deal_id: str,
         *,
         block_number: int | None = None,
+        block_hash: str = "",
         tx_hash: str = "",
         log_index: int | None = None,
         fields: dict[str, Any] | None = None,
@@ -768,6 +903,11 @@ class ControlPlane:
         metadata: dict[str, Any] = {"chain_event_name": event}
         if block_number is not None:
             metadata["chain_block_band"] = value_band(block_number)
+        if block_hash:
+            metadata["chain_block_hash"] = stable_hash(
+                block_hash,
+                prefix="chain_block",
+            )
         if log_index is not None:
             metadata["chain_log_index_band"] = value_band(log_index)
         if tx_hash:
@@ -904,6 +1044,323 @@ class ControlPlane:
             except Exception:
                 return b""
         return b""
+
+
+_ACTIVE_RECOVERY_ENTRY_FIELDS = {
+    "deal_id",
+    "buyer",
+    "seller",
+    "budget_cap",
+    "reserve_price",
+    "committed_artifact_hash",
+    "evaluator_policy_commitment",
+    "state",
+    "artifact_hex",
+    "artifact_commitment_secret_hex",
+    "artifact_hash",
+    "result",
+    "created_at",
+    "recovery_status",
+}
+_ACTIVE_RECOVERY_RESULT_FIELDS = {
+    "deal_id",
+    "score_band",
+    "quality_delta",
+    "offer_price",
+    "recommendation",
+    "confidence",
+    "methodology_summary",
+    "compute_cost_wei",
+    "fee_wei",
+    "settlement_safe",
+    "reconciliation_status",
+}
+_RECOVERY_BAND_DESCRIPTION = {
+    ScoreBand.EXCEPTIONAL: ">20% quality-improvement band",
+    ScoreBand.HIGH: "10-20% quality-improvement band",
+    ScoreBand.MEDIUM: "5-10% quality-improvement band",
+    ScoreBand.LOW: "1-5% quality-improvement band",
+    ScoreBand.NEGLIGIBLE: "<1% quality-improvement band",
+}
+
+
+def _deal_context_to_recovery_entry(ctx: DealContext) -> dict[str, Any]:
+    artifact = ctx.artifact
+    secret = ctx.artifact_commitment_secret
+    if (artifact is None) != (secret is None):
+        raise ActiveDealRecoveryError(
+            "active deal has inconsistent private artifact state"
+        )
+    if artifact is not None:
+        if not 1 <= len(artifact) <= ARTIFACT_RAW_MAX_BYTES:
+            raise ActiveDealRecoveryError(
+                "active deal artifact is outside the recovery bound"
+            )
+        verify_artifact_commitment(
+            artifact,
+            secret,
+            ctx.committed_artifact_hash,
+        )
+    return {
+        "deal_id": ctx.deal_id,
+        "buyer": ctx.buyer,
+        "seller": ctx.seller,
+        "budget_cap": ctx.budget_cap,
+        "reserve_price": ctx.reserve_price,
+        "committed_artifact_hash": ctx.committed_artifact_hash,
+        "evaluator_policy_commitment": ctx.evaluator_policy_commitment,
+        "state": ctx.state.value,
+        "artifact_hex": bytes(artifact).hex() if artifact is not None else "",
+        "artifact_commitment_secret_hex": (
+            bytes(secret).hex() if secret is not None else ""
+        ),
+        "artifact_hash": ctx.artifact_hash,
+        "result": (
+            _evaluation_result_to_recovery_entry(ctx.result)
+            if ctx.result is not None
+            else None
+        ),
+        "created_at": ctx.created_at,
+        "recovery_status": ctx.recovery_status,
+    }
+
+
+def _deal_context_from_recovery_entry(
+    deal_id: str,
+    entry: dict[str, Any],
+) -> DealContext:
+    if set(entry) != _ACTIVE_RECOVERY_ENTRY_FIELDS:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery context shape is invalid"
+        )
+    if entry["deal_id"] != deal_id or not 1 <= len(deal_id) <= 160:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery deal binding is invalid"
+        )
+    buyer = _recovery_address(entry["buyer"], "buyer")
+    seller = _recovery_address(entry["seller"], "seller")
+    budget_cap = _recovery_uint(entry["budget_cap"], "budget cap")
+    reserve_price = _recovery_uint(entry["reserve_price"], "reserve price")
+    if reserve_price > budget_cap:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery public budget is invalid"
+        )
+    try:
+        state = DealState(entry["state"])
+    except (TypeError, ValueError) as exc:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery state is invalid"
+        ) from exc
+    if state == DealState.RESOLVED:
+        raise ActiveDealRecoveryError(
+            "resolved deal cannot remain in active recovery"
+        )
+    created_at = entry["created_at"]
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(float(created_at))
+        or float(created_at) <= 0
+    ):
+        raise ActiveDealRecoveryError(
+            "active-deal recovery creation time is invalid"
+        )
+    recovery_status = entry["recovery_status"]
+    if not isinstance(recovery_status, str) or len(recovery_status) > 80:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery status is invalid"
+        )
+
+    artifact = None
+    secret = None
+    try:
+        artifact_hex = entry["artifact_hex"]
+        secret_hex = entry["artifact_commitment_secret_hex"]
+        if not isinstance(artifact_hex, str) or not isinstance(secret_hex, str):
+            raise ActiveDealRecoveryError(
+                "active-deal recovery private encoding is invalid"
+            )
+        if bool(artifact_hex) != bool(secret_hex):
+            raise ActiveDealRecoveryError(
+                "active-deal recovery private state is inconsistent"
+            )
+        if artifact_hex:
+            if (
+                len(artifact_hex) > ARTIFACT_RAW_MAX_BYTES * 2
+                or len(artifact_hex) % 2
+            ):
+                raise ActiveDealRecoveryError(
+                    "active-deal recovery artifact size is invalid"
+                )
+            try:
+                artifact = bytearray.fromhex(artifact_hex)
+                secret = normalize_artifact_commitment_secret(secret_hex)
+            except ValueError as exc:
+                raise ActiveDealRecoveryError(
+                    "active-deal recovery private encoding is invalid"
+                ) from exc
+            if not artifact:
+                raise ActiveDealRecoveryError(
+                    "active-deal recovery artifact is empty"
+                )
+        artifact_hash = entry["artifact_hash"]
+        if artifact is None:
+            if artifact_hash:
+                raise ActiveDealRecoveryError(
+                    "active-deal recovery artifact hash is inconsistent"
+                )
+        else:
+            normalized_artifact_hash = normalize_artifact_hash(artifact_hash)
+            verified = verify_artifact_commitment(
+                artifact,
+                secret,
+                entry["committed_artifact_hash"],
+            )
+            if not hmac.compare_digest(verified, normalized_artifact_hash):
+                raise ActiveDealRecoveryError(
+                    "active-deal recovery artifact binding is invalid"
+                )
+
+        result_payload = entry["result"]
+        result = (
+            _evaluation_result_from_recovery_entry(deal_id, result_payload)
+            if result_payload is not None
+            else None
+        )
+        if (state == DealState.EVALUATED) != (result is not None):
+            raise ActiveDealRecoveryError(
+                "active-deal recovery result state is inconsistent"
+            )
+        if state == DealState.EVALUATING and artifact is None:
+            raise ActiveDealRecoveryError(
+                "interrupted evaluation has no sealed artifact"
+            )
+        ctx = DealContext(
+            deal_id=deal_id,
+            buyer=buyer,
+            seller=seller,
+            budget_cap=budget_cap,
+            reserve_price=reserve_price,
+            committed_artifact_hash=entry["committed_artifact_hash"],
+            evaluator_policy_commitment=entry[
+                "evaluator_policy_commitment"
+            ],
+            state=state,
+            artifact=artifact,
+            artifact_commitment_secret=secret,
+            artifact_hash=(
+                normalize_artifact_hash(artifact_hash)
+                if artifact_hash
+                else ""
+            ),
+            result=result,
+            created_at=float(created_at),
+            recovery_status=recovery_status,
+        )
+        artifact = None
+        secret = None
+        return ctx
+    finally:
+        zero_buffer(artifact)
+        zero_buffer(secret)
+
+
+def _evaluation_result_to_recovery_entry(
+    result: EvaluationResult,
+) -> dict[str, Any]:
+    return {
+        "deal_id": result.deal_id,
+        "score_band": result.score_band.value,
+        "quality_delta": result.quality_delta,
+        "offer_price": result.offer_price,
+        "recommendation": result.recommendation,
+        "confidence": result.confidence,
+        "methodology_summary": result.methodology_summary,
+        "compute_cost_wei": result.compute_cost_wei,
+        "fee_wei": result.fee_wei,
+        "settlement_safe": result.settlement_safe,
+        "reconciliation_status": result.reconciliation_status,
+    }
+
+
+def _evaluation_result_from_recovery_entry(
+    deal_id: str,
+    payload: Any,
+) -> EvaluationResult:
+    if not isinstance(payload, dict) or set(payload) != _ACTIVE_RECOVERY_RESULT_FIELDS:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery bounded result shape is invalid"
+        )
+    if payload["deal_id"] != deal_id:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery bounded result binding is invalid"
+        )
+    try:
+        band = ScoreBand(payload["score_band"])
+    except (TypeError, ValueError) as exc:
+        raise ActiveDealRecoveryError(
+            "active-deal recovery score band is invalid"
+        ) from exc
+    for field_name in ("offer_price", "compute_cost_wei", "fee_wei"):
+        _recovery_uint(payload[field_name], field_name)
+    recommendation = (
+        "accept"
+        if band in {ScoreBand.EXCEPTIONAL, ScoreBand.HIGH, ScoreBand.MEDIUM}
+        else "reject"
+    )
+    if (
+        payload["quality_delta"] != _RECOVERY_BAND_DESCRIPTION[band]
+        or payload["recommendation"] != recommendation
+        or payload["confidence"] != PUBLIC_CONFIDENCE
+        or payload["methodology_summary"] != PUBLIC_METHODOLOGY_SUMMARY
+        or payload["settlement_safe"] is not True
+        or payload["reconciliation_status"] != "reconciled"
+    ):
+        raise ActiveDealRecoveryError(
+            "active-deal recovery bounded result is invalid"
+        )
+    return EvaluationResult(
+        deal_id=deal_id,
+        score_band=band,
+        quality_delta=payload["quality_delta"],
+        offer_price=payload["offer_price"],
+        recommendation=payload["recommendation"],
+        confidence=payload["confidence"],
+        methodology_summary=payload["methodology_summary"],
+        compute_cost_wei=payload["compute_cost_wei"],
+        fee_wei=payload["fee_wei"],
+        # Raw quotes are intentionally not restart-persisted. Settlement
+        # collects a fresh signer/QVL quote after recovery.
+        tdx_quote=b"",
+        settlement_safe=True,
+        reconciliation_status="reconciled",
+    )
+
+
+def _recovery_uint(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ActiveDealRecoveryError(
+            f"active-deal recovery {label} is invalid"
+        )
+    return value
+
+
+def _recovery_address(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 42
+        or not value.startswith("0x")
+    ):
+        raise ActiveDealRecoveryError(
+            f"active-deal recovery {label} address is invalid"
+        )
+    try:
+        int(value[2:], 16)
+    except ValueError as exc:
+        raise ActiveDealRecoveryError(
+            f"active-deal recovery {label} address is invalid"
+        ) from exc
+    return value.lower()
 
 
 def evaluation_attestation_report_data(

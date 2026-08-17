@@ -46,6 +46,7 @@ class DiligenceRoomEvent:
     block_number: int
     tx_hash: str
     log_index: int
+    block_hash: str = ""
     fields: dict[str, Any] = field(default_factory=dict)
 
     def to_control_plane_payload(self) -> dict[str, Any]:
@@ -53,6 +54,7 @@ class DiligenceRoomEvent:
             "event_name": self.name,
             "deal_id": self.deal_id,
             "block_number": self.block_number,
+            "block_hash": self.block_hash,
             "tx_hash": self.tx_hash,
             "log_index": self.log_index,
             "fields": self.fields,
@@ -192,6 +194,8 @@ def decode_diligence_room_log(log: dict[str, Any]) -> DiligenceRoomEvent | None:
     block_number = _hex_int(log.get("blockNumber", "0x0"))
     log_index = _hex_int(log.get("logIndex", "0x0"))
     tx_hash = str(log.get("transactionHash", ""))
+    raw_block_hash = str(log.get("blockHash", ""))
+    block_hash = _normalize_bytes32(raw_block_hash) if raw_block_hash else ""
 
     fields: dict[str, Any]
     if name == "DealCreated":
@@ -247,6 +251,7 @@ def decode_diligence_room_log(log: dict[str, Any]) -> DiligenceRoomEvent | None:
         block_number=block_number,
         tx_hash=tx_hash,
         log_index=log_index,
+        block_hash=block_hash,
         fields=fields,
     )
 
@@ -270,6 +275,19 @@ class JsonRpcLogSource:
 
     def latest_block(self) -> int:
         return _hex_int(self._rpc("eth_blockNumber", []))
+
+    def block_hash(self, block_number: int) -> str:
+        if isinstance(block_number, bool) or not isinstance(block_number, int) or block_number < 0:
+            raise ChainWatcherError("block number is invalid")
+        block = self._rpc("eth_getBlockByNumber", [hex(block_number), False])
+        if not isinstance(block, dict):
+            raise ChainWatcherError("canonical block is unavailable")
+        if _hex_int(block.get("number", "0x0")) != block_number:
+            raise ChainWatcherError("canonical block number mismatch")
+        block_hash = _normalize_bytes32(str(block.get("hash") or ""))
+        if block_hash == "0x" + "00" * 32:
+            raise ChainWatcherError("canonical block hash cannot be zero")
+        return block_hash
 
     def get_events(self, from_block: int, to_block: int) -> list[DiligenceRoomEvent]:
         if to_block < from_block:

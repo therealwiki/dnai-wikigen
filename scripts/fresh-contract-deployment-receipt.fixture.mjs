@@ -9,6 +9,7 @@ import {
   FRESH_DEPLOYMENT_TRANSACTION_SPEC,
   projectFreshContractDeploymentReceipt,
   rawSha256,
+  FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_SCHEMA,
 } from "./cvm-launch-intent-core.mjs";
 
 function sortedObject(value) {
@@ -76,6 +77,9 @@ export function syntheticFreshContractDeploymentReceiptFixture({
   releaseSha,
   deploymentIntentSha256,
   reviewerAuthorityGenesisAcceptanceSha256,
+  tinkerAccountBindingCeremonyReceiptSha256 =
+    `sha256:${"d".repeat(64)}`,
+  contractOverrides = {},
 } = {}) {
   const operatorAddress = address(1);
   const contractNames = [
@@ -98,6 +102,14 @@ export function syntheticFreshContractDeploymentReceiptFixture({
     deploymentTxFrom: operatorAddress,
     deploymentReceiptContractAddress: address(10 + index),
   }]));
+  for (const [name, override] of Object.entries(contractOverrides)) {
+    if (!contractNames.includes(name) || !override || typeof override !== "object"
+      || Array.isArray(override)) {
+      throw new TypeError("synthetic contract override is invalid");
+    }
+    Object.assign(contracts[name], override);
+    contracts[name].deploymentReceiptContractAddress = contracts[name].address;
+  }
   Object.assign(contracts.challengeRegistry, {
     status: "deployed_empty_active_registry",
     owner: operatorAddress,
@@ -133,6 +145,7 @@ export function syntheticFreshContractDeploymentReceiptFixture({
         sourceCommit: releaseSha,
         deploymentIntentSha256,
         reviewerAuthorityGenesisAcceptanceSha256,
+        tinkerAccountBindingCeremonyReceiptSha256,
         keystoreAccount: "dev",
         runtimeCodeProof: "exact_creation_reexecution_match_all_contracts",
         exactCreationInputProof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -148,6 +161,7 @@ export function syntheticFreshContractDeploymentReceiptFixture({
       sourceCommit: releaseSha,
       deploymentIntentSha256,
       reviewerAuthorityGenesisAcceptanceSha256,
+      tinkerAccountBindingCeremonyReceiptSha256,
       broadcastTransactionsSha256: broadcast.sha256,
     }],
   };
@@ -155,6 +169,8 @@ export function syntheticFreshContractDeploymentReceiptFixture({
     expectedDeploymentIntentSha256: deploymentIntentSha256,
     expectedReviewerAuthorityGenesisAcceptanceSha256:
       reviewerAuthorityGenesisAcceptanceSha256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      tinkerAccountBindingCeremonyReceiptSha256,
   };
   return {
     truth_status: "synthetic_test_fixture_never_live_release_authority",
@@ -164,5 +180,41 @@ export function syntheticFreshContractDeploymentReceiptFixture({
       releaseSha,
       ...authorityPins,
     }),
+  };
+}
+
+export function syntheticHistoricalFreshContractDeploymentReceiptV3Fixture(
+  options = {},
+) {
+  const current = syntheticFreshContractDeploymentReceiptFixture(options);
+  const receipt = structuredClone(current.receipt);
+  receipt.schema = FRESH_CONTRACT_DEPLOYMENT_RECEIPT_V3_SCHEMA;
+  delete receipt.tinker_account_binding_ceremony_receipt_sha256;
+  const royaltyCreate = receipt.broadcast_transactions.find((entry) => (
+    entry.contract_key === "royaltyDistributor"
+      && entry.transaction_type === "CREATE"
+  ));
+  if (!royaltyCreate) {
+    throw new TypeError(
+      "synthetic historical receipt is missing the RoyaltyDistributor CREATE",
+    );
+  }
+  royaltyCreate.function_signature = "constructor()";
+  receipt.broadcast_transactions_sha256 = rawSha256(
+    Buffer.from(
+      JSON.stringify(sortedObject(receipt.broadcast_transactions)),
+      "utf8",
+    ),
+  );
+  return {
+    truth_status:
+      "synthetic_historical_v3_test_fixture_never_live_release_authority",
+    authorityPins: {
+      expectedDeploymentIntentSha256:
+        current.authorityPins.expectedDeploymentIntentSha256,
+      expectedReviewerAuthorityGenesisAcceptanceSha256:
+        current.authorityPins.expectedReviewerAuthorityGenesisAcceptanceSha256,
+    },
+    receipt,
   };
 }

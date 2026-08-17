@@ -550,6 +550,11 @@ export function reconstructFreshContractRelease({
     ADDRESS,
     "deployment operator",
   );
+  const diligenceGovernanceController = exactLowerHex(
+    intent.staticContractInputs.diligenceRoom.governanceController,
+    ADDRESS,
+    "DiligenceRoom release governance controller",
+  );
   const computeDeveloper = exactLowerHex(
     intent.staticContractInputs.computeCreditVault.developer,
     ADDRESS,
@@ -637,7 +642,13 @@ export function reconstructFreshContractRelease({
 
   try {
     forgeRead(["build"]);
-    create({ sequence: 0, contractKey: "diligenceRoom", contractName: "DiligenceRoom", signature: "constructor(bool)", args: ["true"] });
+    create({
+      sequence: 0,
+      contractKey: "diligenceRoom",
+      contractName: "DiligenceRoom",
+      signature: "constructor(bool,address)",
+      args: ["true", diligenceGovernanceController],
+    });
     call({ sequence: 1, contractKey: "diligenceRoom", contractName: "DiligenceRoom", signature: "freezeFeeBps()" });
     call({ sequence: 2, contractKey: "diligenceRoom", contractName: "DiligenceRoom", signature: "enableComputeSettlementPolicy()" });
     call({ sequence: 3, contractKey: "diligenceRoom", contractName: "DiligenceRoom", signature: "setComposeApprovalRequired(bool)", args: ["true"] });
@@ -656,7 +667,13 @@ export function reconstructFreshContractRelease({
         contractPolicy.tinkerMaxSpendWei,
       ],
     });
-    create({ sequence: 7, contractKey: "royaltyDistributor", contractName: "RoyaltyDistributor", signature: "constructor()", args: [] });
+    create({
+      sequence: 7,
+      contractKey: "royaltyDistributor",
+      contractName: "RoyaltyDistributor",
+      signature: "constructor(address)",
+      args: [operator],
+    });
     create({ sequence: 8, contractKey: "challengeRegistry", contractName: "ChallengeRegistry", signature: "constructor(address)", args: [operator] });
     create({
       sequence: 9,

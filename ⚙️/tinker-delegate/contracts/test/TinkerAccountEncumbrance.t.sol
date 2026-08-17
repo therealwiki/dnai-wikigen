@@ -57,6 +57,17 @@ contract TinkerAccountEncumbranceTest is Test {
         encumbrance.activateAndFreezeReleasePolicy();
     }
 
+    function _accountCommitment(bytes32 bindingRoot) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                encumbrance.ACCOUNT_BINDING_TYPEHASH(),
+                block.chainid,
+                encumbrance.TINKER_PROVIDER_NAMESPACE(),
+                bindingRoot
+            )
+        );
+    }
+
     function test_InitialDraftIsHaltedWithEmptyAuthoritySets() public view {
         bytes32[] memory emptyComposeSet = new bytes32[](0);
         address[] memory emptyManagers = _emptyManagerSet();
@@ -77,6 +88,24 @@ contract TinkerAccountEncumbranceTest is Test {
         assertEq(encumbrance.pendingReleasePolicyActivatesAt(), 0);
         assertEq(encumbrance.pendingComposeCount(), 0);
         assertEq(encumbrance.pendingManagerCount(), 0);
+    }
+
+    function test_AccountBindingDerivationMatchesFrozenKnownAnswer() public {
+        vm.chainId(84532);
+        bytes32 bindingRoot = bytes32(uint256(1));
+        assertEq(
+            encumbrance.ACCOUNT_BINDING_TYPEHASH(),
+            keccak256("DnaiTinkerAccountBindingV1(uint256 chainId,bytes32 providerNamespace,bytes32 bindingRoot)")
+        );
+        assertEq(encumbrance.TINKER_PROVIDER_NAMESPACE(), keccak256("thinking-machines/tinker"));
+        assertEq(_accountCommitment(bindingRoot), 0xa5c3b464917302dc58881695681975aea0bfbac6d3ebc3c7aab27854c64130d9);
+    }
+
+    function testFuzz_AccountBindingDerivationSeparatesRoots(bytes32 first, bytes32 second) public view {
+        vm.assume(first != bytes32(0));
+        vm.assume(second != bytes32(0));
+        vm.assume(first != second);
+        assertNotEq(_accountCommitment(first), _accountCommitment(second));
     }
 
     function test_ConstructorRejectsZeroAndSelfOwnerAndZeroCommitments() public {

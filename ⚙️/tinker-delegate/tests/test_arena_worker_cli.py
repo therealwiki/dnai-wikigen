@@ -317,6 +317,7 @@ def _registry_claim_request(harness, **overrides):
 
 class FakeReadOnlyExecutionPolicyAnchorGateway:
     read_only = True
+    allow_zero_genesis_for_test = True
     contract_address = POLICY_ANCHOR
     writer_address = POLICY_ANCHOR_WRITER
     writer_release_commitment = "0x" + POLICY_MANIFEST_COMMITMENT
@@ -465,7 +466,7 @@ class ArenaWorkerCliHarness:
                 "dnai-wikigen/execution-policy-approval/v3"
             ),
             execution_policy_api_schema_version=3,
-            execution_policy_store_schema_version=5,
+            execution_policy_store_schema_version=6,
             execution_policy_approval_domain=self.approval_domain,
             execution_policy_approval_domain_hash=self.approval_domain_hash,
             execution_policy_approver_hashes=self.approver_hashes,
@@ -493,7 +494,7 @@ class ArenaWorkerCliHarness:
                 "dnai-wikigen/execution-policy-approval/v3"
             ),
             "execution_policy_api_schema_version": 3,
-            "execution_policy_store_schema_version": 5,
+            "execution_policy_store_schema_version": 6,
             "execution_policy_approval_domain": self.approval_domain,
             "execution_policy_approval_domain_hash": self.approval_domain_hash,
             "execution_policy_approver_hashes": list(self.approver_hashes),
@@ -566,6 +567,12 @@ class ArenaWorkerCliTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.harness = ArenaWorkerCliHarness(self.temp.name)
+        integrity_key_patcher = patch(
+            "tinker_delegate.arena_worker_cli.arena_store_integrity_key",
+            return_value=b"a" * 32,
+        )
+        integrity_key_patcher.start()
+        self.addCleanup(integrity_key_patcher.stop)
 
     def test_console_surface_has_no_unsafe_activation_or_runtime_selector(self):
         parser = build_parser()

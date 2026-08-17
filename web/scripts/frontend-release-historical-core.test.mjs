@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { URL as NodeURL, fileURLToPath, pathToFileURL } from "node:url";
 
-import { knownVector } from "../../scripts/execution-policy-release-core.fixture.mjs";
 import {
+  knownVector,
+} from "../../scripts/execution-policy-release-core-v3-historical.fixture.mjs";
+import {
+  FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
   normalizeFinalReleaseAuthorityCore,
-} from "../../scripts/execution-policy-release-core.mjs";
+} from "../../scripts/execution-policy-release-core-v3-historical.mjs";
 import {
   CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
   CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
@@ -315,7 +318,7 @@ function historicalCandidateFixture() {
   };
 }
 
-test("historical D replay independently matches the current external closure recipe", () => {
+test("historical D replay preserves its v2 closure while current builds use the versioned authority chain", () => {
   assert.equal(
     HISTORICAL_CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
     CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_SCHEMA,
@@ -324,15 +327,74 @@ test("historical D replay independently matches the current external closure rec
     HISTORICAL_CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
     CLOUDFLARE_EXTERNAL_BUILD_CLOSURE_TRUTH_STATUS,
   );
-  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS.length, 17);
-  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_FILES.length, 29);
+  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS.length, 19);
+  assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_FILES.length, 52);
+  assert.equal(CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.length, 24);
+  const historicalEntrypointPaths =
+    __historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS
+      .map(({ path }) => path);
+  const currentEntrypointPaths = CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS
+    .map(({ path }) => path);
   assert.deepEqual(
-    __historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS,
-    CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS,
+    historicalEntrypointPaths.filter(
+      (path) => !currentEntrypointPaths.includes(path),
+    ),
+    ["scripts/canonical-public-https-url-core.mjs"],
   );
   assert.deepEqual(
-    __historicalFrontendReleaseCoreTest.EXTERNAL_FILES,
-    CLOUDFLARE_EXTERNAL_BUILD_FILES,
+    currentEntrypointPaths.filter(
+      (path) => !historicalEntrypointPaths.includes(path),
+    ),
+    [
+      "docs/compute-console-api.md",
+      "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
+      "scripts/execution-policy-release-core-v3-historical.mjs",
+      "scripts/release-authority-current-c-v6-core.mjs",
+      "scripts/royalty-release-authority-core.mjs",
+      "scripts/royalty-release-history-receipt-core.mjs",
+    ],
+  );
+  const historicalPaths = __historicalFrontendReleaseCoreTest.EXTERNAL_FILES
+    .map(({ path }) => path);
+  const currentPaths = CLOUDFLARE_EXTERNAL_BUILD_FILES.map(({ path }) => path);
+  const historicalOnlyFiles = historicalPaths
+    .filter((path) => !currentPaths.includes(path));
+  const currentOnlyFiles = currentPaths
+    .filter((path) => !historicalPaths.includes(path));
+  assert.deepEqual(historicalOnlyFiles, [
+    "scripts/cvm-descriptor-runtime-authority.mjs",
+    "scripts/cvm-release-descriptor-set.mjs",
+  ]);
+  assert.deepEqual(currentOnlyFiles, [
+    "docs/compute-console-api.md",
+    "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v2.mjs",
+    "scripts/cvm-release-descriptor-set-constants-v3.mjs",
+    "scripts/cvm-release-descriptor-set-v3.mjs",
+    "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
+    "scripts/execution-policy-release-core-v3-historical.mjs",
+    "scripts/frontend-build-candidate-receipt-core.mjs",
+    "scripts/phala-seven-cvm-release-verification-authority-v4-core.mjs",
+    "scripts/release-authority-current-c-v6-core.mjs",
+    "scripts/release-authority-stages.mjs",
+    "scripts/release-ceremony-authorization.mjs",
+    "scripts/release-ceremony-lock-protocol-core.mjs",
+    "scripts/royalty-release-authority-core.mjs",
+    "scripts/royalty-release-history-receipt-core.mjs",
+    "scripts/tinker-account-binding-core.mjs",
+  ]);
+  assert.equal(
+    historicalPaths.includes(
+      "scripts/phala-seven-cvm-release-verification-authority-v4-core.mjs",
+    ),
+    false,
+  );
+  assert.equal(
+    currentPaths.includes(
+      "scripts/phala-seven-cvm-release-verification-authority-core.mjs",
+    ),
+    true,
   );
 });
 
@@ -349,7 +411,7 @@ test("pure D replay preserves the v2 manifest KAT and exact 35-input recipe", ()
     FRONTEND_BUILD_AUTHORITY_ROOT_FIELDS);
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:46c6df9b1871b3683b502429d58120c1b3e73c2be6f47a033d5fdb95f04cf9b7",
+    "sha256:f11af7847c8a2b9185729221434fa2feaa85d9f4069179ab7ceb94bbd32e1e9c",
   );
 });
 
@@ -400,6 +462,54 @@ test("historical candidate binds byte-for-byte to the independently normalized r
     runtimeAuthorityValue: fixture.runtimeAuthority,
     authenticatedRuntimeAuthoritySha256: fixture.runtimeAuthoritySha256,
   }), /does not exactly match/);
+});
+
+test("historical binding explicitly replays the frozen v2 feature shape", () => {
+  const fixture = historicalCandidateFixture();
+  const core = structuredClone(fixture.core);
+  core.schema = FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA;
+  core.contracts.diligence_room.developer = core.operator_address;
+  delete core.requested_features.tinker_customer;
+  delete core.requested_features.collaboration;
+  const candidate = structuredClone(fixture.candidate);
+  candidate.contracts.diligence_room.developer =
+    candidate.operator_address;
+  delete candidate.requested_features.tinker_customer;
+  delete candidate.requested_features.collaboration;
+
+  const binding = validateHistoricalFinalReleaseAuthorityCoreBinding({
+    candidateValue: candidate,
+    coreValue: core,
+    runtimeAuthorityValue: fixture.runtimeAuthority,
+    authenticatedRuntimeAuthoritySha256: fixture.runtimeAuthoritySha256,
+    expectedCoreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+  });
+  assert.equal(
+    binding.coreSha256,
+    historicalFinalReleaseAuthorityCoreSha256(core),
+  );
+  assert.notEqual(
+    binding.coreSha256,
+    historicalFinalReleaseAuthorityCoreSha256(fixture.core),
+  );
+  assert.equal(
+    Object.hasOwn(
+      finalReleaseAuthorityCoreFromHistoricalCandidate(candidate, {
+        coreSchema: FINAL_RELEASE_AUTHORITY_CORE_V2_SCHEMA,
+      }).requested_features,
+      "tinker_customer",
+    ),
+    false,
+  );
+  assert.throws(
+    () => validateHistoricalFinalReleaseAuthorityCoreBinding({
+      candidateValue: candidate,
+      coreValue: core,
+      runtimeAuthorityValue: fixture.runtimeAuthority,
+      authenticatedRuntimeAuthoritySha256: fixture.runtimeAuthoritySha256,
+    }),
+    /schema/,
+  );
 });
 
 test("prebuild projection removes only signed C and pure final-CVM replay matches the v3 topology shape", () => {
@@ -497,22 +607,25 @@ test("recursive historical-core import closure is acyclic and capability-free", 
         external.add(specifier);
         continue;
       }
-      const resolved = fileURLToPath(new URL(specifier, pathToFileURL(file)));
+      const resolved = fileURLToPath(new NodeURL(specifier, pathToFileURL(file)));
       visit(resolved);
     }
     visiting.delete(file);
     visited.add(file);
   }
   visit(root);
-  assert.deepEqual([...external].sort(), ["node:crypto", "node:util"]);
+  assert.deepEqual([...external].sort(), [
+    "node:crypto",
+    "node:url",
+    "node:util",
+  ]);
   assert.deepEqual([...visited].map((file) => path.relative(
     path.resolve(path.dirname(root), "../.."),
     file,
   )).sort(), [
     "scripts/canonical-authority-graph.mjs",
     "scripts/cvm-launch-intent-core.mjs",
-    "scripts/ethereum-keccak.mjs",
-    "scripts/execution-policy-release-core.mjs",
+    "scripts/execution-policy-release-core-v3-historical.mjs",
     "scripts/phala-post-measurement-activation-receipt-core.mjs",
     "scripts/phala-production-execution-policy.mjs",
     "scripts/phala-seven-cvm-measurement-policy.mjs",

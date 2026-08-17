@@ -42,7 +42,11 @@ import {
 } from "./release-build-home-core.mjs";
 import { serializeEnv } from "./release-env-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./frontend-build-candidate-producer-core.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const rootDir = path.resolve(webDir, "..");
 const PINNED_GIT_EXECUTABLE = "/usr/bin/git";
 const PINNED_GIT_ENVIRONMENT = Object.freeze({
@@ -63,6 +67,7 @@ const SEMANTIC_PROJECTION_FIELDS = Object.freeze([
   "primaryRpcUrl",
   "qvlVerifierRoots",
   "releaseSha",
+  "royaltyReleaseHistoryBinding",
   "secondaryRpcUrl",
   "semanticLineage",
   "serializedEnv",
@@ -278,8 +283,10 @@ function defaultBuild({ env, webDir: isolatedWebDir, sandbox }) {
 }
 
 /**
- * Produce nonauthorizing D from a previously authenticated exact-35 semantic
- * projection. This runner has no upload callback and never invokes Wrangler.
+ * Produce nonauthorizing D from a current exact-36 semantic projection. The
+ * projection independently authenticates H, strips it before historical
+ * exact-35 replay, and carries its raw/history/receipt commitments forward.
+ * This runner has no upload callback and never invokes Wrangler.
  */
 export async function runFrontendBuildCandidateProduction({
   releaseArguments = [],
@@ -304,7 +311,7 @@ export async function runFrontendBuildCandidateProduction({
   buildHostEnv = process.env,
 } = {}) {
   if (typeof loadSemanticProjection !== "function") {
-    throw new Error("frontend candidate producer requires the exact-35 semantic validator");
+    throw new Error("frontend candidate producer requires the current exact-36 semantic validator");
   }
   const releaseRuntimeProof = normalizePinnedReleaseRuntimeProof(
     assertReleaseRuntime(),
@@ -511,6 +518,7 @@ export async function runFrontendBuildCandidateProduction({
       sourceFingerprintSha256: baseline.sourceFingerprintSha256,
       preDPrivateInputs: projection.preDPrivateInputs,
       semanticLineage: projection.semanticLineage,
+      royaltyReleaseHistoryBinding: projection.royaltyReleaseHistoryBinding,
       serializedEnv: projection.serializedEnv,
       primaryRpcUrl: projection.primaryRpcUrl,
       secondaryRpcUrl: projection.secondaryRpcUrl,

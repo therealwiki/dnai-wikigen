@@ -28,10 +28,12 @@ import {
   EXECUTION_POLICY_SURFACES,
   parsePolicyBundleText,
   readExecutionPolicyStatus,
+  recoverExecutionPolicyWorkflow,
   runExecutionPolicyWorkflow,
   type ExecutionPolicyStatus,
   type ExecutionPolicySurface,
   type ExecutionPolicyWorkflowResult,
+  type PreparedExecutionPolicyIntent,
 } from "../lib/policy";
 import { fetchComputeExecutionPolicyTarget } from "../lib/compute";
 import { wallet } from "../lib/wallet";
@@ -90,7 +92,116 @@ const SURFACES = [
   },
 ] as const;
 
-type OperatorPhase = "idle" | "preflight" | "approval" | "signing" | "persisting" | "complete";
+type OperatorPhase = "idle" | "preflight" | "approval" | "signing" | "persisting" | "recovery" | "complete";
+
+export interface ExecutionPolicyUiAuthorityContext {
+  readonly walletAddress: string;
+  readonly walletProvider: unknown;
+  readonly walletAuthorizationVersion: number;
+  readonly chainId: number | undefined;
+  readonly runtimeBearer: string;
+  readonly surface: ExecutionPolicySurface;
+  readonly resourceReference: string;
+  readonly computeProjectReference: string;
+  readonly releaseFingerprint: string;
+}
+
+export function executionPolicyUiAuthorityIsCurrent(
+  expected: ExecutionPolicyUiAuthorityContext,
+  current: ExecutionPolicyUiAuthorityContext,
+): boolean {
+  return Boolean(
+    expected.walletAddress
+    && expected.walletAddress.toLowerCase() === current.walletAddress.toLowerCase()
+    && expected.walletProvider === current.walletProvider
+    && expected.walletAuthorizationVersion === current.walletAuthorizationVersion
+    && expected.chainId === current.chainId
+    && expected.chainId === 84_532
+    && expected.runtimeBearer === current.runtimeBearer
+    && expected.surface === current.surface
+    && expected.resourceReference === current.resourceReference
+    && expected.computeProjectReference === current.computeProjectReference
+    && expected.releaseFingerprint === current.releaseFingerprint
+  );
+}
+
+export interface ExecutionPolicyStatusReadAuthorityContext {
+  readonly walletAddress: string;
+  readonly walletProvider: unknown;
+  readonly walletAuthorizationVersion: number;
+  readonly chainId: number | undefined;
+  readonly runtimeBearer: string;
+  readonly surface: ExecutionPolicySurface;
+  readonly statusReference: string;
+  readonly computeStatusProjectReference: string;
+  readonly releaseFingerprint: string;
+}
+
+export function executionPolicyStatusReadAuthorityIsCurrent(
+  expected: ExecutionPolicyStatusReadAuthorityContext,
+  current: ExecutionPolicyStatusReadAuthorityContext,
+): boolean {
+  return Boolean(
+    expected.walletAddress
+    && expected.walletAddress.toLowerCase() === current.walletAddress.toLowerCase()
+    && expected.walletProvider === current.walletProvider
+    && expected.walletAuthorizationVersion === current.walletAuthorizationVersion
+    && expected.chainId === current.chainId
+    && expected.chainId === 84_532
+    && expected.runtimeBearer === current.runtimeBearer
+    && expected.surface === current.surface
+    && expected.statusReference === current.statusReference
+    && expected.computeStatusProjectReference === current.computeStatusProjectReference
+    && expected.releaseFingerprint === current.releaseFingerprint
+  );
+}
+
+interface ExecutionPolicyStatusTarget {
+  readonly resourceId: string;
+  readonly executionContextHash?: string;
+}
+
+export async function runExecutionPolicyStatusRead<T>(
+  authority: ExecutionPolicyStatusReadAuthorityContext,
+  operations: {
+    readonly currentAuthority: () => ExecutionPolicyStatusReadAuthorityContext;
+    readonly resolveTarget: (
+      authority: ExecutionPolicyStatusReadAuthorityContext,
+    ) => Promise<ExecutionPolicyStatusTarget>;
+    readonly readStatus: (
+      authority: ExecutionPolicyStatusReadAuthorityContext,
+      target: ExecutionPolicyStatusTarget,
+      assertAuthorityCurrent: () => void,
+    ) => Promise<T>;
+  },
+): Promise<T> {
+  const assertAuthorityCurrent = () => {
+    if (!executionPolicyStatusReadAuthorityIsCurrent(
+      authority,
+      operations.currentAuthority(),
+    )) {
+      throw new Error(
+        "Wallet, Base Sepolia chain, release, transport session, or status reference changed during this lookup",
+      );
+    }
+  };
+
+  assertAuthorityCurrent();
+  const target = await operations.resolveTarget(authority);
+  assertAuthorityCurrent();
+  const result = await operations.readStatus(
+    authority,
+    target,
+    assertAuthorityCurrent,
+  );
+  assertAuthorityCurrent();
+  return result;
+}
+
+interface PendingPolicyRecovery {
+  readonly intent: PreparedExecutionPolicyIntent;
+  readonly authority: ExecutionPolicyUiAuthorityContext;
+}
 
 export function executionPolicyOperatorReady(input: {
   delegateConfigured: boolean;
@@ -177,8 +288,10 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
   const [busy, setBusy] = createSignal<"" | "evaluate" | "status">("");
   const [phase, setPhase] = createSignal<OperatorPhase>("idle");
   const [error, setError] = createSignal("");
+  const [recoveryNotice, setRecoveryNotice] = createSignal("");
   const [workflow, setWorkflow] = createSignal<ExecutionPolicyWorkflowResult>();
   const [statusResult, setStatusResult] = createSignal<ExecutionPolicyStatus>();
+  const [pendingPolicyRecovery, setPendingPolicyRecovery] = createSignal<PendingPolicyRecovery>();
 
   let transientBundle: File | undefined;
   let bundleInput: HTMLInputElement | undefined;
@@ -193,6 +306,13 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
   const monotonicAnchorPinned = createMemo(() => Boolean(deployment.executionPolicyAnchorRelease));
   const walletConnected = createMemo(() => Boolean(wallet.account()));
   const walletOnBaseSepolia = createMemo(() => wallet.isCorrectChain());
+  const releaseFingerprint = createMemo(() => JSON.stringify([
+    deployment.delegateUrl,
+    deployment.executionPolicyApprovalDomainHash,
+    deployment.executionPolicyApproverRootHash,
+    deployment.executionPolicyApprovedApproverHashes,
+    deployment.executionPolicyAnchorRelease,
+  ]));
   const liveReady = createMemo(() => executionPolicyOperatorReady({
     delegateConfigured: delegateConfigured(),
     approvalDomainPinned: approvalDomainPinned(),
@@ -201,14 +321,59 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
     walletConnected: walletConnected(),
     walletOnBaseSepolia: walletOnBaseSepolia(),
   }));
+  const draftLocked = createMemo(() => Boolean(busy() || pendingPolicyRecovery()));
+  const pendingRecoveryCurrent = createMemo(() => {
+    const pending = pendingPolicyRecovery();
+    return !pending || executionPolicyUiAuthorityIsCurrent(
+      pending.authority,
+      currentUiAuthority(),
+    );
+  });
   const phaseLabel = createMemo(() => ({
     idle: "Waiting for a transient policy bundle",
     preflight: "Validating strict request and policy fields locally",
     approval: "Requesting the delegate's canonical bounded decision",
     signing: "Wallet consent required for this PASS decision",
     persisting: "Persisting the signed execution binding and reading it back",
+    recovery: "Reconciling the exact signed intent before any replay",
     complete: "Bounded decision persisted and independently read back",
   }[phase()]));
+
+  function currentUiAuthority(): ExecutionPolicyUiAuthorityContext {
+    return {
+      walletAddress: wallet.account() ?? "",
+      walletProvider: wallet.provider(),
+      walletAuthorizationVersion: wallet.authorizationVersion(),
+      chainId: wallet.chainId(),
+      runtimeBearer: runtimeBearer(),
+      surface: surface(),
+      resourceReference: resourceReference(),
+      computeProjectReference: computeProjectReference(),
+      releaseFingerprint: releaseFingerprint(),
+    };
+  }
+
+  function currentStatusReadAuthority(): ExecutionPolicyStatusReadAuthorityContext {
+    return {
+      walletAddress: wallet.account() ?? "",
+      walletProvider: wallet.provider(),
+      walletAuthorizationVersion: wallet.authorizationVersion(),
+      chainId: wallet.chainId(),
+      runtimeBearer: runtimeBearer(),
+      surface: surface(),
+      statusReference: statusReference(),
+      computeStatusProjectReference: computeStatusProjectReference(),
+      releaseFingerprint: releaseFingerprint(),
+    };
+  }
+
+  function assertUiAuthority(expected: ExecutionPolicyUiAuthorityContext): void {
+    if (!executionPolicyUiAuthorityIsCurrent(expected, currentUiAuthority())) {
+      throw new Error(
+        "Wallet, Base Sepolia chain, release, transport session, or retained policy draft changed during this decision",
+      );
+    }
+  }
 
   function clearTransientBundle(): void {
     transientBundle = undefined;
@@ -223,10 +388,11 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
   }
 
   async function resolveExecutionTarget(
+    expectedSurface: ExecutionPolicySurface,
     privateReference: string,
     projectReference: string,
   ): Promise<{ resourceId: string; executionContextHash?: string }> {
-    if (surface() !== "compute_dispatch") {
+    if (expectedSurface !== "compute_dispatch") {
       return { resourceId: privateReference };
     }
     if (!projectReference) {
@@ -267,6 +433,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
 
   async function evaluatePolicy(): Promise<void> {
     setError("");
+    setRecoveryNotice("");
     setWorkflow(undefined);
     setStatusResult(undefined);
     const connectedAccount = wallet.account();
@@ -301,69 +468,132 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
       setError("Enter the private resource reference to bind.");
       return;
     }
-    if (!file) {
+    const pending = pendingPolicyRecovery();
+    if (!pending && !file) {
       setError("Choose a strict request-and-policy JSON bundle.");
       return;
     }
 
     setBusy("evaluate");
-    setPhase("preflight");
     let transientExecutionContextHash = "";
+    let preparedThisAttempt: PendingPolicyRecovery | undefined;
+    let completed = false;
     try {
+      if (pending) {
+        setPhase("recovery");
+        assertUiAuthority(pending.authority);
+        const result = await recoverExecutionPolicyWorkflow({
+          delegateUrl: deployment.delegateUrl,
+          runtimeBearer: pending.authority.runtimeBearer,
+          approvalDomainHash: deployment.executionPolicyApprovalDomainHash,
+          approverRootHash: deployment.executionPolicyApproverRootHash,
+          approvedApproverHashes: deployment.executionPolicyApprovedApproverHashes,
+          anchorRelease,
+          executionContextHash: pending.intent.executionContextHash || undefined,
+          approverAddress: connectedAccount,
+          intent: pending.intent,
+          assertAuthorityCurrent: () => assertUiAuthority(pending.authority),
+        });
+        assertUiAuthority(pending.authority);
+        setWorkflow(result);
+        setStatusResult(result.status);
+        setPendingPolicyRecovery(undefined);
+        setRecoveryNotice(
+          "Recovered the exact signed decision from its verified status or byte-identical idempotent replay. No new expiry, signature, prior head, or policy append was created.",
+        );
+        setPhase("complete");
+        completed = true;
+        return;
+      }
+
+      setPhase("preflight");
+      if (!file) {
+        throw new Error("The retained policy bundle is unavailable in this page session.");
+      }
+      const authority = currentUiAuthority();
+      assertUiAuthority(authority);
       const parsedBundle = parsePolicyBundleText(await file.text());
+      assertUiAuthority(authority);
       const target = await resolveExecutionTarget(
-        resourceReference(),
-        computeProjectReference(),
+        authority.surface,
+        authority.resourceReference,
+        authority.computeProjectReference,
       );
+      assertUiAuthority(authority);
       transientExecutionContextHash = target.executionContextHash ?? "";
       setPhase("approval");
       const result = await runExecutionPolicyWorkflow({
         delegateUrl: deployment.delegateUrl,
-        runtimeBearer: runtimeBearer(),
+        runtimeBearer: authority.runtimeBearer,
         approvalDomainHash: deployment.executionPolicyApprovalDomainHash,
         approverRootHash: deployment.executionPolicyApproverRootHash,
         approvedApproverHashes: deployment.executionPolicyApprovedApproverHashes,
         anchorRelease,
-        surface: surface(),
+        surface: authority.surface,
         resourceId: target.resourceId,
         executionContextHash: transientExecutionContextHash || undefined,
         expiresAt: Math.floor(Date.now() / 1000) + ttlSeconds(),
         bundle: parsedBundle,
         approverAddress: connectedAccount,
+        assertAuthorityCurrent: () => assertUiAuthority(authority),
         personalSign: async (message) => {
           setPhase("signing");
+          assertUiAuthority(authority);
           const signature = await wallet.signPersonalMessage(message);
+          assertUiAuthority(authority);
           setPhase("persisting");
           return signature;
         },
+        onPreparedIntent: (intent) => {
+          preparedThisAttempt = { intent, authority };
+          setPendingPolicyRecovery(preparedThisAttempt);
+          setPhase("persisting");
+        },
       });
+      assertUiAuthority(authority);
       setWorkflow(result);
       setStatusResult(result.status);
+      setPendingPolicyRecovery(undefined);
       setPhase("complete");
+      completed = true;
     } catch (cause) {
-      setPhase("idle");
-      setError(cause instanceof Error ? cause.message : "Execution-policy workflow failed closed.");
+      const retained = preparedThisAttempt ?? pendingPolicyRecovery();
+      if (retained) {
+        setPhase("recovery");
+        setError(
+          `${cause instanceof Error ? cause.message : "Execution-policy outcome is ambiguous."} The exact signed intent and private draft remain locked in memory. Retry performs a status read before any byte-identical replay.`,
+        );
+      } else {
+        setPhase("idle");
+        setError(cause instanceof Error ? cause.message : "Execution-policy workflow failed closed.");
+      }
     } finally {
       transientExecutionContextHash = "";
       setBusy("");
-      setResourceReference("");
-      setComputeProjectReference("");
-      clearTransientBundle();
+      if (completed) {
+        setResourceReference("");
+        setComputeProjectReference("");
+        clearTransientBundle();
+      }
     }
   }
 
   async function readStatus(): Promise<void> {
     setError("");
     setStatusResult(undefined);
+    const delegateUrl = deployment.delegateUrl;
+    const approvalDomainHash = deployment.executionPolicyApprovalDomainHash;
+    const approverRootHash = deployment.executionPolicyApproverRootHash;
+    const approvedApproverHashes = deployment.executionPolicyApprovedApproverHashes;
     const anchorRelease = deployment.executionPolicyAnchorRelease;
-    if (!deployment.delegateUrl) {
+    if (!delegateUrl) {
       setError("A live delegate endpoint is not configured for this deployment.");
       return;
     }
     if (
-      !deployment.executionPolicyApprovalDomainHash
-      || !deployment.executionPolicyApproverRootHash
-      || !deployment.executionPolicyApprovedApproverHashes
+      !approvalDomainHash
+      || !approverRootHash
+      || !approvedApproverHashes
       || !anchorRelease
     ) {
       setError("This release does not pin the policy domain, immutable approver set, and active monotonic anchor.");
@@ -385,36 +615,55 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
       setError("Enter the private resource reference to look up.");
       return;
     }
+
+    const authority = currentStatusReadAuthority();
     setBusy("status");
     let transientExecutionContextHash = "";
     try {
-      const target = await resolveExecutionTarget(
-        statusReference(),
-        computeStatusProjectReference(),
-      );
-      transientExecutionContextHash = target.executionContextHash ?? "";
-      setStatusResult(await readExecutionPolicyStatus({
-        delegateUrl: deployment.delegateUrl,
-        runtimeBearer: runtimeBearer(),
-        approvalDomainHash: deployment.executionPolicyApprovalDomainHash,
-        approverRootHash: deployment.executionPolicyApproverRootHash,
-        approvedApproverHashes: deployment.executionPolicyApprovedApproverHashes,
-        anchorRelease,
-        surface: surface(),
-        resourceId: target.resourceId,
-        executionContextHash: transientExecutionContextHash || undefined,
-      }));
+      const result = await runExecutionPolicyStatusRead(authority, {
+        currentAuthority: currentStatusReadAuthority,
+        resolveTarget: async (captured) => resolveExecutionTarget(
+          captured.surface,
+          captured.statusReference,
+          captured.computeStatusProjectReference,
+        ),
+        readStatus: async (captured, target, assertAuthorityCurrent) => {
+          transientExecutionContextHash = target.executionContextHash ?? "";
+          return readExecutionPolicyStatus({
+            delegateUrl,
+            runtimeBearer: captured.runtimeBearer,
+            approvalDomainHash,
+            approverRootHash,
+            approvedApproverHashes,
+            anchorRelease,
+            surface: captured.surface,
+            resourceId: target.resourceId,
+            executionContextHash: transientExecutionContextHash || undefined,
+            assertAuthorityCurrent,
+          });
+        },
+      });
+      setStatusResult(result);
     } catch (cause) {
+      setStatusResult(undefined);
       setError(cause instanceof Error ? cause.message : "Execution-policy status lookup failed closed.");
     } finally {
       transientExecutionContextHash = "";
       setBusy("");
-      setStatusReference("");
-      setComputeStatusProjectReference("");
+      if (statusReference() === authority.statusReference) {
+        setStatusReference("");
+      }
+      if (
+        computeStatusProjectReference()
+        === authority.computeStatusProjectReference
+      ) {
+        setComputeStatusProjectReference("");
+      }
     }
   }
 
   onCleanup(() => {
+    setPendingPolicyRecovery(undefined);
     clearTransientBundle();
     setRuntimeBearer("");
     setResourceReference("");
@@ -495,6 +744,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                   type="button"
                   class={surface() === item.key ? "active" : ""}
                   aria-pressed={surface() === item.key}
+                  disabled={draftLocked()}
                   onClick={() => {
                     setSurface(item.key);
                     setWorkflow(undefined);
@@ -535,6 +785,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                     maxlength="64"
                     placeholder="prj_..."
                     value={computeProjectReference()}
+                    disabled={draftLocked()}
                     onInput={(event) => setComputeProjectReference(event.currentTarget.value)}
                   />
                 </label>
@@ -548,6 +799,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                   maxlength="4096"
                   placeholder="session-only credential"
                   value={runtimeBearer()}
+                  disabled={draftLocked()}
                   onInput={(event) => setRuntimeBearer(event.currentTarget.value)}
                 />
               </label>
@@ -560,6 +812,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                   maxlength="160"
                   placeholder={selectedSurface().placeholder}
                   value={resourceReference()}
+                  disabled={draftLocked()}
                   onInput={(event) => setResourceReference(event.currentTarget.value)}
                 />
               </label>
@@ -571,17 +824,18 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                   ref={bundleInput}
                   type="file"
                   accept=".json,application/json"
+                  disabled={draftLocked()}
                   onChange={(event) => selectBundle(event.currentTarget.files?.[0])}
                 />
                 {bundleReady() ? <CheckCircle2 size={22} /> : <UploadCloud size={22} />}
                 <span>
                   <strong>{bundleReady() ? "Transient bundle staged" : "Choose request + policy JSON"}</strong>
-                  <small>{bundleReady() ? "Filename hidden · cleared after this attempt" : "64 KiB maximum · raw fields never rendered"}</small>
+                  <small>{pendingPolicyRecovery() ? "Locked in page memory until exact recovery" : bundleReady() ? "Filename hidden · cleared only after a verified outcome" : "64 KiB maximum · raw fields never rendered"}</small>
                 </span>
               </label>
               <label class="policy-ttl">
                 <span>Binding lifetime</span>
-                <select value={ttlSeconds()} onChange={(event) => setTtlSeconds(Number(event.currentTarget.value))}>
+                <select value={ttlSeconds()} disabled={draftLocked()} onChange={(event) => setTtlSeconds(Number(event.currentTarget.value))}>
                   <option value="300">5 minutes</option>
                   <option value="900">15 minutes</option>
                   <option value="3600">1 hour</option>
@@ -593,16 +847,41 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
             <button
               class="primary-button large full policy-run-button"
               type="submit"
-              disabled={!liveReady() || !runtimeBearer() || !resourceReference() || !bundleReady() || (surface() === "compute_dispatch" && !computeProjectReference()) || Boolean(busy())}
+              disabled={Boolean(busy()) || !liveReady() || (
+                pendingPolicyRecovery()
+                  ? !pendingRecoveryCurrent()
+                  : !runtimeBearer() || !resourceReference() || !bundleReady() || (surface() === "compute_dispatch" && !computeProjectReference())
+              )}
             >
               {busy() === "evaluate" ? <LoaderCircle class="spin" size={17} /> : <WalletCards size={17} />}
-              {busy() === "evaluate" ? phaseLabel() : liveReady() ? "Evaluate policy and request consent" : "Release binding + delegate + wallet required"}
+              {busy() === "evaluate"
+                ? phaseLabel()
+                : pendingPolicyRecovery()
+                  ? pendingRecoveryCurrent()
+                    ? "Recover exact signed decision"
+                    : "Restore original wallet and session"
+                  : liveReady()
+                    ? "Evaluate policy and request consent"
+                    : "Release binding + delegate + wallet required"}
             </button>
 
             <div class={`policy-phase ${phase()}`} aria-live="polite">
               <span><i /><i /><i /><i /></span>
               <small>{phaseLabel()}</small>
             </div>
+            <Show when={pendingPolicyRecovery()}>
+              <div class="policy-recovery-card" role="status">
+                <RefreshCw size={16} />
+                <span>
+                  <strong>Exact signed intent retained</strong>
+                  <small>
+                    The private bundle, resource reference, original expiry, previous head,
+                    signature, and deterministic idempotency commitment remain in page memory.
+                    Recovery reads status first and can replay only those byte-identical fields.
+                  </small>
+                </span>
+              </div>
+            </Show>
           </form>
 
           <aside class="policy-receipt-card" aria-live="polite">
@@ -675,6 +954,9 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
         <Show when={error()}>
           <div class="policy-operator-error" role="alert"><ShieldAlert size={17} /><span>{error()}</span></div>
         </Show>
+        <Show when={recoveryNotice()}>
+          <div class="policy-recovery-success" role="status"><ShieldCheck size={17} /><span>{recoveryNotice()}</span></div>
+        </Show>
 
         <section class="policy-status-console" aria-labelledby="policy-status-title">
           <div>
@@ -682,7 +964,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
             <h3 id="policy-status-title">Read the latest execution binding.</h3>
             <p>The private reference is sent once and cleared; the delegate returns only its hash and the latest bounded record.</p>
           </div>
-          <form onSubmit={(event) => { event.preventDefault(); void readStatus(); }}>
+          <form aria-busy={busy() === "status"} onSubmit={(event) => { event.preventDefault(); void readStatus(); }}>
             <Show when={surface() === "compute_dispatch"}>
               <label>
                 <span>Exact-asset Compute project reference</span>
@@ -693,6 +975,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                   maxlength="64"
                   placeholder="prj_..."
                   value={computeStatusProjectReference()}
+                  disabled={Boolean(busy())}
                   onInput={(event) => setComputeStatusProjectReference(event.currentTarget.value)}
                 />
               </label>
@@ -706,6 +989,7 @@ export function SafeguardsLab(props: { navigate: (route: RouteKey) => void }) {
                 maxlength="160"
                 placeholder={selectedSurface().placeholder}
                 value={statusReference()}
+                disabled={Boolean(busy())}
                 onInput={(event) => setStatusReference(event.currentTarget.value)}
               />
             </label>

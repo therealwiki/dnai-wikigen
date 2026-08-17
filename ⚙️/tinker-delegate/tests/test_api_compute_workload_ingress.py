@@ -413,6 +413,14 @@ class ComputeWorkloadApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200, created.text)
         self.assertNotIn("SECRET PRIVATE DNA PROMPT", created.text)
+        self.assertEqual(created.json()["schema_version"], 2)
+        self.assertEqual(
+            created.json()["dispatch_adoption"]["state"],
+            "available_for_wallet_dispatch",
+        )
+        self.assertTrue(
+            created.json()["dispatch_adoption"]["wallet_adoption_eligible"]
+        )
         workload_id = created.json()["workload_id"]
         metadata = self.client.get(
             f"/compute/projects/{self.project_id}/workloads/{workload_id}",
@@ -462,6 +470,21 @@ class ComputeWorkloadApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        self.assertEqual(uploaded.json()["schema_version"], 2)
+        self.assertEqual(
+            uploaded.json()["execution_binding"]["source_kind"],
+            "credential",
+        )
+        self.assertTrue(
+            uploaded.json()["execution_binding"]["wallet_adoption_required"]
+        )
+        self.assertEqual(
+            uploaded.json()["dispatch_adoption"]["state"],
+            "wallet_adoption_required",
+        )
+        self.assertFalse(
+            uploaded.json()["dispatch_adoption"]["device_spending_authority"]
+        )
         rejected = self.client.post(
             f"/compute/projects/{self.project_id}/workloads",
             json=payload,

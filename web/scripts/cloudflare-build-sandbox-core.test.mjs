@@ -41,7 +41,11 @@ import {
 } from "./cloudflare-release-artifact-core.mjs";
 import { cloudflareBuildEnvironment } from "./deploy-cloudflare-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL(
+  "./cloudflare-build-sandbox-core.test.mjs",
+  import.meta.url,
+));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const repositoryRoot = path.resolve(webDir, "..");
 const TEST_GIT_EXECUTABLE = "/usr/bin/git";
 const TEST_GIT_ENVIRONMENT = Object.freeze({

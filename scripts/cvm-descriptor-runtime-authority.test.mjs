@@ -29,7 +29,7 @@ import {
 } from "./cvm-launch-intent-core.mjs";
 import {
   CVM_RELEASE_DESCRIPTOR_SERVICE_MATRIX,
-} from "./cvm-release-descriptor-set.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
 import {
   CVM_DESCRIPTOR_EXTERNAL_RUNTIME_AUTHORITY_REQUIREMENTS,
   CVM_DESCRIPTOR_RUNTIME_AUTHORITY_SCHEMA,
@@ -42,7 +42,7 @@ import {
   cvmDescriptorRuntimeAuthoritySha256,
   normalizeCvmDescriptorRuntimeAuthority,
   readFreshCvmDescriptorRuntimeMaterials,
-} from "./cvm-descriptor-runtime-authority.mjs";
+} from "./cvm-descriptor-runtime-authority-v2.mjs";
 
 const RELEASE_SHA = "a".repeat(40);
 const SOURCE_REF = "refs/heads/main";
@@ -116,7 +116,7 @@ function serviceImageName(domain, service) {
   if (domain.endsWith("_qvl_cvm")) return "attestation-qvl";
   if (domain === "independent_metering_cvm") return "compute-metering";
   if (service === "neko") return "neko-chrome";
-  if (service === "oracle") return "tee-email-oracle";
+  if (["oracle", "mailbox-genesis"].includes(service)) return "tee-email-oracle";
   return "tinker-delegate";
 }
 
@@ -125,6 +125,12 @@ function mainProfile(service) {
   if (service === "anchor-writer-evidence") return "anchor-writer-ceremony";
   if (service === "deal-runtime") return "deal-settlement";
   if (service === "compute-execution-worker") return "compute-execution";
+  if (service === "collaboration-execution-worker") {
+    return "collaboration-execution";
+  }
+  if (service === "review-operations") return "review-operations";
+  if (service === "mailbox-genesis") return "mailbox-genesis";
+  if (service === "tinker-account-genesis") return "tinker-account-genesis";
   return null;
 }
 
@@ -213,10 +219,24 @@ async function buildFixture() {
   const manifestSha = sha256(manifestText);
   const bundleText = '{"fixture":"attestation-bundle"}\n';
   const deploymentIntentText = '{"fixture":"deployment-intent"}\n';
+  const accountBindingCeremonyReceipt = {
+    schema: "dnai.tinker-account-binding-ceremony-receipt.v1",
+    tinker_account_binding_ceremony_receipt_sha256:
+      `sha256:${"a".repeat(64)}`,
+  };
+  const accountBindingCeremonyReceiptText =
+    `${JSON.stringify(accountBindingCeremonyReceipt, null, 2)}\n`;
   await Promise.all([
     writeFile(path.join(releaseDirectory, "dnai-tee-image-release.json"), manifestText),
     writeFile(path.join(releaseDirectory, "dnai-tee-image-release.bundle.json"), bundleText),
     writeFile(path.join(releaseDirectory, "dnai-deployment-intent-core.json"), deploymentIntentText),
+    writeFile(
+      path.join(
+        releaseDirectory,
+        "tinker-account-binding-ceremony.receipt.json",
+      ),
+      accountBindingCeremonyReceiptText,
+    ),
   ]);
   const documents = {};
   const descriptorBytes = {};
@@ -249,6 +269,16 @@ async function buildFixture() {
       file: "dnai-deployment-intent-core.json",
       sha256: sha256(deploymentIntentText),
       schema: "dnai.deployment-intent-core.v6",
+    },
+    tinkerAccountBindingCeremonyReceipt: {
+      file: "tinker-account-binding-ceremony.receipt.json",
+      sha256: sha256(accountBindingCeremonyReceiptText),
+      schema: "dnai.tinker-account-binding-ceremony-receipt.v1",
+      tinkerAccountBindingCeremonyReceiptSha256:
+        accountBindingCeremonyReceipt
+          .tinker_account_binding_ceremony_receipt_sha256,
+      validation:
+        "python_structural_and_domain_digest_binding_requires_node_ceremony_check_replay",
     },
     image_manifest: {
       file: "dnai-tee-image-release.json",
@@ -308,6 +338,11 @@ test("fresh authority stable-reads exact seven descriptors and privately brands 
     );
     assert.equal(authority.invariants.runtime_resource_or_identity_claimed, false);
     assert.equal(authority.invariants.deployment_or_tdx_claimed, false);
+    assert.equal(
+      authority.tinker_account_binding_ceremony_receipt_sha256,
+      fixture.topology.tinkerAccountBindingCeremonyReceipt
+        .tinkerAccountBindingCeremonyReceiptSha256,
+    );
     assert.match(cvmDescriptorRuntimeAuthoritySha256(authority), /^sha256:[0-9a-f]{64}$/);
     assert.equal(
       canonicalCvmDescriptorRuntimeAuthorityText(authority),

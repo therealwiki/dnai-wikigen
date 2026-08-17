@@ -28,8 +28,13 @@ import {
 } from "./phala-bootstrap-public-environment-authority-core.mjs";
 import {
   assertVerifiedProductionCvmPostureReceipt,
+  normalizeProductionCvmPostureVerificationReceipt,
   productionCvmPostureVerificationReceiptSha256,
 } from "./phala-production-posture-receipt.mjs";
+import {
+  normalizeCompletedPhalaExecutorState,
+  phalaExecutorStateDigest,
+} from "./phala-executor-state-core.mjs";
 import {
   PHALA_ACTIVATION_EVIDENCE_LEASE_SECONDS,
   PHALA_QVL_MEASUREMENT_POLICY_ORDER,
@@ -45,15 +50,29 @@ import {
 import {
   assertFreshCvmDescriptorRuntimeAuthority,
   cvmDescriptorRuntimeAuthoritySha256,
-} from "./cvm-descriptor-runtime-authority.mjs";
+} from "./cvm-descriptor-runtime-authority-v2.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_STATUS,
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_TRUTH,
   PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE,
   PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE,
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as
+    canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as
+    canonicalLegacyPhalaSevenCvmReleaseVerificationAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-core.mjs";
 export {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_DOMAIN,
@@ -62,25 +81,30 @@ export {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_TRUTH,
   PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE,
   PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE,
-  canonicalPhalaSevenCvmReleaseVerificationAuthorityText,
-  normalizePhalaSevenCvmReleaseVerificationAuthority,
-  phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES as
+    MAX_HISTORICAL_TRANSCRIPT_SET_BYTES,
+  PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_FILE_BYTES as
+    MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER,
   createPhalaSevenCvmHistoricalTranscriptFileSet,
   createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries,
   phalaSevenCvmHistoricalTranscriptFileSetSha256,
 } from "./phala-seven-cvm-historical-transcript.mjs";
+import {
+  assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority,
+  historicallyReconstructedPhalaSevenCvmReleaseVerificationAuthorityMetadata,
+} from "./phala-seven-cvm-historical-release-verification-authority.mjs";
 
 export const PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_SCHEMA =
-  "dnai.phala-qvl-identity-launch-verification.v4";
+  "dnai.phala-qvl-identity-launch-verification.v5";
 export const PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_DOMAIN =
-  "dnai-wikigen/phala-qvl-identity-launch-verification/v4\0";
+  "dnai-wikigen/phala-qvl-identity-launch-verification/v5\0";
 export const PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_STATUS =
-  "fresh_challenge_bound_identity_quote_intel_tdx_dcap_verified_and_activation_appraisal_lease_issued";
+  "fresh_challenge_bound_identity_quote_intel_tdx_dcap_verified_activation_appraisal_lease_issued_and_private_replay_transcript_prepared";
 export const PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_TRUTH =
-  "release_authorized_measurement_policy_appraised_non_debug_identity_quote_fresh_challenge_report_data_and_authenticated_pccs_collateral_verified_with_policy_bounded_activation_evidence_lease";
+  "release_authorized_measurement_policy_appraised_non_debug_identity_quote_fresh_challenge_report_data_and_authenticated_pccs_collateral_verified_with_policy_bounded_activation_evidence_lease_and_private_restart_replay_material_prepared_without_public_quote_or_collateral_disclosure";
 export const PHALA_QVL_IDENTITY_ATTESTATION_REQUEST_SCHEMA =
   "dnai.qvl-identity-attestation-request.v3";
 export const PHALA_QVL_IDENTITY_ATTESTATION_RESPONSE_SCHEMA =
@@ -90,25 +114,29 @@ export const PHALA_WORKLOAD_QVL_CHALLENGE_SCHEMA =
 export const PHALA_INDEPENDENT_TDX_VERDICT_SCHEMA =
   "dnai.independent-tdx-verdict.v4";
 export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_SCHEMA =
-  "dnai.phala-workload-tdx-verdict-verification.v4";
+  "dnai.phala-workload-tdx-verdict-verification.v5";
 export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_DOMAIN =
-  "dnai-wikigen/phala-workload-tdx-verdict-verification/v4\0";
+  "dnai-wikigen/phala-workload-tdx-verdict-verification/v5\0";
 export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_STATUS =
-  "fresh_independent_qvl_signed_intel_tdx_verdict_and_activation_appraisal_lease_verified";
+  "fresh_independent_qvl_signed_intel_tdx_verdict_activation_appraisal_lease_verified_and_private_replay_transcript_prepared";
+export const PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_TRUTH =
+  "release_lineage_qvl_challenge_and_verdict_signatures_policy_report_data_quote_and_policy_bounded_activation_evidence_lease_verified_with_private_restart_replay_material_prepared_without_public_quote_or_collateral_disclosure";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA =
-  "dnai.phala-compute-workload-recipient-activation-verification.v3";
+  "dnai.phala-compute-workload-recipient-activation-verification.v4";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_DOMAIN =
-  "dnai-wikigen/phala-compute-workload-recipient-activation-verification/v3\0";
+  "dnai-wikigen/phala-compute-workload-recipient-activation-verification/v4\0";
 export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS =
   "fresh_main_runtime_recipient_quote_independent_compute_workload_qvl_signature_and_recipient_evidence_lease_verified";
+export const PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH =
+  "release_lineage_signed_compute_workload_qvl_verdict_recipient_report_data_branded_main_runtime_fresh_vault_and_recipient_evidence_lease_verified_without_public_quote_or_collateral_disclosure";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_SCHEMA =
-  "dnai.phala-seven-cvm-verified-evidence-set.v4";
+  "dnai.phala-seven-cvm-verified-evidence-set.v5";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_DOMAIN =
-  "dnai-wikigen/phala-seven-cvm-verified-evidence-set/v4\0";
+  "dnai-wikigen/phala-seven-cvm-verified-evidence-set/v5\0";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_STATUS =
-  "exact_seven_cvm_machine_verifier_evidence_and_activation_appraisal_leases_complete";
+  "exact_seven_cvm_machine_verifier_evidence_activation_appraisal_leases_and_exact14_private_replay_transcript_prepared";
 export const PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_TRUTH =
-  "five_policy_appraised_qvl_identities_and_two_release_lineage_bound_workloads_verified_with_policy_bounded_activation_evidence_leases";
+  "five_policy_appraised_qvl_identities_and_two_release_lineage_bound_workloads_verified_with_policy_bounded_activation_evidence_leases_and_exact14_private_replay_material_required_without_public_quote_or_collateral_disclosure";
 export const PHALA_SEVEN_CVM_MAX_COLLECTION_SKEW_SECONDS = 300;
 export const PHALA_RELEASE_POSTURE_MAX_AGE_SECONDS = 300;
 export const PHALA_RELEASE_POSTURE_MAX_FUTURE_SKEW_SECONDS = 30;
@@ -120,6 +148,14 @@ export const REVOKED_PHALA_SIX_CVM_VERIFIED_EVIDENCE_SET_AUTHORITY =
     domain: "dnai-wikigen/phala-six-cvm-verified-evidence-set/v1\0",
     status: "revoked_never_authoritative_after_exact_seven_cvm_topology",
   });
+export const PHALA_VERIFIER_HISTORICAL_TRANSCRIPT_ARTIFACT_SCHEMA =
+  "dnai.phala-verifier-historical-transcript-artifact.v2";
+export const PHALA_VERIFIER_HISTORICAL_DCAP_REPLAY_RECORD_SCHEMA =
+  "dnai.phala-verifier-historical-dcap-replay-record.v2";
+export const PHALA_VERIFIER_HISTORICAL_SIGNATURE_REPLAY_RECORD_SCHEMA =
+  "dnai.phala-verifier-historical-signature-replay-record.v2";
+export const PHALA_SEVEN_CVM_HISTORICAL_CORROBORATION_SCHEMA =
+  "dnai.phala-seven-cvm-historical-corroboration.v2";
 
 export const PHALA_QVL_IDENTITY_DOMAIN_PROFILE = Object.freeze({
   diligence_qvl_cvm: "diligence",
@@ -137,6 +173,65 @@ export const PHALA_SEVEN_CVM_EXECUTION_ORDER = Object.freeze([
   "compute_metering_qvl_cvm",
   "independent_metering_cvm",
 ]);
+
+function releaseVerificationAuthoritySchema(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(
+      "release verification authority version routing requires one object",
+    );
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(value, "schema");
+  if (!descriptor || !Object.hasOwn(descriptor, "value")
+    || typeof descriptor.value !== "string") {
+    throw new TypeError(
+      "release verification authority version routing requires one own data schema",
+    );
+  }
+  return descriptor.value;
+}
+
+/**
+ * Pure version router for non-authorizing normalization and digest projection.
+ *
+ * Fresh production branding never enters through this router: the production
+ * constructor below calls the v4 normalizer directly. The legacy v3 branch
+ * exists only for the immutable synthetic fixtures and the explicitly
+ * authenticated historical replay path. There is deliberately no
+ * try-current-then-legacy fallback.
+ */
+export function normalizePhalaSevenCvmReleaseVerificationAuthority(value) {
+  const schema = releaseVerificationAuthoritySchema(value);
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
+  }
+  if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+  }
+  throw new TypeError("seven-CVM release verification authority is invalid");
+}
+
+export function canonicalPhalaSevenCvmReleaseVerificationAuthorityText(value) {
+  const schema = releaseVerificationAuthoritySchema(value);
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText(value);
+  }
+  if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return canonicalLegacyPhalaSevenCvmReleaseVerificationAuthorityText(value);
+  }
+  throw new TypeError("seven-CVM release verification authority is invalid");
+}
+
+export function phalaSevenCvmReleaseVerificationAuthoritySha256(value) {
+  const schema = releaseVerificationAuthoritySchema(value);
+  if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
+    return legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  throw new TypeError("seven-CVM release verification authority is invalid");
+}
+
 export const PHALA_WORKLOAD_DOMAIN_QVL_LINK = Object.freeze({
   main_runtime_cvm: Object.freeze({
     profile: "diligence",
@@ -180,8 +275,11 @@ export const PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS = deepFreezeCanonicalPlainDa
   },
 });
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const DCAP_SCRIPT = path.join(ROOT, "scripts", "phala-seven-cvm-dcap-verify.py");
+const DCAP_SCRIPT = fileURLToPath(new URL(
+  "./phala-seven-cvm-dcap-verify.py",
+  import.meta.url,
+));
+const ROOT = path.resolve(path.dirname(DCAP_SCRIPT), "..");
 const ROOT_OWNED_PYTHON_EXECUTABLE = "/usr/bin/python3";
 const ROOT_OWNED_CODESIGN_EXECUTABLE = "/usr/bin/codesign";
 const DCAP_NATIVE_EXTENSION = path.join(
@@ -210,7 +308,7 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
   pccs_url: "https://pccs.phala.network",
   collateral_mode: "authenticated_online_pccs",
   invocation:
-    "root_owned_system_python_I_S_B_root_protected_abi3_fd3_authenticated_source_fd4",
+    "root_owned_system_python_I_S_B_root_protected_abi3_fd3_to_read_only_unlinked_snapshot_source_fd4",
   platform: "darwin",
   architecture: "arm64",
   system_python_launcher: ROOT_OWNED_PYTHON_EXECUTABLE,
@@ -230,11 +328,11 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
     "isolated_ignore_environment_no_site_no_user_site_no_bytecode_exact_system_path",
   user_writable_import_path: false,
   darwin_release: "25.5.0",
-  macos_version: "26.5.1",
-  macos_build: "25F80",
+  macos_version: "26.5.2",
+  macos_build: "25F84",
   system_version_plist: SYSTEM_VERSION_PLIST,
   system_version_plist_sha256:
-    "d90b1755e5dbb837d2ca1e11083c6e36e6219193a0fcf036d0f7cfe5366e031e",
+    "cbf534776ca9200252e5637787e5d4fc26cf527fb354c19bcbac9688341c7a58",
   codesign_executable: ROOT_OWNED_CODESIGN_EXECUTABLE,
   codesign_executable_sha256:
     "214d455584d19abc0d74d02b9cbc7d3da6bdcb0596c235e6156dd9ed2f4e1ba7",
@@ -245,11 +343,11 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
   dcap_qvl_abi3_cdhash_full_sha256:
     "758692e2a484440e6fd2a7bb4b3b74112647e9acd8c1a6f9750a0350a895d29f",
   bootstrap_sha256:
-    "9bdc99d17e92ca311326dc21e9ee82093962d05894a326b98f4df9970e930d92",
+    "b6e79f5ca1b214036d7e11e26aac0a249a26faa1ed702ef908ad27d0cdebb968",
   isolated_runtime_environment_sha256:
-    "sha256:62be45b60bcf7ad7434ad78247997256ab7282bb91d829ee87c301a3b55a146d",
+    "sha256:0acd40fb80dd000f367583017643ac07fe31becd2372bc20ceca3e91aa8b8beb",
   verifier_script_sha256:
-    "baa62561c958026ae783f2d93da3ddf1ad7f2964d9b294aeb4f683ca98475b05",
+    "77f83590ec8812574cf74c96a84e3b28466c54337bdde336b94621e2baef5261",
   dcap_qvl_abi3_sha256:
     "6f86d8b8ed99c74663418d15150906cea4025352c49889e841ac68b387e04e7f",
 });
@@ -305,23 +403,57 @@ const COMPUTE_WORKLOAD_RECIPIENT_REPORT_DATA_DOMAIN =
 const COMPUTE_WORKLOAD_RECIPIENT_RELEASE_DOMAIN =
   "dnai-wikigen/compute-workload-recipient-release/v2\0";
 const COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_ARTIFACT_DOMAIN =
-  "dnai-wikigen/compute-workload-recipient-activation-artifact/v3\0";
+  "dnai-wikigen/compute-workload-recipient-activation-artifact/v4\0";
 const COMPUTE_SIGNER_CUSTODY = "dstack_derived_independent_cvm";
 const MAX_ARTIFACT_BYTES = 128 * 1024;
+const MAX_HISTORICAL_COLLATERAL_BYTES = 512 * 1024;
 
 const VERIFIED_QVL_IDENTITIES = new WeakMap();
 const VERIFIED_WORKLOAD_VERDICTS = new WeakMap();
-const VERIFIED_QVL_IDENTITY_TRANSCRIPTS = new WeakMap();
-const VERIFIED_WORKLOAD_VERDICT_TRANSCRIPTS = new WeakMap();
 const VERIFIED_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATIONS = new WeakMap();
 const VERIFIED_SEVEN_CVM_SETS = new WeakMap();
+const HISTORICALLY_REPLAYED_QVL_IDENTITIES = new WeakMap();
+const HISTORICALLY_REPLAYED_WORKLOAD_VERDICTS = new WeakMap();
+const HISTORICALLY_REPLAYED_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATIONS = new WeakMap();
+const HISTORICALLY_REPLAYED_SEVEN_CVM_SETS = new WeakMap();
+const LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF = new WeakMap();
+const LIVE_POSTURE_CONTEXT_BY_RELEASE_AUTHORITY = new WeakMap();
 const BRANDED_RELEASE_AUTHORITIES = new WeakMap();
+
+/**
+ * Atomically consume the exact seven in-memory capabilities which retain the
+ * private exact-14 verifier envelopes. This stateful helper intentionally
+ * lives in the production verifier rather than the pure historical transcript
+ * module imported by R and O reconstruction.
+ */
+export function consumePhalaSevenCvmHistoricalTranscriptCapabilities(
+  capabilityStore,
+  proofObjects,
+) {
+  if (!(capabilityStore instanceof WeakMap)
+    || !Array.isArray(proofObjects)
+    || proofObjects.length !== 7
+    || new Set(proofObjects).size !== 7
+    || proofObjects.some((proof) =>
+      (typeof proof !== "object" && typeof proof !== "function") || proof === null)) {
+    throw new TypeError(
+      "historical transcript export requires exactly seven distinct proof capabilities",
+    );
+  }
+  if (proofObjects.some((proof) => !capabilityStore.has(proof))) {
+    throw new TypeError(
+      "historical transcript export capability is unavailable or already consumed",
+    );
+  }
+  for (const proof of proofObjects) capabilityStore.delete(proof);
+}
 
 function brandReleaseVerificationAuthority(candidate, {
   bootstrapAuthority,
   signedAReceipt,
 } = {}) {
-  const normalized = normalizePhalaSevenCvmReleaseVerificationAuthority(candidate);
+  const normalized =
+    normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(candidate);
   const bootstrap = deepFreezeCanonicalPlainDataGraph(
     normalizeBootstrapPublicEnvironmentAuthority(bootstrapAuthority),
     { label: "release-authority bootstrap dependency" },
@@ -336,7 +468,8 @@ function brandReleaseVerificationAuthority(candidate, {
   BRANDED_RELEASE_AUTHORITIES.set(
     normalized,
     Object.freeze({
-      digest: phalaSevenCvmReleaseVerificationAuthoritySha256(normalized),
+      digest:
+        currentPhalaSevenCvmReleaseVerificationAuthoritySha256(normalized),
       bootstrap_authority: bootstrap,
       signed_a_receipt: signedA,
     }),
@@ -348,7 +481,7 @@ export function assertBrandedPhalaSevenCvmReleaseVerificationAuthority(value) {
   const provenance = BRANDED_RELEASE_AUTHORITIES.get(value);
   if (!provenance
     || value.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE
-    || phalaSevenCvmReleaseVerificationAuthoritySha256(value)
+    || currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value)
       !== provenance.digest) {
     throw new Error("release verification authority was not reconstructed from signed dependencies");
   }
@@ -505,19 +638,20 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
     reviewerAuthorityGenesisAcceptanceSha256,
     "release reviewer genesis acceptance",
   );
+  const contractReceiptPins = {
+    expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
+    expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      descriptorRuntime
+        .tinker_account_binding_ceremony_receipt_sha256,
+  };
   const contractReceipt = normalizeFreshContractDeploymentReceipt(
     freshContractDeploymentReceipt,
-    {
-      expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
-    },
+    contractReceiptPins,
   );
   const contractReceiptSha = `sha256:${freshContractDeploymentReceiptDigest(
     contractReceipt,
-    {
-      expectedDeploymentIntentSha256: signedA.deployment_intent_sha256,
-      expectedReviewerAuthorityGenesisAcceptanceSha256: reviewerAcceptance,
-    },
+    contractReceiptPins,
   )}`;
   if (contractReceiptSha !== signedA.fresh_contract_deployment_receipt_sha256
     || !Array.isArray(productionPostureReceipts)
@@ -551,7 +685,7 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
       !== postureMap.get(domain).compose_hash)) {
     throw new Error("stable descriptor bytes drifted from signed A or observed CVM compose hashes");
   }
-  return assertFreshProductionPhalaSevenCvmReleaseVerificationAuthority(
+  const authority = assertFreshProductionPhalaSevenCvmReleaseVerificationAuthority(
     brandReleaseVerificationAuthority({
     schema: PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
     status: PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_STATUS,
@@ -567,6 +701,9 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
     cvm_descriptor_runtime_authority_sha256:
       cvmDescriptorRuntimeAuthoritySha256(descriptorRuntime),
     cvm_descriptor_runtime_authority: descriptorRuntime,
+    tinker_account_binding_ceremony_receipt_sha256:
+      descriptorRuntime
+        .tinker_account_binding_ceremony_receipt_sha256,
     ceremony_nonce: ceremonyNonce,
     qvl_measurement_policy_set_sha256: policySetSha,
     qvl_measurement_policies: policies.policies,
@@ -598,6 +735,24 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
       signedAReceipt: signedA,
     }),
   );
+  LIVE_POSTURE_CONTEXT_BY_RELEASE_AUTHORITY.set(authority, new Map(
+    PHALA_SEVEN_CVM_EXECUTION_ORDER.map((domain) => {
+      const posture = postureMap.get(domain);
+      return [domain, Object.freeze({
+        expectedAuthority: Object.freeze({
+          domain,
+          app_id: posture.app_id,
+          cvm_id: posture.cvm_id,
+          compose_hash: posture.compose_hash,
+          kms_id: posture.kms_id,
+          instance_type: posture.instance_type,
+          disk_size: posture.disk_size,
+        }),
+        receipt: posture,
+      })];
+    }),
+  ));
+  return authority;
 }
 
 export class PhalaWorkloadVerdictChallengeLedger {
@@ -922,8 +1077,8 @@ function rawVerifierTranscriptSha256(domain, kind, artifactSha256) {
   });
 }
 
-function rawArtifactFileSize(value, label) {
-  if (!Number.isSafeInteger(value) || value < 2 || value > MAX_ARTIFACT_BYTES) {
+function rawArtifactFileSize(value, label, maximum = MAX_ARTIFACT_BYTES) {
+  if (!Number.isSafeInteger(value) || value < 2 || value > maximum) {
     throw new Error(`${label} must be a bounded positive byte size`);
   }
   return value;
@@ -1000,6 +1155,458 @@ function bytes32FromBare(value, label) {
 
 function bytes32FromSha(value, label) {
   return `0x${sha256(value, label).slice(7)}`;
+}
+
+const SYNTHETIC_HISTORICAL_POSTURE_RECEIPT_SCHEMA =
+  "dnai.synthetic-historical-phala-production-cvm-posture-receipt.v2";
+
+function rawHistoricalFileIdentity(text, label) {
+  const size = typeof text === "string" ? Buffer.byteLength(text, "utf8") : 0;
+  if (typeof text !== "string" || size < 2
+    || size > MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES || text.includes("\0")) {
+    throw new Error(`${label} is outside the private historical file bound`);
+  }
+  return Object.freeze({
+    sha256: `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`,
+    size,
+  });
+}
+
+function historicalTranscriptRoleAuthority(flag) {
+  for (const [domain, roles] of Object.entries(PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS)) {
+    for (const [role, candidateFlag] of Object.entries(roles)) {
+      if (candidateFlag === flag) return Object.freeze({ domain, role });
+    }
+  }
+  throw new Error(`${flag} is not an exact seven-CVM transcript flag`);
+}
+
+function normalizeHistoricalPostureExpectedAuthority(value, expectedDomain) {
+  const parsed = exactRecord(value, [
+    "app_id", "compose_hash", "cvm_id", "disk_size", "domain", "instance_type", "kms_id",
+  ], `${expectedDomain} historical posture expected authority`);
+  if (parsed.domain !== expectedDomain || !PHALA_SEVEN_CVM_EXECUTION_ORDER.includes(expectedDomain)
+    || typeof parsed.instance_type !== "string" || !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(parsed.instance_type)
+    || !Number.isSafeInteger(parsed.disk_size) || parsed.disk_size < 20
+    || parsed.disk_size > 16_384) {
+    throw new Error(`${expectedDomain} historical posture expected authority is invalid`);
+  }
+  return {
+    domain: expectedDomain,
+    app_id: appId(parsed.app_id, `${expectedDomain} historical posture app ID`),
+    cvm_id: cvmId(parsed.cvm_id, `${expectedDomain} historical posture CVM ID`),
+    compose_hash: bareSha256(
+      parsed.compose_hash,
+      `${expectedDomain} historical posture compose hash`,
+    ),
+    kms_id: cvmId(parsed.kms_id, `${expectedDomain} historical posture KMS ID`),
+    instance_type: parsed.instance_type,
+    disk_size: parsed.disk_size,
+  };
+}
+
+function syntheticHistoricalPostureReceipt(descriptor) {
+  return deepFreezeCanonicalPlainDataGraph({
+    schema: SYNTHETIC_HISTORICAL_POSTURE_RECEIPT_SCHEMA,
+    status: "private_posture_fixture_prepared",
+    truth_status: "synthetic_node_test_posture_never_production_authority",
+    domain: descriptor.domain,
+    app_id: descriptor.app_id,
+    cvm_id: descriptor.cvm_id,
+    compose_hash: descriptor.compose_hash,
+    os_image_hash: descriptor.os_image_hash,
+    kms_id: descriptor.kms_id,
+    instance_type: descriptor.instance_type,
+    disk_size: descriptor.disk_size,
+    listed: false,
+    public_logs: false,
+    public_sysinfo: false,
+    public_tcbinfo: false,
+    observed_at: descriptor.posture_observed_at,
+    receipt_sha256: descriptor.posture_receipt_sha256,
+    raw_secret_egress: false,
+  }, { label: `${descriptor.domain} synthetic historical posture receipt` });
+}
+
+function normalizeSyntheticHistoricalPostureReceipt(value, descriptor) {
+  const parsed = exactRecord(value, [
+    "app_id", "compose_hash", "cvm_id", "disk_size", "domain", "instance_type", "kms_id",
+    "listed", "observed_at", "os_image_hash", "public_logs", "public_sysinfo",
+    "public_tcbinfo", "raw_secret_egress", "receipt_sha256", "schema", "status",
+    "truth_status",
+  ], `${descriptor.domain} synthetic historical posture receipt`);
+  const expected = syntheticHistoricalPostureReceipt(descriptor);
+  if (canonicalText(parsed) !== canonicalText(expected)) {
+    throw new Error(`${descriptor.domain} synthetic historical posture receipt drifted`);
+  }
+  return { receipt: expected, receiptSha256: descriptor.posture_receipt_sha256 };
+}
+
+function historicalPostureAuditForReleaseAuthority(releaseAuthority, domain) {
+  const descriptor = releaseAuthority.descriptors.find((entry) => entry.domain === domain);
+  if (!descriptor) throw new Error(`${domain} is absent from release posture authority`);
+  const expectedAuthority = Object.freeze({
+    domain,
+    app_id: descriptor.app_id,
+    cvm_id: descriptor.cvm_id,
+    compose_hash: descriptor.compose_hash,
+    kms_id: descriptor.kms_id,
+    instance_type: descriptor.instance_type,
+    disk_size: descriptor.disk_size,
+  });
+  if (releaseAuthority.evidence_mode === PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
+    return Object.freeze({
+      expected_authority: expectedAuthority,
+      receipt: syntheticHistoricalPostureReceipt(descriptor),
+      receipt_sha256: descriptor.posture_receipt_sha256,
+    });
+  }
+  const context = LIVE_POSTURE_CONTEXT_BY_RELEASE_AUTHORITY.get(releaseAuthority)?.get(domain);
+  if (!context || canonicalText(context.expectedAuthority) !== canonicalText(expectedAuthority)
+    || productionCvmPostureVerificationReceiptSha256(context.receipt, {
+      expectedAuthority,
+    }) !== descriptor.posture_receipt_sha256) {
+    throw new Error(`${domain} live production posture context is unavailable or drifted`);
+  }
+  return Object.freeze({
+    expected_authority: expectedAuthority,
+    receipt: context.receipt,
+    receipt_sha256: descriptor.posture_receipt_sha256,
+  });
+}
+
+function normalizeHistoricalPostureAudit({
+  evidenceMode,
+  domain,
+  expectedAuthority,
+  receipt,
+  receiptSha256,
+  releaseDescriptor,
+}) {
+  const expected = normalizeHistoricalPostureExpectedAuthority(expectedAuthority, domain);
+  for (const field of [
+    "app_id", "cvm_id", "compose_hash", "kms_id", "instance_type", "disk_size",
+  ]) {
+    if (expected[field] !== releaseDescriptor[field]) {
+      throw new Error(`${domain} persisted posture tuple differs from release authority`);
+    }
+  }
+  if (receiptSha256 !== releaseDescriptor.posture_receipt_sha256) {
+    throw new Error(`${domain} persisted posture digest differs from release authority`);
+  }
+  if (evidenceMode === PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
+    const normalized = normalizeProductionCvmPostureVerificationReceipt(receipt, {
+      expectedAuthority: expected,
+    });
+    const digest = productionCvmPostureVerificationReceiptSha256(normalized, {
+      expectedAuthority: expected,
+    });
+    if (digest !== receiptSha256 || normalized.os_image_hash !== releaseDescriptor.os_image_hash
+      || normalized.observed_at !== releaseDescriptor.posture_observed_at) {
+      throw new Error(`${domain} persisted production posture receipt bytes drifted`);
+    }
+    return { expectedAuthority: expected, receipt: normalized, receiptSha256: digest };
+  }
+  if (evidenceMode !== PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
+    throw new Error(`${domain} historical posture evidence mode is invalid`);
+  }
+  const synthetic = normalizeSyntheticHistoricalPostureReceipt(receipt, releaseDescriptor);
+  return { expectedAuthority: expected, ...synthetic };
+}
+
+function normalizeHistoricalDcapReplayRecord(value, {
+  expectedVerifiedAt,
+  expectedLeaseExpiresAt,
+  expectedLocalReceiptSha256,
+  expectedDomain,
+  releaseAuthority,
+} = {}) {
+  const parsed = exactRecord(value, [
+    "activation_evidence_lease_expires_at", "activation_evidence_lease_issued_at",
+    "collateral_json", "collateral_sha256", "local_dcap_verification_receipt_sha256",
+    "posture_expected_authority", "production_posture_receipt",
+    "production_posture_receipt_sha256", "runtime_environment_sha256", "schema",
+    "verification_time",
+  ], "historical local DCAP replay record");
+  const collateralBytes = typeof parsed.collateral_json === "string"
+    ? Buffer.from(parsed.collateral_json, "utf8") : Buffer.alloc(0);
+  if (parsed.schema !== PHALA_VERIFIER_HISTORICAL_DCAP_REPLAY_RECORD_SCHEMA
+    || collateralBytes.length < 2 || collateralBytes.length > MAX_HISTORICAL_COLLATERAL_BYTES
+    || [...parsed.collateral_json].some((character) => {
+      const code = character.codePointAt(0);
+      return code < 0x20 || code > 0x7e;
+    })) {
+    throw new Error("historical local DCAP replay collateral is invalid or unbounded");
+  }
+  const verificationTime = second(parsed.verification_time, "historical DCAP verification time");
+  const leaseIssuedAt = second(
+    parsed.activation_evidence_lease_issued_at,
+    "historical activation lease issued_at",
+  );
+  const leaseExpiresAt = second(
+    parsed.activation_evidence_lease_expires_at,
+    "historical activation lease expires_at",
+  );
+  const collateralSha = `sha256:${createHash("sha256")
+    .update(parsed.collateral_json, "utf8").digest("hex")}`;
+  const localReceiptSha = sha256(
+    parsed.local_dcap_verification_receipt_sha256,
+    "historical local DCAP receipt digest",
+  );
+  if (parsed.collateral_sha256 !== collateralSha || leaseIssuedAt !== verificationTime
+    || leaseExpiresAt - leaseIssuedAt !== PHALA_ACTIVATION_EVIDENCE_LEASE_SECONDS
+    || parsed.runtime_environment_sha256
+      !== PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256
+    || (expectedVerifiedAt !== undefined && verificationTime !== expectedVerifiedAt)
+    || (expectedLeaseExpiresAt !== undefined && leaseExpiresAt !== expectedLeaseExpiresAt)
+    || (expectedLocalReceiptSha256 !== undefined
+      && localReceiptSha !== expectedLocalReceiptSha256)) {
+    throw new Error("historical local DCAP replay record drifted from recorded authority");
+  }
+  const output = {
+    schema: PHALA_VERIFIER_HISTORICAL_DCAP_REPLAY_RECORD_SCHEMA,
+    verification_time: verificationTime,
+    activation_evidence_lease_issued_at: leaseIssuedAt,
+    activation_evidence_lease_expires_at: leaseExpiresAt,
+    runtime_environment_sha256:
+      PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256,
+    collateral_sha256: collateralSha,
+    collateral_json: parsed.collateral_json,
+    local_dcap_verification_receipt_sha256: localReceiptSha,
+    posture_expected_authority: normalizeHistoricalPostureExpectedAuthority(
+      parsed.posture_expected_authority,
+      expectedDomain,
+    ),
+    production_posture_receipt: parsed.production_posture_receipt,
+    production_posture_receipt_sha256: sha256(
+      parsed.production_posture_receipt_sha256,
+      `${expectedDomain} production posture receipt digest`,
+    ),
+  };
+  if (releaseAuthority !== undefined) {
+    const descriptor = releaseAuthority.descriptors.find((entry) => entry.domain === expectedDomain);
+    normalizeHistoricalPostureAudit({
+      evidenceMode: releaseAuthority.evidence_mode,
+      domain: expectedDomain,
+      expectedAuthority: output.posture_expected_authority,
+      receipt: output.production_posture_receipt,
+      receiptSha256: output.production_posture_receipt_sha256,
+      releaseDescriptor: descriptor,
+    });
+    if (leaseExpiresAt - leaseIssuedAt !== releaseAuthority.activation_evidence_lease_seconds) {
+      throw new Error("historical activation lease differs from signed release policy");
+    }
+  }
+  return output;
+}
+
+function normalizeHistoricalSignatureReplayRecord(value, {
+  expectedVerifiedAt,
+  expectedActivationLeaseExpiresAt,
+  expectedDomain,
+  releaseAuthority,
+} = {}) {
+  const parsed = exactRecord(value, [
+    "activation_evidence_lease_expires_at", "posture_expected_authority",
+    "production_posture_receipt", "production_posture_receipt_sha256",
+    "report_data_binding", "schema", "verification_time",
+    "verdict_activation_evidence_lease_expires_at",
+  ], "historical signature replay record");
+  const verificationTime = second(
+    parsed.verification_time,
+    "historical signature verification time",
+  );
+  const verdictLeaseExpiresAt = second(
+    parsed.verdict_activation_evidence_lease_expires_at,
+    "historical verdict activation lease expires_at",
+  );
+  const activationLeaseExpiresAt = second(
+    parsed.activation_evidence_lease_expires_at,
+    "historical workload activation lease expires_at",
+  );
+  if (parsed.schema !== PHALA_VERIFIER_HISTORICAL_SIGNATURE_REPLAY_RECORD_SCHEMA
+    || !PHALA_WORKLOAD_DOMAIN_QVL_LINK[expectedDomain]
+    || activationLeaseExpiresAt > verdictLeaseExpiresAt
+    || verificationTime >= activationLeaseExpiresAt
+    || (expectedVerifiedAt !== undefined && verificationTime !== expectedVerifiedAt)
+    || (expectedActivationLeaseExpiresAt !== undefined
+      && activationLeaseExpiresAt !== expectedActivationLeaseExpiresAt)) {
+    throw new Error("historical signature replay lease or time is invalid");
+  }
+  const output = {
+    schema: PHALA_VERIFIER_HISTORICAL_SIGNATURE_REPLAY_RECORD_SCHEMA,
+    verification_time: verificationTime,
+    verdict_activation_evidence_lease_expires_at: verdictLeaseExpiresAt,
+    activation_evidence_lease_expires_at: activationLeaseExpiresAt,
+    report_data_binding: normalizeReportDataBinding(parsed.report_data_binding, expectedDomain),
+    posture_expected_authority: normalizeHistoricalPostureExpectedAuthority(
+      parsed.posture_expected_authority,
+      expectedDomain,
+    ),
+    production_posture_receipt: parsed.production_posture_receipt,
+    production_posture_receipt_sha256: sha256(
+      parsed.production_posture_receipt_sha256,
+      `${expectedDomain} production posture receipt digest`,
+    ),
+  };
+  if (releaseAuthority !== undefined) {
+    const descriptor = releaseAuthority.descriptors.find((entry) => entry.domain === expectedDomain);
+    normalizeHistoricalPostureAudit({
+      evidenceMode: releaseAuthority.evidence_mode,
+      domain: expectedDomain,
+      expectedAuthority: output.posture_expected_authority,
+      receipt: output.production_posture_receipt,
+      receiptSha256: output.production_posture_receipt_sha256,
+      releaseDescriptor: descriptor,
+    });
+  }
+  return output;
+}
+
+function normalizeHistoricalTranscriptArtifact(domain, role, value) {
+  if (role === "request") return normalizeQvlIdentityRequest(value);
+  if (role === "response") return normalizeQvlIdentityResponse(value);
+  if (role === "challenge") return normalizeQvlChallenge(value);
+  if (role === "verdict") return normalizeIndependentVerdict(value);
+  throw new Error(`${domain} historical transcript role is invalid`);
+}
+
+function historicalTranscriptArtifactSha256(role, artifact) {
+  if (role === "request") return domainSha256(QVL_REQUEST_ARTIFACT_DOMAIN, artifact);
+  if (role === "response") return domainSha256(QVL_RESPONSE_ARTIFACT_DOMAIN, artifact);
+  if (role === "challenge") return qvlChallengeArtifactSha256(artifact);
+  if (role === "verdict") return independentTdxVerdictArtifactSha256(artifact);
+  throw new Error("historical transcript artifact role is invalid");
+}
+
+function createHistoricalTranscriptEnvelopeText({
+  flag,
+  rawArtifactText,
+  artifact,
+  verificationRecord,
+}) {
+  const authority = historicalTranscriptRoleAuthority(flag);
+  const normalizedArtifact = normalizeHistoricalTranscriptArtifact(
+    authority.domain,
+    authority.role,
+    artifact,
+  );
+  const rawArtifact = canonicalRawArtifactFileIdentity(
+    rawArtifactText,
+    normalizedArtifact,
+    `${authority.domain} ${authority.role} source artifact`,
+  );
+  let normalizedRecord = null;
+  if (authority.role === "response") {
+    normalizedRecord = normalizeHistoricalDcapReplayRecord(verificationRecord, {
+      expectedDomain: authority.domain,
+    });
+  } else if (authority.role === "verdict") {
+    normalizedRecord = normalizeHistoricalSignatureReplayRecord(verificationRecord, {
+      expectedDomain: authority.domain,
+    });
+  } else if (verificationRecord !== null) {
+    throw new Error("historical challenge/request transcript cannot carry verification state");
+  }
+  const text = canonicalText({
+    schema: PHALA_VERIFIER_HISTORICAL_TRANSCRIPT_ARTIFACT_SCHEMA,
+    chain_id: CHAIN_ID,
+    flag,
+    domain: authority.domain,
+    role: authority.role,
+    artifact_sha256: historicalTranscriptArtifactSha256(authority.role, normalizedArtifact),
+    raw_artifact_sha256: rawArtifact.sha256,
+    raw_artifact_size: rawArtifact.size,
+    raw_artifact_text: rawArtifactText,
+    verification_record: normalizedRecord,
+  });
+  rawHistoricalFileIdentity(text, `${flag} historical transcript envelope`);
+  return text;
+}
+
+function parseHistoricalTranscriptEnvelopeText(text, expectedFlag) {
+  const transcriptIdentity = rawHistoricalFileIdentity(
+    text,
+    `${expectedFlag} historical transcript envelope`,
+  );
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(`${expectedFlag} historical transcript envelope is not JSON`);
+  }
+  const parsed = exactRecord(value, [
+    "artifact_sha256", "chain_id", "domain", "flag", "raw_artifact_sha256",
+    "raw_artifact_size", "raw_artifact_text", "role", "schema", "verification_record",
+  ], `${expectedFlag} historical transcript envelope`);
+  const authority = historicalTranscriptRoleAuthority(expectedFlag);
+  if (parsed.schema !== PHALA_VERIFIER_HISTORICAL_TRANSCRIPT_ARTIFACT_SCHEMA
+    || parsed.chain_id !== CHAIN_ID || parsed.flag !== expectedFlag
+    || parsed.domain !== authority.domain || parsed.role !== authority.role) {
+    throw new Error("historical transcript envelopes are reordered, substituted, or cross-domain");
+  }
+  let rawArtifact;
+  try {
+    rawArtifact = JSON.parse(parsed.raw_artifact_text);
+  } catch {
+    throw new Error(`${expectedFlag} raw artifact is not JSON`);
+  }
+  const artifact = normalizeHistoricalTranscriptArtifact(
+    authority.domain,
+    authority.role,
+    rawArtifact,
+  );
+  const rawIdentity = canonicalRawArtifactFileIdentity(
+    parsed.raw_artifact_text,
+    artifact,
+    `${expectedFlag} raw artifact`,
+  );
+  const artifactSha = historicalTranscriptArtifactSha256(authority.role, artifact);
+  if (parsed.raw_artifact_sha256 !== rawIdentity.sha256
+    || parsed.raw_artifact_size !== rawIdentity.size
+    || parsed.artifact_sha256 !== artifactSha) {
+    throw new Error(`${expectedFlag} historical transcript bytes or artifact digest drifted`);
+  }
+  let verificationRecord = null;
+  if (authority.role === "response") {
+    verificationRecord = normalizeHistoricalDcapReplayRecord(parsed.verification_record, {
+      expectedDomain: authority.domain,
+    });
+  } else if (authority.role === "verdict") {
+    verificationRecord = normalizeHistoricalSignatureReplayRecord(parsed.verification_record, {
+      expectedDomain: authority.domain,
+    });
+  } else if (parsed.verification_record !== null) {
+    throw new Error("historical request/challenge envelope carries unauthorized verification state");
+  }
+  const normalizedText = canonicalText({
+    schema: PHALA_VERIFIER_HISTORICAL_TRANSCRIPT_ARTIFACT_SCHEMA,
+    chain_id: CHAIN_ID,
+    flag: expectedFlag,
+    domain: authority.domain,
+    role: authority.role,
+    artifact_sha256: artifactSha,
+    raw_artifact_sha256: rawIdentity.sha256,
+    raw_artifact_size: rawIdentity.size,
+    raw_artifact_text: parsed.raw_artifact_text,
+    verification_record: verificationRecord,
+  });
+  if (text !== normalizedText) {
+    throw new Error(`${expectedFlag} historical transcript envelope is not canonical`);
+  }
+  return Object.freeze({
+    ...authority,
+    flag: expectedFlag,
+    artifact,
+    artifact_sha256: artifactSha,
+    raw_artifact_sha256: rawIdentity.sha256,
+    raw_artifact_size: rawIdentity.size,
+    raw_artifact_text: parsed.raw_artifact_text,
+    verification_record: verificationRecord,
+    transcript_file_sha256: transcriptIdentity.sha256,
+    transcript_file_size: transcriptIdentity.size,
+    transcript_text: text,
+  });
 }
 
 function normalizeMeasurements(value) {
@@ -1154,30 +1761,49 @@ export function verifyPinnedSevenCvmIsolatedRuntimeEnvironment(...runtimeOverrid
   }
   const parsed = exactRecord(
     PRODUCTION_OPENED_FD_DCAP_RUNTIME.probe(),
-    ["runtime_environment_sha256"],
+    [
+      "native_snapshot_authenticated", "native_snapshot_link_count",
+      "native_snapshot_mode", "runtime_environment_sha256",
+    ],
     "opened-FD DCAP runtime probe",
   );
   if (parsed.runtime_environment_sha256
-      !== PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256) {
+      !== PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256
+    || parsed.native_snapshot_authenticated !== true
+    || parsed.native_snapshot_link_count !== 0
+    || parsed.native_snapshot_mode !== "0500") {
     throw new Error("opened-FD DCAP runtime does not match the frozen authority manifest");
   }
   return parsed.runtime_environment_sha256;
 }
 
-export function verifyPinnedSevenCvmLocalDcapQuote(rawQuote, measurementPolicy) {
-  if (arguments.length !== 2) {
-    throw new TypeError("production opened-FD verifier does not accept runtime overrides");
-  }
+function verifyPinnedSevenCvmLocalDcapQuoteAt(
+  rawQuote,
+  measurementPolicy,
+  verificationTime,
+  replayRecord,
+) {
   if (!Buffer.isBuffer(rawQuote) || rawQuote.length < 1_024 || rawQuote.length > 16 * 1_024) {
     throw new Error("seven-CVM quote is outside the bounded DCAP input size");
   }
   const policy = normalizePhalaQvlMeasurementPolicy(measurementPolicy);
+  const verifiedAt = second(verificationTime, "opened-FD DCAP verification time");
   verifyPinnedSevenCvmIsolatedRuntimeEnvironment();
-  const parsed = PRODUCTION_OPENED_FD_DCAP_RUNTIME.run({
+  const input = {
     quote: `0x${rawQuote.toString("hex")}`,
     measurement_policy: policy,
     measurement_policy_sha256: phalaQvlMeasurementPolicySha256(policy),
-  });
+    verification_time: verifiedAt,
+  };
+  if (replayRecord !== undefined) {
+    const replay = normalizeHistoricalDcapReplayRecord(replayRecord, {
+      expectedVerifiedAt: verifiedAt,
+      expectedDomain: policy.domain,
+    });
+    input.collateral_json = replay.collateral_json;
+    input.collateral_sha256 = replay.collateral_sha256;
+  }
+  const parsed = PRODUCTION_OPENED_FD_DCAP_RUNTIME.run(input);
   if (parsed.runtime_environment_sha256
       !== PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256) {
     throw new Error("quote verifier ran in an alternate opened-FD runtime authority");
@@ -1185,20 +1811,104 @@ export function verifyPinnedSevenCvmLocalDcapQuote(rawQuote, measurementPolicy) 
   return parsed;
 }
 
-function releaseDescriptor(authorityValue, domain) {
-  const authority = assertReleaseVerificationAuthorityForEvidence(authorityValue);
+export function verifyPinnedSevenCvmLocalDcapQuote(rawQuote, measurementPolicy) {
+  if (arguments.length !== 2) {
+    throw new TypeError("production opened-FD verifier does not accept runtime overrides");
+  }
+  return verifyPinnedSevenCvmLocalDcapQuoteAt(
+    rawQuote,
+    measurementPolicy,
+    Math.floor(Date.now() / 1_000),
+  );
+}
+
+function splitLocalDcapVerifierOutput(value, {
+  evidenceMode,
+  verifiedAt,
+  domain,
+} = {}) {
+  const resultFields = [
+    "collateral_source", "debug", "measurement_policy_matched",
+    "measurement_policy_reference_id", "measurement_policy_sha256", "measurements",
+    "measurements_sha256", "quote_type", "report_data", "runtime_environment_sha256",
+    "status", "verified",
+  ];
+  if (evidenceMode === PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
+    const parsed = exactRecord(value, [
+      ...resultFields,
+      "historical_dcap_replay",
+    ], "production local DCAP verifier output");
+    const replay = exactRecord(parsed.historical_dcap_replay, [
+      "collateral_json", "collateral_sha256", "verification_time",
+    ], "opened-FD local DCAP replay output");
+    const collateralSize = typeof replay.collateral_json === "string"
+      ? Buffer.byteLength(replay.collateral_json, "utf8") : 0;
+    if (replay.verification_time !== verifiedAt || collateralSize < 2
+      || collateralSize > MAX_HISTORICAL_COLLATERAL_BYTES
+      || [...replay.collateral_json].some((character) => {
+        const code = character.codePointAt(0);
+        return code < 0x20 || code > 0x7e;
+      })
+      || replay.collateral_sha256 !== `sha256:${createHash("sha256")
+        .update(replay.collateral_json, "utf8").digest("hex")}`) {
+      throw new Error("opened-FD verifier did not return exact recorded-time collateral");
+    }
+    return {
+      result: Object.fromEntries(resultFields.map((field) => [field, parsed[field]])),
+      replay: Object.freeze({
+        verification_time: verifiedAt,
+        collateral_json: replay.collateral_json,
+        collateral_sha256: replay.collateral_sha256,
+      }),
+    };
+  }
+  if (evidenceMode !== PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
+    throw new Error("local DCAP verifier evidence mode is invalid");
+  }
+  const parsed = exactRecord(value, resultFields, "synthetic local DCAP verifier output");
+  const collateralJson = compactCanonicalText({
+    schema: "dnai.synthetic-historical-dcap-collateral.v2",
+    domain,
+    verification_time: verifiedAt,
+    never_production_authority: true,
+  });
+  return {
+    result: parsed,
+    replay: Object.freeze({
+      verification_time: verifiedAt,
+      collateral_json: collateralJson,
+      collateral_sha256: `sha256:${createHash("sha256")
+        .update(collateralJson, "utf8").digest("hex")}`,
+    }),
+  };
+}
+
+function releaseDescriptorFromAssertedAuthority(authority, domain) {
   const descriptor = authority.descriptors.find((entry) => entry.domain === domain);
   if (!descriptor) throw new Error(`${domain} is absent from the signed release authority`);
   return descriptor;
 }
 
-function releaseMeasurementPolicy(authorityValue, domain) {
-  const authority = assertReleaseVerificationAuthorityForEvidence(authorityValue);
+function releaseDescriptor(authorityValue, domain) {
+  return releaseDescriptorFromAssertedAuthority(
+    assertReleaseVerificationAuthorityForEvidence(authorityValue),
+    domain,
+  );
+}
+
+function releaseMeasurementPolicyFromAssertedAuthority(authority, domain) {
   const policy = authority.qvl_measurement_policies.find((entry) => entry.domain === domain);
   if (!policy || !Object.hasOwn(PHALA_QVL_IDENTITY_DOMAIN_PROFILE, domain)) {
     throw new Error(`${domain} is not an authorized QVL measurement-policy role`);
   }
   return policy;
+}
+
+function releaseMeasurementPolicy(authorityValue, domain) {
+  return releaseMeasurementPolicyFromAssertedAuthority(
+    assertReleaseVerificationAuthorityForEvidence(authorityValue),
+    domain,
+  );
 }
 
 function verificationSecond(authorityValue, testOnlyNow, label) {
@@ -1466,7 +2176,8 @@ function normalizeQvlIdentityVerification(value) {
     "identity_attestation_response_file_size",
     "local_dcap_verification", "local_dcap_verification_receipt_sha256",
     "measurement_policy", "measurement_policy_set_sha256", "measurement_policy_sha256",
-    "os_image_hash", "posture_receipt_sha256", "profile", "raw_quote_persisted",
+    "os_image_hash", "posture_receipt_sha256", "private_historical_transcript_required",
+    "profile", "raw_collateral_publicly_disclosed", "raw_quote_publicly_disclosed",
     "raw_secret_egress", "raw_transcript_sha256", "release_authority_sha256",
     "release_policy_sha256", "schema",
     "status", "tdx_measurements_sha256", "tdx_quote_sha256", "tee_identity",
@@ -1476,8 +2187,10 @@ function normalizeQvlIdentityVerification(value) {
   if (!profile || parsed.schema !== PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_SCHEMA
     || parsed.status !== PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_STATUS
     || parsed.truth_status !== PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_TRUTH
-    || parsed.chain_id !== CHAIN_ID
-    || parsed.profile !== profile || parsed.raw_quote_persisted !== false
+    || parsed.chain_id !== CHAIN_ID || parsed.profile !== profile
+    || parsed.private_historical_transcript_required !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
     || parsed.raw_secret_egress !== false) {
     throw new Error("QVL identity launch verification authority is invalid");
   }
@@ -1558,6 +2271,7 @@ function normalizeQvlIdentityVerification(value) {
   const requestFileSize = rawArtifactFileSize(
     parsed.identity_attestation_request_file_size,
     `${parsed.domain} identity request file size`,
+    MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
   );
   const responseFileSha = sha256(
     parsed.identity_attestation_response_file_sha256,
@@ -1566,6 +2280,7 @@ function normalizeQvlIdentityVerification(value) {
   const responseFileSize = rawArtifactFileSize(
     parsed.identity_attestation_response_file_size,
     `${parsed.domain} identity response file size`,
+    MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
   );
   const transcriptSha = rawVerifierTranscriptSha256(
     parsed.domain,
@@ -1633,7 +2348,9 @@ function normalizeQvlIdentityVerification(value) {
     activation_evidence_lease_issued_at: leaseIssuedAt,
     activation_evidence_lease_expires_at: leaseExpiresAt,
     expires_at: proofExpiresAt,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
 }
@@ -1661,18 +2378,15 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
       !== (testOnlyVerifyQuote === undefined)) {
     throw new Error("synthetic and production DCAP verifier authority cannot be mixed");
   }
-  const verifier = testOnlyVerifyQuote === undefined
-    ? verifyPinnedSevenCvmLocalDcapQuote
-    : testOnlyVerifyQuote;
   if (testOnlyVerifyQuote !== undefined) assertSyntheticDcapAdapter(testOnlyVerifyQuote);
   const normalizedRequest = normalizeQvlIdentityRequest(request);
   const normalizedResponse = normalizeQvlIdentityResponse(response);
-  const requestFile = canonicalRawArtifactFileIdentity(
+  canonicalRawArtifactFileIdentity(
     rawRequestText,
     normalizedRequest,
     `${domain} QVL identity request file`,
   );
-  const responseFile = canonicalRawArtifactFileIdentity(
+  canonicalRawArtifactFileIdentity(
     rawResponseText,
     normalizedResponse,
     `${domain} QVL identity response file`,
@@ -1723,13 +2437,20 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
   if (quoteSha !== shaFromBytes32(normalizedResponse.quote_hash, `${domain} quote hash`)) {
     throw new Error("QVL identity response quote digest drifted");
   }
-  const localRaw = await verifier(rawQuote, policy);
   const verifiedAt = verificationSecond(
     releaseAuthority,
     testOnlyNow,
     `${domain} QVL identity verification`,
   );
-  const local = normalizeLocalDcapResult(localRaw, {
+  const localVerifierOutput = testOnlyVerifyQuote === undefined
+    ? verifyPinnedSevenCvmLocalDcapQuoteAt(rawQuote, policy, verifiedAt)
+    : await testOnlyVerifyQuote(rawQuote, policy);
+  const splitLocal = splitLocalDcapVerifierOutput(localVerifierOutput, {
+    evidenceMode,
+    verifiedAt,
+    domain,
+  });
+  const local = normalizeLocalDcapResult(splitLocal.result, {
     verifiedAt,
     evidenceMode,
     quoteSha256: quoteSha,
@@ -1739,6 +2460,44 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
     || verifiedAt < normalizedRequest.issued_at || verifiedAt >= normalizedRequest.expires_at) {
     throw new Error("local DCAP receipt is stale or not bound to the identity response quote");
   }
+  const localReceiptSha = domainSha256(LOCAL_DCAP_RECEIPT_DOMAIN, local);
+  const postureAudit = historicalPostureAuditForReleaseAuthority(releaseAuthority, domain);
+  const historicalReplayRecord = normalizeHistoricalDcapReplayRecord({
+    schema: PHALA_VERIFIER_HISTORICAL_DCAP_REPLAY_RECORD_SCHEMA,
+    verification_time: verifiedAt,
+    activation_evidence_lease_issued_at: verifiedAt,
+    activation_evidence_lease_expires_at:
+      verifiedAt + releaseAuthority.activation_evidence_lease_seconds,
+    runtime_environment_sha256:
+      PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER.isolated_runtime_environment_sha256,
+    collateral_sha256: splitLocal.replay.collateral_sha256,
+    collateral_json: splitLocal.replay.collateral_json,
+    local_dcap_verification_receipt_sha256: localReceiptSha,
+    posture_expected_authority: postureAudit.expected_authority,
+    production_posture_receipt: postureAudit.receipt,
+    production_posture_receipt_sha256: postureAudit.receipt_sha256,
+  }, { expectedDomain: domain, releaseAuthority });
+  const transcriptFlags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[domain];
+  const historicalRequestText = createHistoricalTranscriptEnvelopeText({
+    flag: transcriptFlags.request,
+    rawArtifactText: rawRequestText,
+    artifact: normalizedRequest,
+    verificationRecord: null,
+  });
+  const historicalResponseText = createHistoricalTranscriptEnvelopeText({
+    flag: transcriptFlags.response,
+    rawArtifactText: rawResponseText,
+    artifact: normalizedResponse,
+    verificationRecord: historicalReplayRecord,
+  });
+  const requestFile = rawHistoricalFileIdentity(
+    historicalRequestText,
+    `${domain} private historical request transcript`,
+  );
+  const responseFile = rawHistoricalFileIdentity(
+    historicalResponseText,
+    `${domain} private historical response transcript`,
+  );
   const candidate = {
     schema: PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_SCHEMA,
     status: PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_STATUS,
@@ -1787,8 +2546,7 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
       ],
     ),
     local_dcap_verification: local,
-    local_dcap_verification_receipt_sha256:
-      domainSha256(LOCAL_DCAP_RECEIPT_DOMAIN, local),
+    local_dcap_verification_receipt_sha256: localReceiptSha,
     verified_at: verifiedAt,
     activation_evidence_lease_seconds:
       releaseAuthority.activation_evidence_lease_seconds,
@@ -1798,7 +2556,9 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
     // Transitional exact alias for downstream evidence-set consumers. New
     // consumers must use activation_evidence_lease_expires_at explicitly.
     expires_at: verifiedAt + releaseAuthority.activation_evidence_lease_seconds,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
   const normalized = deepFreezeCanonicalPlainDataGraph(
@@ -1815,10 +2575,10 @@ export async function verifyPhalaQvlIdentityLaunchEvidence({
     normalized,
     domainSha256(PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_DOMAIN, normalized),
   );
-  VERIFIED_QVL_IDENTITY_TRANSCRIPTS.set(normalized, Object.freeze({
-    request: rawRequestText,
-    response: rawResponseText,
-  }));
+  LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF.set(normalized, Object.freeze([
+    Object.freeze({ flag: transcriptFlags.request, text: historicalRequestText }),
+    Object.freeze({ flag: transcriptFlags.response, text: historicalResponseText }),
+  ]));
   return normalized;
 }
 
@@ -1894,15 +2654,17 @@ function normalizeReportDataBinding(value, domain) {
   };
 }
 
-function normalizeWorkloadExpected(value, domain, linkedQvl, releaseAuthorityValue) {
+function normalizeWorkloadExpectedFromAssertedAuthority(
+  value,
+  domain,
+  linkedQvl,
+  releaseAuthority,
+) {
   const expected = exactRecord(value, [
     "reportDataBinding",
   ], `${domain} workload verdict report-data authority`);
   const binding = normalizeReportDataBinding(expected.reportDataBinding, domain);
-  const releaseAuthority = assertReleaseVerificationAuthorityForEvidence(
-    releaseAuthorityValue,
-  );
-  const descriptor = releaseDescriptor(releaseAuthority, domain);
+  const descriptor = releaseDescriptorFromAssertedAuthority(releaseAuthority, domain);
   const link = PHALA_WORKLOAD_DOMAIN_QVL_LINK[domain];
   return {
     domain,
@@ -1926,6 +2688,15 @@ function normalizeWorkloadExpected(value, domain, linkedQvl, releaseAuthorityVal
     ceremony_nonce: releaseAuthority.ceremony_nonce,
     qvl_identity_evidence_sha256: phalaQvlIdentityLaunchEvidenceSha256(linkedQvl),
   };
+}
+
+function normalizeWorkloadExpected(value, domain, linkedQvl, releaseAuthorityValue) {
+  return normalizeWorkloadExpectedFromAssertedAuthority(
+    value,
+    domain,
+    linkedQvl,
+    assertReleaseVerificationAuthorityForEvidence(releaseAuthorityValue),
+  );
 }
 
 function normalizeIndependentVerdict(value) {
@@ -2101,7 +2872,8 @@ function normalizeWorkloadVerification(value) {
     "qvl_verdict_file_sha256",
     "qvl_verdict_file_size",
     "qvl_verdict_verifier_address", "qvl_verdict_verifier_signature_sha256",
-    "raw_quote_persisted", "raw_secret_egress", "raw_transcript_sha256",
+    "private_historical_transcript_required", "raw_collateral_publicly_disclosed",
+    "raw_quote_publicly_disclosed", "raw_secret_egress", "raw_transcript_sha256",
     "release_authority_sha256", "report_data",
     "report_data_binding", "schema", "status", "tdx_quote_sha256",
     "tee_identity", "truth_status", "verdict_activation_evidence_lease_expires_at",
@@ -2110,10 +2882,12 @@ function normalizeWorkloadVerification(value) {
   const link = PHALA_WORKLOAD_DOMAIN_QVL_LINK[parsed.domain];
   if (!link || parsed.schema !== PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_SCHEMA
     || parsed.status !== PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_STATUS
-    || parsed.truth_status
-      !== "release_lineage_qvl_challenge_and_verdict_signatures_policy_report_data_quote_and_policy_bounded_activation_evidence_lease_verified"
+    || parsed.truth_status !== PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_TRUTH
     || parsed.chain_id !== CHAIN_ID
-    || parsed.profile !== link.profile || parsed.raw_quote_persisted !== false
+    || parsed.profile !== link.profile
+    || parsed.private_historical_transcript_required !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
     || parsed.raw_secret_egress !== false) {
     throw new Error("workload verdict verification authority is invalid");
   }
@@ -2161,11 +2935,13 @@ function normalizeWorkloadVerification(value) {
   const challengeFileSize = rawArtifactFileSize(
     parsed.qvl_challenge_file_size,
     "QVL challenge file size",
+    MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
   );
   const verdictFileSha = sha256(parsed.qvl_verdict_file_sha256, "QVL verdict file digest");
   const verdictFileSize = rawArtifactFileSize(
     parsed.qvl_verdict_file_size,
     "QVL verdict file size",
+    MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
   );
   const transcriptSha = rawVerifierTranscriptSha256(
     parsed.domain,
@@ -2256,7 +3032,9 @@ function normalizeWorkloadVerification(value) {
     verified_at: verifiedAt,
     activation_evidence_lease_expires_at: activationLeaseExpires,
     expires_at: proofExpiresAt,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
 }
@@ -2297,12 +3075,12 @@ export function verifyPhalaWorkloadIndependentTdxVerdict({
   );
   const challenge = normalizeQvlChallenge(challengeValue);
   const verdict = normalizeIndependentVerdict(verdictValue);
-  const challengeFile = canonicalRawArtifactFileIdentity(
+  canonicalRawArtifactFileIdentity(
     rawChallengeText,
     challenge,
     `${domain} QVL challenge file`,
   );
-  const verdictFile = canonicalRawArtifactFileIdentity(
+  canonicalRawArtifactFileIdentity(
     rawVerdictText,
     verdict,
     `${domain} QVL verdict file`,
@@ -2385,11 +3163,42 @@ export function verifyPhalaWorkloadIndependentTdxVerdict({
     digest: signingDigest,
     signature: verdict.verifier_signature,
   });
+  const postureAudit = historicalPostureAuditForReleaseAuthority(releaseAuthority, domain);
+  const transcriptFlags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[domain];
+  const historicalChallengeText = createHistoricalTranscriptEnvelopeText({
+    flag: transcriptFlags.challenge,
+    rawArtifactText: rawChallengeText,
+    artifact: challenge,
+    verificationRecord: null,
+  });
+  const historicalVerdictText = createHistoricalTranscriptEnvelopeText({
+    flag: transcriptFlags.verdict,
+    rawArtifactText: rawVerdictText,
+    artifact: verdict,
+    verificationRecord: {
+      schema: PHALA_VERIFIER_HISTORICAL_SIGNATURE_REPLAY_RECORD_SCHEMA,
+      verification_time: verifiedSecond,
+      verdict_activation_evidence_lease_expires_at:
+        verdict.activation_evidence_lease_expires_at,
+      activation_evidence_lease_expires_at: activationEvidenceLeaseExpiresAt,
+      report_data_binding: binding,
+      posture_expected_authority: postureAudit.expected_authority,
+      production_posture_receipt: postureAudit.receipt,
+      production_posture_receipt_sha256: postureAudit.receipt_sha256,
+    },
+  });
+  const challengeFile = rawHistoricalFileIdentity(
+    historicalChallengeText,
+    `${domain} private historical challenge transcript`,
+  );
+  const verdictFile = rawHistoricalFileIdentity(
+    historicalVerdictText,
+    `${domain} private historical verdict transcript`,
+  );
   const candidate = {
     schema: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_SCHEMA,
     status: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_STATUS,
-    truth_status:
-      "release_lineage_qvl_challenge_and_verdict_signatures_policy_report_data_quote_and_policy_bounded_activation_evidence_lease_verified",
+    truth_status: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_TRUTH,
     evidence_mode: linked.evidence_mode,
     chain_id: CHAIN_ID,
     domain,
@@ -2440,7 +3249,9 @@ export function verifyPhalaWorkloadIndependentTdxVerdict({
     verified_at: verifiedSecond,
     activation_evidence_lease_expires_at: activationEvidenceLeaseExpiresAt,
     expires_at: activationEvidenceLeaseExpiresAt,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
   const normalized = deepFreezeCanonicalPlainDataGraph(
@@ -2457,10 +3268,10 @@ export function verifyPhalaWorkloadIndependentTdxVerdict({
     normalized,
     domainSha256(PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_DOMAIN, normalized),
   );
-  VERIFIED_WORKLOAD_VERDICT_TRANSCRIPTS.set(normalized, Object.freeze({
-    challenge: rawChallengeText,
-    verdict: rawVerdictText,
-  }));
+  LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF.set(normalized, Object.freeze([
+    Object.freeze({ flag: transcriptFlags.challenge, text: historicalChallengeText }),
+    Object.freeze({ flag: transcriptFlags.verdict, text: historicalVerdictText }),
+  ]));
   return normalized;
 }
 
@@ -2715,7 +3526,8 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
     "qvl_identity_evidence_sha256", "qvl_release_policy_sha256",
     "qvl_verdict_artifact_sha256", "qvl_verdict_signing_digest",
     "qvl_verdict_verifier_address", "qvl_verdict_verifier_signature_sha256",
-    "raw_quote_persisted", "raw_secret_egress", "raw_transcript_sha256",
+    "raw_collateral_publicly_disclosed", "raw_quote_publicly_disclosed",
+    "raw_secret_egress", "raw_transcript_sha256",
     "recipient_evidence_lease_expires_at", "recipient_key_id",
     "recipient_release_commitment", "release_authority_sha256",
     "report_data", "schema", "source_activation", "status", "tdx_quote_sha256",
@@ -2726,9 +3538,11 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
   if (parsed.schema !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA
     || parsed.status !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS
     || parsed.truth_status
-      !== "release_lineage_signed_compute_workload_qvl_verdict_recipient_report_data_branded_main_runtime_fresh_vault_and_recipient_evidence_lease_verified"
+      !== PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH
     || parsed.chain_id !== CHAIN_ID || parsed.domain !== "main_runtime_cvm"
-    || parsed.raw_quote_persisted !== false || parsed.raw_secret_egress !== false) {
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false) {
     throw new Error("compute-workload recipient activation verification authority is invalid");
   }
   if (![PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE, PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE]
@@ -2943,7 +3757,8 @@ function normalizeComputeWorkloadRecipientActivationVerification(value) {
     authenticated_at: authenticatedAt,
     verified_at: verifiedAt,
     expires_at: proofExpiresAt,
-    raw_quote_persisted: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
 }
@@ -3085,7 +3900,7 @@ export function verifyPhalaComputeWorkloadRecipientActivation({
     schema: PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA,
     status: PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS,
     truth_status:
-      "release_lineage_signed_compute_workload_qvl_verdict_recipient_report_data_branded_main_runtime_fresh_vault_and_recipient_evidence_lease_verified",
+      PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH,
     evidence_mode: computeQvl.evidence_mode,
     chain_id: CHAIN_ID,
     domain: "main_runtime_cvm",
@@ -3154,7 +3969,8 @@ export function verifyPhalaComputeWorkloadRecipientActivation({
       computeQvl.activation_evidence_lease_expires_at,
       activation.recipient_evidence_lease_expires_at,
     ),
-    raw_quote_persisted: false,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
   const normalized = deepFreezeCanonicalPlainDataGraph(
@@ -3212,11 +4028,231 @@ export function assertProductionPhalaComputeWorkloadRecipientActivation(value) {
 export function assertHistoricallyVerifiedProductionPhalaComputeWorkloadRecipientActivation(
   value,
 ) {
-  const verified = assertVerifiedPhalaComputeWorkloadRecipientActivation(value);
+  const expected = VERIFIED_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATIONS.get(value)
+    || HISTORICALLY_REPLAYED_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATIONS.get(value);
+  if (!expected
+    || phalaComputeWorkloadRecipientActivationVerificationSha256(value) !== expected) {
+    throw new Error(
+      "compute-workload activation lacks a verified live or restart-safe historical brand",
+    );
+  }
+  const verified = value;
   if (verified.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
     throw new Error("synthetic activation has no production historical authority");
   }
   return verified;
+}
+
+export function replayPersistedHistoricalPhalaComputeWorkloadRecipientActivation({
+  activation: persistedActivation,
+  releaseAuthority: releaseAuthorityValue,
+  qvlIdentityEvidence,
+  mainRuntimeEvidence,
+} = {}) {
+  const { authority: releaseAuthority } =
+    resolveHistoricalReplayReleaseAuthority(releaseAuthorityValue);
+  const computeQvl = assertHistoricallyReplayedPhalaQvlIdentity(qvlIdentityEvidence);
+  const mainProof = assertHistoricallyReplayedPhalaWorkloadVerdict(mainRuntimeEvidence);
+  const persisted = normalizeComputeWorkloadRecipientActivationVerification(
+    persistedActivation,
+  );
+  const activation = persisted.source_activation;
+  if (computeQvl.domain !== "compute_workload_qvl_cvm"
+    || computeQvl.profile !== "compute_workload"
+    || mainProof.domain !== "main_runtime_cvm" || mainProof.profile !== "diligence") {
+    throw new Error(
+      "historical recipient activation is not linked to its exact replayed QVL/main proofs",
+    );
+  }
+  const releaseAuthoritySha =
+    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  const mainDescriptor = releaseDescriptorFromAssertedAuthority(
+    releaseAuthority,
+    "main_runtime_cvm",
+  );
+  const mainProofSha = phalaWorkloadTdxVerdictVerificationSha256(mainProof);
+  for (const proof of [computeQvl, mainProof]) {
+    if (proof.release_authority_sha256 !== releaseAuthoritySha
+      || proof.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+      || proof.ceremony_nonce !== releaseAuthority.ceremony_nonce
+      || proof.measurement_policy_set_sha256
+        !== releaseAuthority.qvl_measurement_policy_set_sha256) {
+      throw new Error("historical recipient activation proof belongs to another release");
+    }
+  }
+  const attestation = activation.recipient_attestation;
+  const verdict = activation.authenticated_verdict;
+  const expectedReportData = computeWorkloadRecipientReportData(attestation);
+  const signingDigest = independentTdxVerdictSigningDigest(verdict);
+  const challengeDigest = computeWorkloadChallengeDigestFromVerdict(verdict);
+  const releaseCommitment = computeWorkloadRecipientReleaseCommitment(activation);
+  const checked = persisted.verified_at;
+  const lineage = {
+    chain_id: CHAIN_ID,
+    domain: "main_runtime_cvm",
+    profile: "compute_workload",
+    cvm_id: mainDescriptor.cvm_id,
+    deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+    release_authority_sha256: releaseAuthoritySha,
+    ceremony_nonce: releaseAuthority.ceremony_nonce,
+    measurement_policy_sha256: computeQvl.measurement_policy_sha256,
+  };
+  if (Object.entries(lineage).some(([field, expectedValue]) =>
+    activation[field] !== expectedValue || verdict[field] !== expectedValue)
+    || activation.measurement_policy_set_sha256
+      !== releaseAuthority.qvl_measurement_policy_set_sha256
+    || activation.main_runtime_evidence_sha256 !== mainProofSha
+    || verdict.release_policy_hash
+      !== bytes32FromSha(computeQvl.release_policy_sha256, "historical compute QVL policy")
+    || verdict.verifier_address !== computeQvl.tee_identity
+    || verdict.app_id !== mainDescriptor.app_id
+    || verdict.compose_hash
+      !== bytes32FromBare(mainDescriptor.compose_hash, "historical main compose")
+    || verdict.os_image_hash !== mainDescriptor.os_image_hash
+    || verdict.signer_address !== attestation.activation_signer_address
+    || verdict.signer_address === computeQvl.tee_identity
+    || verdict.signer_address === mainProof.tee_identity
+    || verdict.contract_address !== attestation.compute_vault_address
+    || verdict.contract_address !== releaseAuthority.contracts.compute_credit_vault
+    || attestation.compute_vault_runtime_code_hash
+      !== releaseAuthority.contracts.compute_credit_vault_runtime_code_hash
+    || attestation.fresh_contract_deployment_receipt_sha256
+      !== bytes32FromSha(
+        releaseAuthority.contracts.fresh_contract_deployment_receipt_sha256,
+        "historical fresh deployment receipt",
+      )
+    || activation.recipient_key_id !== attestation.key_id
+    || activation.report_data !== expectedReportData || verdict.report_data !== expectedReportData
+    || activation.compose_hash !== verdict.compose_hash || activation.app_id !== verdict.app_id
+    || activation.os_image_hash !== verdict.os_image_hash
+    || activation.release_policy_hash !== verdict.release_policy_hash
+    || activation.quote_hash !== verdict.quote_hash
+    || activation.verifier_address !== verdict.verifier_address
+    || activation.verdict_digest !== signingDigest
+    || activation.issued_at !== verdict.issued_at
+    || activation.recipient_evidence_lease_expires_at
+      !== verdict.activation_evidence_lease_expires_at
+    || activation.expires_at !== verdict.expires_at
+    || activation.recipient_release_commitment !== releaseCommitment
+    || verdict.challenge_digest !== challengeDigest) {
+    throw new Error("historical compute-workload activation lineage or report data drifted");
+  }
+  const terminalEvidenceLeaseExpiresAt = Math.min(
+    mainProof.activation_evidence_lease_expires_at,
+    computeQvl.activation_evidence_lease_expires_at,
+    activation.recipient_evidence_lease_expires_at,
+  );
+  if (verdict.challenge_expires_at <= verdict.challenge_issued_at
+    || verdict.challenge_expires_at - verdict.challenge_issued_at > 120
+    || verdict.issued_at < verdict.challenge_issued_at
+    || verdict.issued_at >= verdict.challenge_expires_at
+    || verdict.expires_at <= verdict.issued_at
+    || verdict.expires_at - verdict.issued_at > 300
+    || activation.authenticated_at < verdict.issued_at - 30
+    || activation.authenticated_at >= verdict.expires_at
+    || checked < activation.authenticated_at || checked >= verdict.expires_at
+    || checked >= computeQvl.activation_evidence_lease_expires_at
+    || checked >= mainProof.activation_evidence_lease_expires_at
+    || persisted.terminal_evidence_lease_expires_at !== terminalEvidenceLeaseExpiresAt) {
+    throw new Error(
+      "historical compute-workload activation was invalid at recorded verification time",
+    );
+  }
+  const signatureReceipt = verifyIndependentEip191RawDigestSignature({
+    address: verdict.verifier_address,
+    digest: signingDigest,
+    signature: verdict.verifier_signature,
+  });
+  const activationArtifactSha = domainSha256(
+    COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_ARTIFACT_DOMAIN,
+    activation,
+  );
+  const verdictArtifactSha = independentTdxVerdictArtifactSha256(verdict);
+  const candidate = {
+    schema: PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_SCHEMA,
+    status: PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_STATUS,
+    truth_status: PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_TRUTH,
+    evidence_mode: computeQvl.evidence_mode,
+    chain_id: CHAIN_ID,
+    domain: "main_runtime_cvm",
+    profile: "compute_workload",
+    release_authority_sha256: releaseAuthoritySha,
+    deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+    ceremony_nonce: releaseAuthority.ceremony_nonce,
+    measurement_policy_set_sha256: releaseAuthority.qvl_measurement_policy_set_sha256,
+    measurement_policy_sha256: computeQvl.measurement_policy_sha256,
+    descriptor_sha256: mainDescriptor.descriptor_sha256,
+    posture_receipt_sha256: mainDescriptor.posture_receipt_sha256,
+    qvl_identity_evidence_sha256: phalaQvlIdentityLaunchEvidenceSha256(computeQvl),
+    main_runtime_evidence_sha256: mainProofSha,
+    initial_main_runtime_activation_evidence_lease_expires_at:
+      mainProof.activation_evidence_lease_expires_at,
+    initial_compute_workload_qvl_activation_evidence_lease_expires_at:
+      computeQvl.activation_evidence_lease_expires_at,
+    app_id: mainDescriptor.app_id,
+    cvm_id: mainDescriptor.cvm_id,
+    compose_hash: mainDescriptor.compose_hash,
+    os_image_hash: mainDescriptor.os_image_hash,
+    encryption_public_key: attestation.encryption_public_key,
+    recipient_key_id: attestation.key_id,
+    activation_signer_address: attestation.activation_signer_address,
+    activation_signer_key_path: attestation.activation_signer_key_path,
+    activation_signer_custody: attestation.activation_signer_custody,
+    main_runtime_signer_address: mainProof.tee_identity,
+    compute_vault_address: attestation.compute_vault_address,
+    compute_vault_runtime_code_hash: attestation.compute_vault_runtime_code_hash,
+    fresh_contract_deployment_receipt_sha256:
+      attestation.fresh_contract_deployment_receipt_sha256,
+    report_data: expectedReportData,
+    recipient_release_commitment: releaseCommitment,
+    qvl_release_policy_sha256: computeQvl.release_policy_sha256,
+    qvl_verdict_verifier_address: verdict.verifier_address,
+    challenge_id: verdict.challenge_id,
+    challenge_digest: verdict.challenge_digest,
+    challenge_issued_at: verdict.challenge_issued_at,
+    challenge_expires_at: verdict.challenge_expires_at,
+    tdx_quote_sha256: shaFromBytes32(verdict.quote_hash, "historical activation quote hash"),
+    qvl_verdict_signing_digest: signingDigest,
+    qvl_verdict_artifact_sha256: verdictArtifactSha,
+    qvl_verdict_verifier_signature_sha256: signatureReceipt.signature_sha256,
+    activation_artifact_sha256: activationArtifactSha,
+    raw_transcript_sha256: rawVerifierTranscriptSha256(
+      "main_runtime_cvm",
+      "compute_workload_recipient_activation",
+      [activationArtifactSha, verdictArtifactSha],
+    ),
+    source_activation: activation,
+    verdict_issued_at: verdict.issued_at,
+    verdict_activation_evidence_lease_expires_at:
+      verdict.activation_evidence_lease_expires_at,
+    verdict_expires_at: verdict.expires_at,
+    recipient_evidence_lease_expires_at:
+      activation.recipient_evidence_lease_expires_at,
+    terminal_evidence_lease_expires_at: terminalEvidenceLeaseExpiresAt,
+    authenticated_at: activation.authenticated_at,
+    verified_at: checked,
+    expires_at: terminalEvidenceLeaseExpiresAt,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+  };
+  const reconstructed = normalizeComputeWorkloadRecipientActivationVerification(candidate);
+  if (canonicalText(reconstructed) !== canonicalText(persisted)) {
+    throw new Error(
+      "persisted compute-workload activation differs from historical reconstruction",
+    );
+  }
+  const normalized = deepFreezeCanonicalPlainDataGraph(reconstructed, {
+    label: "historically replayed compute-workload recipient activation",
+  });
+  HISTORICALLY_REPLAYED_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATIONS.set(
+    normalized,
+    domainSha256(
+      PHALA_COMPUTE_WORKLOAD_RECIPIENT_ACTIVATION_VERIFICATION_DOMAIN,
+      normalized,
+    ),
+  );
+  return normalized;
 }
 
 export function normalizePhalaComputeWorkloadRecipientActivationVerification(value) {
@@ -3278,7 +4314,9 @@ function projectDomainEvidence(proof) {
     activation_evidence_lease_expires_at:
       proof.activation_evidence_lease_expires_at,
     expires_at: proof.expires_at,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
 }
@@ -3289,7 +4327,9 @@ function normalizeDomainProjection(value, expectedDomain) {
     "contract_address", "cvm_id", "domain", "evidence_kind",
     "evidence_sha256", "expires_at", "os_image_hash", "qvl_identity_sha256",
     "qvl_release_policy_sha256", "qvl_verification_receipt_sha256",
-    "raw_quote_persisted", "raw_secret_egress", "tdx_attestation_evidence_sha256",
+    "private_historical_transcript_required", "raw_collateral_publicly_disclosed",
+    "raw_quote_publicly_disclosed", "raw_secret_egress",
+    "tdx_attestation_evidence_sha256",
     "tdx_attestation_verification_receipt_sha256", "tdx_measurement_policy_sha256",
     "tdx_measurements_sha256", "tdx_quote_sha256", "tee_identity", "verified_at",
     "ceremony_nonce", "deployment_intent_sha256", "descriptor_sha256",
@@ -3303,7 +4343,10 @@ function normalizeDomainProjection(value, expectedDomain) {
     || parsed.evidence_kind !== (identity
       ? "qvl_identity_local_dcap_verification"
       : "workload_independent_signed_qvl_verdict")
-    || parsed.raw_quote_persisted !== false || parsed.raw_secret_egress !== false
+    || parsed.private_historical_transcript_required !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false
     || (identity ? parsed.contract_address !== null : !ADDRESS.test(parsed.contract_address || ""))
     || (identity ? typeof parsed.tdx_measurements_sha256 !== "string"
       : parsed.tdx_measurements_sha256 !== null)) {
@@ -3389,7 +4432,11 @@ function normalizeDomainProjection(value, expectedDomain) {
         throw new Error(`${expectedDomain} raw transcript must contain exactly two file sizes`);
       }
       return parsed.raw_transcript_file_size.map((fileSize, index) =>
-        rawArtifactFileSize(fileSize, `${expectedDomain} raw transcript file size[${index}]`));
+        rawArtifactFileSize(
+          fileSize,
+          `${expectedDomain} raw transcript file size[${index}]`,
+          MAX_HISTORICAL_TRANSCRIPT_FILE_BYTES,
+        ));
     })(),
     raw_transcript_sha256: sha256(
       parsed.raw_transcript_sha256,
@@ -3401,7 +4448,9 @@ function normalizeDomainProjection(value, expectedDomain) {
       `${expectedDomain} activation evidence lease expires_at`,
     ),
     expires_at: second(parsed.expires_at, `${expectedDomain} expires_at`),
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
   const expectedTranscriptSha = rawVerifierTranscriptSha256(
@@ -3476,34 +4525,44 @@ export function exportPhalaSevenCvmHistoricalTranscriptFiles(options = {}) {
     if (proof.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
       throw new Error("synthetic QVL identity evidence cannot export production transcripts");
     }
-    const retained = VERIFIED_QVL_IDENTITY_TRANSCRIPTS.get(proof);
+    const retained = LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF.get(proof);
     const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[proof.domain];
-    if (!retained || !flags?.request || !flags?.response
+    if (!retained || retained.length !== 2 || !flags?.request || !flags?.response
       || proofByDomain.has(proof.domain)) {
       throw new Error(
         "QVL identity transcript provenance is missing, duplicated, or unavailable",
       );
     }
     proofByDomain.set(proof.domain, proof);
-    textByFlag.set(flags.request, retained.request);
-    textByFlag.set(flags.response, retained.response);
+    for (const entry of retained) {
+      if (entry.flag !== flags.request && entry.flag !== flags.response) {
+        throw new Error(`${proof.domain} retained historical envelope flag drifted`);
+      }
+      parseHistoricalTranscriptEnvelopeText(entry.text, entry.flag);
+      textByFlag.set(entry.flag, entry.text);
+    }
   }
   for (const candidate of parsed.workloadVerdictEvidence) {
     const proof = assertVerifiedPhalaWorkloadTdxVerdict(candidate);
     if (proof.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
       throw new Error("synthetic workload evidence cannot export production transcripts");
     }
-    const retained = VERIFIED_WORKLOAD_VERDICT_TRANSCRIPTS.get(proof);
+    const retained = LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF.get(proof);
     const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[proof.domain];
-    if (!retained || !flags?.challenge || !flags?.verdict
+    if (!retained || retained.length !== 2 || !flags?.challenge || !flags?.verdict
       || proofByDomain.has(proof.domain)) {
       throw new Error(
         "workload transcript provenance is missing, duplicated, or unavailable",
       );
     }
     proofByDomain.set(proof.domain, proof);
-    textByFlag.set(flags.challenge, retained.challenge);
-    textByFlag.set(flags.verdict, retained.verdict);
+    for (const entry of retained) {
+      if (entry.flag !== flags.challenge && entry.flag !== flags.verdict) {
+        throw new Error(`${proof.domain} retained historical envelope flag drifted`);
+      }
+      parseHistoricalTranscriptEnvelopeText(entry.text, entry.flag);
+      textByFlag.set(entry.flag, entry.text);
+    }
   }
   if (proofByDomain.size !== PHALA_SEVEN_CVM_EXECUTION_ORDER.length
     || textByFlag.size !== PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.length) {
@@ -3537,6 +4596,13 @@ export function exportPhalaSevenCvmHistoricalTranscriptFiles(options = {}) {
   const entries = PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.map(
     (flag) => ({ flag, text: textByFlag.get(flag) }),
   );
+  const totalBytes = entries.reduce(
+    (total, entry) => total + Buffer.byteLength(entry.text, "utf8"),
+    0,
+  );
+  if (totalBytes > MAX_HISTORICAL_TRANSCRIPT_SET_BYTES) {
+    throw new Error("production historical transcript export exceeds the byte budget");
+  }
   const fileSet = createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries(
     entries,
   );
@@ -3546,9 +4612,573 @@ export function exportPhalaSevenCvmHistoricalTranscriptFiles(options = {}) {
       "exported exact-14 verifier bytes differ from the production aggregate",
     );
   }
-  return deepFreezeCanonicalPlainDataGraph(entries, {
+  const exportedEntries = deepFreezeCanonicalPlainDataGraph(entries, {
     label: "production seven-CVM historical transcript export",
   });
+  consumePhalaSevenCvmHistoricalTranscriptCapabilities(
+    LIVE_HISTORICAL_TRANSCRIPTS_BY_PROOF,
+    PHALA_SEVEN_CVM_EXECUTION_ORDER.map((domain) => proofByDomain.get(domain)),
+  );
+  return exportedEntries;
+}
+
+function parseExactPhalaSevenCvmHistoricalTranscriptFiles(value) {
+  if (!Array.isArray(value)
+    || value.length !== PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER.length) {
+    throw new Error("historical replay requires exactly 14 transcript files");
+  }
+  let totalBytes = 0;
+  const files = value.map((entry, index) => {
+    const file = exactRecord(
+      entry,
+      ["flag", "text"],
+      `historical transcript file[${index}]`,
+    );
+    const expectedFlag = PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER[index];
+    if (file.flag !== expectedFlag) {
+      throw new Error(
+        "historical transcript files are omitted, extra, reordered, or substituted",
+      );
+    }
+    totalBytes += Buffer.byteLength(
+      typeof file.text === "string" ? file.text : "",
+      "utf8",
+    );
+    return parseHistoricalTranscriptEnvelopeText(file.text, expectedFlag);
+  });
+  if (totalBytes > MAX_HISTORICAL_TRANSCRIPT_SET_BYTES) {
+    throw new Error("historical transcript set exceeds its exact aggregate byte bound");
+  }
+  if (new Set(files.map(({ transcript_file_sha256: digest }) => digest)).size !== 14) {
+    throw new Error("historical transcript files must have pairwise-distinct exact bytes");
+  }
+  const fileSet = createPhalaSevenCvmHistoricalTranscriptFileSetFromTextEntries(value);
+  const postureAudits = files
+    .filter((file) => file.verification_record !== null)
+    .map((file) => ({
+      domain: file.domain,
+      expectedAuthority: file.verification_record.posture_expected_authority,
+      receipt: file.verification_record.production_posture_receipt,
+      receiptSha256: file.verification_record.production_posture_receipt_sha256,
+    }));
+  if (postureAudits.length !== PHALA_SEVEN_CVM_EXECUTION_ORDER.length) {
+    throw new Error("exact 14-file transcript set omits a second-envelope posture audit");
+  }
+  return {
+    files,
+    byFlag: new Map(files.map((file) => [file.flag, file])),
+    fileSet,
+    postureAudits,
+  };
+}
+
+function resolveHistoricalReplayReleaseAuthority(value) {
+  const normalized =
+    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+  if (normalized.evidence_mode === PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
+    return Object.freeze({
+      authority: normalized,
+      metadata: null,
+    });
+  }
+  const authority =
+    assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority(
+      value,
+    );
+  return Object.freeze({
+    authority,
+    metadata:
+      historicallyReconstructedPhalaSevenCvmReleaseVerificationAuthorityMetadata(
+        authority,
+      ),
+  });
+}
+
+export function reconstructPersistedPhalaSevenCvmHistoricalCorroboration({
+  releaseAuthority: releaseAuthorityValue,
+  historicalPostureAudits,
+  executorFinalState,
+} = {}) {
+  const { authority: releaseAuthority, metadata } =
+    resolveHistoricalReplayReleaseAuthority(releaseAuthorityValue);
+  const executorOrder = [
+    ...PHALA_SEVEN_CVM_EXECUTION_ORDER.slice(1),
+    PHALA_SEVEN_CVM_EXECUTION_ORDER[0],
+  ];
+  if (!Array.isArray(historicalPostureAudits)
+    || historicalPostureAudits.length !== executorOrder.length) {
+    throw new Error(
+      "historical replay requires exactly seven transcript-embedded posture audits",
+    );
+  }
+  const rawPostureByDomain = new Map(historicalPostureAudits.map((audit) => [
+    audit?.domain,
+    audit,
+  ]));
+  if (rawPostureByDomain.size !== executorOrder.length
+    || executorOrder.some((domain) => !rawPostureByDomain.has(domain))) {
+    throw new Error(
+      "historical transcript posture audits are omitted, duplicated, or cross-domain",
+    );
+  }
+  const postureByDomain = new Map();
+  const normalizedPostures = executorOrder.map((expectedDomain) => {
+    const descriptor = releaseDescriptorFromAssertedAuthority(
+      releaseAuthority,
+      expectedDomain,
+    );
+    const audit = rawPostureByDomain.get(expectedDomain);
+    const normalized = normalizeHistoricalPostureAudit({
+      evidenceMode: releaseAuthority.evidence_mode,
+      domain: expectedDomain,
+      expectedAuthority: audit.expectedAuthority,
+      receipt: audit.receipt,
+      receiptSha256: audit.receiptSha256,
+      releaseDescriptor: descriptor,
+    });
+    postureByDomain.set(expectedDomain, normalized);
+    return normalized.receipt;
+  });
+  const executor = normalizeCompletedPhalaExecutorState(executorFinalState);
+  if (canonicalText(executor) !== canonicalText(executorFinalState)) {
+    throw new Error("persisted executor terminal state is not already exact and normalized");
+  }
+  const executorSha256 = phalaExecutorStateDigest(executor);
+  const releaseAuthoritySha =
+    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  if ((metadata !== null
+      && executorSha256 !== metadata.executor_final_state_sha256)
+    || executor.release_sha !== releaseAuthority.release_sha
+    || executor.bootstrap_authorization_receipt_sha256
+      !== releaseAuthority.bootstrap_authorization_receipt_sha256
+    || bytes32FromSha(executor.bootstrap_authorization_id, "executor authorization ID")
+      !== releaseAuthority.ceremony_nonce
+    || executor.reservations.length !== 7 || executor.committed_prefix.length !== 7
+    || executor.posture_receipts.length !== 7) {
+    throw new Error("persisted executor terminal state belongs to another release authority");
+  }
+  for (let index = 0; index < executorOrder.length; index += 1) {
+    const domain = executorOrder[index];
+    const descriptor = releaseDescriptorFromAssertedAuthority(releaseAuthority, domain);
+    const posture = postureByDomain.get(domain);
+    const reservation = executor.reservations[index];
+    const committed = executor.committed_prefix[index];
+    const executorPosture = executor.posture_receipts[index];
+    if (reservation.domain !== domain || committed.domain !== domain
+      || executorPosture.domain !== domain || reservation.app_id !== descriptor.app_id
+      || committed.cvm_id !== descriptor.cvm_id
+      || executorPosture.receipt_sha256 !== posture.receiptSha256
+      || Math.floor(Date.parse(committed.observed_at) / 1_000)
+        > Math.floor(Date.parse(descriptor.posture_observed_at) / 1_000)) {
+      throw new Error(`${domain} persisted executor/posture lineage is invalid`);
+    }
+  }
+  return deepFreezeCanonicalPlainDataGraph({
+    schema: PHALA_SEVEN_CVM_HISTORICAL_CORROBORATION_SCHEMA,
+    status: "actual_seven_posture_receipts_and_terminal_executor_state_revalidated",
+    evidence_mode: releaseAuthority.evidence_mode,
+    release_authority_sha256: releaseAuthoritySha,
+    executor_final_state_sha256: executorSha256,
+    executor_final_state: executor,
+    posture_receipts: normalizedPostures,
+    posture_receipt_sha256_by_domain: Object.fromEntries(
+      PHALA_SEVEN_CVM_EXECUTION_ORDER.map((domain) => [
+        domain,
+        postureByDomain.get(domain).receiptSha256,
+      ]),
+    ),
+    raw_secret_egress: false,
+  }, { label: "historically reconstructed seven-CVM posture/executor corroboration" });
+}
+
+async function replayHistoricalQvlIdentityPair({
+  releaseAuthority,
+  requestFile,
+  responseFile,
+  testOnlyVerifyQuote,
+}) {
+  const domain = requestFile.domain;
+  if (responseFile.domain !== domain || requestFile.role !== "request"
+    || responseFile.role !== "response") {
+    throw new Error("historical QVL identity transcript pair is cross-domain or reordered");
+  }
+  const descriptor = releaseDescriptorFromAssertedAuthority(releaseAuthority, domain);
+  const policy = releaseMeasurementPolicyFromAssertedAuthority(releaseAuthority, domain);
+  const policySha = phalaQvlMeasurementPolicySha256(policy);
+  const releaseAuthoritySha =
+    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  const evidenceMode = releaseAuthority.evidence_mode;
+  if ((evidenceMode === PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE)
+      !== (testOnlyVerifyQuote === undefined)) {
+    throw new Error("historical production and synthetic DCAP verifier authority cannot be mixed");
+  }
+  if (testOnlyVerifyQuote !== undefined) {
+    assertSyntheticDcapAdapter(testOnlyVerifyQuote);
+  }
+  const request = requestFile.artifact;
+  const response = responseFile.artifact;
+  if (request.challenge_digest !== phalaQvlIdentityChallengeDigest(request)) {
+    throw new Error("historical QVL identity challenge digest is invalid");
+  }
+  const expectedLineage = {
+    chain_id: CHAIN_ID,
+    domain,
+    profile: PHALA_QVL_IDENTITY_DOMAIN_PROFILE[domain],
+    cvm_id: descriptor.cvm_id,
+    deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+    release_authority_sha256: releaseAuthoritySha,
+    ceremony_nonce: releaseAuthority.ceremony_nonce,
+    measurement_policy_sha256: policySha,
+    app_id: descriptor.app_id,
+    compose_hash: descriptor.compose_hash,
+    os_image_hash: descriptor.os_image_hash,
+  };
+  for (const [field, expectedValue] of Object.entries(expectedLineage)) {
+    if (request[field] !== expectedValue || response[field] !== expectedValue) {
+      throw new Error(`historical QVL identity ${field} drifted from release authority`);
+    }
+  }
+  for (const [requestField, responseField] of [
+    ["challenge_id", "challenge_id"],
+    ["challenge_digest", "challenge_digest"],
+    ["issued_at", "challenge_issued_at"],
+    ["expires_at", "challenge_expires_at"],
+  ]) {
+    if (request[requestField] !== response[responseField]) {
+      throw new Error("historical QVL identity response is not bound to its exact challenge");
+    }
+  }
+  const expectedReportData = qvlIdentityReportData({
+    request,
+    verifierAddress: response.verifier_address,
+    releasePolicyHash: response.release_policy_hash,
+  });
+  if (response.report_data !== expectedReportData
+    || response.quote_report_data !== `${expectedReportData}${request.challenge_digest.slice(2)}`) {
+    throw new Error("historical QVL identity report data is not release/challenge bound");
+  }
+  const rawQuote = Buffer.from(response.quote.slice(2), "hex");
+  const quoteSha = `sha256:${createHash("sha256").update(rawQuote).digest("hex")}`;
+  if (quoteSha !== shaFromBytes32(response.quote_hash, `${domain} historical quote hash`)) {
+    throw new Error("historical QVL identity quote digest drifted");
+  }
+  const replayRecord = normalizeHistoricalDcapReplayRecord(
+    responseFile.verification_record,
+    {
+      expectedDomain: domain,
+      releaseAuthority,
+    },
+  );
+  const verifiedAt = replayRecord.verification_time;
+  const verifierOutput = testOnlyVerifyQuote === undefined
+    ? verifyPinnedSevenCvmLocalDcapQuoteAt(rawQuote, policy, verifiedAt, replayRecord)
+    : await testOnlyVerifyQuote(rawQuote, policy, replayRecord);
+  const splitLocal = splitLocalDcapVerifierOutput(verifierOutput, {
+    evidenceMode,
+    verifiedAt,
+    domain,
+  });
+  if (splitLocal.replay.collateral_sha256 !== replayRecord.collateral_sha256) {
+    throw new Error("historical DCAP replay used collateral other than the persisted exact bytes");
+  }
+  const local = normalizeLocalDcapResult(splitLocal.result, {
+    verifiedAt,
+    evidenceMode,
+    quoteSha256: quoteSha,
+    measurementPolicy: policy,
+  });
+  const localReceiptSha = domainSha256(LOCAL_DCAP_RECEIPT_DOMAIN, local);
+  normalizeHistoricalDcapReplayRecord(replayRecord, {
+    expectedVerifiedAt: verifiedAt,
+    expectedLeaseExpiresAt: replayRecord.activation_evidence_lease_expires_at,
+    expectedLocalReceiptSha256: localReceiptSha,
+    expectedDomain: domain,
+    releaseAuthority,
+  });
+  if (quoteSha !== local.tdx_quote_sha256 || local.report_data !== response.quote_report_data
+    || verifiedAt < request.issued_at || verifiedAt >= request.expires_at) {
+    throw new Error("historical QVL identity evidence was not valid at recorded verification time");
+  }
+  const candidate = {
+    schema: PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_SCHEMA,
+    status: PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_STATUS,
+    truth_status: PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_TRUTH,
+    evidence_mode: evidenceMode,
+    chain_id: CHAIN_ID,
+    domain,
+    profile: expectedLineage.profile,
+    release_authority_sha256: releaseAuthoritySha,
+    deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+    ceremony_nonce: releaseAuthority.ceremony_nonce,
+    measurement_policy_set_sha256: releaseAuthority.qvl_measurement_policy_set_sha256,
+    measurement_policy_sha256: policySha,
+    measurement_policy: policy,
+    descriptor_sha256: descriptor.descriptor_sha256,
+    posture_receipt_sha256: descriptor.posture_receipt_sha256,
+    app_id: descriptor.app_id,
+    cvm_id: descriptor.cvm_id,
+    compose_hash: descriptor.compose_hash,
+    os_image_hash: descriptor.os_image_hash,
+    tee_identity: response.verifier_address,
+    release_policy_sha256: shaFromBytes32(
+      response.release_policy_hash,
+      `${domain} historical QVL release policy`,
+    ),
+    challenge_id: request.challenge_id,
+    challenge_digest: request.challenge_digest,
+    challenge_issued_at: request.issued_at,
+    challenge_expires_at: request.expires_at,
+    tdx_quote_sha256: quoteSha,
+    tdx_measurements_sha256: local.measurements_sha256,
+    identity_attestation_request_sha256: requestFile.artifact_sha256,
+    identity_attestation_response_sha256: responseFile.artifact_sha256,
+    identity_attestation_request_file_sha256: requestFile.transcript_file_sha256,
+    identity_attestation_request_file_size: Buffer.byteLength(
+      requestFile.transcript_text,
+      "utf8",
+    ),
+    identity_attestation_response_file_sha256: responseFile.transcript_file_sha256,
+    identity_attestation_response_file_size: Buffer.byteLength(
+      responseFile.transcript_text,
+      "utf8",
+    ),
+    raw_transcript_sha256: rawVerifierTranscriptSha256(
+      domain,
+      "qvl_identity_request_response",
+      [requestFile.transcript_file_sha256, responseFile.transcript_file_sha256],
+    ),
+    local_dcap_verification: local,
+    local_dcap_verification_receipt_sha256: localReceiptSha,
+    verified_at: verifiedAt,
+    activation_evidence_lease_seconds:
+      releaseAuthority.activation_evidence_lease_seconds,
+    activation_evidence_lease_issued_at:
+      replayRecord.activation_evidence_lease_issued_at,
+    activation_evidence_lease_expires_at:
+      replayRecord.activation_evidence_lease_expires_at,
+    expires_at: replayRecord.activation_evidence_lease_expires_at,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+  };
+  const normalized = deepFreezeCanonicalPlainDataGraph(
+    normalizeQvlIdentityVerification(candidate),
+    { label: `${domain} historically replayed QVL identity evidence` },
+  );
+  HISTORICALLY_REPLAYED_QVL_IDENTITIES.set(
+    normalized,
+    domainSha256(PHALA_QVL_IDENTITY_LAUNCH_VERIFICATION_DOMAIN, normalized),
+  );
+  return normalized;
+}
+
+function assertHistoricallyReplayedPhalaQvlIdentity(value) {
+  const expected = HISTORICALLY_REPLAYED_QVL_IDENTITIES.get(value);
+  if (!expected || phalaQvlIdentityLaunchEvidenceSha256(value) !== expected) {
+    throw new Error("QVL identity lacks a restart-safe historical transcript replay brand");
+  }
+  return value;
+}
+
+function replayHistoricalWorkloadPair({
+  releaseAuthority,
+  challengeFile,
+  verdictFile,
+  expected,
+  qvlIdentityEvidence,
+}) {
+  const domain = challengeFile.domain;
+  if (verdictFile.domain !== domain || challengeFile.role !== "challenge"
+    || verdictFile.role !== "verdict") {
+    throw new Error("historical workload transcript pair is cross-domain or reordered");
+  }
+  const linked = assertHistoricallyReplayedPhalaQvlIdentity(qvlIdentityEvidence);
+  const link = PHALA_WORKLOAD_DOMAIN_QVL_LINK[domain];
+  if (!link || linked.domain !== link.qvl_domain) {
+    throw new Error("historical workload verdict is not linked to its exact replayed QVL");
+  }
+  const releaseAuthoritySha =
+    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  if (linked.release_authority_sha256 !== releaseAuthoritySha
+    || linked.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+    || linked.ceremony_nonce !== releaseAuthority.ceremony_nonce
+    || linked.measurement_policy_set_sha256
+      !== releaseAuthority.qvl_measurement_policy_set_sha256) {
+    throw new Error("historical workload-linked QVL identity is cross-release");
+  }
+  const authority = normalizeWorkloadExpectedFromAssertedAuthority(
+    expected,
+    domain,
+    linked,
+    releaseAuthority,
+  );
+  const challenge = challengeFile.artifact;
+  const verdict = verdictFile.artifact;
+  const replayRecord = normalizeHistoricalSignatureReplayRecord(
+    verdictFile.verification_record,
+    {
+      expectedDomain: domain,
+      releaseAuthority,
+    },
+  );
+  const binding = replayRecord.report_data_binding;
+  if (canonicalText(binding) !== canonicalText(authority.report_data_binding)) {
+    throw new Error("historical workload report-data binding drifted from replay record");
+  }
+  const expectedReportData = domain === "main_runtime_cvm"
+    ? diligenceReportData({
+      teeIdentity: verdict.signer_address,
+      contractAddress: authority.contract_address,
+    })
+    : computeMeteringReportData({
+      teeIdentity: verdict.signer_address,
+      contractAddress: authority.contract_address,
+      policySetHash: binding.policy_set_hash,
+    });
+  const lineage = {
+    chain_id: CHAIN_ID,
+    domain,
+    profile: authority.profile,
+    cvm_id: authority.cvm_id,
+    deployment_intent_sha256: authority.deployment_intent_sha256,
+    release_authority_sha256: authority.release_authority_sha256,
+    ceremony_nonce: authority.ceremony_nonce,
+    measurement_policy_sha256: authority.measurement_policy_sha256,
+  };
+  if (Object.entries(lineage).some(([field, expectedValue]) =>
+    challenge[field] !== expectedValue || verdict[field] !== expectedValue)
+    || challenge.release_policy_hash
+      !== bytes32FromSha(authority.release_policy_sha256, "historical challenge policy")
+    || challenge.verifier_address !== authority.verifier_address
+    || challenge.challenge_id !== verdict.challenge_id
+    || challenge.challenge_digest !== verdict.challenge_digest
+    || challenge.issued_at !== verdict.challenge_issued_at
+    || challenge.expires_at !== verdict.challenge_expires_at
+    || verdict.app_id !== authority.app_id
+    || verdict.compose_hash
+      !== bytes32FromBare(authority.compose_hash, "historical workload compose")
+    || verdict.os_image_hash !== authority.os_image_hash
+    || verdict.signer_address === authority.verifier_address
+    || verdict.contract_address !== authority.contract_address
+    || verdict.verifier_address !== authority.verifier_address
+    || shaFromBytes32(verdict.release_policy_hash, "historical verdict policy")
+      !== authority.release_policy_sha256
+    || verdict.report_data !== expectedReportData) {
+    throw new Error("historical signed workload verdict drifted from release authority");
+  }
+  const challengeDigest = qvlChallengeSigningDigest(challenge);
+  if (challenge.challenge_digest !== challengeDigest) {
+    throw new Error("historical workload challenge digest is invalid");
+  }
+  const challengeSignatureReceipt = verifyIndependentEip191RawDigestSignature({
+    address: challenge.verifier_address,
+    digest: challengeDigest,
+    signature: challenge.verifier_signature,
+  });
+  const verifiedAt = replayRecord.verification_time;
+  const activationEvidenceLeaseExpiresAt = Math.min(
+    verdict.activation_evidence_lease_expires_at,
+    linked.activation_evidence_lease_expires_at,
+  );
+  if (replayRecord.verdict_activation_evidence_lease_expires_at
+      !== verdict.activation_evidence_lease_expires_at
+    || replayRecord.activation_evidence_lease_expires_at
+      !== activationEvidenceLeaseExpiresAt
+    || verdict.challenge_expires_at <= verdict.challenge_issued_at
+    || verdict.challenge_expires_at - verdict.challenge_issued_at > 120
+    || verdict.issued_at < verdict.challenge_issued_at
+    || verdict.issued_at >= verdict.challenge_expires_at
+    || verdict.expires_at <= verdict.issued_at
+    || verdict.expires_at - verdict.issued_at
+      > releaseAuthority.activation_evidence_lease_seconds
+    || verdict.expires_at !== verdict.activation_evidence_lease_expires_at
+    || verifiedAt < verdict.issued_at
+    || verifiedAt >= activationEvidenceLeaseExpiresAt) {
+    throw new Error("historical workload verdict was invalid at recorded verification time");
+  }
+  const signingDigest = independentTdxVerdictSigningDigest(verdict);
+  const signatureReceipt = verifyIndependentEip191RawDigestSignature({
+    address: verdict.verifier_address,
+    digest: signingDigest,
+    signature: verdict.verifier_signature,
+  });
+  const candidate = {
+    schema: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_SCHEMA,
+    status: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_STATUS,
+    truth_status: PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_TRUTH,
+    evidence_mode: linked.evidence_mode,
+    chain_id: CHAIN_ID,
+    domain,
+    profile: authority.profile,
+    release_authority_sha256: authority.release_authority_sha256,
+    deployment_intent_sha256: authority.deployment_intent_sha256,
+    ceremony_nonce: authority.ceremony_nonce,
+    measurement_policy_set_sha256: authority.measurement_policy_set_sha256,
+    measurement_policy_sha256: authority.measurement_policy_sha256,
+    descriptor_sha256: authority.descriptor_sha256,
+    posture_receipt_sha256: authority.posture_receipt_sha256,
+    app_id: authority.app_id,
+    cvm_id: authority.cvm_id,
+    compose_hash: authority.compose_hash,
+    os_image_hash: authority.os_image_hash,
+    tee_identity: verdict.signer_address,
+    contract_address: authority.contract_address,
+    report_data_binding: binding,
+    report_data: verdict.report_data,
+    qvl_release_policy_sha256: authority.release_policy_sha256,
+    qvl_identity_evidence_sha256: authority.qvl_identity_evidence_sha256,
+    qvl_challenge_signing_digest: challengeDigest,
+    qvl_challenge_artifact_sha256: challengeFile.artifact_sha256,
+    qvl_challenge_file_sha256: challengeFile.transcript_file_sha256,
+    qvl_challenge_file_size: Buffer.byteLength(challengeFile.transcript_text, "utf8"),
+    qvl_challenge_verifier_signature_sha256:
+      challengeSignatureReceipt.signature_sha256,
+    challenge_id: verdict.challenge_id,
+    challenge_digest: verdict.challenge_digest,
+    challenge_issued_at: verdict.challenge_issued_at,
+    challenge_expires_at: verdict.challenge_expires_at,
+    tdx_quote_sha256: shaFromBytes32(verdict.quote_hash, "historical workload quote hash"),
+    qvl_verdict_signing_digest: signingDigest,
+    qvl_verdict_artifact_sha256: verdictFile.artifact_sha256,
+    qvl_verdict_file_sha256: verdictFile.transcript_file_sha256,
+    qvl_verdict_file_size: Buffer.byteLength(verdictFile.transcript_text, "utf8"),
+    raw_transcript_sha256: rawVerifierTranscriptSha256(
+      domain,
+      "workload_challenge_verdict",
+      [challengeFile.transcript_file_sha256, verdictFile.transcript_file_sha256],
+    ),
+    qvl_verdict_verifier_address: verdict.verifier_address,
+    qvl_verdict_verifier_signature_sha256: signatureReceipt.signature_sha256,
+    verdict_issued_at: verdict.issued_at,
+    verdict_activation_evidence_lease_expires_at:
+      verdict.activation_evidence_lease_expires_at,
+    verdict_expires_at: verdict.expires_at,
+    verified_at: verifiedAt,
+    activation_evidence_lease_expires_at: activationEvidenceLeaseExpiresAt,
+    expires_at: activationEvidenceLeaseExpiresAt,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+  };
+  const normalized = deepFreezeCanonicalPlainDataGraph(
+    normalizeWorkloadVerification(candidate),
+    { label: `${domain} historically replayed workload verdict` },
+  );
+  HISTORICALLY_REPLAYED_WORKLOAD_VERDICTS.set(
+    normalized,
+    domainSha256(PHALA_WORKLOAD_TDX_VERDICT_VERIFICATION_DOMAIN, normalized),
+  );
+  return normalized;
+}
+
+function assertHistoricallyReplayedPhalaWorkloadVerdict(value) {
+  const expected = HISTORICALLY_REPLAYED_WORKLOAD_VERDICTS.get(value);
+  if (!expected || phalaWorkloadTdxVerdictVerificationSha256(value) !== expected) {
+    throw new Error("workload verdict lacks a restart-safe historical transcript replay brand");
+  }
+  return value;
 }
 
 function normalizeSevenCvmSet(value) {
@@ -3558,7 +5188,9 @@ function normalizeSevenCvmSet(value) {
   }
   const parsed = exactRecord(value, [
     "all_seven_machine_verified", "chain_id", "domains", "evidence_mode",
-    "execution_order", "raw_quote_persisted", "raw_secret_egress", "schema",
+    "execution_order", "private_historical_transcript_required",
+    "raw_collateral_publicly_disclosed", "raw_quote_publicly_disclosed",
+    "raw_secret_egress", "schema",
     "status", "truth_status", "verified_at", "release_authority_sha256",
     "release_sha", "deployment_intent_sha256", "ceremony_nonce",
     "measurement_policy_set_sha256", "historical_transcript_file_set_sha256",
@@ -3570,7 +5202,10 @@ function normalizeSevenCvmSet(value) {
     || parsed.status !== PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_STATUS
     || parsed.truth_status !== PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_TRUTH
     || parsed.chain_id !== CHAIN_ID || parsed.all_seven_machine_verified !== true
-    || parsed.raw_quote_persisted !== false || parsed.raw_secret_egress !== false
+    || parsed.private_historical_transcript_required !== true
+    || parsed.raw_quote_publicly_disclosed !== false
+    || parsed.raw_collateral_publicly_disclosed !== false
+    || parsed.raw_secret_egress !== false
     || JSON.stringify(parsed.execution_order) !== JSON.stringify(PHALA_SEVEN_CVM_EXECUTION_ORDER)
     || !Array.isArray(parsed.domains) || parsed.domains.length !== 7) {
     throw new Error("seven-CVM verified evidence set authority is invalid");
@@ -3652,9 +5287,246 @@ function normalizeSevenCvmSet(value) {
     proofs_valid_at_issuance: true,
     verified_at: lastVerifiedAt,
     all_seven_machine_verified: true,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
+}
+
+export async function replayPersistedHistoricalPhalaSevenCvmEvidence({
+  releaseAuthority: releaseAuthorityValue,
+  rawTranscriptFiles,
+  executorFinalState,
+  persistedEvidenceSet,
+  testOnlyHistoricalReplayCommitments,
+  testOnlyVerifyQuote,
+} = {}) {
+  const {
+    authority: releaseAuthority,
+    metadata: historicalAuthorityMetadata,
+  } = resolveHistoricalReplayReleaseAuthority(releaseAuthorityValue);
+  if (releaseAuthority.evidence_mode === PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
+    if (testOnlyVerifyQuote !== undefined
+      || testOnlyHistoricalReplayCommitments !== undefined) {
+      throw new Error(
+        "production historical replay cannot inject a DCAP verifier or commitments",
+      );
+    }
+  } else {
+    assertSyntheticDcapAdapter(testOnlyVerifyQuote);
+  }
+  const replayCommitments = historicalAuthorityMetadata ?? (() => {
+    const parsed = exactRecord(testOnlyHistoricalReplayCommitments, [
+      "executor_final_state_sha256",
+      "historical_transcript_file_set_sha256",
+      "seven_cvm_verified_evidence_set_sha256",
+    ], "synthetic historical replay commitments");
+    return Object.freeze({
+      executor_final_state_sha256: sha256(
+        parsed.executor_final_state_sha256,
+        "synthetic historical executor final state",
+      ),
+      historical_transcript_file_set_sha256: sha256(
+        parsed.historical_transcript_file_set_sha256,
+        "synthetic historical transcript file set",
+      ),
+      seven_cvm_verified_evidence_set_sha256: sha256(
+        parsed.seven_cvm_verified_evidence_set_sha256,
+        "synthetic historical evidence set",
+      ),
+    });
+  })();
+  const persisted = persistedEvidenceSet === undefined
+    ? null
+    : normalizeSevenCvmSet(persistedEvidenceSet);
+  if (persisted !== null) {
+    if (canonicalText(persisted) !== canonicalText(persistedEvidenceSet)) {
+      throw new Error("persisted seven-CVM evidence set is not already exact and normalized");
+    }
+    if (phalaSevenCvmVerifiedEvidenceSetSha256(persisted)
+        !== replayCommitments.seven_cvm_verified_evidence_set_sha256) {
+      throw new Error(
+        "persisted seven-CVM evidence set drifted from reconstructed release authority metadata",
+      );
+    }
+  }
+  const transcript = parseExactPhalaSevenCvmHistoricalTranscriptFiles(rawTranscriptFiles);
+  const transcriptFileSetSha256 =
+    phalaSevenCvmHistoricalTranscriptFileSetSha256(transcript.fileSet);
+  if (transcriptFileSetSha256
+      !== replayCommitments.historical_transcript_file_set_sha256
+    || (persisted !== null
+      && transcriptFileSetSha256
+        !== persisted.historical_transcript_file_set_sha256)) {
+    throw new Error(
+      "historical transcript file set drifted from persisted evidence and release authority",
+    );
+  }
+  const normalizedExecutorFinalState = normalizeCompletedPhalaExecutorState(
+    executorFinalState,
+  );
+  if (canonicalText(normalizedExecutorFinalState) !== canonicalText(executorFinalState)) {
+    throw new Error("persisted executor terminal state is not already exact and normalized");
+  }
+  if (phalaExecutorStateDigest(normalizedExecutorFinalState)
+      !== replayCommitments.executor_final_state_sha256) {
+    throw new Error(
+      "historical executor terminal state drifted from reconstructed release authority",
+    );
+  }
+  const corroboration = reconstructPersistedPhalaSevenCvmHistoricalCorroboration({
+    releaseAuthority,
+    historicalPostureAudits: transcript.postureAudits,
+    executorFinalState: normalizedExecutorFinalState,
+  });
+  const qvlIdentityEvidence = [];
+  for (const domain of Object.keys(PHALA_QVL_IDENTITY_DOMAIN_PROFILE)) {
+    const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[domain];
+    qvlIdentityEvidence.push(await replayHistoricalQvlIdentityPair({
+      releaseAuthority,
+      requestFile: transcript.byFlag.get(flags.request),
+      responseFile: transcript.byFlag.get(flags.response),
+      testOnlyVerifyQuote,
+    }));
+  }
+  const qvlByDomain = new Map(
+    qvlIdentityEvidence.map((proof) => [proof.domain, proof]),
+  );
+  const workloadVerdictEvidence = [];
+  for (const domain of Object.keys(PHALA_WORKLOAD_DOMAIN_QVL_LINK)) {
+    const flags = PHALA_SEVEN_CVM_VERIFIER_RAW_CLI_FLAGS[domain];
+    const linkedDomain = PHALA_WORKLOAD_DOMAIN_QVL_LINK[domain].qvl_domain;
+    const verdictFile = transcript.byFlag.get(flags.verdict);
+    workloadVerdictEvidence.push(replayHistoricalWorkloadPair({
+      releaseAuthority,
+      challengeFile: transcript.byFlag.get(flags.challenge),
+      verdictFile,
+      expected: {
+        reportDataBinding: verdictFile.verification_record.report_data_binding,
+      },
+      qvlIdentityEvidence: qvlByDomain.get(linkedDomain),
+    }));
+  }
+  const allProofs = PHALA_SEVEN_CVM_EXECUTION_ORDER.map((domain) =>
+    qvlIdentityEvidence.find((proof) => proof.domain === domain)
+      || workloadVerdictEvidence.find((proof) => proof.domain === domain));
+  if (allProofs.some((proof) => !proof)) {
+    throw new Error("historical replay omitted a seven-CVM proof domain");
+  }
+  const challengeIds = allProofs.map(({ challenge_id: challengeId }) => challengeId);
+  if (new Set(challengeIds).size !== challengeIds.length) {
+    throw new Error("historical replay contains a cross-domain challenge replay");
+  }
+  const modes = new Set(allProofs.map(({ evidence_mode: mode }) => mode));
+  if (modes.size !== 1 || !modes.has(releaseAuthority.evidence_mode)) {
+    throw new Error("historical replay mixed production and synthetic verifier evidence");
+  }
+  const domains = allProofs.map(projectDomainEvidence);
+  const releaseAuthoritySha =
+    phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  for (let index = 0; index < domains.length; index += 1) {
+    const projection = domains[index];
+    const descriptor = releaseAuthority.descriptors[index];
+    const postureSecond = Math.floor(Date.parse(descriptor.posture_observed_at) / 1_000);
+    if (projection.release_authority_sha256 !== releaseAuthoritySha
+      || projection.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+      || projection.ceremony_nonce !== releaseAuthority.ceremony_nonce
+      || projection.measurement_policy_set_sha256
+        !== releaseAuthority.qvl_measurement_policy_set_sha256
+      || projection.descriptor_sha256 !== descriptor.descriptor_sha256
+      || projection.posture_receipt_sha256 !== descriptor.posture_receipt_sha256
+      || projection.app_id !== descriptor.app_id || projection.cvm_id !== descriptor.cvm_id
+      || projection.compose_hash !== descriptor.compose_hash
+      || projection.os_image_hash !== descriptor.os_image_hash
+      || projection.verified_at < postureSecond) {
+      throw new Error(`${projection.domain} historical proof/posture/release lineage is invalid`);
+    }
+  }
+  for (const [workloadDomain, { qvl_domain: qvlDomain }] of
+    Object.entries(PHALA_WORKLOAD_DOMAIN_QVL_LINK)) {
+    const workload = domains.find((entry) => entry.domain === workloadDomain);
+    const qvl = domains.find((entry) => entry.domain === qvlDomain);
+    if (workload.qvl_identity_sha256 !== qvl.evidence_sha256) {
+      throw new Error(`${workloadDomain} historical proof does not chain to ${qvlDomain}`);
+    }
+  }
+  const firstVerifiedAt = Math.min(...allProofs.map((proof) => proof.verified_at));
+  const lastVerifiedAt = Math.max(...allProofs.map((proof) => proof.verified_at));
+  const minimumActivationEvidenceLeaseExpiresAt = Math.min(
+    ...allProofs.map((proof) => proof.activation_evidence_lease_expires_at),
+  );
+  const candidateForIssuedAt = (issuedAt) => normalizeSevenCvmSet({
+    schema: PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_SCHEMA,
+    status: PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_STATUS,
+    truth_status: PHALA_SEVEN_CVM_VERIFIED_EVIDENCE_SET_TRUTH,
+    evidence_mode: releaseAuthority.evidence_mode,
+    chain_id: CHAIN_ID,
+    release_sha: releaseAuthority.release_sha,
+    release_authority_sha256: releaseAuthoritySha,
+    deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+    ceremony_nonce: releaseAuthority.ceremony_nonce,
+    measurement_policy_set_sha256: releaseAuthority.qvl_measurement_policy_set_sha256,
+    execution_order: [...PHALA_SEVEN_CVM_EXECUTION_ORDER],
+    domains,
+    historical_transcript_file_set_sha256: transcriptFileSetSha256,
+    issued_at: issuedAt,
+    first_verified_at: firstVerifiedAt,
+    last_verified_at: lastVerifiedAt,
+    minimum_activation_evidence_lease_expires_at:
+      minimumActivationEvidenceLeaseExpiresAt,
+    proof_collection_skew_seconds: lastVerifiedAt - firstVerifiedAt,
+    proofs_valid_at_issuance: true,
+    verified_at: lastVerifiedAt,
+    all_seven_machine_verified: true,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
+    raw_secret_egress: false,
+  });
+  let reconstructed;
+  if (persisted !== null) {
+    reconstructed = candidateForIssuedAt(persisted.issued_at);
+    if (canonicalText(reconstructed) !== canonicalText(persisted)) {
+      throw new Error(
+        "persisted seven-CVM evidence set differs from exact historical reconstruction",
+      );
+    }
+  } else {
+    const matchingCandidates = [];
+    for (let issuedAt = lastVerifiedAt;
+      issuedAt < minimumActivationEvidenceLeaseExpiresAt;
+      issuedAt += 1) {
+      const candidate = candidateForIssuedAt(issuedAt);
+      if (phalaSevenCvmVerifiedEvidenceSetSha256(candidate)
+          === replayCommitments.seven_cvm_verified_evidence_set_sha256) {
+        matchingCandidates.push(candidate);
+      }
+    }
+    if (matchingCandidates.length !== 1) {
+      throw new Error(
+        "release authority does not select exactly one historical evidence-set issuance second",
+      );
+    }
+    [reconstructed] = matchingCandidates;
+  }
+  const evidenceSet = deepFreezeCanonicalPlainDataGraph(reconstructed, {
+    label: "historically replayed seven-CVM evidence set",
+  });
+  const evidenceSetSha256 = phalaSevenCvmVerifiedEvidenceSetSha256(evidenceSet);
+  if (evidenceSetSha256
+      !== replayCommitments.seven_cvm_verified_evidence_set_sha256) {
+    throw new Error(
+      "historically reconstructed seven-CVM evidence set drifted from release authority metadata",
+    );
+  }
+  HISTORICALLY_REPLAYED_SEVEN_CVM_SETS.set(evidenceSet, evidenceSetSha256);
+  return Object.freeze({
+    evidenceSet,
+    qvlIdentityEvidence: Object.freeze(qvlIdentityEvidence),
+    workloadVerdictEvidence: Object.freeze(workloadVerdictEvidence),
+    corroboration,
+  });
 }
 
 export function createPhalaSevenCvmVerifiedEvidenceSet({
@@ -3746,7 +5618,9 @@ export function createPhalaSevenCvmVerifiedEvidenceSet({
     proofs_valid_at_issuance: true,
     verified_at: Math.max(...proofs.map((entry) => entry.verified_at)),
     all_seven_machine_verified: true,
-    raw_quote_persisted: false,
+    private_historical_transcript_required: true,
+    raw_quote_publicly_disclosed: false,
+    raw_collateral_publicly_disclosed: false,
     raw_secret_egress: false,
   };
   const normalized = deepFreezeCanonicalPlainDataGraph(normalizeSevenCvmSet(candidate), {
@@ -3791,7 +5665,14 @@ export function assertProductionPhalaSevenCvmEvidenceSet(value) {
 }
 
 export function assertHistoricallyVerifiedProductionPhalaSevenCvmEvidenceSet(value) {
-  const verified = assertVerifiedPhalaSevenCvmEvidenceSet(value);
+  const expected = VERIFIED_SEVEN_CVM_SETS.get(value)
+    || HISTORICALLY_REPLAYED_SEVEN_CVM_SETS.get(value);
+  if (!expected || phalaSevenCvmVerifiedEvidenceSetSha256(value) !== expected) {
+    throw new Error(
+      "seven-CVM evidence lacks a verified live or restart-safe historical brand",
+    );
+  }
+  const verified = value;
   if (verified.evidence_mode !== PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE) {
     throw new Error("synthetic seven-CVM evidence has no production historical authority");
   }

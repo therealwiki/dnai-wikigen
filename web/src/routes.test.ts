@@ -15,6 +15,9 @@ const EXPECTED_ALIASES: ReadonlyArray<readonly [string, RouteKey]> = [
   ["", "overview"],
   ["/", "overview"],
   ["/overview", "overview"],
+  ["/health", "health"],
+  ["/health-guide", "health"],
+  ["/explore-health", "health"],
   ["/arena", "arena"],
   ["/challenges", "arena"],
   ["/challenge-arena", "arena"],
@@ -117,6 +120,7 @@ describe("hash route contract", () => {
     const routes = Object.keys(ROUTE_DEFINITIONS) as RouteKey[];
     expect(routes).toEqual([
       "overview",
+      "health",
       "arena",
       "deals",
       "review",
@@ -131,6 +135,7 @@ describe("hash route contract", () => {
     ]);
     expect(routes.map(canonicalHashForRoute)).toEqual([
       "#/",
+      "#/health",
       "#/arena",
       "#/deals",
       "#/review",

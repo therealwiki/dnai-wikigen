@@ -12,6 +12,11 @@ export const ROUTE_DEFINITIONS = {
     aliases: ["", "/", "/overview"],
     title: "Wikigen · Private intelligence, verifiable outcomes",
   },
+  health: {
+    canonicalPath: "/health",
+    aliases: ["/health", "/health-guide", "/explore-health"],
+    title: "Health Guide · Wikigen",
+  },
   arena: {
     canonicalPath: "/arena",
     aliases: ["/arena", "/challenges", "/challenge-arena"],

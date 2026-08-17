@@ -79,6 +79,7 @@ const REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS = Object.freeze([
   "--anchor-writer-evidence",
   "--email-oracle-evidence",
   "--live-activation-authority",
+  "--royalty-release-history-receipt",
   "--compute-workload-activation-observation",
   "--frontend-build-candidate-receipt",
 ]);
@@ -118,6 +119,7 @@ export const CLOUDFLARE_D_BUILD_CONTROL_PATHS = Object.freeze([
   "web/scripts/build-release-env.mjs",
   "web/scripts/build-security-headers.mjs",
   "web/scripts/cloudflare-build-sandbox-core.mjs",
+  "web/scripts/collaboration-execution-release-env-core.mjs",
   "web/scripts/cloudflare-external-build-closure-core.mjs",
   "web/scripts/cloudflare-release-artifact-core.mjs",
   "web/scripts/deploy-cloudflare-core.mjs",
@@ -130,6 +132,7 @@ export const CLOUDFLARE_D_BUILD_CONTROL_PATHS = Object.freeze([
   "web/scripts/release-build-home-core.mjs",
   "web/scripts/release-runtime-pins-core.mjs",
   "web/scripts/release-env-core.mjs",
+  "web/scripts/royalty-release-env-core.mjs",
   "web/scripts/security-headers-core.mjs",
   "web/tsconfig.json",
   "web/vite.config.ts",

@@ -10,7 +10,9 @@ import { createPublicClient, http } from "viem";
 import {
   BASE_SEPOLIA_CHAIN_ID,
   CANONICAL_PUBLIC_RPC,
+  assertLiveReleaseCandidateMatchesPrebuild,
   buildReleaseEnv,
+  canonicalLiveReleaseCandidatePrebuildProjectionText,
   canonicalPreLiveActivationReleaseCandidateText,
   githubAttestationCommands,
   liveReleaseCandidatePrebuildProjectionSha256,
@@ -21,11 +23,33 @@ import {
   serializeEnv,
 } from "./release-env-core.mjs";
 import {
+  EXACT35_MODEL_A_INPUT_FLAGS,
+  EXACT37_MODEL_A_INPUT_FLAGS,
+  validateExact35ModelAPrebuildAuthority,
+} from "../../scripts/exact37-model-a-semantic-validator.mjs";
+import {
+  normalizeRoyaltyReleaseHistoryReceipt,
+  royaltyReleaseHistoryReceiptSha256,
+} from "../../scripts/royalty-release-history-receipt-core.mjs";
+import {
+  runFrontendBuildCandidateProduction,
+} from "./frontend-build-candidate-producer-core.mjs";
+import {
+  FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS,
+  FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
+  FRONTEND_BUILD_RAW_PRIVATE_INPUT_FLAGS,
+  assertFrontendBuildCandidateLineage,
+  canonicalFrontendBuildCandidateReceiptText,
+  createFrontendBuildPreDPrivateInputs,
+} from "./frontend-build-candidate-core.mjs";
+import {
+  assertHistoricalLiveActivationComputeWorkloadObservationBinding,
+  normalizeLiveActivationAuthority,
+  projectLiveActivationFrontendBinding,
+} from "../../scripts/release-authority-current-c-v6-core.mjs";
+import {
   validateExecutionPolicyReleaseCoreBinding,
 } from "./execution-policy-release-core-binding.mjs";
-import {
-  readCanonicalExecutionPolicyReleaseCoreArtifact,
-} from "../../scripts/execution-policy-release-core-cli.mjs";
 import {
   MAX_PACKET_BYTES,
   parseDeploymentIntentCoreText,
@@ -33,23 +57,34 @@ import {
 import {
   exactDistinctPublicHttpsEndpoints,
 } from "./public-https-origin-core.mjs";
+import {
+  projectRoyaltyReleaseBrowserEnv,
+} from "./royalty-release-env-core.mjs";
+import {
+  projectCollaborationExecutionReleaseEnv,
+} from "./collaboration-execution-release-env-core.mjs";
 import { durablyWritePrivateFile } from "./durable-private-file-core.mjs";
+import {
+  createPrivateReleaseBuildHome,
+  removePrivateReleaseBuildHome,
+} from "./release-build-home-core.mjs";
 import { PINNED_GH_TOOL } from "../../scripts/release-manifest-sigstore-verifier.mjs";
 import {
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_FLAG_ORDER,
   createPhalaSevenCvmHistoricalTranscriptFileSet,
   phalaSevenCvmHistoricalTranscriptFileSetSha256,
 } from "../../scripts/phala-seven-cvm-historical-transcript.mjs";
-import {
-  FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS,
-  FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
-  FRONTEND_BUILD_RAW_PRIVATE_INPUT_FLAGS,
-  createFrontendBuildPreDPrivateInputs,
-} from "./frontend-build-candidate-core.mjs";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const modulePath = fileURLToPath(new URL("./build-release-env.mjs", import.meta.url));
+const webDir = path.resolve(path.dirname(modulePath), "..");
 const rootDir = path.resolve(webDir, "..");
 const defaultOutput = path.join(webDir, ".env.production.local");
+export const FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT = path.join(
+  rootDir,
+  ".release",
+  "frontend-build-candidate-receipt.json",
+);
+export const PREBUILD_CANDIDATE_MODE_FLAG = "--produce-candidate";
 const PINNED_GIT_EXECUTABLE = "/usr/bin/git";
 const PINNED_GIT_ENVIRONMENT = Object.freeze({
   PATH: "/usr/bin:/bin",
@@ -95,12 +130,23 @@ export const SEMANTIC_VALIDATOR_INPUT_FLAGS = Object.freeze([
   "--anchor-writer-evidence",
   "--email-oracle-evidence",
   "--live-activation-authority",
+  "--royalty-release-history-receipt",
   "--compute-workload-activation-observation",
   "--frontend-build-candidate-receipt",
 ]);
 export const PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS = Object.freeze([
   ...FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
 ]);
+export const CURRENT_FRONTEND_EXACT38_INPUT_FLAGS =
+  SEMANTIC_VALIDATOR_INPUT_FLAGS;
+export const CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS =
+  PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS;
+if (CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.length !== 38
+  || CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS.length !== 36
+  || EXACT37_MODEL_A_INPUT_FLAGS.length !== 37
+  || EXACT35_MODEL_A_INPUT_FLAGS.length !== 35) {
+  throw new Error("current exact36/38 and historical exact35/37 flag counts drifted");
+}
 const SEMANTIC_VALIDATOR_INPUT_FLAG_SET = new Set(
   SEMANTIC_VALIDATOR_INPUT_FLAGS,
 );
@@ -291,6 +337,33 @@ export function semanticValidationReceipt(
       === binding.frontendBuildSha256) {
     throw new Error("semantic validation receipt must keep D distinct from the deterministic dist manifest");
   }
+  const serializedReleaseEnv = Object.fromEntries(
+    serializedEnv.trimEnd().split("\n").map((line) => {
+      const separator = line.indexOf("=");
+      if (separator <= 0) {
+        throw new Error("semantic validation receipt received malformed release env");
+      }
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }),
+  );
+  const royaltyReleaseHistorySha256 =
+    serializedReleaseEnv.VITE_ROYALTY_RELEASE_HISTORY_SHA256;
+  const royaltyReleaseHistoryReceiptSha256 =
+    serializedReleaseEnv.VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256;
+  for (const [value, label] of [
+    [royaltyReleaseHistorySha256, "Royalty release history"],
+    [royaltyReleaseHistoryReceiptSha256, "Royalty release H receipt"],
+  ]) {
+    if (!/^sha256:[0-9a-f]{64}$/.test(String(value || ""))
+      || value === `sha256:${"0".repeat(64)}`) {
+      throw new Error(`semantic validation receipt requires the nonzero ${label} digest`);
+    }
+  }
+  if (royaltyReleaseHistorySha256 === royaltyReleaseHistoryReceiptSha256) {
+    throw new Error(
+      "semantic validation receipt must keep Royalty history distinct from its H receipt",
+    );
+  }
   return {
     schema: SEMANTIC_VALIDATION_SCHEMA,
     status: SEMANTIC_VALIDATION_STATUS,
@@ -302,6 +375,9 @@ export function semanticValidationReceipt(
       binding.reviewerAuthorityGenesisAcceptanceSha256,
     ceremony_authorization_sha256: binding.ceremonyAuthorizationSha256,
     live_activation_authority_sha256: binding.liveActivationAuthoritySha256,
+    royalty_release_history_sha256: royaltyReleaseHistorySha256,
+    royalty_release_history_receipt_sha256:
+      royaltyReleaseHistoryReceiptSha256,
     runtime_authority_dependency_sha256: binding.runtimeAuthorityDependencySha256,
     release_inputs_sha256: binding.releaseInputsSha256,
     compute_workload_activation_observation_sha256:
@@ -516,6 +592,106 @@ export async function loadExactPrebuildSemanticValidatorInputs(args) {
     PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS,
     "prebuild semantic validator",
   );
+}
+
+/**
+ * Project the current exact-36/38 input set back to the immutable historical
+ * exact-35/37 recipe. H is deliberately absent from the returned graph, so a
+ * historical validator can never accidentally acquire current authority from
+ * a post-transaction receipt it did not originally define.
+ */
+export function historicalSemanticInputsWithoutRoyaltyHistory(
+  inputs,
+  historicalFlags,
+) {
+  if (!inputs?.artifactPaths || !Array.isArray(inputs.entries)
+    || !Array.isArray(historicalFlags)
+    || ![EXACT35_MODEL_A_INPUT_FLAGS.length, EXACT37_MODEL_A_INPUT_FLAGS.length]
+      .includes(historicalFlags.length)
+    || historicalFlags.includes("--royalty-release-history-receipt")) {
+    throw new Error("historical replay requires an exact H-free 35/37 flag recipe");
+  }
+  const sourceByFlag = new Map(inputs.entries.map((entry) => [entry.flag, entry]));
+  if (sourceByFlag.size !== inputs.entries.length
+    || !sourceByFlag.has("--royalty-release-history-receipt")) {
+    throw new Error("current release inputs must contain one independent H receipt");
+  }
+  const entries = historicalFlags.map((flag) => {
+    const entry = sourceByFlag.get(flag);
+    if (!entry) throw new Error(`historical replay projection is missing ${flag}`);
+    return entry;
+  });
+  const pathEntries = entries.map((entry) => Object.freeze({
+    flag: entry.flag,
+    key: entry.key,
+    filePath: entry.filePath,
+  }));
+  return Object.freeze({
+    artifactPaths: Object.freeze({
+      entries: Object.freeze(pathEntries),
+      byFlag: Object.freeze(Object.fromEntries(pathEntries.map((entry) => [
+        entry.flag,
+        entry.filePath,
+      ]))),
+      byKey: Object.freeze(Object.fromEntries(pathEntries.map((entry) => [
+        entry.key,
+        entry.filePath,
+      ]))),
+    }),
+    entries: Object.freeze(entries),
+    byFlag: Object.freeze(Object.fromEntries(entries.map((entry) => [
+      entry.flag,
+      entry,
+    ]))),
+    byKey: Object.freeze(Object.fromEntries(entries.map((entry) => [
+      entry.key,
+      entry,
+    ]))),
+    totalBytes: entries.reduce((sum, entry) => sum + entry.byteLength, 0),
+  });
+}
+
+export function validateIndependentRoyaltyReleaseHistoryInput(inputs, candidate) {
+  const entry = inputs?.byFlag?.["--royalty-release-history-receipt"];
+  if (!entry || entry.flag !== "--royalty-release-history-receipt"
+    || !/^sha256:[0-9a-f]{64}$/.test(String(entry.rawSha256 || ""))) {
+    throw new Error("current release inputs omit the independently read H receipt");
+  }
+  let receipt;
+  try {
+    receipt = normalizeRoyaltyReleaseHistoryReceipt(entry.value);
+  } catch (error) {
+    throw new Error(`independent Royalty release H validation failed: ${error.message}`);
+  }
+  const receiptSha256 = royaltyReleaseHistoryReceiptSha256(receipt);
+  const historySha256 = receipt.royalty_release_history_sha256;
+  if (new Set([entry.rawSha256, receiptSha256, historySha256]).size !== 3) {
+    throw new Error("Royalty H raw bytes, receipt digest, and history digest must remain distinct");
+  }
+  let browserEnv;
+  if (candidate !== undefined) {
+    browserEnv = projectRoyaltyReleaseBrowserEnv(receipt, {
+      royaltyDistributorAddress:
+        candidate.contracts.royalty_distributor.address,
+      royaltyDistributorCodeHash:
+        candidate.contracts.royalty_distributor.runtime_code_hash,
+      executionPolicyAnchorAddress:
+        candidate.execution_policy.rollback_anchor.contract_address,
+      executionPolicyAnchorWriter:
+        candidate.execution_policy.rollback_anchor.writer_address,
+      executionPolicyAnchorWriterReleaseCommitment:
+        candidate.execution_policy.rollback_anchor.writer_release_commitment,
+    });
+  }
+  return Object.freeze({
+    receipt: Object.freeze(receipt),
+    browserEnv,
+    binding: Object.freeze({
+      history_receipt_raw_sha256: entry.rawSha256,
+      history_sha256: historySha256,
+      receipt_sha256: receiptSha256,
+    }),
+  });
 }
 
 function exactSemanticArtifactPathsForFlags(
@@ -862,18 +1038,477 @@ function atomicWriteOutput(output, content) {
     outputPath: output,
     allowedOutputPath: defaultOutput,
     content,
+    requireAbsent: true,
   });
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  const args = parseArgs(argv);
-  await loadExactSemanticValidatorInputs(args);
-  throw new Error(
-    "Model-A exact-37 semantic validator integration is incomplete",
+async function assertNoClobberTargetAbsent(outputPath, label) {
+  try {
+    await lstat(outputPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`${label} already exists and no-clobber publication is required`);
+}
+
+export async function assertCandidateReceiptOutputPreflight({
+  outputPath = FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+  allowedOutputPath = FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+  assertIgnoredCandidate = (candidatePath) => git([
+    "check-ignore",
+    "-q",
+    path.relative(rootDir, candidatePath),
+  ]),
+} = {}) {
+  if (
+    typeof outputPath !== "string"
+    || !path.isAbsolute(outputPath)
+    || path.resolve(outputPath) !== outputPath
+    || path.normalize(outputPath) !== outputPath
+    || outputPath !== allowedOutputPath
+  ) {
+    throw new Error("frontend D receipt output is not the exact canonical publication path");
+  }
+  if (typeof assertIgnoredCandidate !== "function") {
+    throw new TypeError("frontend D publication requires an ignore-policy verifier");
+  }
+  const directoryPath = path.dirname(outputPath);
+  let canonicalDirectory;
+  let metadata;
+  try {
+    [canonicalDirectory, metadata] = await Promise.all([
+      realpath(directoryPath),
+      lstat(directoryPath),
+    ]);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(
+        "frontend D publication requires the existing operator-owned 0700 .release directory",
+      );
+    }
+    throw error;
+  }
+  const expectedUid = typeof process.geteuid === "function"
+    ? process.geteuid()
+    : metadata.uid;
+  if (canonicalDirectory !== directoryPath
+    || !metadata.isDirectory()
+    || metadata.isSymbolicLink()
+    || metadata.uid !== expectedUid
+    || (metadata.mode & 0o777) !== 0o700) {
+    throw new Error(
+      "frontend D publication requires the canonical operator-owned 0700 .release directory",
+    );
+  }
+  await assertIgnoredCandidate(outputPath);
+  await assertNoClobberTargetAbsent(
+    outputPath,
+    "frontend D receipt",
   );
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function atomicWriteCandidateReceipt(receipt) {
+  return durablyWritePrivateFile({
+    outputPath: FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+    allowedOutputPath: FRONTEND_BUILD_CANDIDATE_RECEIPT_OUTPUT,
+    content: canonicalFrontendBuildCandidateReceiptText(receipt),
+    requireAbsent: true,
+  });
+}
+
+function wholeSecondNowMs() {
+  return Math.floor(Date.now() / 1_000) * 1_000;
+}
+
+function prebuildArgumentsFromFullArgs(args, prebuildReleasePath) {
+  return PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS.flatMap((flag) => [
+    flag,
+    flag === "--release"
+      ? prebuildReleasePath
+      : args[semanticValidatorInputKey(flag)],
+  ]);
+}
+
+async function createLiveReplayPrebuildArguments(args, liveCandidate) {
+  const home = await createPrivateReleaseBuildHome();
+  try {
+    const prebuildReleasePath = path.join(home, "pre-live-release.json");
+    const prebuildReleaseText =
+      canonicalLiveReleaseCandidatePrebuildProjectionText(liveCandidate);
+    durablyWritePrivateFile({
+      outputPath: prebuildReleasePath,
+      allowedOutputPath: prebuildReleasePath,
+      content: prebuildReleaseText,
+      requireAbsent: true,
+    });
+    return Object.freeze({
+      home,
+      prebuildCandidate: JSON.parse(prebuildReleaseText),
+      releaseArguments: prebuildArgumentsFromFullArgs(
+        args,
+        prebuildReleasePath,
+      ),
+    });
+  } catch (error) {
+    await removePrivateReleaseBuildHome(home);
+    throw error;
+  }
+}
+
+function sortedTrustedVerifierAddresses() {
+  return Object.freeze(
+    trustedVerifierAddresses().map((value) => value.toLowerCase()).sort(),
+  );
+}
+
+function currentBaseSepoliaClient(primaryRpcUrl) {
+  return createPublicClient({
+    transport: http(primaryRpcUrl, {
+      batch: false,
+      retryCount: 0,
+      timeout: 20_000,
+    }),
+  });
+}
+
+async function buildCurrentReleaseEnvironment({
+  candidate,
+  inputs,
+  historical,
+  royaltyReleaseBrowserEnv,
+  validationTimeMs,
+  authorityStage,
+  rpcEndpoints,
+  verifierAddresses,
+}) {
+  const collaborationExecutionReleaseEnv =
+    projectCollaborationExecutionReleaseEnv(
+      inputs.byKey.releaseCore.value,
+    );
+  return buildReleaseEnv({
+    candidate,
+    ledger: inputs.byKey.ledger.value,
+    artifactEvidence: inputs.byKey.artifactEvidence.value,
+    arenaEvidence: inputs.byKey.arenaEvidence.value,
+    anchorWriterEvidence: inputs.byKey.anchorWriterEvidence.value,
+    anchorWriterEvidenceBytes: inputs.byKey.anchorWriterEvidence.bytes,
+    emailOracleEvidence: inputs.byKey.emailOracleEvidence.value,
+    emailOracleEvidenceBytes: inputs.byKey.emailOracleEvidence.bytes,
+    client: currentBaseSepoliaClient(rpcEndpoints.primary),
+    primaryRpcUrl: rpcEndpoints.primary,
+    secondaryRpcUrl: rpcEndpoints.secondary,
+    now: validationTimeMs / 1_000,
+    trustedVerifierAddresses: verifierAddresses,
+    authorityBinding: Object.freeze({
+      deploymentIntentSha256:
+        historical.authorityBinding.deploymentIntentSha256,
+      reviewerAuthorityGenesisAcceptanceSha256:
+        historical.authorityBinding.reviewerAuthorityGenesisAcceptanceSha256,
+      ceremonyAuthorizationSha256:
+        historical.authorityBinding.ceremonyAuthorizationSha256,
+      runtimeAuthorityDependencySha256:
+        historical.authorityBinding.runtimeAuthorityDependencySha256,
+    }),
+    candidateAuthorityStage: authorityStage,
+    historicalComputeWorkloadActivationObservation:
+      historical.normalizedArtifacts.historicalO,
+    royaltyReleaseBrowserEnv,
+    collaborationExecutionReleaseEnv,
+  });
+}
+
+/**
+ * Authenticate the acyclic L -> R -> signed-B -> O boundary and the current
+ * chain/external evidence needed to deterministically produce nonauthorizing D.
+ * This function never writes a file, signs C, or authorizes live traffic.
+ */
+export async function validatePrebuildSemanticRelease(argv, {
+  onHistoricalValidation,
+} = {}) {
+  const args = parsePrebuildArgs(argv);
+  const inputs = await loadExactPrebuildSemanticValidatorInputs(args);
+  const independentRoyaltyHistory =
+    validateIndependentRoyaltyReleaseHistoryInput(inputs);
+  const historicalInputs = historicalSemanticInputsWithoutRoyaltyHistory(
+    inputs,
+    EXACT35_MODEL_A_INPUT_FLAGS,
+  );
+  const validationTimeMs = wholeSecondNowMs();
+  const historical = await validateExact35ModelAPrebuildAuthority({
+    inputs: historicalInputs,
+    validationTimeMs,
+    reviewerStatusHistory: [],
+  });
+  if (onHistoricalValidation !== undefined) {
+    if (typeof onHistoricalValidation !== "function") {
+      throw new TypeError("prebuild historical validation observer must be a function");
+    }
+    onHistoricalValidation(historical);
+  }
+  const candidate = normalizeReleaseCandidate(historical.candidate, {
+    authorityStage: "prebuild",
+  });
+  const currentRoyaltyHistory = validateIndependentRoyaltyReleaseHistoryInput(
+    inputs,
+    candidate,
+  );
+  if (JSON.stringify(currentRoyaltyHistory.binding)
+      !== JSON.stringify(independentRoyaltyHistory.binding)) {
+    throw new Error("Royalty H changed while cross-binding the prebuild candidate");
+  }
+  assertCleanReleaseSource(candidate.release_sha);
+  verifyGithubAttestations(candidate);
+  const rpcEndpoints = releaseRpcEndpoints();
+  const verifierAddresses = sortedTrustedVerifierAddresses();
+  const env = await buildCurrentReleaseEnvironment({
+    candidate,
+    inputs,
+    historical,
+    royaltyReleaseBrowserEnv: currentRoyaltyHistory.browserEnv,
+    validationTimeMs,
+    authorityStage: "prebuild",
+    rpcEndpoints,
+    verifierAddresses,
+  });
+  const serializedEnv = serializeEnv(env);
+  await assertExactSemanticInputsUnchangedForFlags(
+    inputs,
+    PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS,
+    "prebuild semantic validator",
+  );
+  assertCleanReleaseSource(candidate.release_sha);
+  return Object.freeze({
+    releaseSha: candidate.release_sha,
+    env: Object.freeze(env),
+    serializedEnv,
+    preDPrivateInputs: frontendBuildPreDPrivateInputsFromSemanticInputs(inputs),
+    semanticLineage: Object.freeze({
+      ...historical.semanticLineage,
+      royalty_release_history_sha256:
+        currentRoyaltyHistory.binding.history_sha256,
+      royalty_release_history_receipt_sha256:
+        currentRoyaltyHistory.binding.receipt_sha256,
+    }),
+    royaltyReleaseHistoryBinding: currentRoyaltyHistory.binding,
+    primaryRpcUrl: rpcEndpoints.primary,
+    secondaryRpcUrl: rpcEndpoints.secondary,
+    qvlVerifierRoots: verifierAddresses,
+    authorityRoots: historical.authorityRoots,
+    authorityBinding: Object.freeze({
+      ...historical.authorityBinding,
+      computeWorkloadActivationObservationSha256:
+        historical.semanticLineage.compute_workload_activation_observation_sha256,
+    }),
+  });
+}
+
+async function produceFrontendBuildCandidate(argv) {
+  await assertCandidateReceiptOutputPreflight();
+  let prebuildProjection;
+  const production = await runFrontendBuildCandidateProduction({
+    releaseArguments: argv,
+    loadSemanticProjection: async (releaseArguments) => {
+      if (prebuildProjection) {
+        throw new Error(
+          "prebuild semantic projection must be evaluated exactly once",
+        );
+      }
+      prebuildProjection = await validatePrebuildSemanticRelease(
+        releaseArguments,
+      );
+      return prebuildProjection;
+    },
+  });
+  if (!prebuildProjection) {
+    throw new Error(
+      "frontend D production omitted the authenticated prebuild projection",
+    );
+  }
+  await assertCandidateReceiptOutputPreflight();
+  atomicWriteCandidateReceipt(production.receipt);
+  return production.receipt;
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === PREBUILD_CANDIDATE_MODE_FLAG) {
+    return produceFrontendBuildCandidate(argv.slice(1));
+  }
+  const args = parseArgs(argv);
+  if (!args.checkOnly) {
+    assertSafeOutput(args.output);
+    await assertNoClobberTargetAbsent(args.output, "production release env");
+  }
+  const inputs = await loadExactSemanticValidatorInputs(args);
+  const normalizedLiveCandidate = normalizeReleaseCandidate(
+    inputs.byKey.release.value,
+    { authorityStage: "live" },
+  );
+  const replay = await createLiveReplayPrebuildArguments(
+    args,
+    normalizedLiveCandidate,
+  );
+  let prebuildProjection;
+  let prebuildHistoricalValidation;
+  let candidateProduction;
+  try {
+    candidateProduction = await runFrontendBuildCandidateProduction({
+      releaseArguments: replay.releaseArguments,
+      loadSemanticProjection: async (releaseArguments) => {
+        if (prebuildProjection) {
+          throw new Error(
+            "prebuild semantic projection must be evaluated exactly once",
+          );
+        }
+        prebuildProjection = await validatePrebuildSemanticRelease(
+          releaseArguments,
+          {
+            onHistoricalValidation: (value) => {
+              if (prebuildHistoricalValidation) {
+                throw new Error("historical exact-35 validation must be captured exactly once");
+              }
+              prebuildHistoricalValidation = value;
+            },
+          },
+        );
+        return prebuildProjection;
+      },
+    });
+  } finally {
+    await removePrivateReleaseBuildHome(replay.home);
+  }
+  if (!prebuildProjection || !prebuildHistoricalValidation) {
+    throw new Error("frontend D production omitted the authenticated exact-35 prebuild projection");
+  }
+  const validationTimeMs = wholeSecondNowMs();
+  const independentRoyaltyHistory =
+    validateIndependentRoyaltyReleaseHistoryInput(inputs);
+  const { live: candidate } = assertLiveReleaseCandidateMatchesPrebuild(
+    replay.prebuildCandidate,
+    normalizedLiveCandidate,
+  );
+  const currentRoyaltyHistory = validateIndependentRoyaltyReleaseHistoryInput(
+    inputs,
+    candidate,
+  );
+  const frontendBuildSha256 =
+    `sha256:${candidateProduction.buildAudit.manifestSha256}`;
+  const currentBuildReceipt = assertFrontendBuildCandidateLineage({
+    receipt: inputs.byKey.frontendBuildCandidateReceipt.value,
+    serializedEnv: candidateProduction.serializedEnv,
+    inputManifest: candidateProduction.inputManifest,
+    authorityBinding: {
+      ...prebuildProjection.authorityBinding,
+      frontendBuildSha256,
+    },
+  });
+  const liveActivationOptions = Object.freeze({
+    ceremonyAuthorization:
+      prebuildHistoricalValidation.normalizedArtifacts.stageOne,
+    deploymentIntent:
+      prebuildHistoricalValidation.normalizedArtifacts.intent,
+    freshContractDeploymentReceipt:
+      prebuildHistoricalValidation.normalizedArtifacts.contract,
+    reviewerGenesis:
+      prebuildHistoricalValidation.normalizedArtifacts.genesis,
+    reviewerGenesisAcceptance:
+      prebuildHistoricalValidation.normalizedArtifacts.acceptance,
+    stageBReviewerStatusHistory: Object.freeze([]),
+    stageCReviewerStatusHistory: Object.freeze([]),
+    preCeremonyRuntimeAuthority:
+      prebuildHistoricalValidation.normalizedArtifacts.runtimeAuthority,
+    computeWorkloadActivationObservationSha256:
+      prebuildProjection.authorityBinding
+        .computeWorkloadActivationObservationSha256,
+    checkedAtMs: validationTimeMs,
+    enforceFreshness: true,
+  });
+  const currentLiveActivation = normalizeLiveActivationAuthority(
+    inputs.byKey.liveActivationAuthority.value,
+    liveActivationOptions,
+  );
+  const frontendBinding = projectLiveActivationFrontendBinding(
+    currentLiveActivation,
+    { ...liveActivationOptions, enforceFreshness: false },
+  );
+  const currentAuthorityBinding =
+    assertHistoricalLiveActivationComputeWorkloadObservationBinding({
+      liveActivationAuthority: currentLiveActivation,
+      liveActivationOptions: {
+        ...liveActivationOptions,
+        enforceFreshness: false,
+      },
+      historicallyVerifiedObservation:
+        prebuildHistoricalValidation.normalizedArtifacts.historicalO,
+      frontendBuildCandidateReceipt: currentBuildReceipt,
+      serializedEnv: candidateProduction.serializedEnv,
+    });
+  if (JSON.stringify(currentRoyaltyHistory.binding)
+      !== JSON.stringify(independentRoyaltyHistory.binding)
+    || JSON.stringify(currentRoyaltyHistory.binding)
+      !== JSON.stringify(prebuildProjection.royaltyReleaseHistoryBinding)
+    || currentBuildReceipt.royalty_release_history_sha256
+      !== currentRoyaltyHistory.binding.history_sha256
+    || currentBuildReceipt.royalty_release_history_receipt_sha256
+      !== currentRoyaltyHistory.binding.receipt_sha256
+    || frontendBinding.royalty_release_history_sha256
+      !== currentRoyaltyHistory.binding.history_sha256
+    || frontendBinding.royalty_release_history_receipt_sha256
+      !== currentRoyaltyHistory.binding.receipt_sha256
+    || JSON.stringify(frontendBinding.royalty_release_authority)
+      !== JSON.stringify(currentRoyaltyHistory.receipt.royalty_release_authority)
+    || JSON.stringify(frontendBinding.royalty_release_active_state)
+      !== JSON.stringify(currentRoyaltyHistory.receipt.royalty_release_active_state)
+    || candidate.operator_policy.live_activation_authority_sha256
+      !== currentAuthorityBinding.liveActivationAuthoritySha256
+    || candidate.operator_policy.ceremony_authorization_sha256
+      !== prebuildProjection.authorityBinding.ceremonyAuthorizationSha256
+    || candidate.operator_policy.runtime_authority_dependency_sha256
+      !== prebuildProjection.authorityBinding.runtimeAuthorityDependencySha256) {
+    throw new Error("final C, D, and H Royalty release lineage is not identical");
+  }
+  validateExecutionPolicyReleaseCoreBinding(
+    candidate,
+    inputs.byKey.releaseCore.value,
+    inputs.byKey.runtimeAuthorityDependency.value,
+  );
+  assertCleanReleaseSource(candidate.release_sha);
+  verifyGithubAttestations(candidate);
+  const rpcEndpoints = releaseRpcEndpoints();
+  const verifierAddresses = sortedTrustedVerifierAddresses();
+  const env = await buildCurrentReleaseEnvironment({
+    candidate,
+    inputs,
+    historical: prebuildHistoricalValidation,
+    royaltyReleaseBrowserEnv: currentRoyaltyHistory.browserEnv,
+    validationTimeMs,
+    authorityStage: "live",
+    rpcEndpoints,
+    verifierAddresses,
+  });
+  const serializedEnv = serializeEnv(env);
+  if (serializedEnv !== candidateProduction.serializedEnv) {
+    throw new Error(
+      "final signed-C release environment differs from the reproducible pre-D environment",
+    );
+  }
+  await assertExactSemanticValidatorInputsUnchanged(inputs);
+  assertCleanReleaseSource(candidate.release_sha);
+  const receipt = Object.freeze(semanticValidationReceipt(
+    candidate.release_sha,
+    serializedEnv,
+    Object.freeze({
+      ...prebuildProjection.authorityBinding,
+      ...currentAuthorityBinding,
+    }),
+  ));
+  if (!args.checkOnly) {
+    atomicWriteOutput(args.output, serializedEnv);
+  }
+  return receipt;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -31,21 +31,26 @@ import {
   ShieldCheck,
   Sparkles,
   TimerReset,
+  Trash2,
   TriangleAlert,
   Trophy,
 } from "lucide-solid";
 import { shortAddress } from "../lib/contract";
 import {
   ARENA_SAFE_IR_STARTER_FILENAME,
+  appendArenaLeaderboardPageRows,
+  appendArenaQueuePageRows,
   arenaWorkerPresenceMatchesRegistryPreflight,
   arenaSafeIrStarterCandidateBytes,
   candidateCommitment,
+  cancelArenaOwnerSubmission,
   fetchArenaCatalog,
   fetchArenaLeaderboard,
   fetchArenaOwnerSubmissions,
   fetchArenaQueue,
   fetchArenaWorkerCapability,
   prepareArenaSubmission,
+  retryArenaCiphertextErasure,
   submitPreparedArenaSubmission,
   validateArenaSafeIrCandidateBytes,
   runArenaChallengeRegistryBrowserPreflight,
@@ -53,9 +58,12 @@ import {
   type ArenaChallengeRegistryBrowserPreflight,
   type ArenaChallengeManifest,
   type ArenaLeaderboard,
+  type ArenaLeaderboardRow,
   type ArenaOwnerSubmission,
+  type ArenaPublicSubmission,
   type ArenaSubmissionResult,
   type ArenaQueue,
+  type ArenaQueueState,
   type ArenaExecutionProvenance,
   type ArenaWorkerCapability,
   type PreparedArenaSubmission,
@@ -75,6 +83,49 @@ import type { ArenaRouteState, ArenaRouteTab } from "../routes";
 type ArenaTab = ArenaRouteTab;
 type ChallengeStatus = "MODELED" | "ROADMAP";
 type RegistryPreflightState = "not_applicable" | "checking" | "passed" | "blocked";
+type PublicPaginationState = "idle" | "loading" | "ready" | "error";
+type ArenaQueueTone =
+  | "queued"
+  | "checking"
+  | "running"
+  | "held"
+  | "completed"
+  | "failed"
+  | "withheld"
+  | "cancelled"
+  | "expired"
+  | "dead-letter";
+
+export interface ArenaPublicQueuePresentation {
+  readonly label: string;
+  readonly phase: "active" | "terminal";
+  readonly tone: ArenaQueueTone;
+  readonly spinning: boolean;
+}
+
+const ARENA_PUBLIC_QUEUE_PRESENTATION: Readonly<
+  Record<ArenaQueueState, ArenaPublicQueuePresentation>
+> = {
+  submitted: { label: "submitted", phase: "active", tone: "queued", spinning: false },
+  policy_screen: { label: "policy screen", phase: "active", tone: "checking", spinning: true },
+  queued: { label: "queued", phase: "active", tone: "queued", spinning: false },
+  provisioning: { label: "provisioning", phase: "active", tone: "running", spinning: true },
+  public_tests: { label: "public tests", phase: "active", tone: "running", spinning: true },
+  sealed_eval: { label: "sealed evaluation", phase: "active", tone: "running", spinning: true },
+  review_hold: { label: "review hold", phase: "active", tone: "held", spinning: false },
+  completed: { label: "completed", phase: "terminal", tone: "completed", spinning: false },
+  failed: { label: "failed", phase: "terminal", tone: "failed", spinning: false },
+  withheld: { label: "withheld", phase: "terminal", tone: "withheld", spinning: false },
+  cancelled: { label: "cancelled", phase: "terminal", tone: "cancelled", spinning: false },
+  expired: { label: "expired", phase: "terminal", tone: "expired", spinning: false },
+  dead_letter: { label: "dead letter", phase: "terminal", tone: "dead-letter", spinning: false },
+};
+
+export function arenaPublicQueuePresentation(
+  state: ArenaQueueState,
+): ArenaPublicQueuePresentation {
+  return ARENA_PUBLIC_QUEUE_PRESENTATION[state];
+}
 
 interface Challenge {
   id: string;
@@ -119,6 +170,19 @@ interface Ranking {
     denominator: number;
     improvementSteps: number;
   };
+}
+
+interface ArenaQueueDisplayRow {
+  id: string;
+  who: string;
+  stage: string;
+  status: string;
+  phase: "active" | "terminal";
+  tone: ArenaQueueTone;
+  spinning: boolean;
+  eta: string;
+  spend: string;
+  evidence: string;
 }
 
 const CHALLENGES: Challenge[] = [
@@ -201,11 +265,11 @@ const RANKINGS: Ranking[] = [
   { rank: 8, handle: "agent/solace", wallet: "0x92B0…7781", band: "MEDIUM", runtime: "MEDIUM", receipts: 14, delta: 1, updated: "8 hr", evidence: "illustrative", evidenceLabel: "Modeled sample" },
 ];
 
-const QUEUE = [
-  { id: "run_9a30", who: "agent/meridian-7", stage: "Modeled execution", status: "running", eta: "sample only", spend: "sample", evidence: "Illustrative only" },
-  { id: "run_f273", who: "latent_orchid", stage: "Modeled policy gate", status: "checking", eta: "sample only", spend: "sample", evidence: "Illustrative only" },
-  { id: "run_2d8c", who: "ttt-discover/bio", stage: "Modeled queue", status: "queued", eta: "sample only", spend: "sample", evidence: "Illustrative only" },
-  { id: "run_71ab", who: "helix_works", stage: "Modeled queue", status: "queued", eta: "sample only", spend: "sample", evidence: "Illustrative only" },
+const QUEUE: ArenaQueueDisplayRow[] = [
+  { id: "run_9a30", who: "agent/meridian-7", stage: "Modeled execution", status: "running", phase: "active", tone: "running", spinning: true, eta: "sample only", spend: "sample", evidence: "Illustrative only" },
+  { id: "run_f273", who: "latent_orchid", stage: "Modeled policy gate", status: "checking", phase: "active", tone: "checking", spinning: true, eta: "sample only", spend: "sample", evidence: "Illustrative only" },
+  { id: "run_2d8c", who: "ttt-discover/bio", stage: "Modeled queue", status: "queued", phase: "active", tone: "queued", spinning: false, eta: "sample only", spend: "sample", evidence: "Illustrative only" },
+  { id: "run_71ab", who: "helix_works", stage: "Modeled queue", status: "queued", phase: "active", tone: "queued", spinning: false, eta: "sample only", spend: "sample", evidence: "Illustrative only" },
 ];
 
 const ARENA_TABS: readonly { key: ArenaTab; label: string; icon: typeof Trophy }[] = [
@@ -216,6 +280,14 @@ const ARENA_TABS: readonly { key: ArenaTab; label: string; icon: typeof Trophy }
 ];
 
 const ARENA_TAB_KEYS = ARENA_TABS.map((item) => item.key);
+
+function restoreRoutedArenaTabFocus(next: ArenaTab): void {
+  queueMicrotask(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !active.id.startsWith("arena-tab-")) return;
+    document.getElementById(`arena-tab-${next}`)?.focus({ preventScroll: true });
+  });
+}
 
 function catalogChallenge(item: ArenaCatalog["challenges"][number]): Challenge {
   const dnaseq = item.challenge_id === "dnaseq-variant-qc-safe-ir";
@@ -275,7 +347,15 @@ export function Arena(props: {
   const [submissionResult, setSubmissionResult] = createSignal<ArenaSubmissionResult>();
   const [catalog, setCatalog] = createSignal<ArenaCatalog>();
   const [publicQueue, setPublicQueue] = createSignal<ArenaQueue>();
+  const [publicQueueRows, setPublicQueueRows] = createSignal<ArenaPublicSubmission[]>([]);
   const [publicLeaderboard, setPublicLeaderboard] = createSignal<ArenaLeaderboard>();
+  const [publicLeaderboardRows, setPublicLeaderboardRows] = createSignal<ArenaLeaderboardRow[]>([]);
+  const [queuePaginationState, setQueuePaginationState] = createSignal<PublicPaginationState>("idle");
+  const [queuePaginationError, setQueuePaginationError] = createSignal("");
+  const [queuePaginationAnnouncement, setQueuePaginationAnnouncement] = createSignal("");
+  const [leaderboardPaginationState, setLeaderboardPaginationState] = createSignal<PublicPaginationState>("idle");
+  const [leaderboardPaginationError, setLeaderboardPaginationError] = createSignal("");
+  const [leaderboardPaginationAnnouncement, setLeaderboardPaginationAnnouncement] = createSignal("");
   const [workerCapability, setWorkerCapability] = createSignal<ArenaWorkerCapability>();
   const [workerCapabilityError, setWorkerCapabilityError] = createSignal("");
   const [arenaSession, setArenaSession] = createSignal<ArenaWalletTokenResponse>();
@@ -284,6 +364,11 @@ export function Arena(props: {
   const [ownerNextCursor, setOwnerNextCursor] = createSignal<string | null>(null);
   const [ownerState, setOwnerState] = createSignal<"signed_out" | "authorizing" | "loading" | "ready" | "error">("signed_out");
   const [ownerError, setOwnerError] = createSignal("");
+  const [ownerActionSubmissionId, setOwnerActionSubmissionId] = createSignal<string>();
+  const [ownerActionKind, setOwnerActionKind] = createSignal<"cancel" | "cleanup">();
+  const [ownerActionError, setOwnerActionError] = createSignal("");
+  const [ownerActionAnnouncement, setOwnerActionAnnouncement] = createSignal("");
+  const [cancelConfirmationId, setCancelConfirmationId] = createSignal<string>();
   const [apiState, setApiState] = createSignal<"preview" | "loading" | "connected" | "error">("preview");
   const [apiError, setApiError] = createSignal("");
   const [projectionState, setProjectionState] = createSignal<"idle" | "loading" | "ready" | "error">("idle");
@@ -311,13 +396,28 @@ export function Arena(props: {
     return [...live, ...CHALLENGES.filter((item) => !liveKeys.has(`${item.id}@${item.version ?? ""}`))];
   });
 
+  const routeResolution = createMemo<"resolved" | "resolving" | "unavailable" | "unknown">(() => {
+    const requested = props.routeState;
+    if (!requested) return "resolved";
+    const liveCatalog = catalog();
+    if (liveCatalog) {
+      return liveCatalog.challenges.some((item) => (
+        item.challenge_id === requested.challengeId && item.version === requested.version
+      )) ? "resolved" : "unknown";
+    }
+    if (CHALLENGES.some((item) => item.id === requested.challengeId && item.version === requested.version)) {
+      return "resolved";
+    }
+    return apiState() === "error" ? "unavailable" : "resolving";
+  });
+
   const challenge = createMemo(() => challenges().find((item) => (
     item.id === challengeId()
     && (!challengeVersion() || item.version === challengeVersion())
   )) ?? challenges()[0]);
   const rankings = createMemo(() => {
     const needle = search().trim().toLowerCase();
-    const boundedRows = publicLeaderboard()?.rows.map((row) => {
+    const boundedRows = publicLeaderboardRows().map((row) => {
       return {
         rank: row.rank,
         handle: `entrant-${row.identity.project_id_hash.slice(0, 8)}`,
@@ -343,17 +443,25 @@ export function Arena(props: {
     return needle ? source.filter((row) => `${row.handle} ${row.wallet}`.toLowerCase().includes(needle)) : source;
   });
 
-  const queueRows = createMemo(() => {
+  const queueRows = createMemo<ArenaQueueDisplayRow[]>(() => {
     if (!challenge().apiBacked) return QUEUE;
-    return (publicQueue()?.submissions ?? []).map((run) => ({
-      id: run.submission_id,
-      who: `entrant-${run.identity.project_id_hash.slice(0, 8)}`,
-      stage: run.state.replaceAll("_", " "),
-      status: run.state === "sealed_eval" || run.state === "public_tests" ? "running" : run.state === "policy_screen" ? "checking" : "queued",
-      eta: "timing sealed",
-      spend: "no charge",
-      evidence: run.execution_provenance.status === "worker_reported" ? "QVL-bound claim" : "No execution evidence",
-    }));
+    return publicQueueRows().map((run) => {
+      const presentation = arenaPublicQueuePresentation(run.state);
+      return {
+        id: run.submission_id,
+        who: `entrant-${run.identity.project_id_hash.slice(0, 8)}`,
+        stage: presentation.label,
+        status: presentation.label,
+        phase: presentation.phase,
+        tone: presentation.tone,
+        spinning: presentation.spinning,
+        eta: "timing sealed",
+        spend: "no charge",
+        evidence: run.execution_provenance.status === "worker_reported"
+          ? "Worker-reported QVL binding · not independently verified"
+          : "No execution evidence",
+      };
+    });
   });
 
   const safeIrWorkerPresenceMatchesPreflight = createMemo(() => Boolean(
@@ -398,10 +506,30 @@ export function Arena(props: {
   };
 
   let projectionRequest = 0;
+  let queuePaginationRequest = 0;
+  let leaderboardPaginationRequest = 0;
+  const queueSeenCursors = new Set<string>();
+  const leaderboardSeenCursors = new Set<string>();
   const refreshSelectedChallenge = async (announce = true): Promise<void> => {
     const selected = challenge();
-    if (!selected.apiBacked || !selected.version || projectionRefreshing()) return;
+    if (
+      !selected.apiBacked
+      || !selected.version
+      || projectionRefreshing()
+      || queuePaginationState() === "loading"
+      || leaderboardPaginationState() === "loading"
+    ) return;
     const request = ++projectionRequest;
+    ++queuePaginationRequest;
+    ++leaderboardPaginationRequest;
+    queueSeenCursors.clear();
+    leaderboardSeenCursors.clear();
+    setQueuePaginationState("idle");
+    setLeaderboardPaginationState("idle");
+    setQueuePaginationError("");
+    setLeaderboardPaginationError("");
+    setQueuePaginationAnnouncement("");
+    setLeaderboardPaginationAnnouncement("");
     const selectedId = selected.id;
     const selectedVersion = selected.version;
     setProjectionRefreshing(true);
@@ -418,7 +546,11 @@ export function Arena(props: {
         || challenge().version !== selectedVersion
       ) return;
       setPublicQueue(queue);
+      setPublicQueueRows(queue.submissions);
       setPublicLeaderboard(board);
+      setPublicLeaderboardRows(board.rows);
+      setQueuePaginationState("ready");
+      setLeaderboardPaginationState("ready");
       setProjectionState("ready");
     } catch (cause) {
       if (
@@ -428,8 +560,118 @@ export function Arena(props: {
       ) return;
       setProjectionState("error");
       setProjectionError(cause instanceof Error ? cause.message : "Arena projections are unavailable");
+      setQueuePaginationState(publicQueue() ? "ready" : "idle");
+      setLeaderboardPaginationState(publicLeaderboard() ? "ready" : "idle");
     } finally {
       if (request === projectionRequest) setProjectionRefreshing(false);
+    }
+  };
+
+  const loadMoreQueue = async (): Promise<void> => {
+    const selected = challenge();
+    const currentPage = publicQueue();
+    const cursor = currentPage?.next_cursor;
+    if (
+      !selected.apiBacked
+      || !selected.version
+      || !currentPage
+      || !cursor
+      || projectionRefreshing()
+      || queuePaginationState() === "loading"
+    ) return;
+    const request = ++queuePaginationRequest;
+    const selectedId = selected.id;
+    const selectedVersion = selected.version;
+    queueSeenCursors.add(cursor);
+    setQueuePaginationState("loading");
+    setQueuePaginationError("");
+    setQueuePaginationAnnouncement("");
+    try {
+      const nextPage = await fetchArenaQueue(selectedId, selectedVersion, {
+        limit: 100,
+        cursor,
+      });
+      if (
+        request !== queuePaginationRequest
+        || challenge().id !== selectedId
+        || challenge().version !== selectedVersion
+      ) return;
+      if (
+        nextPage.next_cursor !== null
+        && queueSeenCursors.has(nextPage.next_cursor)
+      ) {
+        throw new Error("Arena queue continuation did not advance to a fresh cursor");
+      }
+      const currentRows = publicQueueRows();
+      const appended = appendArenaQueuePageRows(currentRows, currentPage, nextPage);
+      setPublicQueueRows(appended);
+      setPublicQueue(nextPage);
+      setQueuePaginationState("ready");
+      setQueuePaginationAnnouncement(
+        `Loaded ${appended.length - currentRows.length} additional queue record${appended.length - currentRows.length === 1 ? "" : "s"}. ${appended.length} displayed.`,
+      );
+    } catch (cause) {
+      if (
+        request !== queuePaginationRequest
+        || challenge().id !== selectedId
+        || challenge().version !== selectedVersion
+      ) return;
+      setQueuePaginationState("error");
+      setQueuePaginationError(cause instanceof Error ? cause.message : "The next queue page was rejected");
+    }
+  };
+
+  const loadMoreLeaderboard = async (): Promise<void> => {
+    const selected = challenge();
+    const currentPage = publicLeaderboard();
+    const cursor = currentPage?.next_cursor;
+    if (
+      !selected.apiBacked
+      || !selected.version
+      || !currentPage
+      || !cursor
+      || projectionRefreshing()
+      || leaderboardPaginationState() === "loading"
+    ) return;
+    const request = ++leaderboardPaginationRequest;
+    const selectedId = selected.id;
+    const selectedVersion = selected.version;
+    leaderboardSeenCursors.add(cursor);
+    setLeaderboardPaginationState("loading");
+    setLeaderboardPaginationError("");
+    setLeaderboardPaginationAnnouncement("");
+    try {
+      const nextPage = await fetchArenaLeaderboard(selectedId, selectedVersion, {
+        limit: 100,
+        cursor,
+      });
+      if (
+        request !== leaderboardPaginationRequest
+        || challenge().id !== selectedId
+        || challenge().version !== selectedVersion
+      ) return;
+      if (
+        nextPage.next_cursor !== null
+        && leaderboardSeenCursors.has(nextPage.next_cursor)
+      ) {
+        throw new Error("Arena leaderboard continuation did not advance to a fresh cursor");
+      }
+      const currentRows = publicLeaderboardRows();
+      const appended = appendArenaLeaderboardPageRows(currentRows, currentPage, nextPage);
+      setPublicLeaderboardRows(appended);
+      setPublicLeaderboard(nextPage);
+      setLeaderboardPaginationState("ready");
+      setLeaderboardPaginationAnnouncement(
+        `Loaded ${appended.length - currentRows.length} additional ranking${appended.length - currentRows.length === 1 ? "" : "s"}. ${appended.length} displayed.`,
+      );
+    } catch (cause) {
+      if (
+        request !== leaderboardPaginationRequest
+        || challenge().id !== selectedId
+        || challenge().version !== selectedVersion
+      ) return;
+      setLeaderboardPaginationState("error");
+      setLeaderboardPaginationError(cause instanceof Error ? cause.message : "The next ranking page was rejected");
     }
   };
 
@@ -439,19 +681,16 @@ export function Arena(props: {
       .then((nextCatalog) => {
         setCatalog(nextCatalog);
         const requested = props.routeState;
-        const selected = requested
-          ? nextCatalog.challenges.find((item) => item.challenge_id === requested.challengeId && item.version === requested.version)
-          : nextCatalog.challenges[0];
-        const fallback = selected ?? nextCatalog.challenges[0];
-        setChallengeId(fallback?.challenge_id ?? CHALLENGES[0].id);
-        setChallengeVersion(fallback?.version);
-        if (requested && !selected) {
-          setApiError(`Challenge ${requested.challengeId} ${requested.version} is not in the bounded catalog.`);
-        } else if (!requested && fallback) {
-          props.navigateArena({ challengeId: fallback.challenge_id, version: fallback.version, tab: "rankings" });
+        if (!requested) {
+          const first = nextCatalog.challenges[0];
+          setChallengeId(first?.challenge_id ?? CHALLENGES[0].id);
+          setChallengeVersion(first?.version);
+          if (first) {
+            props.navigateArena({ challengeId: first.challenge_id, version: first.version, tab: "rankings" });
+          }
         }
         setApiState("connected");
-        if (!requested || selected) setApiError("");
+        setApiError("");
       })
       .catch((cause) => {
         setApiState("error");
@@ -464,7 +703,9 @@ export function Arena(props: {
     if (!requested) return;
     // Tab routing is independent of API availability. A shareable queue/spec link
     // must still select the requested surface while the bounded catalog is offline.
+    const previousTab = tab();
     setTab(requested.tab);
+    if (previousTab !== requested.tab) restoreRoutedArenaTabFocus(requested.tab);
     const liveCatalog = catalog();
     if (!liveCatalog) {
       const local = CHALLENGES.find((item) => (
@@ -481,8 +722,10 @@ export function Arena(props: {
     ));
     if (!selected) {
       setApiError(`Challenge ${requested.challengeId} ${requested.version} is not in the bounded catalog.`);
+      queueMicrotask(() => props.navigate("not_found"));
       return;
     }
+    setApiError("");
     setChallengeId(selected.challenge_id);
     setChallengeVersion(selected.version);
   });
@@ -490,8 +733,20 @@ export function Arena(props: {
   createEffect(() => {
     const selected = challenge();
     ++projectionRequest;
+    ++queuePaginationRequest;
+    ++leaderboardPaginationRequest;
+    queueSeenCursors.clear();
+    leaderboardSeenCursors.clear();
     setPublicQueue(undefined);
+    setPublicQueueRows([]);
     setPublicLeaderboard(undefined);
+    setPublicLeaderboardRows([]);
+    setQueuePaginationState("idle");
+    setLeaderboardPaginationState("idle");
+    setQueuePaginationError("");
+    setLeaderboardPaginationError("");
+    setQueuePaginationAnnouncement("");
+    setLeaderboardPaginationAnnouncement("");
     setProjectionError("");
     if (!selected.apiBacked || !selected.version) {
       setProjectionState("idle");
@@ -502,11 +757,19 @@ export function Arena(props: {
     setProjectionRefreshing(false);
     untrack(() => void refreshSelectedChallenge(false));
     const poll = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshSelectedChallenge(false);
+      const extendedProjection = (
+        publicQueueRows().length > (publicQueue()?.submission_count ?? 0)
+        || publicLeaderboardRows().length > (publicLeaderboard()?.row_count ?? 0)
+      );
+      if (document.visibilityState === "visible" && !extendedProjection) {
+        void refreshSelectedChallenge(false);
+      }
     }, 30_000);
     onCleanup(() => {
       window.clearInterval(poll);
       ++projectionRequest;
+      ++queuePaginationRequest;
+      ++leaderboardPaginationRequest;
       setProjectionRefreshing(false);
     });
   });
@@ -552,6 +815,11 @@ export function Arena(props: {
       setOwnerSubmissions([]);
       setOwnerNextCursor(null);
       setOwnerError("");
+      setOwnerActionSubmissionId(undefined);
+      setOwnerActionKind(undefined);
+      setOwnerActionError("");
+      setOwnerActionAnnouncement("");
+      setCancelConfirmationId(undefined);
       setOwnerState("signed_out");
     }
   });
@@ -747,6 +1015,169 @@ export function Arena(props: {
     }
   };
 
+  const ownerMutationContext = (token: ArenaWalletTokenResponse, submissionId: string): {
+    challengeId: string;
+    version: string;
+    walletVersion: number;
+  } => {
+    const selected = challenge();
+    const walletVersion = wallet.authorizationVersion();
+    if (
+      !selected.apiBacked
+      || !selected.version
+      || token.challenge_id !== selected.id
+      || token.challenge_version !== selected.version
+      || token.address.toLowerCase() !== wallet.account()?.toLowerCase()
+      || !wallet.isCorrectChain()
+      || arenaSessionWalletVersion() !== walletVersion
+      || !/^sub_[0-9a-f]{24}$/.test(submissionId)
+    ) throw new Error("Arena wallet session changed before the owner action");
+    return { challengeId: selected.id, version: selected.version, walletVersion };
+  };
+
+  const ownerMutationStillCurrent = (
+    token: ArenaWalletTokenResponse,
+    context: { challengeId: string; version: string; walletVersion: number },
+  ): boolean => (
+    arenaSession()?.access_token === token.access_token
+    && challenge().id === context.challengeId
+    && challenge().version === context.version
+    && wallet.account()?.toLowerCase() === token.address.toLowerCase()
+    && wallet.isCorrectChain()
+    && wallet.authorizationVersion() === context.walletVersion
+    && arenaSessionWalletVersion() === context.walletVersion
+  );
+
+  const recoverOwnerAction = async (
+    token: ArenaWalletTokenResponse,
+    context: { challengeId: string; version: string; walletVersion: number },
+    submissionId: string,
+    expectedState: "cancelled" | "unlinked",
+  ): Promise<boolean> => {
+    await loadOwnerPage(token);
+    if (!ownerMutationStillCurrent(token, context)) return false;
+    const refreshed = ownerSubmissions().find((item) => item.submission_id === submissionId);
+    return expectedState === "cancelled"
+      ? refreshed?.state === "cancelled"
+      : refreshed?.ciphertext_lifecycle.state === "unlinked";
+  };
+
+  const cancelOwnerSubmission = async (submissionId: string): Promise<void> => {
+    const token = arenaSession();
+    if (!token) {
+      setOwnerActionError("Re-authorize the exact challenge version before cancelling.");
+      return;
+    }
+    let context: ReturnType<typeof ownerMutationContext>;
+    try {
+      context = ownerMutationContext(token, submissionId);
+    } catch (cause) {
+      setOwnerActionError(cause instanceof Error ? cause.message : "Arena owner session is stale");
+      return;
+    }
+    setOwnerActionSubmissionId(submissionId);
+    setOwnerActionKind("cancel");
+    setOwnerActionError("");
+    setOwnerActionAnnouncement("");
+    try {
+      const receipt = await cancelArenaOwnerSubmission(
+        context.challengeId,
+        context.version,
+        submissionId,
+        token.access_token,
+      );
+      if (!ownerMutationStillCurrent(token, context)) return;
+      setOwnerSubmissions((current) => current.map((item) => (
+        item.submission_id === submissionId ? receipt.submission : item
+      )));
+      setCancelConfirmationId(undefined);
+      setOwnerActionAnnouncement(
+        receipt.ciphertext_lifecycle.state === "unlinked"
+          ? `${submissionId} was cancelled before claim; the owned ciphertext directory entry is now observed absent. This is not a physical-media wipe claim.`
+          : `${submissionId} was cancelled before claim. Ciphertext unlink remains retryable and no worker may now claim the submission.`,
+      );
+    } catch (cause) {
+      if (!ownerMutationStillCurrent(token, context)) return;
+      try {
+        const recovered = await recoverOwnerAction(token, context, submissionId, "cancelled");
+        if (recovered) {
+          setCancelConfirmationId(undefined);
+          setOwnerActionAnnouncement(
+            `${submissionId} is durably cancelled after response recovery. Check its ciphertext lifecycle below and retry unlink if requested.`,
+          );
+          return;
+        }
+      } catch {
+        // Preserve uncertainty explicitly; never infer cancellation from a
+        // failed mutation response or a failed recovery read.
+      }
+      setOwnerActionError(
+        `${cause instanceof Error ? cause.message : "Cancellation response was unavailable"} Outcome not confirmed; refresh the authenticated owner state before retrying.`,
+      );
+    } finally {
+      if (ownerMutationStillCurrent(token, context)) {
+        setOwnerActionSubmissionId(undefined);
+        setOwnerActionKind(undefined);
+      }
+    }
+  };
+
+  const retryOwnerCiphertextErasure = async (submissionId: string): Promise<void> => {
+    const token = arenaSession();
+    if (!token) {
+      setOwnerActionError("Re-authorize the exact challenge version before retrying unlink.");
+      return;
+    }
+    let context: ReturnType<typeof ownerMutationContext>;
+    try {
+      context = ownerMutationContext(token, submissionId);
+    } catch (cause) {
+      setOwnerActionError(cause instanceof Error ? cause.message : "Arena owner session is stale");
+      return;
+    }
+    setOwnerActionSubmissionId(submissionId);
+    setOwnerActionKind("cleanup");
+    setOwnerActionError("");
+    setOwnerActionAnnouncement("");
+    try {
+      const receipt = await retryArenaCiphertextErasure(
+        context.challengeId,
+        context.version,
+        submissionId,
+        token.access_token,
+      );
+      if (!ownerMutationStillCurrent(token, context)) return;
+      await loadOwnerPage(token);
+      if (!ownerMutationStillCurrent(token, context)) return;
+      setOwnerActionAnnouncement(
+        receipt.state === "unlinked"
+          ? `${submissionId} ciphertext directory entry is observed absent. Commitments and the bounded receipt remain; physical-media erasure is not claimed.`
+          : `${submissionId} unlink still requires retry. The terminal record remains non-executable and exposes no ciphertext.`,
+      );
+    } catch (cause) {
+      if (!ownerMutationStillCurrent(token, context)) return;
+      try {
+        const recovered = await recoverOwnerAction(token, context, submissionId, "unlinked");
+        if (recovered) {
+          setOwnerActionAnnouncement(
+            `${submissionId} is observed unlinked after response recovery. Physical-media erasure is not claimed.`,
+          );
+          return;
+        }
+      } catch {
+        // Keep the response ambiguous until the authenticated row can be read.
+      }
+      setOwnerActionError(
+        `${cause instanceof Error ? cause.message : "Ciphertext cleanup response was unavailable"} Current unlink state is unconfirmed; refresh before retrying.`,
+      );
+    } finally {
+      if (ownerMutationStillCurrent(token, context)) {
+        setOwnerActionSubmissionId(undefined);
+        setOwnerActionKind(undefined);
+      }
+    }
+  };
+
   const submitProgram = async (): Promise<void> => {
     const file = submissionFile();
     const selected = challenge();
@@ -831,6 +1262,32 @@ export function Arena(props: {
   useModalFocus(submitOpen, () => submissionDialogRef, closeSubmissionDialog);
 
   return (
+    <Show
+      when={routeResolution() === "resolved"}
+      fallback={
+        <div class="page-wrap product-page arena-page">
+          <header class="product-page-head arena-head">
+            <div>
+              <p class="overline">Versioned challenge link</p>
+              <h1>{routeResolution() === "resolving" ? "Resolving challenge link" : routeResolution() === "unknown" ? "Challenge not found" : "Arena catalog unavailable"}</h1>
+              <p>{routeResolution() === "resolving"
+                ? "Checking the bounded Arena catalog before showing any rankings, queue, spec, or wallet-private controls. No fallback challenge data is shown while membership is pending."
+                : routeResolution() === "unknown"
+                  ? "This challenge id and version are not present in the bounded Arena catalog. No fallback challenge data is shown under the requested URL."
+                  : "The Arena catalog could not be reached, so this unrecognized challenge link cannot be validated. No fallback challenge data is shown."}</p>
+            </div>
+          </header>
+          <div class={`environment-banner ${routeResolution() === "unknown" ? "warning" : "modeled"}`} role={routeResolution() === "unknown" ? "alert" : "status"} aria-live="polite">
+            {routeResolution() === "resolving" ? <LoaderCircle class="spin" size={17} /> : <TriangleAlert size={17} />}
+            <div>
+              <strong>{routeResolution() === "resolving" ? "Catalog membership pending" : "Fail-closed route boundary"}</strong>
+              <span>{apiError() || "Only an exact catalog challenge id and semantic version may open a version-scoped Arena surface."}</span>
+            </div>
+          </div>
+          <button class="secondary-button" type="button" onClick={() => props.navigate("arena")}>Open the Arena catalog</button>
+        </div>
+      }
+    >
     <div class="page-wrap product-page arena-page">
       <header class="product-page-head arena-head">
         <div>
@@ -841,14 +1298,14 @@ export function Arena(props: {
         <button class="primary-button large" type="button" disabled={!challenge().apiBacked} title={challenge().apiBacked ? "Prepare ciphertext ingress; queue acceptance does not authorize execution" : challenge().version ? "Submission requires the fresh API, frozen contract gate, and release-bound CVM" : "Modeled challenge previews cannot accept submissions"} onClick={() => setSubmitOpen(true)}><Plus size={17} /> Prepare ciphertext ingress</button>
       </header>
 
-      <div class={`environment-banner ${safeIrWorkerPresenceMatchesPreflight() ? "live" : "modeled"}`} role="status" aria-live="polite"><Sparkles size={17} /><div>
+      <div class={`environment-banner ${apiState() === "connected" ? "live" : apiState() === "error" ? "warning" : "modeled"}`} role="status" aria-live="polite"><Sparkles size={17} /><div>
         <strong>{apiState() === "connected"
-          ? safeIrWorkerPresenceMatchesPreflight() ? "Release-bound Safe-IR worker present" : "Modeled Arena API connected"
-          : apiState() === "loading" ? "Checking the modeled Arena API" : "Modeled competition preview"}</strong>
+          ? safeIrWorkerPresenceMatchesPreflight() ? "Arena API connected · release-bound Safe-IR worker present" : "Arena API connected · execution unproven"
+          : apiState() === "loading" ? "Checking the release-gated Arena API" : apiState() === "error" ? "Arena API unavailable · modeled competition preview" : "Modeled competition preview"}</strong>
         <span>{apiState() === "connected"
           ? safeIrWorkerPresenceMatchesPreflight()
-            ? "A fresh authenticated heartbeat matches the deployed source SHA, image, release policy, catalog, and Safe-IR runtime. This presence record is not TDX evidence: the worker registry check is startup-scoped, and every job still requires fresh independent quote/QVL and execution-policy gates. General Python remains preview-only."
-            : `The versioned challenge, durable queue, owner projection, and bounded Ladder ranking come from the service. Execution remains modeled until the deployed descriptor and a fresh matching Safe-IR heartbeat are present.${workerCapabilityError() ? ` Presence note: ${workerCapabilityError()}` : ""}${apiError() ? ` Catalog note: ${apiError()}` : ""}`
+            ? "A fresh authenticated heartbeat matches the deployed source SHA, image, release policy, catalog, and Safe-IR runtime. This presence record is not TDX evidence and never upgrades a queue or ranking row: every job still requires fresh independent quote/QVL and execution-policy gates, and every result needs its own bounded worker provenance. General Python remains preview-only."
+            : `The versioned challenge, durable queue, owner projection, and bounded Ladder ranking come from the connected service. Ciphertext ingress can be live while execution remains unproven; every queue and ranking row keeps its own evidence state. Execution remains modeled until the deployed descriptor and a fresh matching Safe-IR heartbeat are present.${workerCapabilityError() ? ` Presence note: ${workerCapabilityError()}` : ""}${apiError() ? ` Catalog note: ${apiError()}` : ""}`
           : `Competitors, rewards, queue activity, and rankings are illustrative until the fresh evaluator is deployed.${apiState() === "error" && apiError() ? ` API note: ${apiError()}` : ""}`}</span>
       </div></div>
 
@@ -898,7 +1355,7 @@ export function Arena(props: {
               <p>{challenge().description}</p>
               <div class="challenge-meta-row">
                 <span><Award size={15} /><small>{challenge().apiBacked ? "BOUNTY STATUS · NO LIVE POOL" : `${challenge().status} · ILLUSTRATIVE BOUNTY`}</small><strong>{challenge().prize}</strong></span>
-                <span><Code2 size={15} /><small>{challenge().apiBacked ? "PUBLIC API · QUEUE COUNT" : `${challenge().status} · ILLUSTRATIVE ENTRIES`}</small><strong>{challenge().apiBacked ? publicQueue()?.submission_count ?? "—" : challenge().entries}</strong></span>
+                <span><Code2 size={15} /><small>{challenge().apiBacked ? "PUBLIC API · LOADED QUEUE ROWS" : `${challenge().status} · ILLUSTRATIVE ENTRIES`}</small><strong>{challenge().apiBacked ? publicQueue() ? publicQueueRows().length : "—" : challenge().entries}</strong></span>
                 <span><Clock3 size={15} /><small>{challenge().apiBacked ? `${challenge().status} · DECLARED WINDOW` : `${challenge().status} · ILLUSTRATIVE WINDOW`}</small><strong>{challenge().time}</strong></span>
                 <span><Gauge size={15} /><small>{challenge().apiBacked ? "PUBLIC MANIFEST · BOUNDED METRIC" : `${challenge().status} · ILLUSTRATIVE METRIC`}</small><strong>{challenge().metric}</strong></span>
               </div>
@@ -929,13 +1386,13 @@ export function Arena(props: {
                   <div class="worker-presence-indicator" role="status" aria-live="polite" title="Worker presence is not proof for any result row">
                     <Activity size={14} /><span>{safeIrWorkerPresenceMatchesPreflight() ? "service observed · execution per row" : "service not observed · execution per row"}</span>
                   </div>
-                  <Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh"}</button></Show>
+                  <Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing() || leaderboardPaginationState() === "loading" || queuePaginationState() === "loading"} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh first page"}</button></Show>
                 </div>
               </div>
               <div class="leaderboard-notice"><ShieldCheck size={15} /><span>Exact reward, hidden-label errors, outputs, and private examples never appear here. The public rank uses the Ladder step; ties resolve by earlier release time and then submission ID.</span></div>
-              <Show when={challenge().apiBacked && projectionState() === "error"}><div class="projection-error" role="alert"><TriangleAlert size={15} /><span><strong>Rankings could not be refreshed.</strong> {projectionError()} {publicLeaderboard() ? "The last bounded projection remains visible and may be stale." : "No ranking data is being shown as an empty result."}</span><button class="secondary-button" type="button" disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}>Retry</button></div></Show>
+              <Show when={challenge().apiBacked && projectionState() === "error"}><div class="projection-error" role="alert"><TriangleAlert size={15} /><span><strong>Rankings could not be refreshed.</strong> {projectionError()} {publicLeaderboard() ? "The last bounded projection remains visible and may be stale." : "No ranking data is being shown as an empty result."}</span><button class="secondary-button" type="button" disabled={projectionRefreshing() || leaderboardPaginationState() === "loading" || queuePaginationState() === "loading"} onClick={() => void refreshSelectedChallenge()}>Retry first page</button></div></Show>
               <Show when={challenge().apiBacked && projectionState() === "loading" && !publicLeaderboard()}><div class="projection-loading" role="status" aria-live="polite"><LoaderCircle class="spin" size={16} /> Loading the bounded public ranking…</div></Show>
-              <div class="leaderboard-scroll" role="region" aria-label={`${challenge().title} rankings table`} tabindex="0">
+              <div id="arena-public-rankings-table" class="leaderboard-scroll" role="region" aria-label={`${challenge().title} rankings table`} aria-busy={leaderboardPaginationState() === "loading"} tabindex="0">
                 <table class="leaderboard-table">
                   <caption class="sr-only">Public bounded rankings and row-level evidence state for {challenge().title}</caption>
                   <thead><tr><th>Rank</th><th>Competitor</th><th>Ladder release</th><th>Execution</th><th>Improvements</th><th>Movement</th><th>Released</th><th>Evidence</th></tr></thead>
@@ -975,6 +1432,36 @@ export function Arena(props: {
                 </table>
               </div>
               <div class="leaderboard-foot" aria-live="polite"><span>Showing {rankings().length} {challenge().apiBacked ? "bounded public competitors" : "illustrative competitors"}</span><span>{rankings().filter((row) => row.evidence === "worker_reported").length} worker-reported · 0 browser-verified · exact rewards withheld</span></div>
+              <Show when={challenge().apiBacked && publicLeaderboard()}>
+                <div class="public-projection-pagination" aria-label="Public ranking pagination">
+                  <p id="arena-ranking-pagination-status" class="public-pagination-status" role="status" aria-live="polite" aria-atomic="true">
+                    {leaderboardPaginationAnnouncement() || `${publicLeaderboardRows().length} bounded ranking${publicLeaderboardRows().length === 1 ? "" : "s"} loaded.${publicLeaderboard()?.has_more ? " More are available through an opaque challenge-version cursor." : " No continuation cursor was returned."}`}
+                  </p>
+                  <Show when={leaderboardPaginationState() === "error"} fallback={
+                    <button
+                      class="secondary-button public-load-more"
+                      type="button"
+                      aria-controls="arena-public-rankings-table"
+                      aria-describedby="arena-ranking-pagination-status"
+                      aria-busy={leaderboardPaginationState() === "loading"}
+                      disabled={!publicLeaderboard()?.has_more || leaderboardPaginationState() === "loading" || projectionRefreshing()}
+                      onClick={() => void loadMoreLeaderboard()}
+                    >
+                      {leaderboardPaginationState() === "loading" ? <LoaderCircle class="spin" size={14} /> : <ArrowDown size={14} />}
+                      {leaderboardPaginationState() === "loading" ? "Loading next ranking page…" : publicLeaderboard()?.has_more ? "Load more rankings" : "All returned rankings loaded"}
+                    </button>
+                  }>
+                    <div class="public-pagination-error" role="alert">
+                      <TriangleAlert size={15} />
+                      <span><strong>Next ranking page rejected.</strong>{leaderboardPaginationError()} The rows already shown were preserved.</span>
+                      <div>
+                        <button class="secondary-button" type="button" onClick={() => void loadMoreLeaderboard()}>Retry next page</button>
+                        <button class="ghost-button" type="button" onClick={() => void refreshSelectedChallenge()}>Restart from first page</button>
+                      </div>
+                    </div>
+                  </Show>
+                </div>
+              </Show>
             </section>
           </Show>
 
@@ -1019,16 +1506,33 @@ export function Arena(props: {
 
           <Show when={tab() === "queue"}>
             <section id="arena-panel-queue" class="queue-panel" role="tabpanel" aria-labelledby="arena-tab-queue" tabindex="0">
-              <div class="queue-head"><div><p class="overline">{challenge().apiBacked ? "Ciphertext ingress · execution per row" : "Modeled scheduler · no execution"}</p><h3>{challenge().apiBacked ? "Versioned evaluation queue" : "Evaluation queue preview"}</h3></div><div class="projection-actions"><div class="queue-stat"><TimerReset size={17} /><span><small>{challenge().apiBacked ? "INGRESS RECORDS" : "MODELED MEDIAN"}</small><strong>{challenge().apiBacked ? publicQueue()?.submission_count ?? "—" : "6m 18s"}</strong></span></div><Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh"}</button></Show></div></div>
-              <div class="leaderboard-notice queue-ingress-notice"><LockKeyhole size={15} /><span><strong>{challenge().apiBacked ? "Ciphertext accepted is not code executed." : "This queue is an unexecuted product model."}</strong> {challenge().apiBacked ? "Ingress records can be live while execution remains absent; inspect the status and evidence on every row." : "Sample rows demonstrate scheduling and disclosure boundaries only. No evaluator, TDX job, or reward ran."}</span></div>
-              <Show when={challenge().apiBacked && projectionState() === "error"}><div class="projection-error" role="alert"><TriangleAlert size={15} /><span><strong>Queue status could not be refreshed.</strong> {projectionError()} {publicQueue() ? "The last bounded projection remains visible and may be stale." : "No queue data is being presented as an empty queue."}</span><button class="secondary-button" type="button" disabled={projectionRefreshing()} onClick={() => void refreshSelectedChallenge()}>Retry</button></div></Show>
+              <div class="queue-head"><div><p class="overline">{challenge().apiBacked ? "CIPHERTEXT INGRESS · RELEASE GATED · EXECUTION PER ROW" : "Modeled scheduler · no execution"}</p><h3>{challenge().apiBacked ? "Versioned evaluation queue" : "Evaluation queue preview"}</h3></div><div class="projection-actions"><div class="queue-stat"><TimerReset size={17} /><span><small>{challenge().apiBacked ? "ROWS LOADED" : "MODELED MEDIAN"}</small><strong>{challenge().apiBacked ? publicQueue() ? publicQueueRows().length : "—" : "6m 18s"}</strong></span></div><Show when={challenge().apiBacked}><button class="secondary-button projection-refresh" type="button" aria-busy={projectionRefreshing()} disabled={projectionRefreshing() || leaderboardPaginationState() === "loading" || queuePaginationState() === "loading"} onClick={() => void refreshSelectedChallenge()}><RefreshCw class={projectionRefreshing() ? "spin" : ""} size={14} /> {projectionRefreshing() ? "Refreshing" : "Refresh first page"}</button></Show></div></div>
+              <div class="leaderboard-notice queue-ingress-notice"><LockKeyhole size={15} /><span><strong>{challenge().apiBacked ? "Ciphertext accepted is not code executed." : "This queue is an unexecuted product model."}</strong> {challenge().apiBacked ? "Ingress records can be live while execution remains absent; inspect the status and evidence on every row. Worker-reported provenance is not independent QVL or TDX verification." : "Sample rows demonstrate scheduling and disclosure boundaries only. No evaluator, TDX job, or reward ran."}</span></div>
+              <Show when={challenge().apiBacked && projectionState() === "error"}><div class="projection-error" role="alert"><TriangleAlert size={15} /><span><strong>Queue status could not be refreshed.</strong> {projectionError()} {publicQueue() ? "The last bounded projection remains visible and may be stale." : "No queue data is being presented as an empty queue."}</span><button class="secondary-button" type="button" disabled={projectionRefreshing() || leaderboardPaginationState() === "loading" || queuePaginationState() === "loading"} onClick={() => void refreshSelectedChallenge()}>Retry first page</button></div></Show>
               <Show when={challenge().apiBacked && projectionState() === "loading" && !publicQueue()}><div class="projection-loading" role="status" aria-live="polite"><LoaderCircle class="spin" size={16} /> Loading the bounded public queue…</div></Show>
-              <div class="queue-list" role="list" aria-label={`${challenge().title} evaluation queue`}>
+              <div id="arena-public-queue-list" class="queue-list" role="list" aria-label={`${challenge().title} evaluation queue`} aria-busy={queuePaginationState() === "loading"}>
                 <For each={queueRows()}>
                   {(run, index) => (
                     <article class="queue-row" role="listitem">
                       <span class="queue-position">{index() + 1}</span>
-                      <div class={`queue-state ${run.status}`} aria-label={`Status: ${run.status}`}>{run.status === "running" || run.status === "checking" ? <LoaderCircle class="spin" size={15} /> : <CircleDot size={15} />}<span class="queue-state-label">{run.status}</span></div>
+                      <div
+                        class={`queue-state ${run.phase} ${run.tone}`}
+                        data-queue-phase={run.phase}
+                        aria-label={`${run.phase === "terminal" ? "Terminal" : "Active"} status: ${run.status}`}
+                      >
+                        {run.spinning
+                          ? <LoaderCircle class="spin" size={15} />
+                          : run.tone === "completed"
+                            ? <CheckCircle2 size={15} />
+                            : run.tone === "expired"
+                              ? <Clock3 size={15} />
+                              : run.tone === "held" || run.tone === "withheld"
+                                ? <LockKeyhole size={15} />
+                                : run.tone === "failed" || run.tone === "dead-letter"
+                                  ? <TriangleAlert size={15} />
+                                  : <CircleDot size={15} />}
+                        <span class="queue-state-label">{run.status}</span>
+                      </div>
                       <div><strong>{run.id}</strong><small>{run.who}</small></div>
                       <div><small>STAGE</small><strong>{run.stage}</strong></div>
                       <div><small>UPDATED</small><strong>{run.eta}</strong></div>
@@ -1041,6 +1545,36 @@ export function Arena(props: {
               <Show when={queueRows().length === 0 && projectionState() !== "loading" && projectionState() !== "error"}>
                 <div class="empty-state compact-empty"><ListChecks size={24} /><h3>{challenge().apiBacked ? "The public queue is empty" : "The modeled queue is empty"}</h3><p>No encrypted candidate commitments have entered this challenge version.</p></div>
               </Show>
+              <Show when={challenge().apiBacked && publicQueue()}>
+                <div class="public-projection-pagination" aria-label="Public queue pagination">
+                  <p id="arena-queue-pagination-status" class="public-pagination-status" role="status" aria-live="polite" aria-atomic="true">
+                    {queuePaginationAnnouncement() || `${publicQueueRows().length} bounded queue record${publicQueueRows().length === 1 ? "" : "s"} loaded.${publicQueue()?.has_more ? " More are available through an opaque challenge-version cursor." : " No continuation cursor was returned."}`}
+                  </p>
+                  <Show when={queuePaginationState() === "error"} fallback={
+                    <button
+                      class="secondary-button public-load-more"
+                      type="button"
+                      aria-controls="arena-public-queue-list"
+                      aria-describedby="arena-queue-pagination-status"
+                      aria-busy={queuePaginationState() === "loading"}
+                      disabled={!publicQueue()?.has_more || queuePaginationState() === "loading" || projectionRefreshing()}
+                      onClick={() => void loadMoreQueue()}
+                    >
+                      {queuePaginationState() === "loading" ? <LoaderCircle class="spin" size={14} /> : <ArrowDown size={14} />}
+                      {queuePaginationState() === "loading" ? "Loading next queue page…" : publicQueue()?.has_more ? "Load more queue records" : "All returned queue records loaded"}
+                    </button>
+                  }>
+                    <div class="public-pagination-error" role="alert">
+                      <TriangleAlert size={15} />
+                      <span><strong>Next queue page rejected.</strong>{queuePaginationError()} The rows already shown were preserved.</span>
+                      <div>
+                        <button class="secondary-button" type="button" onClick={() => void loadMoreQueue()}>Retry next page</button>
+                        <button class="ghost-button" type="button" onClick={() => void refreshSelectedChallenge()}>Restart from first page</button>
+                      </div>
+                    </div>
+                  </Show>
+                </div>
+              </Show>
             </section>
           </Show>
 
@@ -1052,20 +1586,20 @@ export function Arena(props: {
                   <span class="owner-session-badge"><ShieldCheck size={13} /> challenge-version scoped</span>
                 </Show>
               </div>
-              <div class="leaderboard-notice"><LockKeyhole size={15} /><span>This view is filtered only by the address recovered from your signed Arena session. It omits encrypted object references, source, exact scores or rewards, timing, and internal errors.</span></div>
+              <div class="leaderboard-notice"><LockKeyhole size={15} /><span>This view is filtered only by the address recovered from your signed Arena session. It omits encrypted object references, source, exact scores or rewards, timing, and internal errors. Terminal ciphertext becomes unavailable to service reads immediately and is scheduled for immediate unlink; one hour is the configured maximum-retention deadline while bounded retries remain pending, not a promised wait or physical-deletion guarantee.</span></div>
 
               <Show when={!challenge().apiBacked}>
                 <div class="empty-state compact-empty"><FileCode2 size={24} /><h3>{challenge().version ? "Submission service is not connected" : "Choose a versioned service challenge"}</h3><p>{challenge().version ? "This source-ready challenge version has no wallet-authenticated API in the current release. Owner records stay unavailable until its frozen contract gate and release-bound CVM are activated." : "Illustrative challenge cards have no owner records or wallet-authenticated API."}</p></div>
               </Show>
 
               <Show when={challenge().apiBacked && !wallet.account()}>
-                <div class="owner-auth-card"><Fingerprint size={25} /><div><h4>Connect your Base Sepolia wallet</h4><p>Use the wallet control in the header, then return here to sign the exact submit + owner-read session request. No transaction or fund transfer is requested.</p></div></div>
+                <div class="owner-auth-card"><Fingerprint size={25} /><div><h4>Connect your Base Sepolia wallet</h4><p>Use the wallet control in the header, then return here to sign the exact submit + owner-read + owner-manage session request. No transaction or fund transfer is requested.</p></div></div>
               </Show>
 
               <Show when={challenge().apiBacked && wallet.account() && !arenaSession()}>
                 <div class="owner-auth-card">
                   {ownerState() === "authorizing" ? <LoaderCircle class="spin" size={25} /> : <Fingerprint size={25} />}
-                  <div><h4>Authorize this challenge version</h4><p>Sign once for a short, least-privilege session with only <code>challenge:submit</code> and <code>challenge:submissions:read</code>. It can submit encrypted candidates and read your bounded status for {challenge().id} {challenge().version}; agent management requires a separate explicit signature below.</p></div>
+                  <div><h4>Authorize this challenge version</h4><p>Sign once for a short, least-privilege session with <code>challenge:submit</code>, <code>challenge:submissions:read</code>, and wallet-only <code>challenge:submissions:manage</code>. The manage scope can cancel only before a worker claim and retry terminal ciphertext unlink; it cannot drive worker transitions. Agent management requires a separate explicit signature below.</p></div>
                   <button class="primary-button" type="button" onClick={() => void authorizeOwnerView()} disabled={ownerState() === "authorizing"}>
                     {ownerState() === "authorizing" ? <LoaderCircle class="spin" size={15} /> : <ShieldCheck size={15} />}
                     {ownerState() === "authorizing" ? "Waiting for signature…" : "Sign and load mine"}
@@ -1077,18 +1611,83 @@ export function Arena(props: {
               <Show when={challenge().apiBacked && arenaSession()}>
                 <div class="owner-session-strip"><span><Fingerprint size={14} /><code>{shortAddress(arenaSession()?.address ?? "", 8)}</code></span><span>Exact version · {challenge().version}</span><span>Timing withheld from records</span></div>
                 <Show when={ownerError()}><p class="form-error owner-error" role="alert">{ownerError()}</p></Show>
+                <Show when={ownerActionError()}><p class="form-error owner-error" role="alert">{ownerActionError()}</p></Show>
+                <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{ownerActionAnnouncement()}</p>
                 <Show when={ownerState() === "loading" && ownerSubmissions().length === 0}>
                   <div class="owner-loading" role="status" aria-live="polite"><LoaderCircle class="spin" size={20} /><span>Loading the authenticated bounded projection…</span></div>
                 </Show>
                 <div class="owner-submission-list">
                   <For each={ownerSubmissions()}>
                     {(item) => (
-                      <article class="owner-submission-row">
+                      <article class="owner-submission-row" aria-busy={ownerActionSubmissionId() === item.submission_id}>
                         <div class="owner-submission-icon"><FileCode2 size={17} /></div>
                         <div class="owner-submission-primary"><strong>{item.submission_id}</strong><small><code>{shortAddress(item.candidate_commitment, 13)}</code> · {item.manifest.runtime}</small></div>
                         <div><small>STATE</small><strong>{item.state.replaceAll("_", " ")}</strong></div>
                         <div><small>BOUNDED RESULT</small><strong>{item.bounded_result ? item.bounded_result.accepted ? `step ${item.bounded_result.leaderboard_step_index}/${item.bounded_result.step_denominator}` : "not accepted" : "not released"}</strong></div>
                         <span class="owner-private-pill"><LockKeyhole size={12} /> {item.execution_provenance.status === "worker_reported" ? "worker claim · not browser-verified" : "no execution evidence"}</span>
+                        <div class="owner-ciphertext-lifecycle">
+                          <small>CIPHERTEXT LIFECYCLE</small>
+                          <strong>{item.ciphertext_lifecycle.state.replaceAll("_", " ")}</strong>
+                          <span>
+                            {item.ciphertext_lifecycle.state === "unlinked"
+                              ? `${item.ciphertext_lifecycle.current_state_evidence.replaceAll("_", " ")} observed; no physical wipe claimed`
+                              : item.ciphertext_lifecycle.state === "retained"
+                                ? "retained only while the submission remains nonterminal"
+                                : `unlink attempt ${item.ciphertext_lifecycle.unlink_attempts}; bounded retry remains available`}
+                          </span>
+                          <Show when={item.ciphertext_lifecycle.receipt}>
+                            {(receipt) => <code>ciphertext {shortAddress(receipt().ciphertext_sha256, 13)}</code>}
+                          </Show>
+                        </div>
+                        <div class="owner-submission-controls">
+                          <Show when={item.owner_actions.can_cancel && cancelConfirmationId() !== item.submission_id}>
+                            <button
+                              class="secondary-button"
+                              type="button"
+                              aria-haspopup="dialog"
+                              disabled={ownerActionSubmissionId() !== undefined}
+                              onClick={() => {
+                                setOwnerActionError("");
+                                setCancelConfirmationId(item.submission_id);
+                              }}
+                            >
+                              <Trash2 size={14} /> Cancel before claim
+                            </button>
+                          </Show>
+                          <Show when={cancelConfirmationId() === item.submission_id}>
+                            <div class="owner-cancel-confirmation" role="group" aria-label={`Confirm cancellation of ${item.submission_id}`}>
+                              <p><strong>Cancel this unclaimed submission?</strong> A successful cancel is terminal, prevents worker claim, and immediately attempts ciphertext unlink.</p>
+                              <button
+                                class="danger-button"
+                                type="button"
+                                disabled={ownerActionSubmissionId() !== undefined}
+                                onClick={() => void cancelOwnerSubmission(item.submission_id)}
+                              >
+                                {ownerActionSubmissionId() === item.submission_id && ownerActionKind() === "cancel" ? <LoaderCircle class="spin" size={14} /> : <Trash2 size={14} />}
+                                Confirm cancel
+                              </button>
+                              <button
+                                class="ghost-button"
+                                type="button"
+                                disabled={ownerActionSubmissionId() !== undefined}
+                                onClick={() => setCancelConfirmationId(undefined)}
+                              >
+                                Keep submission
+                              </button>
+                            </div>
+                          </Show>
+                          <Show when={item.owner_actions.can_retry_ciphertext_erasure}>
+                            <button
+                              class="secondary-button"
+                              type="button"
+                              disabled={ownerActionSubmissionId() !== undefined}
+                              onClick={() => void retryOwnerCiphertextErasure(item.submission_id)}
+                            >
+                              {ownerActionSubmissionId() === item.submission_id && ownerActionKind() === "cleanup" ? <LoaderCircle class="spin" size={14} /> : <RefreshCw size={14} />}
+                              Retry ciphertext unlink
+                            </button>
+                          </Show>
+                        </div>
                       </article>
                     )}
                   </For>
@@ -1126,7 +1725,7 @@ export function Arena(props: {
             <button class="dialog-x" type="button" aria-label="Close submission dialog" data-autofocus onClick={closeSubmissionDialog} disabled={submitting()}>×</button>
             <div class="dialog-mark"><FileCode2 size={22} /></div>
             <Show when={submissionResult()} fallback={<>
-              <p class="overline">{challenge().short} · ciphertext-only ingress</p>
+              <p class="overline">{challenge().short} · CIPHERTEXT INGRESS · RELEASE GATED</p>
               <h2 id="submit-title">Prepare an encrypted queue record</h2>
               <p>Your source is hashed locally, browser-preflighted against the exact frozen Base Sepolia challenge version, encrypted to the independently quote-pinned Arena recipient, authorized by your wallet, and sent as ciphertext only. The proposed finalized block/hash snapshot is cryptographically bound to the ciphertext; the proxy independently verifies it before either durable write.</p>
               <div class="submission-steps"><span class="done">1 <em>Commit</em></span><i /><span>2 <em>Verify + encrypt</em></span><i /><span>3 <em>Authorize</em></span><i /><span>4 <em>Queue</em></span></div>
@@ -1135,7 +1734,7 @@ export function Arena(props: {
               <Show when={submissionHash()}><div class="hash-preview"><Hash size={15} /><code>{shortAddress(submissionHash() ?? "", 14)}</code></div></Show>
               <div class="submission-policy"><ShieldCheck size={16} /><span>{safeIrWorkerPresenceMatchesPreflight()
                 ? "This creates a ciphertext-only queue record. The release-bound Safe-IR worker may claim it only after independent per-job gates pass. It does not charge Compute Credits, expose the sealed object reference, or promise a reward."
-                : "This creates a durable modeled queue projection only. It does not reserve or charge Compute Credits, execute the program, expose a sealed object reference, or promise a reward."}</span></div>
+                : "This creates a durable ciphertext-ingress record only when every release and authorization gate passes. It does not reserve or charge Compute Credits, execute the program, expose a sealed object reference, or promise a reward."}</span></div>
               <button
                 class="primary-button large full"
                 type="button"
@@ -1155,14 +1754,14 @@ export function Arena(props: {
                           ? "Fresh independently verified CVM required"
                       : !wallet.account()
                         ? "Connect a wallet to continue"
-                        : "Encrypt and create modeled record"}
+                        : "Encrypt and create gated ingress record"}
                 <ArrowRight size={16} />
               </button>
               <p class="modeled-note"><Sparkles size={13} /> This client requires the exact release-approved challenge-set digest, selected id/version commitments, the independently approved TDX quote/compose identity, and a finalized browser-side Base Sepolia snapshot. The snapshot is only a proposal: proxy authorization exists only after the service independently matches its pinned block/hash and contract state. Queue acceptance never grants worker execution authorization.</p>
             </>}>{(result) => <>
-              <p class="overline">Ciphertext accepted · bounded queue</p>
+              <p class="overline">CIPHERTEXT INGRESS ACCEPTED · EXECUTION UNPROVEN</p>
               <h2 id="submit-title">Submission receipt created</h2>
-              <div class="credential-callout"><CheckCircle2 size={18} /><div><strong>{result().submission.submission_id}</strong><span>{result().created ? "A new ciphertext-only record entered the modeled queue." : "The service returned the original record for this idempotent replay."}</span></div></div>
+              <div class="credential-callout"><CheckCircle2 size={18} /><div><strong>{result().submission.submission_id}</strong><span>{result().created ? "A new ciphertext-only ingress record was durably accepted; execution remains separately gated and unproven." : "The service returned the original ingress record for this idempotent replay; no execution or reward is implied."}</span></div></div>
               <div class="envelope-facts"><div><span>Candidate commitment</span><code>{shortAddress(result().submission.candidate_commitment, 14)}</code></div><div><span>Ciphertext commitment</span><code>{shortAddress(result().candidate_ingress.ciphertext_sha256, 14)}</code></div><div><span>Recipient key</span><code>{shortAddress(result().candidate_ingress.key_id, 14)}</code></div><div><span>Ingress registry check</span><strong>Proxy verified pinned finalized block</strong></div><div><span>Execution</span><strong>{safeIrWorkerPresenceMatchesPreflight() ? "Per-job gates required" : "Not connected"}</strong></div><div><span>Credits charged</span><strong>0</strong></div><div><span>Raw source egress</span><strong>False</strong></div></div>
               <button class="primary-button large full" type="button" onClick={() => { closeSubmissionDialog(); chooseTab("submissions"); }}><FileCode2 size={17} /> View my submissions</button>
               <p class="modeled-note"><ShieldCheck size={13} /> This receipt proves only that the proxy independently matched the exact AEAD-bound snapshot at one RPC-reported finalized block before persistence. The browser preflight was not accepted as authority, RPC quorum and consensus proof were not established, and worker execution remains unauthorized until its separate per-job registry, release, TDX/QVL, and policy gates pass.</p>
@@ -1171,5 +1770,6 @@ export function Arena(props: {
         </div>
       </Show>
     </div>
+    </Show>
   );
 }

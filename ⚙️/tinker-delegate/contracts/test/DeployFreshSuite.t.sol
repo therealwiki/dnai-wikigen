@@ -13,12 +13,19 @@ import {ExecutionPolicyAnchor} from "../src/ExecutionPolicyAnchor.sol";
 import {RoyaltyDistributor} from "../src/RoyaltyDistributor.sol";
 import {TinkerAccountEncumbrance} from "../src/TinkerAccountEncumbrance.sol";
 
+contract DeployFreshSuiteHarness is DeployFreshSuiteScript {
+    function reviewedComputeDeveloperFee(uint256 feeBps) external pure returns (uint16) {
+        return _reviewedComputeDeveloperFee(feeBps);
+    }
+}
+
 contract DeployFreshSuiteTest is Test {
     uint256 internal constant BASE_SEPOLIA_CHAIN_ID = 84532;
     uint256 internal constant POLICY_UNIT = 1e18;
 
     DeployFreshSuiteScript internal script;
     address internal operator;
+    address internal diligenceGovernanceController = makeAddr("diligence-governance-controller");
     address internal computeDeveloper = makeAddr("compute-developer");
     bytes32 internal accountCommitment = keccak256("tinker-account-commitment");
     bytes32 internal composeHash = keccak256("tinker-compose-hash");
@@ -30,6 +37,7 @@ contract DeployFreshSuiteTest is Test {
         vm.chainId(BASE_SEPOLIA_CHAIN_ID);
         operator = msg.sender;
         vm.setEnv("DEPLOYMENT_OPERATOR", vm.toString(operator));
+        vm.setEnv("DILIGENCE_GOVERNANCE_CONTROLLER", vm.toString(diligenceGovernanceController));
         vm.setEnv("COMPUTE_VAULT_DEVELOPER", vm.toString(computeDeveloper));
         vm.setEnv("COMPUTE_VAULT_DEVELOPER_FEE_BPS", "100");
         vm.setEnv("TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT", vm.toString(accountCommitment));
@@ -64,6 +72,11 @@ contract DeployFreshSuiteTest is Test {
         assertGt(address(executionPolicyAnchor).code.length, 0);
 
         assertEq(room.developer(), operator);
+        assertEq(room.initialDeveloper(), operator);
+        assertEq(room.releaseGovernanceController(), diligenceGovernanceController);
+        assertEq(room.pendingDeveloper(), address(0));
+        assertEq(room.pendingDeveloperActivatesAt(), 0);
+        assertEq(room.DEVELOPER_TRANSFER_DELAY(), 2 days);
         assertTrue(room.productionRelease());
         assertEq(room.dealCount(), 0);
         assertEq(room.resultVerifier(), address(0));
@@ -118,6 +131,17 @@ contract DeployFreshSuiteTest is Test {
         assertEq(encumbrance.pendingReleasePolicyActivatesAt(), 0);
         assertEq(encumbrance.pendingComposeCount(), 0);
         assertEq(encumbrance.pendingManagerCount(), 0);
+        assertEq(royalties.owner(), operator);
+        assertEq(royalties.pendingOwner(), address(0));
+        assertTrue(royalties.paused());
+        assertEq(royalties.settlementVerifier(), address(0));
+        assertEq(royalties.qvlVerifier(), address(0));
+        assertEq(royalties.executionPolicyAnchor(), address(0));
+        assertEq(royalties.anchorWriterReleaseCommitment(), bytes32(0));
+        assertEq(royalties.releasePolicyCommitment(), bytes32(0));
+        assertEq(royalties.authorityNonce(), 0);
+        assertEq(royalties.pendingAuthorityActivatesAt(), 0);
+        assertFalse(royalties.pendingAuthorityRevocation());
         assertEq(challenges.owner(), operator);
 
         assertEq(computeVault.owner(), operator);
@@ -176,5 +200,18 @@ contract DeployFreshSuiteTest is Test {
 
         vm.expectRevert(bytes("use DeployFreshSuite for Base EmailOracleAuth releases"));
         standalone.run();
+    }
+
+    function test_RejectsDeveloperFeeAboveFreshReleaseCap() public {
+        DeployFreshSuiteHarness harness = new DeployFreshSuiteHarness();
+
+        vm.expectRevert(bytes("compute developer fee exceeds fresh-release cap"));
+        harness.reviewedComputeDeveloperFee(101);
+    }
+
+    function test_AcceptsDeveloperFeeAtFreshReleaseCap() public {
+        DeployFreshSuiteHarness harness = new DeployFreshSuiteHarness();
+
+        assertEq(harness.reviewedComputeDeveloperFee(100), 100);
     }
 }

@@ -196,6 +196,31 @@ The full activation ceremony is ordered and fail-closed:
    root, and authenticates the signature. An arbitrary nonzero evidence hash
    or the former self-produced envelope is rejected.
 
+The writer is a dstack-derived EOA, not a gasless verifier. It pays Base
+Sepolia ETH for the release-authority marker and every later policy or Royalty
+anchor transaction. Current v4 authority reserves exactly 500,000 gas for each
+of one release-marker transaction plus 32 subsequent anchors, under a reviewed
+2,000,000,000 wei-per-gas budget. The resulting activation minimum is
+`33000000000000000` wei (0.033 ETH). This is a bounded 33-transaction reserve,
+not a claim of indefinite funding. Fund the exact reviewed writer address
+before the first anchor and replenish it under a new reviewed readiness
+observation as the bounded reserve is consumed. QVL authorization, contract
+funding, USDC reservation value, and the operator's deployment balance do not
+fund this writer. There is no relayer, paymaster, hot-key fallback, or eighth
+CVM in this release; an underfunded writer makes new authorization fail closed
+while already finalized records remain verifiable.
+
+Activation must not infer readiness from address derivation or a merely
+nonzero balance. Preflight v4 calls `eth_getBalance` for the exact writer
+through both independent Base Sepolia RPC authorities at one common finalized
+block, requires canonical decimal-wei agreement, and compares it with the
+signed final-authority minimum. Readiness snapshot v5 binds the writer, block,
+balance, both observation digests, reserve policy, final-authority digest, and
+descriptor hashes for at most 120 seconds. Until that complete evidence passes
+the dedicated gas-reserve check, writer gas readiness is unproven and
+post-Compute Royalty settlement activation remains blocked. The ephemeral
+snapshot is read-only evidence, not standalone mutation authority.
+
 Configure the reviewed on-chain release in its two governance phases:
 
 ```bash

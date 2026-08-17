@@ -28,11 +28,14 @@ import {
 } from "./phala-post-measurement-activation.mjs";
 import {
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   syntheticPhalaSevenCvmReleaseDescriptorsFixture,
-  syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
 } from "./phala-seven-cvm-release-verification-authority.fixture.mjs";
+import {
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as
+    syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
+} from "./current-cvm-authority-v4.fixture.mjs";
 import {
   phalaQvlMeasurementPolicySha256,
 } from "./phala-seven-cvm-measurement-policy.mjs";

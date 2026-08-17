@@ -39,7 +39,7 @@ COMPOSE = "0x" + "33" * 32
 
 
 class ComputeRuntimeCliTest(unittest.TestCase):
-    def test_installed_cli_fails_closed_before_any_mutation_without_adapter(self):
+    def test_installed_cli_fails_closed_without_disclosing_bootstrap_detail(self):
         output = io.StringIO()
         with redirect_stdout(output):
             code = main(["--once"])
@@ -47,7 +47,7 @@ class ComputeRuntimeCliTest(unittest.TestCase):
         status = json.loads(output.getvalue())
         self.assertEqual(
             status["reason"],
-            "idempotent_tinker_provider_adapter_unavailable",
+            "compute_execution_bootstrap_rejected",
         )
         self.assertFalse(status["provider_authoritative"])
         self.assertTrue(status["execution_policy_anchor_gate_integrated"])
@@ -72,7 +72,12 @@ class ComputeRuntimeCliTest(unittest.TestCase):
 
     def test_production_builder_rejects_anchor_release_domain_drift(self):
         class IdempotentProvider:
-            supports_idempotent_dispatch = True
+            supports_idempotent_dispatch = False
+            supports_at_most_once_dispatch = True
+            supports_checkpointed_workload_release = True
+
+            def prepare_attempt(self, *args, **kwargs):
+                raise AssertionError("provider must not be prepared in this test")
 
         account = Account.from_key("0x" + "81" * 32)
         approver_hash = execution_policy_approver_hash(account.address)
@@ -124,7 +129,12 @@ class ComputeRuntimeCliTest(unittest.TestCase):
 
     def test_production_builder_rejects_approver_root_drift(self):
         class IdempotentProvider:
-            supports_idempotent_dispatch = True
+            supports_idempotent_dispatch = False
+            supports_at_most_once_dispatch = True
+            supports_checkpointed_workload_release = True
+
+            def prepare_attempt(self, *args, **kwargs):
+                raise AssertionError("provider must not be prepared in this test")
 
         account = Account.from_key("0x" + "82" * 32)
         configured_root = "94" * 32

@@ -23,8 +23,11 @@ import {
   normalizeReleaseReviewerAuthorityGenesisAcceptance,
   releaseReviewerAuthorityGenesisAcceptanceSha256,
 } from "./release-reviewer-authority-genesis-acceptance.mjs";
+import {
+  RELEASE_CEREMONY_LOCK_PROTOCOL,
+} from "./release-ceremony-lock-protocol-core.mjs";
 
-export const RELEASE_CEREMONY_LOCK_PROTOCOL = "dnai.release-ceremony-lock.v1";
+export { RELEASE_CEREMONY_LOCK_PROTOCOL };
 export const RELEASE_CEREMONY_LOCK_OWNER_SCHEMA =
   "dnai.release-ceremony-lock-owner.v1";
 export const RELEASE_CEREMONY_LOCK_RECOVERY_SCHEMA =
@@ -57,6 +60,13 @@ export const RELEASE_CEREMONY_WRITERS = Object.freeze([
   "email_oracle_release",
   "execution_policy_anchor_release",
   "tinker_release",
+]);
+// This legacy export is an immutable protocol-history surface. New writers
+// belong in the separately named current allowlist so recovery artifacts and
+// compatibility tests can continue to pin the historical value exactly.
+export const CURRENT_RELEASE_CEREMONY_WRITERS = Object.freeze([
+  ...RELEASE_CEREMONY_WRITERS,
+  "royalty_release",
 ]);
 
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -199,7 +209,7 @@ function assertDirectoryStillBound(directoryPath, expected, label, { requirePriv
 
 function normalizeLockContext({ lockRoot, repositoryRoot, releaseSha, writerId }) {
   if (!SHA40.test(releaseSha)) throw new Error("release SHA must be lowercase 40-hex");
-  if (!RELEASE_CEREMONY_WRITERS.includes(writerId)) {
+  if (!CURRENT_RELEASE_CEREMONY_WRITERS.includes(writerId)) {
     throw new Error("writer ID is not a supported release ceremony writer");
   }
   assertNoSymlinkComponents(lockRoot);
@@ -324,7 +334,7 @@ function normalizeOwner(value) {
     || owner.protocol !== RELEASE_CEREMONY_LOCK_PROTOCOL
     || owner.state !== "held"
     || !SHA40.test(owner.release_sha)
-    || !RELEASE_CEREMONY_WRITERS.includes(owner.writer_id)
+    || !CURRENT_RELEASE_CEREMONY_WRITERS.includes(owner.writer_id)
     || !SHA256.test(owner.owner_token_sha256)
     || !Number.isSafeInteger(owner.owner_pid)
     || owner.owner_pid < 1) {

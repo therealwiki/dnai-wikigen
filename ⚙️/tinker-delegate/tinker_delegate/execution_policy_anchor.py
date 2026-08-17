@@ -26,7 +26,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlparse
 
 import httpx
@@ -41,6 +41,12 @@ BASE_SEPOLIA_CHAIN_ID = 84_532
 EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH = (
     "tinker/execution_policy_anchor_writer"
 )
+EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN = (
+    b"dnai-wikigen/execution-policy/final-release-authority/v1"
+)
+EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH = keccak(
+    EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_DOMAIN
+).hex()
 ZERO_BYTES32 = "0x" + "00" * 32
 ZERO_ADDRESS = "0x" + "00" * 20
 MAX_RPC_RESPONSE_BYTES = 512 * 1024
@@ -54,9 +60,11 @@ MIN_MAX_BLOCK_AGE_SECONDS = 30
 MAX_MAX_BLOCK_AGE_SECONDS = 3_600
 MAX_CONFIRMATION_WAIT_SECONDS = 120
 MAX_POLICY_LEASE_WAIT_SECONDS = 125.0
+MIN_ROYALTY_SPONSOR_BROADCAST_WINDOW_SECONDS = 30
 
 _BYTES32 = re.compile(r"^0x[0-9a-f]{64}$")
 _BARE_HASH = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_PIN = re.compile(r"^sha256:(?!0{64}$)[0-9a-f]{64}$")
 _HEX_DATA = re.compile(r"^0x(?:[0-9a-f]{2})*$")
 
 _OWNER = keccak(b"owner()")[:4]
@@ -100,6 +108,10 @@ class ExecutionPolicyAnchorSignerUnavailable(ExecutionPolicyAnchorError):
     """A production dstack writer identity cannot be obtained."""
 
 
+class ExecutionPolicyRoyaltyAnchorPending(ExecutionPolicyAnchorUnavailable):
+    """A durable Royalty plan must be reconciled outside the global lease."""
+
+
 class ExecutionPolicyAnchorSigner(Protocol):
     address: str
     custody: str
@@ -110,15 +122,31 @@ class ExecutionPolicyAnchorSigner(Protocol):
 
 @dataclass(frozen=True)
 class AnchorProjectionRecord:
+    # ``sequence`` is the HMAC journal's contiguous local order.  The release
+    # marker occupies on-chain sequence 1, so production records use the
+    # separately derived chain sequence 2..N.  Only Royalty records persist
+    # that chain value because it is signature/calldata authority; ordinary
+    # policy records can derive it from the release marker.
     sequence: int
     resource_id_hash: str
     decision_hash: str
+    chain_sequence: int = 0
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "AnchorProjectionRecord":
         if not isinstance(value, Mapping):
             raise ExecutionPolicyAnchorMismatch("policy projection record is invalid")
         sequence = _integer(value.get("sequence"), "local sequence", minimum=1)
+        raw_chain_sequence = value.get("chain_sequence")
+        chain_sequence = (
+            0
+            if raw_chain_sequence is None
+            else _integer(
+                raw_chain_sequence,
+                "chain sequence",
+                minimum=1,
+            )
+        )
         return cls(
             sequence=sequence,
             resource_id_hash=_bare_hash(
@@ -127,6 +155,7 @@ class AnchorProjectionRecord:
             decision_hash=_bare_hash(
                 value.get("decision_hash"), "decision commitment"
             ),
+            chain_sequence=chain_sequence,
         )
 
 
@@ -135,6 +164,33 @@ class AnchorProjection:
     sequence: int
     global_head: str
     resource_heads: Mapping[str, tuple[str, int]]
+
+
+@dataclass(frozen=True)
+class ExecutionPolicyReleaseMarker:
+    chain_id: int
+    contract_address: str
+    sequence: int
+    previous_global_head: str
+    resource_id_hash: str
+    previous_resource_head: str
+    decision_hash: str
+    writer_address: str
+    writer_release_commitment: str
+    new_global_head: str
+
+    @property
+    def projection(self) -> AnchorProjection:
+        return AnchorProjection(
+            sequence=self.sequence,
+            global_head=self.new_global_head,
+            resource_heads={
+                self.resource_id_hash: (
+                    "0x" + self.decision_hash,
+                    self.sequence,
+                )
+            },
+        )
 
 
 @dataclass(frozen=True)
@@ -295,6 +351,7 @@ class HttpsExecutionPolicyAnchorGateway:
         runtime_code_hash: str,
         writer_address: str,
         writer_release_commitment: str,
+        release_authority_sha256: str,
         confirmations: int,
         max_block_age_seconds: int,
         max_future_block_skew_seconds: int,
@@ -313,6 +370,13 @@ class HttpsExecutionPolicyAnchorGateway:
         self.writer_release_commitment = _bytes32(
             writer_release_commitment, allow_zero=False
         )
+        self.release_marker = execution_policy_release_marker(
+            final_authority_sha256=release_authority_sha256,
+            contract_address=self.contract_address,
+            writer_address=self.writer_address,
+            writer_release_commitment=self.writer_release_commitment,
+        )
+        self.genesis_projection = self.release_marker.projection
         self.confirmations = _integer(
             confirmations,
             "anchor confirmations",
@@ -408,6 +472,9 @@ class HttpsExecutionPolicyAnchorGateway:
                     "",
                 )
                 or ""
+            ),
+            release_authority_sha256=str(
+                getattr(settings, "release_authority_sha256", "") or ""
             ),
             confirmations=getattr(
                 settings, "execution_policy_anchor_confirmations", 12
@@ -631,13 +698,18 @@ class HttpsExecutionPolicyAnchorGateway:
             raise ExecutionPolicyAnchorSignerUnavailable(
                 "read-only anchor verifier cannot reconcile a pending record"
             )
-        if record.sequence != prefix.sequence + 1:
+        target_sequence = prefix.sequence + 1
+        expected_local_sequence = target_sequence - self.release_marker.sequence
+        if (
+            record.sequence != expected_local_sequence
+            or record.chain_sequence not in (0, target_sequence)
+        ):
             raise ExecutionPolicyAnchorMismatch(
                 "only one persisted anchor record can be reconciled"
             )
         expected_target = compute_anchor_head(
             contract_address=self.contract_address,
-            sequence=record.sequence,
+            sequence=target_sequence,
             previous_global_head=prefix.global_head,
             resource_id_hash=record.resource_id_hash,
             previous_resource_head=prefix.resource_heads.get(
@@ -652,8 +724,13 @@ class HttpsExecutionPolicyAnchorGateway:
             decision_hash=record.decision_hash,
             now=validation_now(),
         )
-        if latest.global_sequence == record.sequence:
-            self._verify_target(latest, record, expected_target)
+        if latest.global_sequence == target_sequence:
+            self._verify_target(
+                latest,
+                record,
+                expected_target,
+                target_sequence=target_sequence,
+            )
         elif latest.global_sequence == prefix.sequence:
             _verify_projection(prefix, latest)
             previous_resource = prefix.resource_heads.get(
@@ -673,7 +750,7 @@ class HttpsExecutionPolicyAnchorGateway:
                 decision_hash=record.decision_hash,
             )
             if (
-                prepared.target_sequence != record.sequence
+                prepared.target_sequence != target_sequence
                 or prepared.target_global_head != expected_target
             ):
                 raise ExecutionPolicyAnchorMismatch(
@@ -691,9 +768,14 @@ class HttpsExecutionPolicyAnchorGateway:
                     decision_hash=record.decision_hash,
                     now=validation_now(),
                 )
-                if raced.global_sequence != record.sequence:
+                if raced.global_sequence != target_sequence:
                     raise
-                self._verify_target(raced, record, expected_target)
+                self._verify_target(
+                    raced,
+                    record,
+                    expected_target,
+                    target_sequence=target_sequence,
+                )
         else:
             raise ExecutionPolicyAnchorMismatch(
                 "latest anchor sequence diverges from the local store"
@@ -706,15 +788,25 @@ class HttpsExecutionPolicyAnchorGateway:
                 decision_hash=record.decision_hash,
                 now=validation_now(),
             )
-            if latest.global_sequence == record.sequence:
-                self._verify_target(latest, record, expected_target)
+            if latest.global_sequence == target_sequence:
+                self._verify_target(
+                    latest,
+                    record,
+                    expected_target,
+                    target_sequence=target_sequence,
+                )
                 finalized = self.finalized_snapshot(
                     resource_id_hash=record.resource_id_hash,
                     decision_hash=record.decision_hash,
                     now=validation_now(),
                 )
-                if finalized.global_sequence == record.sequence:
-                    self._verify_target(finalized, record, expected_target)
+                if finalized.global_sequence == target_sequence:
+                    self._verify_target(
+                        finalized,
+                        record,
+                        expected_target,
+                        target_sequence=target_sequence,
+                    )
                     return finalized
                 if finalized.global_sequence != prefix.sequence:
                     raise ExecutionPolicyAnchorMismatch(
@@ -738,14 +830,16 @@ class HttpsExecutionPolicyAnchorGateway:
         snapshot: ExecutionPolicyAnchorSnapshot,
         record: AnchorProjectionRecord,
         expected_global_head: str,
+        *,
+        target_sequence: int,
     ) -> None:
         if (
-            snapshot.global_sequence != record.sequence
+            snapshot.global_sequence != target_sequence
             or snapshot.global_head != expected_global_head
             or snapshot.resource_decision_head
             != "0x" + record.decision_hash
-            or snapshot.resource_sequence != record.sequence
-            or snapshot.decision_sequence != record.sequence
+            or snapshot.resource_sequence != target_sequence
+            or snapshot.decision_sequence != target_sequence
         ):
             raise ExecutionPolicyAnchorMismatch(
                 "anchored decision does not match the persisted record"
@@ -1216,11 +1310,45 @@ class AnchoredExecutionPolicyCoordinator:
         self.store = store
         self.gateway = gateway
         self._lock = threading.RLock()
+        release_marker = getattr(gateway, "release_marker", None)
+        allow_zero_genesis = (
+            getattr(gateway, "allow_zero_genesis_for_test", False) is True
+        )
+        if release_marker is None:
+            if not allow_zero_genesis:
+                raise ExecutionPolicyAnchorMismatch(
+                    "execution-policy release marker is required"
+                )
+        elif not isinstance(release_marker, ExecutionPolicyReleaseMarker):
+            raise ExecutionPolicyAnchorMismatch(
+                "execution-policy release marker is invalid"
+            )
+        self._release_marker = release_marker
+        # Validate the marker's complete deterministic binding immediately,
+        # before any local journal or chain state is trusted.
+        self._compute_projection(())
 
     def close(self) -> None:
         close = getattr(self.gateway, "close", None)
         if callable(close):
             close()
+
+    @property
+    def _release_marker_sequence(self) -> int:
+        marker = self._release_marker
+        return marker.sequence if marker is not None else 0
+
+    def _compute_projection(
+        self,
+        records: Sequence[AnchorProjectionRecord],
+    ) -> AnchorProjection:
+        return compute_anchor_projection(
+            records,
+            contract_address=self.gateway.contract_address,
+            writer_address=self.gateway.writer_address,
+            writer_release_commitment=self.gateway.writer_release_commitment,
+            release_marker=self._release_marker,
+        )
 
     @contextmanager
     def _policy_lease(self, *, exclusive: bool):
@@ -1239,12 +1367,7 @@ class AnchoredExecutionPolicyCoordinator:
             AnchorProjectionRecord.from_mapping(value)
             for value in self.store.anchor_projection()
         )
-        projection = compute_anchor_projection(
-            records,
-            contract_address=self.gateway.contract_address,
-            writer_address=self.gateway.writer_address,
-            writer_release_commitment=self.gateway.writer_release_commitment,
-        )
+        projection = self._compute_projection(records)
         last_decision = records[-1].decision_hash if records else ""
         finalized = self.gateway.finalized_snapshot(
             decision_hash=last_decision,
@@ -1272,20 +1395,26 @@ class AnchoredExecutionPolicyCoordinator:
                     "canonical anchor head does not contain the local decision"
                 )
             return finalized
+        if not records:
+            raise ExecutionPolicyAnchorMismatch(
+                "execution-policy release marker is missing on chain"
+            )
         if projection.sequence != finalized.global_sequence + 1:
             raise ExecutionPolicyAnchorMismatch(
                 "local policy journal is more than one decision ahead of chain"
             )
-        prefix = compute_anchor_projection(
-            records[:-1],
-            contract_address=self.gateway.contract_address,
-            writer_address=self.gateway.writer_address,
-            writer_release_commitment=self.gateway.writer_release_commitment,
-        )
+        prefix = self._compute_projection(records[:-1])
         _verify_projection(prefix, finalized)
         if not reconcile:
             raise ExecutionPolicyAnchorUnavailable(
                 "one local policy decision is awaiting chain anchoring"
+            )
+        if (
+            self.store.anchor_record_kind(sequence=records[-1].sequence)
+            == "royalty_settlement_anchor_v1"
+        ):
+            raise ExecutionPolicyRoyaltyAnchorPending(
+                "durable royalty anchor requires external reconciliation"
             )
         self.gateway.anchor_record(
             prefix=prefix,
@@ -1323,6 +1452,315 @@ class AnchoredExecutionPolicyCoordinator:
             )
             return {**record, "rollback_anchor": snapshot.to_bounded_dict()}
 
+    def prepare_and_anchor_royalty_settlement(
+        self,
+        *,
+        qvl_client: Any,
+        prepared_attestation: Any,
+        intent_factory: Callable[[int], Any],
+        recipients: Sequence[Any],
+        refund_after: int,
+        recorded_at: int,
+        replace_expired: bool,
+    ) -> tuple[Any, ExecutionPolicyAnchorSnapshot]:
+        """Persist, externally anchor, and confirm one exact Royalty plan.
+
+        Challenge issuance and quote collection are intentionally absent from
+        this method.  The caller prepares that ephemeral evidence first.  Both
+        release signatures are then created while the global file lease fixes
+        the next sequence, and the exact signed/calldata plan is atomically
+        persisted in the shared journal before the lease is released.  Only
+        the anchor broadcast/finality wait runs without the lease.
+        """
+
+        from tinker_delegate.royalty_qvl_client import (
+            HttpsRoyaltySettlementQvlClient,
+            PreparedRoyaltyAttestation,
+        )
+        from tinker_delegate.royalty_settlement_authorization import (
+            RoyaltySettlementIntent,
+        )
+        from tinker_delegate.royalty_settlement_wallet_plan import (
+            RoyaltySettlementWalletPlan,
+        )
+
+        if (
+            not isinstance(qvl_client, HttpsRoyaltySettlementQvlClient)
+            or not isinstance(prepared_attestation, PreparedRoyaltyAttestation)
+            or not callable(intent_factory)
+        ):
+            raise ExecutionPolicyAnchorMismatch(
+                "royalty settlement preparation boundary is invalid"
+            )
+        checked_at = _integer(recorded_at, "royalty prepared time", minimum=1)
+        clock_started = time.monotonic()
+
+        def validation_now() -> int:
+            advanced = _advancing_validation_time(checked_at, clock_started)
+            assert advanced is not None
+            return advanced
+
+        prefix: AnchorProjection
+        anchor_record: AnchorProjectionRecord
+        with self._policy_lease(exclusive=True):
+            self._ensure_synchronized_locked(now=checked_at, reconcile=True)
+            before = tuple(
+                AnchorProjectionRecord.from_mapping(value)
+                for value in self.store.anchor_projection()
+            )
+            prefix = self._compute_projection(before)
+            target_sequence = prefix.sequence + 1
+            try:
+                intent = intent_factory(target_sequence)
+            except Exception:
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement intent derivation failed"
+                ) from None
+            if (
+                not isinstance(intent, RoyaltySettlementIntent)
+                or intent.anchor_sequence != target_sequence
+            ):
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement intent did not bind the next sequence"
+                )
+            try:
+                authorized_plan = qvl_client.authorize_prepared(
+                    intent,
+                    prepared_attestation,
+                    now=checked_at,
+                )
+                wallet_plan = RoyaltySettlementWalletPlan.create(
+                    authorized_plan=authorized_plan,
+                    recipients=recipients,
+                    refund_after=refund_after,
+                )
+                persisted = self.store.append_royalty_wallet_plan(
+                    wallet_plan=wallet_plan,
+                    chain_sequence=target_sequence,
+                    recorded_at=checked_at,
+                    replace_expired=replace_expired,
+                )
+            except ExecutionPolicyAnchorError:
+                raise
+            except Exception:
+                # QVL/signing/store errors are intentionally bounded here.  In
+                # particular, a transport exception may retain bearer or quote
+                # material and must never escape the CVM worker boundary.
+                raise ExecutionPolicyAnchorUnavailable(
+                    "royalty settlement authorization could not be persisted"
+                ) from None
+            anchor_record = AnchorProjectionRecord(
+                sequence=persisted["sequence"],
+                resource_id_hash=persisted["resource_id_hash"],
+                decision_hash=persisted["decision_hash"],
+                chain_sequence=persisted["chain_sequence"],
+            )
+            if (
+                anchor_record.sequence != len(before) + 1
+                or anchor_record.chain_sequence != target_sequence
+            ):
+                raise ExecutionPolicyAnchorMismatch(
+                    "persisted royalty anchor sequence changed"
+                )
+
+        broadcast_error: ExecutionPolicyAnchorError | None = None
+        try:
+            # Network broadcast and confirmation wait are deliberately outside
+            # the cross-process lease.  Concurrent policy appends see the one
+            # durable local gap and fail closed until this exact record lands.
+            self.gateway.anchor_record(
+                prefix=prefix,
+                record=anchor_record,
+                now=validation_now(),
+            )
+        except ExecutionPolicyAnchorError as exc:
+            broadcast_error = exc
+        try:
+            return self._confirm_royalty_plan(
+                plan_commitment=wallet_plan.plan_commitment,
+                now=validation_now(),
+                require_unexpired=True,
+            )
+        except ExecutionPolicyAnchorError:
+            if broadcast_error is not None:
+                raise broadcast_error
+            raise
+
+    def resume_royalty_settlement_anchor(
+        self,
+        *,
+        plan_commitment: str,
+        now: int,
+    ) -> tuple[Any, ExecutionPolicyAnchorSnapshot]:
+        """Idempotently recover a persisted pre-broadcast/ambiguous plan."""
+
+        checked_at = _integer(now, "royalty reconciliation time", minimum=1)
+        clock_started = time.monotonic()
+
+        def validation_now() -> int:
+            advanced = _advancing_validation_time(checked_at, clock_started)
+            assert advanced is not None
+            return advanced
+
+        with self._policy_lease(exclusive=True):
+            wallet_plan = self.store.royalty_wallet_plan(
+                plan_commitment=plan_commitment
+            )
+            if wallet_plan is None:
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement plan is not in the shared journal"
+                )
+            records = tuple(
+                AnchorProjectionRecord.from_mapping(value)
+                for value in self.store.anchor_projection()
+            )
+            chain_sequence = wallet_plan.anchor_sequence
+            local_sequence = chain_sequence - self._release_marker_sequence
+            if local_sequence < 1 or local_sequence > len(records):
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement plan sequence is missing"
+                )
+            record = records[local_sequence - 1]
+            if (
+                record.sequence != local_sequence
+                or record.chain_sequence != chain_sequence
+                or record.resource_id_hash != wallet_plan.anchor_resource_hash[2:]
+                or record.decision_hash != wallet_plan.anchor_decision_hash[2:]
+            ):
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement projection does not match its plan"
+                )
+            prefix = self._compute_projection(records[: local_sequence - 1])
+
+        broadcast_error: ExecutionPolicyAnchorError | None = None
+        try:
+            self.gateway.anchor_record(
+                prefix=prefix,
+                record=record,
+                now=validation_now(),
+            )
+        except ExecutionPolicyAnchorError as exc:
+            broadcast_error = exc
+        try:
+            return self._confirm_royalty_plan(
+                plan_commitment=plan_commitment,
+                now=validation_now(),
+                require_unexpired=False,
+            )
+        except ExecutionPolicyAnchorError:
+            if broadcast_error is not None:
+                raise broadcast_error
+            raise
+
+    def finalized_royalty_wallet_plan(
+        self,
+        *,
+        plan_commitment: str,
+        now: int,
+    ) -> dict[str, Any]:
+        """Expose sponsor calldata only while its finalized head is current."""
+
+        checked_at = _integer(now, "royalty confirmation time", minimum=1)
+        clock_started = time.monotonic()
+        wallet_plan, snapshot = self._confirm_royalty_plan(
+            plan_commitment=plan_commitment,
+            now=checked_at,
+            require_unexpired=True,
+        )
+        # The finalized RPC read may consume most of a short authorization.
+        # Re-evaluate immediately before returning calldata so the minimum
+        # sponsor broadcast window applies at delivery, not merely at request
+        # start.
+        delivery_now = _advancing_validation_time(checked_at, clock_started)
+        assert delivery_now is not None
+        remaining = (
+            wallet_plan.authorized_plan.authorization_expires_at
+            - delivery_now
+        )
+        if remaining < MIN_ROYALTY_SPONSOR_BROADCAST_WINDOW_SECONDS:
+            raise ExecutionPolicyAnchorMismatch(
+                "royalty settlement plan does not leave the minimum sponsor broadcast window"
+            )
+        return wallet_plan.to_sponsor_dict(
+            finalized_anchor=snapshot.to_bounded_dict()
+        )
+
+    def _confirm_royalty_plan(
+        self,
+        *,
+        plan_commitment: str,
+        now: int,
+        require_unexpired: bool,
+    ) -> tuple[Any, ExecutionPolicyAnchorSnapshot]:
+        checked_at = _integer(now, "royalty confirmation time", minimum=1)
+        with self._policy_lease(exclusive=True):
+            wallet_plan = self.store.royalty_wallet_plan(
+                plan_commitment=plan_commitment
+            )
+            if wallet_plan is None:
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement plan is not in the shared journal"
+                )
+            if require_unexpired:
+                remaining = (
+                    wallet_plan.authorized_plan.authorization_expires_at
+                    - checked_at
+                )
+                if remaining < MIN_ROYALTY_SPONSOR_BROADCAST_WINDOW_SECONDS:
+                    raise ExecutionPolicyAnchorMismatch(
+                        "royalty settlement plan does not leave the minimum sponsor broadcast window"
+                    )
+            latest_plan = self.store.latest_royalty_wallet_plan(
+                anchor_resource_hash=wallet_plan.anchor_resource_hash
+            )
+            if (
+                latest_plan is None
+                or latest_plan.plan_commitment != wallet_plan.plan_commitment
+            ):
+                raise ExecutionPolicyAnchorMismatch(
+                    "royalty settlement plan is no longer the resource head"
+                )
+            snapshot = self.gateway.finalized_snapshot(
+                resource_id_hash=wallet_plan.anchor_resource_hash[2:],
+                decision_hash=wallet_plan.anchor_decision_hash[2:],
+                now=checked_at,
+            )
+            sequence = wallet_plan.anchor_sequence
+            if (
+                snapshot.global_sequence < sequence
+                or snapshot.resource_decision_head
+                != wallet_plan.anchor_decision_hash
+                or snapshot.resource_sequence != sequence
+                or snapshot.decision_sequence != sequence
+            ):
+                raise ExecutionPolicyAnchorUnavailable(
+                    "royalty settlement anchor is not finalized"
+                )
+            records = tuple(
+                AnchorProjectionRecord.from_mapping(value)
+                for value in self.store.anchor_projection()
+            )
+            local_finalized_count = (
+                snapshot.global_sequence - self._release_marker_sequence
+            )
+            if (
+                local_finalized_count < 0
+                or local_finalized_count > len(records)
+            ):
+                raise ExecutionPolicyAnchorMismatch(
+                    "on-chain policy sequence is ahead of the local HMAC journal"
+                )
+            finalized_prefix = self._compute_projection(
+                records[:local_finalized_count]
+            )
+            _verify_projection(finalized_prefix, snapshot)
+            self.store.confirm_royalty_anchor(
+                plan_commitment=wallet_plan.plan_commitment,
+                snapshot=snapshot,
+                confirmed_at=max(checked_at, snapshot.block_timestamp),
+            )
+            return wallet_plan, snapshot
+
     def latest_decision_hash(
         self,
         *,
@@ -1354,6 +1792,28 @@ class AnchoredExecutionPolicyCoordinator:
             )
             return (
                 self.store.latest(surface=surface, resource_id=resource_id),
+                snapshot,
+            )
+
+    def history(
+        self,
+        *,
+        surface: str,
+        resource_id: str,
+        now: int | None = None,
+    ) -> tuple[tuple[dict[str, Any], ...], ExecutionPolicyAnchorSnapshot]:
+        """Return one authenticated resource chain and its pinned anchor view."""
+
+        reconcile = not self.gateway.read_only
+        with self._policy_lease(exclusive=reconcile):
+            snapshot = self._ensure_resource_synchronized_locked(
+                surface=surface,
+                resource_id=resource_id,
+                now=now,
+                reconcile=reconcile,
+            )
+            return (
+                self.store.history(surface=surface, resource_id=resource_id),
                 snapshot,
             )
 
@@ -1396,12 +1856,7 @@ class AnchoredExecutionPolicyCoordinator:
             AnchorProjectionRecord.from_mapping(value)
             for value in self.store.anchor_projection()
         )
-        projection = compute_anchor_projection(
-            records,
-            contract_address=self.gateway.contract_address,
-            writer_address=self.gateway.writer_address,
-            writer_release_commitment=self.gateway.writer_release_commitment,
-        )
+        projection = self._compute_projection(records)
         _verify_projection(projection, snapshot)
         if record is None:
             if (
@@ -1412,10 +1867,16 @@ class AnchoredExecutionPolicyCoordinator:
                     "chain has a resource head missing from the local journal"
                 )
             return snapshot
+        expected_resource = projection.resource_heads.get(resource_hash)
+        if expected_resource is None:
+            raise ExecutionPolicyAnchorMismatch(
+                "local policy resource is absent from the anchor projection"
+            )
+        expected_chain_sequence = expected_resource[1]
         if (
             snapshot.resource_decision_head != "0x" + record["decision_hash"]
-            or snapshot.resource_sequence != record["sequence"]
-            or snapshot.decision_sequence != record["sequence"]
+            or snapshot.resource_sequence != expected_chain_sequence
+            or snapshot.decision_sequence != expected_chain_sequence
         ):
             raise ExecutionPolicyAnchorMismatch(
                 "resource policy head does not match the local journal"
@@ -1576,9 +2037,27 @@ def compute_anchor_projection(
     contract_address: str,
     writer_address: str,
     writer_release_commitment: str,
+    release_marker: ExecutionPolicyReleaseMarker | None = None,
 ) -> AnchorProjection:
-    global_head = ZERO_BYTES32
-    resource_heads: dict[str, tuple[str, int]] = {}
+    if release_marker is None:
+        base_sequence = 0
+        global_head = ZERO_BYTES32
+        resource_heads: dict[str, tuple[str, int]] = {}
+    else:
+        expected_marker = execution_policy_release_marker(
+            final_authority_sha256="sha256:" + release_marker.decision_hash,
+            contract_address=contract_address,
+            writer_address=writer_address,
+            writer_release_commitment=writer_release_commitment,
+        )
+        if release_marker != expected_marker:
+            raise ExecutionPolicyAnchorMismatch(
+                "execution-policy release marker does not match the release"
+            )
+        marker_projection = release_marker.projection
+        base_sequence = marker_projection.sequence
+        global_head = marker_projection.global_head
+        resource_heads = dict(marker_projection.resource_heads)
     for expected_sequence, record in enumerate(records, start=1):
         if not isinstance(record, AnchorProjectionRecord):
             raise ExecutionPolicyAnchorMismatch("policy projection is invalid")
@@ -1589,9 +2068,14 @@ def compute_anchor_projection(
         previous_resource = resource_heads.get(
             record.resource_id_hash, (ZERO_BYTES32, 0)
         )[0]
+        chain_sequence = base_sequence + record.sequence
+        if record.chain_sequence not in (0, chain_sequence):
+            raise ExecutionPolicyAnchorMismatch(
+                "persisted chain sequence does not match the release marker"
+            )
         global_head = compute_anchor_head(
             contract_address=contract_address,
-            sequence=record.sequence,
+            sequence=chain_sequence,
             previous_global_head=global_head,
             resource_id_hash=record.resource_id_hash,
             previous_resource_head=previous_resource,
@@ -1601,10 +2085,10 @@ def compute_anchor_projection(
         )
         resource_heads[record.resource_id_hash] = (
             "0x" + record.decision_hash,
-            record.sequence,
+            chain_sequence,
         )
     return AnchorProjection(
-        sequence=len(records),
+        sequence=base_sequence + len(records),
         global_head=global_head,
         resource_heads=resource_heads,
     )
@@ -1634,6 +2118,50 @@ def compute_anchor_head(
         + _bytes32_word(writer_release_commitment)
     )
     return "0x" + keccak(encoded).hex()
+
+
+def execution_policy_release_marker(
+    *,
+    final_authority_sha256: str,
+    contract_address: str,
+    writer_address: str,
+    writer_release_commitment: str,
+) -> ExecutionPolicyReleaseMarker:
+    """Derive the exact non-circular first anchor decision for one release."""
+
+    if (
+        not isinstance(final_authority_sha256, str)
+        or not _SHA256_PIN.fullmatch(final_authority_sha256)
+    ):
+        raise ExecutionPolicyAnchorMismatch(
+            "execution-policy release authority digest is invalid"
+        )
+    anchor = _address(contract_address, allow_zero=False)
+    writer = _address(writer_address, allow_zero=False)
+    release = _bytes32(writer_release_commitment, allow_zero=False)
+    decision = final_authority_sha256.removeprefix("sha256:")
+    head = compute_anchor_head(
+        contract_address=anchor,
+        sequence=1,
+        previous_global_head=ZERO_BYTES32,
+        resource_id_hash=EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
+        previous_resource_head=ZERO_BYTES32,
+        decision_hash=decision,
+        writer_address=writer,
+        writer_release_commitment=release,
+    )
+    return ExecutionPolicyReleaseMarker(
+        chain_id=BASE_SEPOLIA_CHAIN_ID,
+        contract_address=anchor,
+        sequence=1,
+        previous_global_head=ZERO_BYTES32,
+        resource_id_hash=EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
+        previous_resource_head=ZERO_BYTES32,
+        decision_hash=decision,
+        writer_address=writer,
+        writer_release_commitment=release,
+        new_global_head=head,
+    )
 
 
 def _verify_projection(

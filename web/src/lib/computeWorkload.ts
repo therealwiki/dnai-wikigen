@@ -283,7 +283,7 @@ export interface PreparedComputeWorkloadUpload {
 
 export interface ComputeWorkloadIngressReceipt {
   surface: "compute_workload_ingress_receipt";
-  schema_version: 1;
+  schema_version: 2;
   workload_id: string;
   workload_schema: ComputeWorkloadManifest["schema"];
   workload_commitment: string;
@@ -293,6 +293,8 @@ export interface ComputeWorkloadIngressReceipt {
   key_id: string;
   activation_commitment: string;
   recipient_release_commitment: string;
+  execution_binding: ComputeWorkloadExecutionBinding;
+  dispatch_adoption: ComputeWorkloadDispatchAdoption;
   created: boolean;
   idempotent_replay: boolean;
   ciphertext_egress: false;
@@ -303,11 +305,91 @@ export interface ComputeWorkloadIngressReceipt {
   provider_dispatch_enabled: false;
 }
 
+export interface ComputeWorkloadMetadata {
+  surface: "compute_workload_metadata";
+  schema_version: 2;
+  workload_id: string;
+  workload_schema: ComputeWorkloadManifest["schema"];
+  operation: ComputeWorkloadManifest["operation"];
+  model: ComputeWorkloadManifest["model"];
+  recipe: ComputeWorkloadManifest["recipe"];
+  payload_size_class: ComputeWorkloadPayloadSizeClass;
+  example_count_class: ComputeWorkloadExampleCountClass;
+  resource_caps: {
+    max_prefill_tokens: number;
+    max_sample_tokens: number;
+    max_train_tokens: number;
+  };
+  manifest_commitment: string;
+  workload_commitment: string;
+  recipient_key_id: string;
+  activation_commitment: string;
+  recipient_release_commitment: string;
+  execution_binding: ComputeWorkloadExecutionBinding;
+  dispatch_adoption: ComputeWorkloadDispatchAdoption;
+  ciphertext_egress: false;
+  raw_prompt_egress: false;
+  raw_examples_egress: false;
+  raw_dataset_egress: false;
+  raw_output_egress: false;
+  provider_dispatch_enabled: false;
+}
+
+export interface ComputeWorkloadExecutionBinding {
+  schema: "dnai.compute.workload-execution-binding.v1";
+  commitment: string;
+  source_kind: "wallet" | "credential";
+  wallet_adoption_required: boolean;
+  device_spending_authority: false;
+}
+
+export interface ComputeWorkloadDispatchAdoption {
+  state:
+    | "wallet_adoption_required"
+    | "available_for_wallet_dispatch"
+    | "claimed_by_wallet_dispatch";
+  wallet_adoption_eligible: boolean;
+  dispatch_claimed: boolean;
+  claim_commitment: string | null;
+  funding_authority: "wallet_required" | "onchain_wallet_job";
+  device_spending_authority: false;
+  direct_deletion_allowed: boolean;
+}
+
+export interface ComputeWorkloadDeletionReceipt {
+  surface: "compute_workload_deletion";
+  schema_version: 1;
+  workload_id: string;
+  deleted: true;
+  ciphertext_egress: false;
+  raw_workload_egress: false;
+  provider_dispatch_performed: false;
+}
+
+export type ComputeWorkloadErasureResult =
+  | {
+    state: "deleted";
+    workload_id: string;
+    exact_deletion_receipt: true;
+    unconsumed_ciphertext_retrievable: false;
+    receipt: ComputeWorkloadDeletionReceipt;
+  }
+  | {
+    state: "not_retrievable_after_uncertain_response";
+    workload_id: string;
+    exact_deletion_receipt: false;
+    unconsumed_ciphertext_retrievable: false;
+    recovery_lookup_performed: true;
+  };
+
 export interface ComputeWorkloadDispatchBinding {
   workloadId: string;
   workloadSchema: ComputeWorkloadManifest["schema"];
   manifestCommitment: Hex;
   workloadCommitment: Hex;
+  sourceKind: "wallet" | "credential";
+  executionBindingCommitment: `sha256:${string}`;
+  recipientReleaseCommitment: `sha256:${string}`;
 }
 
 export interface ComputeWorkloadWireBinding {
@@ -1313,21 +1395,116 @@ export async function prepareComputeWorkloadUpload(input: {
   }
 }
 
+function parseWorkloadExecutionBinding(value: unknown): ComputeWorkloadExecutionBinding {
+  const binding = exactObject(value, [
+    "schema", "commitment", "source_kind", "wallet_adoption_required",
+    "device_spending_authority",
+  ], "Compute workload execution binding");
+  const sourceKind = binding.source_kind;
+  if (sourceKind !== "wallet" && sourceKind !== "credential") {
+    throw new ComputeWorkloadWireError("Compute workload source kind is invalid");
+  }
+  const parsed: ComputeWorkloadExecutionBinding = {
+    schema: exactValue(
+      binding.schema,
+      "dnai.compute.workload-execution-binding.v1",
+      "workload execution-binding schema",
+    ),
+    commitment: stringValue(
+      binding.commitment,
+      NONZERO_SHA256,
+      "workload execution-binding commitment",
+    ),
+    source_kind: sourceKind,
+    wallet_adoption_required: exactValue(
+      binding.wallet_adoption_required,
+      sourceKind === "credential",
+      "workload wallet-adoption requirement",
+    ),
+    device_spending_authority: exactValue(
+      binding.device_spending_authority,
+      false,
+      "workload device spending authority",
+    ),
+  };
+  return parsed;
+}
+
+function parseWorkloadDispatchAdoption(
+  value: unknown,
+  sourceKind: ComputeWorkloadExecutionBinding["source_kind"],
+  allowClaimed: boolean,
+): ComputeWorkloadDispatchAdoption {
+  const adoption = exactObject(value, [
+    "state", "wallet_adoption_eligible", "dispatch_claimed", "claim_commitment",
+    "funding_authority", "device_spending_authority", "direct_deletion_allowed",
+  ], "Compute workload dispatch adoption");
+  const unclaimedState = sourceKind === "credential"
+    ? "wallet_adoption_required"
+    : "available_for_wallet_dispatch";
+  const state = adoption.state;
+  if (state !== unclaimedState && !(allowClaimed && state === "claimed_by_wallet_dispatch")) {
+    throw new ComputeWorkloadWireError("Compute workload dispatch-adoption state is invalid");
+  }
+  const parsedState = state as ComputeWorkloadDispatchAdoption["state"];
+  const claimed = parsedState === "claimed_by_wallet_dispatch";
+  const claimCommitment = adoption.claim_commitment === null
+    ? null
+    : stringValue(
+      adoption.claim_commitment,
+      NONZERO_SHA256,
+      "workload dispatch-claim commitment",
+    );
+  if (claimed !== (claimCommitment !== null)) {
+    throw new ComputeWorkloadWireError("Compute workload dispatch claim is contradictory");
+  }
+  return {
+    state: parsedState,
+    wallet_adoption_eligible: exactValue(
+      adoption.wallet_adoption_eligible,
+      !claimed,
+      "workload wallet-adoption eligibility",
+    ),
+    dispatch_claimed: exactValue(
+      adoption.dispatch_claimed,
+      claimed,
+      "workload dispatch-claimed state",
+    ),
+    claim_commitment: claimCommitment,
+    funding_authority: exactValue(
+      adoption.funding_authority,
+      claimed ? "onchain_wallet_job" : "wallet_required",
+      "workload funding authority",
+    ),
+    device_spending_authority: exactValue(
+      adoption.device_spending_authority,
+      false,
+      "workload adoption device spending authority",
+    ),
+    direct_deletion_allowed: exactValue(
+      adoption.direct_deletion_allowed,
+      !claimed,
+      "workload direct-deletion authority",
+    ),
+  };
+}
+
 function parseReceipt(value: unknown, expected: PreparedComputeWorkloadUpload["expected"]): ComputeWorkloadIngressReceipt {
   const receipt = exactObject(value, [
     "surface", "schema_version", "workload_id", "workload_schema", "workload_commitment",
     "manifest_commitment", "ciphertext_sha256", "blob_sha256", "key_id",
     "activation_commitment", "created", "idempotent_replay", "ciphertext_egress",
-    "recipient_release_commitment",
+    "recipient_release_commitment", "execution_binding", "dispatch_adoption",
     "raw_prompt_egress", "raw_examples_egress", "raw_dataset_egress", "raw_output_egress",
     "provider_dispatch_enabled",
   ], "Compute workload ingress receipt");
   const created = typeof receipt.created === "boolean" ? receipt.created : (() => { throw new ComputeWorkloadWireError("workload receipt created state is invalid"); })();
   const replay = typeof receipt.idempotent_replay === "boolean" ? receipt.idempotent_replay : (() => { throw new ComputeWorkloadWireError("workload receipt replay state is invalid"); })();
   if (created === replay) throw new ComputeWorkloadWireError("workload receipt idempotency state is invalid");
+  const executionBinding = parseWorkloadExecutionBinding(receipt.execution_binding);
   const parsed: ComputeWorkloadIngressReceipt = {
     surface: exactValue(receipt.surface, "compute_workload_ingress_receipt", "workload receipt surface"),
-    schema_version: exactValue(receipt.schema_version, 1, "workload receipt schema"),
+    schema_version: exactValue(receipt.schema_version, 2, "workload receipt schema"),
     workload_id: stringValue(receipt.workload_id, WORKLOAD_ID, "workload id"),
     workload_schema: exactValue(receipt.workload_schema, expected.workloadSchema, "workload receipt schema binding"),
     workload_commitment: exactValue(receipt.workload_commitment, expected.workloadCommitment, "workload receipt commitment"),
@@ -1337,6 +1514,12 @@ function parseReceipt(value: unknown, expected: PreparedComputeWorkloadUpload["e
     key_id: exactValue(receipt.key_id, expected.keyId, "workload recipient key"),
     activation_commitment: exactValue(receipt.activation_commitment, expected.activationCommitment, "workload activation commitment"),
     recipient_release_commitment: exactValue(receipt.recipient_release_commitment, expected.recipientReleaseCommitment, "workload recipient release commitment"),
+    execution_binding: executionBinding,
+    dispatch_adoption: parseWorkloadDispatchAdoption(
+      receipt.dispatch_adoption,
+      executionBinding.source_kind,
+      false,
+    ),
     created,
     idempotent_replay: replay,
     ciphertext_egress: exactValue(receipt.ciphertext_egress, false, "workload ciphertext egress"),
@@ -1349,12 +1532,282 @@ function parseReceipt(value: unknown, expected: PreparedComputeWorkloadUpload["e
   return parsed;
 }
 
+function workloadAuthorization(value: string): string {
+  if (typeof value !== "string" || !/^Bearer [^\s]{16,4096}$/.test(value)) {
+    throw new ComputeWorkloadWireError("Compute workload authorization is invalid");
+  }
+  return value;
+}
+
+function workloadResourceIdentity(projectId: string, workloadId: string): {
+  projectId: string;
+  workloadId: string;
+} {
+  return {
+    projectId: stringValue(projectId, RESOURCE_ID, "Compute workload project id"),
+    workloadId: stringValue(workloadId, WORKLOAD_ID, "Compute workload id"),
+  };
+}
+
+function workloadMetadataEndpoint(
+  delegateUrl: string,
+  projectId: string,
+  workloadId: string,
+): string {
+  const identity = workloadResourceIdentity(projectId, workloadId);
+  return `${delegateUrl.replace(/\/$/, "")}/compute/projects/${encodeURIComponent(identity.projectId)}/workloads/${encodeURIComponent(identity.workloadId)}`;
+}
+
+export function parseComputeWorkloadMetadata(
+  value: unknown,
+  expectedWorkloadId: string,
+): ComputeWorkloadMetadata {
+  const expectedId = stringValue(expectedWorkloadId, WORKLOAD_ID, "expected Compute workload id");
+  const metadata = exactObject(value, [
+    "surface", "schema_version", "workload_id", "workload_schema", "operation",
+    "model", "recipe", "payload_size_class", "example_count_class", "resource_caps",
+    "manifest_commitment", "workload_commitment", "recipient_key_id",
+    "activation_commitment", "recipient_release_commitment", "execution_binding",
+    "dispatch_adoption", "ciphertext_egress",
+    "raw_prompt_egress", "raw_examples_egress", "raw_dataset_egress",
+    "raw_output_egress", "provider_dispatch_enabled",
+  ], "Compute workload metadata");
+  const resourceCaps = exactObject(metadata.resource_caps, [
+    "max_prefill_tokens", "max_sample_tokens", "max_train_tokens",
+  ], "Compute workload resource caps");
+  const workloadSchema = metadata.workload_schema;
+  if (
+    workloadSchema !== "dnai.compute.workload.inference.v1"
+    && workloadSchema !== "dnai.compute.workload.sft-jsonl.v1"
+  ) throw new ComputeWorkloadWireError("Compute workload metadata schema is invalid");
+  const operation = metadata.operation;
+  if (operation !== "inference" && operation !== "training") {
+    throw new ComputeWorkloadWireError("Compute workload metadata operation is invalid");
+  }
+  const recipe = metadata.recipe;
+  if (recipe !== "qwen3_8b_bounded" && recipe !== "qwen3_8b_lora_r32") {
+    throw new ComputeWorkloadWireError("Compute workload metadata recipe is invalid");
+  }
+  const payloadSizeClass = metadata.payload_size_class;
+  if (
+    typeof payloadSizeClass !== "string"
+    || !(payloadSizeClass in COMPUTE_WORKLOAD_PAYLOAD_CLASS_BYTES)
+  ) throw new ComputeWorkloadWireError("Compute workload metadata payload class is invalid");
+  const exampleCountClass = metadata.example_count_class;
+  if (
+    typeof exampleCountClass !== "string"
+    || !(exampleCountClass in COMPUTE_WORKLOAD_EXAMPLE_COUNT_CLASSES)
+  ) throw new ComputeWorkloadWireError("Compute workload metadata example-count class is invalid");
+  const executionBinding = parseWorkloadExecutionBinding(metadata.execution_binding);
+  const parsed: ComputeWorkloadMetadata = {
+    surface: exactValue(metadata.surface, "compute_workload_metadata", "workload metadata surface"),
+    schema_version: exactValue(metadata.schema_version, 2, "workload metadata schema version"),
+    workload_id: exactValue(
+      stringValue(metadata.workload_id, WORKLOAD_ID, "workload metadata id"),
+      expectedId,
+      "workload metadata id binding",
+    ),
+    workload_schema: workloadSchema,
+    operation,
+    model: exactValue(metadata.model, "qwen3_8b", "workload metadata model"),
+    recipe,
+    payload_size_class: payloadSizeClass as ComputeWorkloadPayloadSizeClass,
+    example_count_class: exampleCountClass as ComputeWorkloadExampleCountClass,
+    resource_caps: {
+      max_prefill_tokens: integerValue(resourceCaps.max_prefill_tokens, 0, 32_768, "workload prefill cap"),
+      max_sample_tokens: integerValue(resourceCaps.max_sample_tokens, 0, 4_096, "workload sample cap"),
+      max_train_tokens: integerValue(resourceCaps.max_train_tokens, 0, 10_000_000, "workload training cap"),
+    },
+    manifest_commitment: stringValue(metadata.manifest_commitment, NONZERO_SHA256, "workload manifest commitment"),
+    workload_commitment: stringValue(metadata.workload_commitment, NONZERO_SHA256, "workload commitment"),
+    recipient_key_id: stringValue(metadata.recipient_key_id, NONZERO_SHA256, "workload recipient key"),
+    activation_commitment: stringValue(metadata.activation_commitment, NONZERO_SHA256, "workload activation commitment"),
+    recipient_release_commitment: stringValue(
+      metadata.recipient_release_commitment,
+      NONZERO_SHA256,
+      "workload recipient release commitment",
+    ),
+    execution_binding: executionBinding,
+    dispatch_adoption: parseWorkloadDispatchAdoption(
+      metadata.dispatch_adoption,
+      executionBinding.source_kind,
+      true,
+    ),
+    ciphertext_egress: exactValue(metadata.ciphertext_egress, false, "workload metadata ciphertext egress"),
+    raw_prompt_egress: exactValue(metadata.raw_prompt_egress, false, "workload metadata prompt egress"),
+    raw_examples_egress: exactValue(metadata.raw_examples_egress, false, "workload metadata examples egress"),
+    raw_dataset_egress: exactValue(metadata.raw_dataset_egress, false, "workload metadata dataset egress"),
+    raw_output_egress: exactValue(metadata.raw_output_egress, false, "workload metadata output egress"),
+    provider_dispatch_enabled: exactValue(
+      metadata.provider_dispatch_enabled,
+      false,
+      "workload metadata provider dispatch",
+    ),
+  };
+  validateManifest({
+    schema: parsed.workload_schema,
+    operation: parsed.operation,
+    model: parsed.model,
+    recipe: parsed.recipe,
+    payload_size_class: parsed.payload_size_class,
+    example_count_class: parsed.example_count_class,
+    max_prefill_tokens: parsed.resource_caps.max_prefill_tokens,
+    max_sample_tokens: parsed.resource_caps.max_sample_tokens,
+    max_train_tokens: parsed.resource_caps.max_train_tokens,
+  });
+  return parsed;
+}
+
+function parseComputeWorkloadDeletionReceipt(
+  value: unknown,
+  expectedWorkloadId: string,
+): ComputeWorkloadDeletionReceipt {
+  const receipt = exactObject(value, [
+    "surface", "schema_version", "workload_id", "deleted", "ciphertext_egress",
+    "raw_workload_egress", "provider_dispatch_performed",
+  ], "Compute workload deletion receipt");
+  return {
+    surface: exactValue(receipt.surface, "compute_workload_deletion", "workload deletion surface"),
+    schema_version: exactValue(receipt.schema_version, 1, "workload deletion schema"),
+    workload_id: exactValue(
+      stringValue(receipt.workload_id, WORKLOAD_ID, "deleted workload id"),
+      expectedWorkloadId,
+      "deleted workload id binding",
+    ),
+    deleted: exactValue(receipt.deleted, true, "workload deletion state"),
+    ciphertext_egress: exactValue(receipt.ciphertext_egress, false, "workload deletion ciphertext egress"),
+    raw_workload_egress: exactValue(receipt.raw_workload_egress, false, "workload deletion raw-workload egress"),
+    provider_dispatch_performed: exactValue(
+      receipt.provider_dispatch_performed,
+      false,
+      "workload deletion provider dispatch",
+    ),
+  };
+}
+
+async function workloadMetadataRequest(
+  delegateUrl: string,
+  authorization: string,
+  projectId: string,
+  workloadId: string,
+): Promise<{ state: "found"; metadata: ComputeWorkloadMetadata } | { state: "absent" }> {
+  const endpoint = workloadMetadataEndpoint(delegateUrl, projectId, workloadId);
+  const response = await fetch(endpoint, {
+    method: "GET",
+    cache: "no-store",
+    credentials: "omit",
+    redirect: "error",
+    headers: {
+      Accept: "application/json",
+      Authorization: workloadAuthorization(authorization),
+    },
+  });
+  if (!response.redirected && response.status === 404) return { state: "absent" };
+  return {
+    state: "found",
+    metadata: parseComputeWorkloadMetadata(
+      await strictJsonResponse(response, "Compute workload metadata lookup"),
+      workloadId,
+    ),
+  };
+}
+
+export async function fetchComputeWorkloadMetadata(
+  delegateUrl: string,
+  authorization: string,
+  projectId: string,
+  workloadId: string,
+): Promise<ComputeWorkloadMetadata> {
+  const result = await workloadMetadataRequest(
+    delegateUrl,
+    authorization,
+    projectId,
+    workloadId,
+  );
+  if (result.state === "absent") {
+    throw new ComputeWorkloadWireError(
+      "No unconsumed sealed ciphertext is available for this workload in the authorized project",
+    );
+  }
+  return result.metadata;
+}
+
+export async function eraseUnconsumedComputeWorkload(
+  delegateUrl: string,
+  authorization: string,
+  projectId: string,
+  workloadId: string,
+): Promise<ComputeWorkloadErasureResult> {
+  const endpoint = workloadMetadataEndpoint(delegateUrl, projectId, workloadId);
+  const auth = workloadAuthorization(authorization);
+  let response: Response | undefined;
+  try {
+    response = await fetch(endpoint, {
+      method: "DELETE",
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      headers: {
+        Accept: "application/json",
+        Authorization: auth,
+      },
+    });
+  } catch {
+    // A transport failure can happen after the server has durably erased the
+    // envelope. Resolve that ambiguity with the same authorized metadata read.
+  }
+
+  if (response && !response.redirected && response.ok) {
+    try {
+      const receipt = parseComputeWorkloadDeletionReceipt(
+        await strictJsonResponse(response, "Compute workload deletion"),
+        workloadId,
+      );
+      return {
+        state: "deleted",
+        workload_id: receipt.workload_id,
+        exact_deletion_receipt: true,
+        unconsumed_ciphertext_retrievable: false,
+        receipt,
+      };
+    } catch {
+      // A truncated or malformed success response is an uncertain mutation,
+      // so perform the same non-egressing recovery read below.
+    }
+  } else if (response && !response.redirected && (response.status === 404 || response.status === 409)) {
+    throw new ComputeWorkloadWireError(
+      "This workload has no deletable sealed ciphertext; it may already be consumed, released, deleted, or outside the authorized project",
+    );
+  } else if (response && !response.redirected && response.status >= 400 && response.status < 500) {
+    throw new ComputeWorkloadWireError("Compute workload deletion was rejected");
+  }
+
+  const recovered = await workloadMetadataRequest(
+    delegateUrl,
+    auth,
+    projectId,
+    workloadId,
+  );
+  if (recovered.state === "absent") {
+    return {
+      state: "not_retrievable_after_uncertain_response",
+      workload_id: workloadId,
+      exact_deletion_receipt: false,
+      unconsumed_ciphertext_retrievable: false,
+      recovery_lookup_performed: true,
+    };
+  }
+  throw new ComputeWorkloadWireError(
+    "Compute workload deletion was not confirmed; the server still reports sealed ciphertext retained",
+  );
+}
+
 export async function uploadPreparedComputeWorkload(
   delegateUrl: string,
   authorization: string,
   prepared: PreparedComputeWorkloadUpload,
 ): Promise<{ receipt: ComputeWorkloadIngressReceipt; dispatchBinding: ComputeWorkloadDispatchBinding }> {
-  if (typeof authorization !== "string" || !/^Bearer [^\s]{16,4096}$/.test(authorization)) throw new ComputeWorkloadWireError("Compute workload authorization is invalid");
+  workloadAuthorization(authorization);
   const response = await fetch(`${delegateUrl.replace(/\/$/, "")}/compute/projects/${encodeURIComponent(prepared.projectId)}/workloads`, {
     method: "POST",
     cache: "no-store",
@@ -1376,6 +1829,13 @@ export async function uploadPreparedComputeWorkload(
       workloadSchema: receipt.workload_schema,
       manifestCommitment: `0x${receipt.manifest_commitment.slice(7)}` as Hex,
       workloadCommitment: `0x${receipt.workload_commitment.slice(7)}` as Hex,
+      sourceKind: receipt.execution_binding.source_kind,
+      executionBindingCommitment: (
+        receipt.execution_binding.commitment as `sha256:${string}`
+      ),
+      recipientReleaseCommitment: (
+        receipt.recipient_release_commitment as `sha256:${string}`
+      ),
     },
   };
 }

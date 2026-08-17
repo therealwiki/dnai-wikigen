@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
+  link,
   mkdtemp,
   readFile,
   realpath,
@@ -55,6 +57,23 @@ import {
   FRESH_DEPLOYMENT_TRANSACTION_SPEC,
   rawSha256,
 } from "./cvm-launch-intent-core.mjs";
+import {
+  TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA,
+  TINKER_ACCOUNT_BINDING_HISTORICAL_REPLAY_TRUTH_STATUS,
+  TINKER_ACCOUNT_BINDING_TRUTH_STATUS,
+  tinkerAccountBindingCeremonyReceiptSha256,
+} from "./tinker-account-binding-ceremony.mjs";
+import {
+  TINKER_ACCOUNT_BINDING_SCHEMA,
+  TINKER_ACCOUNT_BINDING_TYPEHASH,
+  TINKER_PROVIDER_NAMESPACE,
+} from "./tinker-account-binding-core.mjs";
+import {
+  executionPolicyReviewerHash,
+  executionPolicyReviewerRootHash,
+  PINNED_EIP191_SIGNATURE_SCHEME,
+  reviewerSetSha256,
+} from "./release-authority-signature-verifier-core.mjs";
 import { runOperatorPolicyPacketCli } from "./operator-policy-packet.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -80,7 +99,7 @@ const REVIEW_SCHEMA = path.join(
 );
 const CHECKED_AT_MS = Math.floor(Date.now() / 1_000) * 1_000;
 const VALID_INTENT_V6_KAT_SHA256 =
-  "sha256:e4f4f11299b587d72093c12b59733c229f3a5c922dae69a2f068a75745a16380";
+  "sha256:02008fc51cb79bbf12c7da84ed4785c42e2a9947caecdcc036d6cd92d6e00bf8";
 
 function address(index) {
   return `0x${index.toString(16).padStart(40, "0")}`;
@@ -122,6 +141,7 @@ function validIntent() {
   intent.release.reviewerAuthorityCurrentStatusSha256 = `sha256:${"92".repeat(32)}`;
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress = address(1);
+  intent.staticContractInputs.diligenceRoom.governanceController = address(29);
   intent.staticContractInputs.computeCreditVault.developer = address(30);
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment = bytes32(3);
   intent.numericPolicy.contract = {
@@ -196,7 +216,73 @@ function validLaunchIntent() {
   return value;
 }
 
-function validFreshContractDeploymentReceipt(intent) {
+function validTinkerAccountBindingCeremonyReceipt(intent) {
+  const signers = [
+    {
+      address: address(10),
+      controller_id: "binding-reviewer-alpha",
+      signature_sha256: `sha256:${"a1".repeat(32)}`,
+    },
+    {
+      address: address(11),
+      controller_id: "binding-reviewer-bravo",
+      signature_sha256: `sha256:${"b2".repeat(32)}`,
+    },
+  ];
+  const body = {
+    account_commitment:
+      intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment,
+    attested_provider_binding_required: true,
+    binding_chain_id: intent.network.chainId,
+    binding_commitment_typehash: TINKER_ACCOUNT_BINDING_TYPEHASH,
+    binding_scheme: TINKER_ACCOUNT_BINDING_SCHEMA,
+    ceremony_sha256: `sha256:${"c3".repeat(32)}`,
+    deployment_intent_matched: true,
+    deployment_intent_sha256: canonicalArtifactSha256(intent),
+    environment_commitment_matched: true,
+    historical_replay: false,
+    intent_sha256: `sha256:${"d4".repeat(32)}`,
+    network_request_performed: false,
+    provider_identifier_committed: false,
+    provider_namespace: TINKER_PROVIDER_NAMESPACE,
+    raw_binding_root_egress: false,
+    raw_share_egress: false,
+    remote_state_mutated: false,
+    reviewer_authority_current_status_sha256:
+      intent.release.reviewerAuthorityCurrentStatusSha256,
+    reviewer_authority_genesis_acceptance_sha256:
+      intent.release.reviewerAuthorityGenesisAcceptanceSha256,
+    reviewer_root_hash: executionPolicyReviewerRootHash(
+      signers.map(({ address: reviewerAddress }) => (
+        executionPolicyReviewerHash(reviewerAddress)
+      )).sort(),
+    ),
+    reviewer_set_sha256: reviewerSetSha256(
+      signers.map(({ address: reviewerAddress, controller_id }) => ({
+        address: reviewerAddress,
+        controller_id,
+      })),
+    ),
+    schema: TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA,
+    share_or_root_digest_published: false,
+    signature_scheme: PINNED_EIP191_SIGNATURE_SCHEME,
+    signature_verification_subprocess_invoked: true,
+    signers,
+    status: "tinker_account_binding_two_reviewer_ceremony_verified",
+    truth_status: TINKER_ACCOUNT_BINDING_TRUTH_STATUS,
+    verified_signature_count: 2,
+  };
+  return {
+    ...body,
+    tinker_account_binding_ceremony_receipt_sha256:
+      tinkerAccountBindingCeremonyReceiptSha256(body),
+  };
+}
+
+function validFreshContractDeploymentReceipt(
+  intent,
+  tinkerAccountBindingCeremonyReceiptSha256,
+) {
   const contracts = CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS.map(({
     ledger_key: contractKey,
     name,
@@ -261,6 +347,8 @@ function validFreshContractDeploymentReceipt(intent) {
     deployment_intent_sha256: canonicalArtifactSha256(intent),
     reviewer_authority_genesis_acceptance_sha256:
       intent.release.reviewerAuthorityGenesisAcceptanceSha256,
+    tinker_account_binding_ceremony_receipt_sha256:
+      tinkerAccountBindingCeremonyReceiptSha256,
     operator_address: intent.deploymentControl.operatorAddress,
     keystore_account: "dev",
     exact_creation_proof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -275,8 +363,12 @@ function validFreshContractDeploymentReceipt(intent) {
 
 function validLaunchReviewContext() {
   const deploymentIntent = validIntent();
+  const tinkerAccountBindingCeremonyReceipt =
+    validTinkerAccountBindingCeremonyReceipt(deploymentIntent);
   const freshContractDeploymentReceipt = validFreshContractDeploymentReceipt(
     deploymentIntent,
+    tinkerAccountBindingCeremonyReceipt
+      .tinker_account_binding_ceremony_receipt_sha256,
   );
   const launch = validLaunchIntent();
   launch.release_sha = deploymentIntent.release.releaseSha;
@@ -286,10 +378,17 @@ function validLaunchReviewContext() {
       expectedDeploymentIntentSha256: canonicalArtifactSha256(deploymentIntent),
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        freshContractDeploymentReceipt
+          .tinker_account_binding_ceremony_receipt_sha256,
     })}`;
   return {
     launch,
-    dependencies: { deploymentIntent, freshContractDeploymentReceipt },
+    dependencies: {
+      deploymentIntent,
+      freshContractDeploymentReceipt,
+      tinkerAccountBindingCeremonyReceipt,
+    },
   };
 }
 
@@ -428,7 +527,7 @@ test("valid deployment intent has a stable hash-only receipt", () => {
   assert.equal(result.receipt.schema, DEPLOYMENT_INTENT_RECEIPT_SCHEMA);
   assert.equal(result.receipt.status, "valid");
   assert.equal(result.receipt.dynamicRuntimeAuthorityCount, 0);
-  assert.equal(result.receipt.staticContractInputCount, 2);
+  assert.equal(result.receipt.staticContractInputCount, 3);
   assert.equal(result.receipt.reviewerAuthorityCurrentStatusEpoch, 7);
   assert.equal(
     result.receipt.reviewerAuthorityCurrentStatusSha256,
@@ -620,9 +719,15 @@ test("deployment intent excludes review, self hash, release commitment, and fina
 });
 
 test("deployment intent retains strict numeric and QVL bounds", () => {
+  const overFeeCap = validIntent();
+  overFeeCap.numericPolicy.contract.computeDeveloperFeeBps = 101;
+  let result = validateDeploymentIntentCore(overFeeCap);
+  assert.equal(result.ok, false);
+  assert.match(errorText(result), /computeDeveloperFeeBps.*between 0 and 100/);
+
   const intent = validIntent();
   intent.numericPolicy.contract.tinkerMaxSpendWei = "5000000000000000001";
-  let result = validateDeploymentIntentCore(intent);
+  result = validateDeploymentIntentCore(intent);
   assert.equal(result.ok, false);
   assert.match(errorText(result), /must not exceed the reviewed add-balance cap/);
 
@@ -947,6 +1052,51 @@ test("launch review independence includes validated transitive deployment author
   });
   assert.equal(result.ok, false);
   assert.match(errorText(result), /digest, release, intent, and deployment operator/);
+
+  const staleReviewerStatusDependencies = structuredClone(dependencies);
+  const staleReviewerStatusCeremony =
+    staleReviewerStatusDependencies.tinkerAccountBindingCeremonyReceipt;
+  staleReviewerStatusCeremony.reviewer_authority_current_status_sha256 =
+    `sha256:${"e6".repeat(32)}`;
+  staleReviewerStatusCeremony.tinker_account_binding_ceremony_receipt_sha256 =
+    tinkerAccountBindingCeremonyReceiptSha256(staleReviewerStatusCeremony);
+  const staleReviewerStatusFreshReceipt =
+    staleReviewerStatusDependencies.freshContractDeploymentReceipt;
+  staleReviewerStatusFreshReceipt
+    .tinker_account_binding_ceremony_receipt_sha256 =
+      staleReviewerStatusCeremony
+        .tinker_account_binding_ceremony_receipt_sha256;
+  const staleReviewerStatusLaunch = structuredClone(launch);
+  staleReviewerStatusLaunch.contract_deployment_receipt_sha256 =
+    `sha256:${freshContractDeploymentReceiptDigest(
+      staleReviewerStatusFreshReceipt,
+      {
+        expectedDeploymentIntentSha256:
+          canonicalArtifactSha256(deploymentIntent),
+        expectedReviewerAuthorityGenesisAcceptanceSha256:
+          deploymentIntent.release
+            .reviewerAuthorityGenesisAcceptanceSha256,
+        expectedTinkerAccountBindingCeremonyReceiptSha256:
+          staleReviewerStatusCeremony
+            .tinker_account_binding_ceremony_receipt_sha256,
+      },
+    )}`;
+  const staleReviewerStatusDescriptor = describeAuthorityReviewSubjectText(
+    canonicalCvmLaunchIntentCoreArtifactText(staleReviewerStatusLaunch),
+  );
+  result = validateAuthorityReviewEnvelope(
+    validEnvelope(staleReviewerStatusDescriptor),
+    {
+      checkedAtMs: CHECKED_AT_MS,
+      subjectDescriptor: staleReviewerStatusDescriptor,
+      authorityDependencies: staleReviewerStatusDependencies,
+    },
+  );
+  assert.equal(result.ok, false);
+  assert.match(
+    errorText(result),
+    /reviewer authority.*must match the deployment intent/i,
+  );
 });
 
 test("canonical parser rejects extra fields, duplicate keys, depth, and size", () => {
@@ -1107,6 +1257,8 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
     const launchPath = path.join(directory, "launch.json");
     const intentPath = path.join(directory, "intent.json");
     const receiptPath = path.join(directory, "contract-receipt.json");
+    const bindingCeremonyReceiptPath =
+      path.join(directory, "tinker-account-binding-ceremony.receipt.json");
     const launchReviewPath = path.join(directory, "launch-review.json");
     await writeFile(launchPath, canonicalCvmLaunchIntentCoreArtifactText(launch), "utf8");
     await writeFile(intentPath, canonicalArtifactText(dependencies.deploymentIntent), "utf8");
@@ -1115,13 +1267,22 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
       canonicalArtifactText(dependencies.freshContractDeploymentReceipt),
       "utf8",
     );
+    await writeFile(
+      bindingCeremonyReceiptPath,
+      canonicalArtifactText(dependencies.tinkerAccountBindingCeremonyReceipt),
+      "utf8",
+    );
+    await chmod(bindingCeremonyReceiptPath, 0o600);
 
     let stdout = "";
     let code = await runOperatorPolicyPacketCli([
       "init-review", "--subject", launchPath, "--out", launchReviewPath,
     ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
     assert.equal(code, 1);
-    assert.match(stdout, /requires exactly --deployment-intent and --contract-receipt/);
+    assert.match(
+      stdout,
+      /requires exactly --deployment-intent, --contract-receipt, and --tinker-account-binding-ceremony-receipt/,
+    );
 
     stdout = "";
     code = await runOperatorPolicyPacketCli([
@@ -1129,6 +1290,8 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
       "--subject", launchPath,
       "--deployment-intent", intentPath,
       "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      bindingCeremonyReceiptPath,
       "--out", launchReviewPath,
     ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
     assert.equal(code, 0, stdout);
@@ -1143,7 +1306,10 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
       "check-review", "--subject", launchPath, "--in", launchReviewPath,
     ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
     assert.equal(code, 1);
-    assert.match(stdout, /requires exactly --deployment-intent and --contract-receipt/);
+    assert.match(
+      stdout,
+      /requires exactly --deployment-intent, --contract-receipt, and --tinker-account-binding-ceremony-receipt/,
+    );
 
     stdout = "";
     code = await runOperatorPolicyPacketCli([
@@ -1151,9 +1317,136 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
       "--subject", launchPath,
       "--deployment-intent", intentPath,
       "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      bindingCeremonyReceiptPath,
       "--in", launchReviewPath,
     ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
     assert.equal(code, 0, stdout);
+
+    const substitutedCeremony =
+      structuredClone(dependencies.tinkerAccountBindingCeremonyReceipt);
+    substitutedCeremony.ceremony_sha256 = `sha256:${"e5".repeat(32)}`;
+    substitutedCeremony.tinker_account_binding_ceremony_receipt_sha256 =
+      tinkerAccountBindingCeremonyReceiptSha256(substitutedCeremony);
+    const substitutedCeremonyPath =
+      path.join(directory, "substituted-binding-ceremony.receipt.json");
+    await writeFile(
+      substitutedCeremonyPath,
+      canonicalArtifactText(substitutedCeremony),
+      "utf8",
+    );
+    await chmod(substitutedCeremonyPath, 0o600);
+    stdout = "";
+    code = await runOperatorPolicyPacketCli([
+      "check-review",
+      "--subject", launchPath,
+      "--deployment-intent", intentPath,
+      "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      substitutedCeremonyPath,
+      "--in", launchReviewPath,
+    ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
+    assert.equal(code, 1);
+    assert.match(
+      stdout,
+      /ceremony receipt|fresh-contract deployment receipt|external reviewed pins/i,
+    );
+
+    const staleReviewerStatusCeremony =
+      structuredClone(dependencies.tinkerAccountBindingCeremonyReceipt);
+    staleReviewerStatusCeremony.reviewer_authority_current_status_sha256 =
+      `sha256:${"e6".repeat(32)}`;
+    staleReviewerStatusCeremony.tinker_account_binding_ceremony_receipt_sha256 =
+      tinkerAccountBindingCeremonyReceiptSha256(staleReviewerStatusCeremony);
+    const staleReviewerStatusCeremonyPath =
+      path.join(directory, "stale-reviewer-status-binding-ceremony.receipt.json");
+    await writeFile(
+      staleReviewerStatusCeremonyPath,
+      canonicalArtifactText(staleReviewerStatusCeremony),
+      "utf8",
+    );
+    await chmod(staleReviewerStatusCeremonyPath, 0o600);
+    stdout = "";
+    code = await runOperatorPolicyPacketCli([
+      "check-review",
+      "--subject", launchPath,
+      "--deployment-intent", intentPath,
+      "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      staleReviewerStatusCeremonyPath,
+      "--in", launchReviewPath,
+    ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
+    assert.equal(code, 1);
+    assert.match(
+      stdout,
+      /reviewer authority|deployment intent|fresh ceremony receipt|fresh-contract deployment receipt/i,
+    );
+
+    const historicalCeremony =
+      structuredClone(dependencies.tinkerAccountBindingCeremonyReceipt);
+    historicalCeremony.historical_replay = true;
+    historicalCeremony.environment_commitment_matched = false;
+    historicalCeremony.status =
+      "historical_tinker_account_binding_ceremony_cryptographically_replayed";
+    historicalCeremony.truth_status =
+      TINKER_ACCOUNT_BINDING_HISTORICAL_REPLAY_TRUTH_STATUS;
+    historicalCeremony.tinker_account_binding_ceremony_receipt_sha256 =
+      tinkerAccountBindingCeremonyReceiptSha256(historicalCeremony);
+    const historicalCeremonyPath =
+      path.join(directory, "historical-binding-ceremony.receipt.json");
+    await writeFile(
+      historicalCeremonyPath,
+      canonicalArtifactText(historicalCeremony),
+      "utf8",
+    );
+    await chmod(historicalCeremonyPath, 0o600);
+    stdout = "";
+    code = await runOperatorPolicyPacketCli([
+      "check-review",
+      "--subject", launchPath,
+      "--deployment-intent", intentPath,
+      "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      historicalCeremonyPath,
+      "--in", launchReviewPath,
+    ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
+    assert.equal(code, 1);
+    assert.match(
+      stdout,
+      /historical|fresh ceremony receipt|live deployment-intent authority/i,
+    );
+
+    await chmod(bindingCeremonyReceiptPath, 0o644);
+    stdout = "";
+    code = await runOperatorPolicyPacketCli([
+      "check-review",
+      "--subject", launchPath,
+      "--deployment-intent", intentPath,
+      "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      bindingCeremonyReceiptPath,
+      "--in", launchReviewPath,
+    ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
+    assert.equal(code, 1);
+    assert.match(stdout, /mode-0600/i);
+    await chmod(bindingCeremonyReceiptPath, 0o600);
+
+    const hardlinkCeremonyPath =
+      path.join(directory, "hardlink-binding-ceremony.receipt.json");
+    await link(bindingCeremonyReceiptPath, hardlinkCeremonyPath);
+    stdout = "";
+    code = await runOperatorPolicyPacketCli([
+      "check-review",
+      "--subject", launchPath,
+      "--deployment-intent", intentPath,
+      "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      hardlinkCeremonyPath,
+      "--in", launchReviewPath,
+    ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
+    assert.equal(code, 1);
+    assert.match(stdout, /single-link/i);
+    await rm(hardlinkCeremonyPath);
 
     const { finalAuthority, dependencies: finalDependencies } = validFinalReviewContext();
     const finalPath = path.join(directory, "final.json");
@@ -1194,6 +1487,8 @@ test("CLI requires digest-linked transitive dependencies for launch and final re
       "--subject", launchPath,
       "--deployment-intent", intentPath,
       "--contract-receipt", receiptPath,
+      "--tinker-account-binding-ceremony-receipt",
+      bindingCeremonyReceiptPath,
       "--in", launchReviewPath,
     ], { stdout: (value) => { stdout += value; }, stderr: () => {} });
     assert.equal(code, 1);

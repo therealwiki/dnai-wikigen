@@ -114,6 +114,13 @@ function projection() {
       ]),
     ),
   });
+  const royaltyReleaseHistoryBinding = {
+    history_receipt_raw_sha256: preDPrivateInputs.find(
+      ({ flag }) => flag === "--royalty-release-history-receipt",
+    ).sha256,
+    history_sha256: semanticLineage.royalty_release_history_sha256,
+    receipt_sha256: semanticLineage.royalty_release_history_receipt_sha256,
+  };
   return {
     releaseSha: RELEASE_SHA,
     env,
@@ -124,6 +131,7 @@ function projection() {
     secondaryRpcUrl: "https://base-sepolia-rpc.publicnode.com",
     qvlVerifierRoots: qvlRoots,
     authorityRoots,
+    royaltyReleaseHistoryBinding,
     authorityBinding: {
       deploymentIntentSha256: semanticLineage.deployment_intent_sha256,
       reviewerAuthorityGenesisAcceptanceSha256:
@@ -282,7 +290,7 @@ function dependencies(overrides = {}) {
   };
 }
 
-test("D producer runs exact35 -> isolated verify -> independent fresh build -> audit with no upload hook", async () => {
+test("D producer runs exact36 -> isolated verify -> independent fresh build -> audit with no upload hook", async () => {
   const fixture = dependencies();
   assert.equal("invokeWrangler" in fixture.values, false);
   const result = await runFrontendBuildCandidateProduction(fixture.values);
@@ -327,6 +335,13 @@ test("D producer runs exact35 -> isolated verify -> independent fresh build -> a
   assert.equal(result.receipt.frontend_build_sha256, pin("dist"));
   assert.equal(result.receipt.release_env_sha256,
     result.inputManifest.projected_env_sha256);
+  assert.equal(result.inputManifest.pre_D_private_inputs.length, 36);
+  assert.deepEqual(result.inputManifest.royalty_release_history,
+    fixture.semantic.royaltyReleaseHistoryBinding);
+  assert.equal(result.receipt.royalty_release_history_sha256,
+    fixture.semantic.royaltyReleaseHistoryBinding.history_sha256);
+  assert.equal(result.receipt.royalty_release_history_receipt_sha256,
+    fixture.semantic.royaltyReleaseHistoryBinding.receipt_sha256);
   assert.equal(result.serializedEnv, fixture.semantic.serializedEnv);
   assert.equal(result.inputManifest.git_source.source_fingerprint_sha256,
     fixture.source.sourceFingerprintSha256);
@@ -343,6 +358,23 @@ test("D producer runs exact35 -> isolated verify -> independent fresh build -> a
     sourceFingerprintSha256: fixture.source.sourceFingerprintSha256,
     externalBuildClosureSha256: fixture.source.externalBuildClosureSha256,
   });
+});
+
+test("D producer rejects Royalty H raw, history, and receipt binding mismatches", async () => {
+  for (const [field, label] of [
+    ["history_receipt_raw_sha256", "raw"],
+    ["history_sha256", "history"],
+    ["receipt_sha256", "receipt"],
+  ]) {
+    const fixture = dependencies();
+    fixture.semantic.royaltyReleaseHistoryBinding[field] = pin(`mismatch:${label}`);
+    await assert.rejects(
+      runFrontendBuildCandidateProduction(fixture.values),
+      /Royalty H raw bytes, receipt digest, and history digest are not exact-bound/,
+    );
+    assert.equal(fixture.events.includes("build"), true);
+    assert.equal(fixture.events.at(-1), "build-home:remove");
+  }
 });
 
 test("D producer rejects projection extras and private-byte drift before creating a HOME", async () => {
@@ -514,6 +546,7 @@ test("D producer freezes its exact Git/runtime/semantic API contract", () => {
     "primaryRpcUrl",
     "qvlVerifierRoots",
     "releaseSha",
+    "royaltyReleaseHistoryBinding",
     "secondaryRpcUrl",
     "semanticLineage",
     "serializedEnv",

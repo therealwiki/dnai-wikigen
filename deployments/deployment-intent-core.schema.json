@@ -43,7 +43,7 @@
         "contract": {
           "additionalProperties": false,
           "properties": {
-            "computeDeveloperFeeBps": { "maximum": 2000, "minimum": 0, "type": "integer" },
+            "computeDeveloperFeeBps": { "maximum": 100, "minimum": 0, "type": "integer" },
             "emailOracleUpgradeDelaySeconds": { "maximum": 31536000, "minimum": 172800, "type": "integer" },
             "tinkerMaxAddBalanceWei": { "$ref": "#/$defs/tinkerUnits" },
             "tinkerMaxSpendWei": { "$ref": "#/$defs/tinkerUnits" }
@@ -145,6 +145,14 @@
     "staticContractInputs": {
       "additionalProperties": false,
       "properties": {
+        "diligenceRoom": {
+          "additionalProperties": false,
+          "properties": {
+            "governanceController": { "$ref": "#/$defs/address" }
+          },
+          "required": ["governanceController"],
+          "type": "object"
+        },
         "computeCreditVault": {
           "additionalProperties": false,
           "properties": {
@@ -162,7 +170,7 @@
           "type": "object"
         }
       },
-      "required": ["computeCreditVault", "tinkerAccountEncumbrance"],
+      "required": ["diligenceRoom", "computeCreditVault", "tinkerAccountEncumbrance"],
       "type": "object"
     },
     "truthStatus": { "const": "pre_deployment_intent_not_deployment_attestation_or_runtime_authority_evidence" }

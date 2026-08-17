@@ -198,14 +198,19 @@
                   "delegate",
                   "diligence-policy-init",
                   "neko",
-                  "oracle"
+                  "oracle",
+                  "tinker-customer-authority-init"
                 ],
                 "initially_enabled_profiles": [],
                 "initially_disabled_profiles": [
                   "anchor-writer-ceremony",
                   "arena-runtime",
+                  "collaboration-execution",
                   "compute-execution",
-                  "deal-settlement"
+                  "deal-settlement",
+                  "mailbox-genesis",
+                  "review-operations",
+                  "tinker-account-genesis"
                 ]
               },
               "additionalProperties": false
@@ -263,6 +268,18 @@
                   "TINKER_MAX_ADD_BALANCE_USD",
                   "TINKER_MIN_ADD_BALANCE_USD",
                   "TINKER_ORACLE_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_AUTHORITY_CHALLENGE_TTL_SECONDS",
+                  "TINKER_REVIEW_AUTHORITY_MAX_PENDING_CHALLENGES",
+                  "TINKER_REVIEW_OPERATIONS_MAXIMUM_NOTIFICATIONS_PER_TICK",
+                  "TINKER_REVIEW_OPERATIONS_MAXIMUM_QUEUE_PAGES",
+                  "TINKER_REVIEW_OPERATIONS_POLL_INTERVAL_SECONDS",
+                  "TINKER_REVIEW_OPERATIONS_REQUEST_TIMEOUT_SECONDS",
+                  "TINKER_REVIEW_QUEUE_PATH",
+                  "TINKER_REVIEW_QUEUE_READ_LIMIT_WINDOW_SECONDS",
+                  "TINKER_REVIEW_QUEUE_READ_MAX_PEERS",
+                  "TINKER_REVIEW_QUEUE_READ_PEER_LIMIT",
+                  "TINKER_REVIEW_QUEUE_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_REVIEW_TICKET_TTL_SECONDS",
                   "TINKER_RUNTIME_AUTH_KEY_PATH",
                   "TINKER_RUNTIME_AUTH_TOKEN",
                   "TINKER_RUN_METADATA_KEY_PATH",
@@ -278,14 +295,48 @@
                   "TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS"
                 ],
                 "descriptor_static_keys": [
+                  "DSTACK_ENABLED",
+                  "DSTACK_SIMULATOR_ENDPOINT",
                   "EMAIL_ORACLE_AUTH_ADDRESS",
                   "EMAIL_ORACLE_AUTH_RUNTIME_CODE_HASH",
+                  "ORACLE_REVIEW_NOTIFICATION_CALLER_IDENTITY",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_KEY",
+                  "ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_PATH",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_PORT",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_TIMEOUT_SECONDS",
+                  "TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED",
                   "TINKER_ARENA_PROVISION_EVALUATOR_SHA256",
                   "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_ARENA_STORE_INTEGRITY_KEY",
+                  "TINKER_ARENA_STORE_INTEGRITY_KEY_PATH",
                   "TINKER_ARENA_WORKER_IMAGE_DIGEST",
                   "TINKER_ARENA_WORKER_RELEASE_SHA",
                   "TINKER_CHAIN_CONTRACT_ADDRESS",
                   "TINKER_CHAIN_START_BLOCK",
+                  "TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_POLL_INTERVAL_SECONDS",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH",
+                  "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH",
+                  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY",
+                  "TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_COLLABORATION_STORE_PATH",
+                  "TINKER_COLLABORATION_WALLET_AUTH_AUDIENCE",
+                  "TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS",
+                  "TINKER_COLLABORATION_WALLET_AUTH_ISSUER",
+                  "TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH",
+                  "TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES",
+                  "TINKER_COLLABORATION_WALLET_AUTH_SIGNING_KEY",
+                  "TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS",
                   "TINKER_COMPUTE_VAULT_ADDRESS",
                   "TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH",
                   "TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE",
@@ -297,6 +348,14 @@
                   "TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256",
                   "TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON",
                   "TINKER_CORS_ALLOWED_ORIGINS",
+                  "TINKER_CUSTOMER_AUTHORITY_PATH",
+                  "TINKER_CUSTOMER_CREDENTIAL_KEY_PATH",
+                  "TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY",
+                  "TINKER_CUSTOMER_SETTLEMENT_KEY_PATH",
+                  "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+                  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY",
+                  "TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH",
+                  "TINKER_CUSTOMER_STORE_PATH",
                   "TINKER_DILIGENCE_CHAIN_ID",
                   "TINKER_DILIGENCE_EVALUATOR_POLICY_SET_ROOT",
                   "TINKER_DILIGENCE_EVALUATOR_RELEASE_B64",
@@ -309,7 +368,23 @@
                   "TINKER_EXECUTION_POLICY_APPROVAL_DOMAIN",
                   "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS",
                   "TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH",
+                  "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY",
                   "TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+                  "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+                  "TINKER_REVIEW_OPERATIONS_DELEGATE_URL",
+                  "TINKER_REVIEW_OPERATIONS_ENABLED",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_TOKEN",
+                  "TINKER_REVIEW_OPERATIONS_ORACLE_URL",
+                  "TINKER_REVIEW_OPERATIONS_PRODUCTION_RELEASE",
+                  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_KEY_PATH",
+                  "TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_TOKEN",
+                  "TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS",
+                  "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
                   "TINKER_WALLET_AUTH_CHAIN_ID",
                   "TINKER_WALLET_AUTH_DOMAIN",
                   "TINKER_WALLET_AUTH_URI"
@@ -327,6 +402,12 @@
                   "TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH"
                 ],
                 "post_measurement_deferred_keys": [
+                  "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+                  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+                  "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+                  "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+                  "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+                  "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
                   "TINKER_ARENA_REGISTRY_ADDRESS",
                   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
                   "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -335,6 +416,11 @@
                   "TINKER_ARENA_WORKER_QVL_VERDICT_URL",
                   "TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256",
                   "TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT",
+                  "TINKER_COLLABORATION_ENABLED",
+                  "TINKER_COLLABORATION_EXECUTION_ENABLED",
+                  "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+                  "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+                  "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
                   "TINKER_COMPUTE_METERING_POLICY_SET_HASH",
                   "TINKER_COMPUTE_METERING_URL",
                   "TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256",
@@ -342,13 +428,31 @@
                   "TINKER_COMPUTE_WORKLOAD_QVL_URL",
                   "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
                   "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+                  "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+                  "TINKER_CUSTOMER_AUTHORITY_SHA256",
+                  "TINKER_CUSTOMER_ENABLED",
                   "TINKER_DILIGENCE_QVL_RELEASE_POLICY_HASH",
                   "TINKER_DILIGENCE_QVL_URL",
                   "TINKER_DILIGENCE_QVL_VERIFIER_ADDRESS",
                   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS",
                   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_RELEASE_POLICY_HASH",
                   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_URL",
-                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS"
+                  "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_VERIFIER_ADDRESS",
+                  "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                  "TINKER_ROYALTY_AUTHORITY_NONCE",
+                  "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+                  "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+                  "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+                  "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+                  "TINKER_ROYALTY_OWNER_ADDRESS",
+                  "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+                  "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+                  "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+                  "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+                  "TINKER_ROYALTY_QVL_VERIFIER",
+                  "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+                  "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+                  "TINKER_ROYALTY_SETTLEMENT_VERIFIER"
                 ],
                 "post_measurement_phase_control_keys": [
                   "COMPOSE_PROFILES"
@@ -364,11 +468,17 @@
                   "BASE_SEPOLIA_RPC_URL_SECONDARY",
                   "NEKO_PASSWORD",
                   "NEKO_PASSWORD_ADMIN",
+                  "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+                  "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
                   "TINKER_WALLET_AUTH_RPC_URL",
                   "TINKER_WALLET_AUTH_RPC_URL_SECONDARY"
                 ],
-                "post_measurement_policy_bootstrap": [],
+                "post_measurement_policy_bootstrap": [
+                  "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+                  "TINKER_ACCOUNT_BINDING_SHARE_TWO"
+                ],
                 "final_authority_runtime": [
+                  "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
                   "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
                   "TINKER_ARENA_PROVISION_AUTH_TAG",
                   "TINKER_ARENA_PROVISION_EVALUATOR_B64",
@@ -379,8 +489,10 @@
                   "TINKER_COMPUTE_CHAIN_RPC_URL",
                   "TINKER_COMPUTE_METERING_AUTH_TOKEN",
                   "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+                  "TINKER_CUSTOMER_AUTHORITY_B64",
                   "TINKER_DILIGENCE_QVL_AUTH_TOKEN",
-                  "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL"
+                  "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+                  "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN"
                 ],
                 "anchor_writer_ceremony": [
                   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN"
@@ -400,6 +512,15 @@
                 "EMAIL_ORACLE_CONSUMER_COMPOSE_HASH",
                 "NEKO_PASSWORD",
                 "NEKO_PASSWORD_ADMIN",
+                "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+                "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
+                "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+                "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+                "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+                "TINKER_ACCOUNT_BINDING_SHARE_TWO",
+                "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+                "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+                "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
                 "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
                 "TINKER_ARENA_PROVISION_AUTH_TAG",
                 "TINKER_ARENA_PROVISION_EVALUATOR_B64",
@@ -424,6 +545,11 @@
                 "TINKER_CHAIN_CONTRACT_ADDRESS",
                 "TINKER_CHAIN_RPC_URL",
                 "TINKER_CHAIN_START_BLOCK",
+                "TINKER_COLLABORATION_ENABLED",
+                "TINKER_COLLABORATION_EXECUTION_ENABLED",
+                "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
+                "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+                "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
                 "TINKER_COMPUTE_CHAIN_RPC_URL",
                 "TINKER_COMPUTE_METERING_AUTH_TOKEN",
                 "TINKER_COMPUTE_METERING_POLICY_SET_HASH",
@@ -445,7 +571,11 @@
                 "TINKER_COMPUTE_WORKLOAD_QVL_URL",
                 "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
                 "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+                "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
                 "TINKER_CORS_ALLOWED_ORIGINS",
+                "TINKER_CUSTOMER_AUTHORITY_B64",
+                "TINKER_CUSTOMER_AUTHORITY_SHA256",
+                "TINKER_CUSTOMER_ENABLED",
                 "TINKER_DILIGENCE_ALLOWED_APP_ID",
                 "TINKER_DILIGENCE_ALLOWED_COMPOSE_HASH",
                 "TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH",
@@ -472,16 +602,38 @@
                 "TINKER_EXECUTION_POLICY_APPROVED_SIGNERS",
                 "TINKER_EXECUTION_POLICY_APPROVER_ROOT_HASH",
                 "TINKER_FUNDING_PREFLIGHT_ALLOWED_HOSTS",
-                "TINKER_WALLET_AUTH_CHAIN_ID",
-                "TINKER_WALLET_AUTH_DOMAIN",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_JSON",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+                "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+                "TINKER_REVIEW_AUTHORITY_POLICY_JSON",
+                "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+                "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+                "TINKER_ROYALTY_AUTHORITY_NONCE",
+                "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+                "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+                "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+                "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+                "TINKER_ROYALTY_OWNER_ADDRESS",
+                "TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS",
+                "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+                "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+                "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
+                "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+                "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+                "TINKER_ROYALTY_QVL_VERIFIER",
+                "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+                "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN",
+                "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+                "TINKER_ROYALTY_SETTLEMENT_VERIFIER",
                 "TINKER_WALLET_AUTH_RPC_URL",
-                "TINKER_WALLET_AUTH_RPC_URL_SECONDARY",
-                "TINKER_WALLET_AUTH_URI"
+                "TINKER_WALLET_AUTH_RPC_URL_SECONDARY"
               ]
             },
             "exact_allowed_environment_keys_sha256": {
               "type": "string",
-              "const": "sha256:785103fc1d1259ec73cf5364e113c67593e479dc7ab0d4079b98b6e6e77556d0"
+              "const": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4"
             },
             "public_environment_value_authority": {
               "type": "object",
@@ -492,8 +644,8 @@
                 "values_validated": false,
                 "bootstrap_static": {
                   "keys_source": "classification.descriptor_static_keys_intersect_exact_allowed_environment_keys",
-                  "key_count": 34,
-                  "key_names_sha256": "sha256:869e9be50018373ad4d7b76ab87a3fb91c9798a4ae5f673b43b80968507a0abb",
+                  "key_count": 38,
+                  "key_names_sha256": "sha256:2852a81256ae93cbc88f53d8db3613720f29bc02007bf89589d1471ebd36e78b",
                   "authority_status": "required_not_implemented",
                   "source_authority_refs": [
                     "contract_deployment_receipt_sha256",
@@ -510,8 +662,8 @@
                 },
                 "descriptor_embedded_static": {
                   "keys_source": "classification.descriptor_static_keys_minus_allowed_plus_descriptor_defaulted_keys",
-                  "key_count": 63,
-                  "key_names_sha256": "sha256:9807c4ac6fcce80b4b702528026c8e632f1161bb9d1bd854c3102a37f4439f46",
+                  "key_count": 129,
+                  "key_names_sha256": "sha256:30300fdedbc6cf93404d20118404be79dd30b0746104ab7115477e427df13b4b",
                   "authority_status": "descriptor_bytes_bound_not_injectable",
                   "source_authority_refs": [
                     "deployment_intent_sha256",
@@ -538,8 +690,8 @@
                 },
                 "post_measurement_deferred": {
                   "keys_source": "classification.post_measurement_deferred_keys",
-                  "key_count": 22,
-                  "key_names_sha256": "sha256:7534287d7f1f34dded6aa1833c7bdbf702940bfefa0845c8f2bedd2a9c702b84",
+                  "key_count": 51,
+                  "key_names_sha256": "sha256:cba9d5b60a69fe9487a4c0c8924be7a3b4a0de3b21d9a425ff651e11d6c40b85",
                   "authority_status": "required_not_implemented",
                   "source_authority_refs": [
                     "stage_specific_measured_cvm_authority_artifact",
@@ -633,10 +785,10 @@
                   "const": "descriptor.exact_allowed_environment_keys"
                 },
                 "allowed_envs_sha256": {
-                  "const": "sha256:785103fc1d1259ec73cf5364e113c67593e479dc7ab0d4079b98b6e6e77556d0"
+                  "const": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4"
                 },
                 "allowed_envs_count": {
-                  "const": 86
+                  "const": 126
                 },
                 "docker_compose_file_sha256": {
                   "type": "string",
@@ -2458,10 +2610,10 @@
                   "const": "descriptor.exact_allowed_environment_keys"
                 },
                 "allowed_envs_sha256": {
-                  "const": "sha256:c2f9d3d14a383c9fb1e145c70b65b481b090f52658f7a93eb7d5e003b26959ab"
+                  "const": "sha256:669978f98627994d7b751d061bb4f0022595efafd40fdd81836099ab5b14453b"
                 },
                 "allowed_envs_count": {
-                  "const": 8
+                  "const": 13
                 },
                 "docker_compose_file_sha256": {
                   "type": "string",

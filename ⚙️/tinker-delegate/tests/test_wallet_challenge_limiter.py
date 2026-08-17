@@ -44,7 +44,7 @@ def limiter(clock, *, global_capacity=3, address_capacity=2, peer_capacity=2):
 
 
 class WalletChallengeAdmissionLimiterTest(unittest.TestCase):
-    def test_default_settings_keep_a_256_nonce_headroom_in_every_store(self):
+    def test_default_settings_keep_a_256_nonce_headroom_in_all_four_stores(self):
         gate = WalletChallengeAdmissionLimiter.from_settings(Settings())
         self.assertEqual(gate.window_seconds, 600)
         self.assertEqual(gate.maximum_challenge_ttl, 300)
@@ -54,6 +54,22 @@ class WalletChallengeAdmissionLimiterTest(unittest.TestCase):
             gate.minimum_store_capacity - gate.global_capacity,
             256,
         )
+
+    def test_review_ttl_and_store_capacity_join_the_shared_safety_proof(self):
+        with self.assertRaisesRegex(
+            WalletChallengeLimitConfigurationError,
+            "below every nonce store capacity",
+        ):
+            WalletChallengeAdmissionLimiter.from_settings(
+                Settings(review_authority_max_pending_challenges=768)
+            )
+        with self.assertRaisesRegex(
+            WalletChallengeLimitConfigurationError,
+            "outside its safe range",
+        ):
+            WalletChallengeAdmissionLimiter.from_settings(
+                Settings(review_authority_challenge_ttl_seconds=601)
+            )
 
     def test_configuration_proves_window_and_capacity_below_store_exhaustion(self):
         with self.assertRaisesRegex(
@@ -148,6 +164,29 @@ class WalletChallengeAdmissionLimiterTest(unittest.TestCase):
             gate.admit(address=ADDRESS_B, peer_source="peer-b")
         self.assertEqual(raised.exception.retry_after, 60)
         self.assertEqual(gate.accepted_count(), 1)
+
+    def test_rotating_identities_cannot_accumulate_expired_bucket_keys(self):
+        clock = MutableClock()
+        gate = limiter(
+            clock,
+            global_capacity=7,
+            address_capacity=7,
+            peer_capacity=7,
+        )
+        for index in range(7):
+            gate.admit(
+                address="0x" + f"{index + 1:040x}",
+                peer_source=f"ipv4:192.0.2.{index + 1}",
+            )
+        self.assertEqual(len(gate._addresses), 7)
+        self.assertEqual(len(gate._peers), 7)
+
+        clock.value += 60
+        gate.admit(address=ADDRESS_A, peer_source="ipv4:198.51.100.10")
+
+        self.assertEqual(gate.accepted_count(), 1)
+        self.assertEqual(tuple(gate._addresses), (ADDRESS_A,))
+        self.assertEqual(tuple(gate._peers), ("ipv4:198.51.100.10",))
 
 
 class WalletChallengePeerPolicyTest(unittest.TestCase):

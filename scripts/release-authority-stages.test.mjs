@@ -10,12 +10,18 @@ import {
 } from "./release-authority-signature-verifier.mjs";
 import {
   CEREMONY_AUTHORIZATION_CORE_STATUS,
+  DEPRECATED_FINAL_RELEASE_AUTHORITY_WRAPPER_SCHEMA,
   LIVE_ACTIVATION_AUTHORITY_STATUS,
   LIVE_ACTIVATION_FRONTEND_BINDING_SCHEMA,
   LIVE_ACTIVATION_FRONTEND_BINDING_TRUTH_STATUS,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_V2_SCHEMA,
+  ROYALTY_RELEASE_HISTORY_RECEIPT_TRUTH_STATUS,
+  ROYALTY_RELEASE_HISTORY_V2_SCHEMA,
   canonicalCeremonyAuthorizationCoreArtifactText,
   canonicalLiveActivationAuthorityArtifactText,
   ceremonyReceiptRpcObservationSha256,
+  ceremonyTransactionRpcObservationSha256,
   ceremonyAuthorizationCoreSha256,
   commonFinalizedBlockRpcObservationSha256,
   executionPolicyAnchorRpcReadSha256,
@@ -23,18 +29,28 @@ import {
   liveActivationReviewSigningPayload,
   liveActivationFrontendBindingSha256,
   normalizeCeremonyAuthorizationCore,
+  normalizeDeprecatedFinalReleaseAuthorityWrapper,
   normalizeLiveActivationAuthority,
   normalizeLiveActivationFrontendBinding,
+  normalizeRoyaltyReleaseHistoryReceipt,
+  normalizedRoyaltyReleaseHistorySha256,
   projectLiveActivationFrontendBinding,
+  projectRoyaltyReleaseHistoryReceipt,
+  royaltyReleaseHistoryReceiptSha256,
   frontendBuildCandidateAuthorityBindingFromLiveActivation,
   frontendBuildCandidateAuthorityBindingFromCeremonyAuthorization,
   assertLiveActivationFrontendBuildSha256,
-  assertFreshProductionCeremonyAuthorizationCore,
   ceremonyAuthorizationReviewSigningPayload,
-  ceremonyAuthorizationReviewSigningPayloadForProduction,
   releaseAuthorityReviewSigningMessage,
   releaseAuthorityReviewSigningPayloadSha256,
 } from "./release-authority-stages.mjs";
+import {
+  assertFreshProductionCeremonyAuthorizationCore,
+  ceremonyAuthorizationReviewSigningPayloadForProduction,
+} from "./release-ceremony-authorization-production.mjs";
+import {
+  FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+} from "./execution-policy-release-core.mjs";
 import {
   syntheticReleaseAuthorityStagesFixture,
 } from "./release-authority-stages.fixture.mjs";
@@ -146,13 +162,36 @@ async function resignSyntheticStageTwo(value, {
   };
 }
 
+test("deprecated compatibility wrapper has a schema distinct from the v3 authority core", () => {
+  assert.notEqual(
+    DEPRECATED_FINAL_RELEASE_AUTHORITY_WRAPPER_SCHEMA,
+    FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+  );
+  const wrapper = {
+    schema: DEPRECATED_FINAL_RELEASE_AUTHORITY_WRAPPER_SCHEMA,
+    status: CEREMONY_AUTHORIZATION_CORE_STATUS,
+    truth_status:
+      "deprecated_pre_ceremony_compatibility_wrapper_not_final_or_live_authority",
+    pre_ceremony_runtime_authority_sha256: pin("a1"),
+    ceremony_authorization_sha256: pin("a2"),
+  };
+  assert.deepEqual(normalizeDeprecatedFinalReleaseAuthorityWrapper(wrapper), wrapper);
+  assert.throws(
+    () => normalizeDeprecatedFinalReleaseAuthorityWrapper({
+      ...wrapper,
+      schema: FINAL_RELEASE_AUTHORITY_CORE_SCHEMA,
+    }),
+    /deprecated wrapper schema/,
+  );
+});
+
 test("signed Stage 1 flows into separately signed Stage 2 without digest cycles", async () => {
   const value = await syntheticReleaseAuthorityStagesFixture();
   const stageOne = normalizeCeremonyAuthorizationCore(value.stageOne, value.stageOneOptions);
   const stageTwo = normalizeLiveActivationAuthority(value.stageTwo, value.stageTwoOptions);
   assert.equal(stageOne.status, CEREMONY_AUTHORIZATION_CORE_STATUS);
   assert.equal(stageTwo.status, LIVE_ACTIVATION_AUTHORITY_STATUS);
-  assert.equal(stageTwo.schema, "dnai.live-activation-authority.v5");
+  assert.equal(stageTwo.schema, "dnai.live-activation-authority.v6");
   assert.equal(
     stageTwo.post_ceremony_evidence
       .post_measurement_activation_execution_receipt_sha256,
@@ -335,6 +374,21 @@ test("signed Stage 2 projects one exact frontend candidate and audited-build bin
     value.stageTwo.post_ceremony_evidence.frontend_build_sha256,
   );
   assert.equal(binding.contracts.length, 7);
+  assert.deepEqual(
+    binding.royalty_release_authority,
+    value.stageTwo.contract_state.royalty_release_history.authority,
+  );
+  assert.deepEqual(
+    binding.royalty_release_active_state,
+    value.stageTwo.contract_state.royalty_release_history.phase_two
+      .poststate.primary_rpc_state,
+  );
+  assert.equal(binding.royalty_release_active_state.paused, false);
+  assert.equal(binding.royalty_release_active_state.pending_authority_nonce, 0);
+  assert.equal(
+    binding.royalty_release_history_receipt_sha256,
+    value.stageTwo.contract_state.royalty_release_history_receipt_sha256,
+  );
   assert.equal(
     binding.execution_policy_anchor_commitment.primary_rpc_read_sha256,
     value.stageTwo.contract_state.execution_policy_anchor_commitment
@@ -404,6 +458,237 @@ test("signed Stage 2 projects one exact frontend candidate and audited-build bin
       value.stageTwoOptions,
     ),
     /exact audited frontend build/,
+  );
+
+  const activeStateExtraField = structuredClone(binding);
+  activeStateExtraField.royalty_release_active_state.attacker = true;
+  assert.throws(
+    () => normalizeLiveActivationFrontendBinding(activeStateExtraField),
+    /exact schema/,
+  );
+
+  const pausedRoyalty = structuredClone(binding);
+  pausedRoyalty.royalty_release_active_state.paused = true;
+  assert.throws(
+    () => normalizeLiveActivationFrontendBinding(pausedRoyalty),
+    /phase-two RoyaltyDistributor state must be active/,
+  );
+
+  const royaltyBlockDrift = structuredClone(binding);
+  royaltyBlockDrift.royalty_release_active_state.block_hash = word("fb");
+  assert.throws(
+    () => normalizeLiveActivationFrontendBinding(royaltyBlockDrift),
+    /active poststate drifted/,
+  );
+});
+
+test("Royalty release history digest normalizes exact phase shapes and dual-RPC authority", async () => {
+  const value = await syntheticReleaseAuthorityStagesFixture();
+  const history = value.stageTwo.contract_state.royalty_release_history;
+  const options = {
+    contracts: value.stageTwo.contract_state.contracts,
+    commonFinalizedState: value.stageTwo.common_finalized_state,
+  };
+  assert.equal(
+    normalizedRoyaltyReleaseHistorySha256(history, options),
+    value.stageTwo.contract_state.royalty_release_history_sha256,
+  );
+  const receipt = projectRoyaltyReleaseHistoryReceipt({
+    contracts: options.contracts,
+    commonFinalizedState: options.commonFinalizedState,
+    royaltyReleaseHistory: history,
+  });
+  assert.equal(receipt.schema, ROYALTY_RELEASE_HISTORY_RECEIPT_SCHEMA);
+  assert.equal(
+    receipt.truth_status,
+    ROYALTY_RELEASE_HISTORY_RECEIPT_TRUTH_STATUS,
+  );
+  assert.deepEqual(normalizeRoyaltyReleaseHistoryReceipt(receipt), receipt);
+  assert.equal(
+    royaltyReleaseHistoryReceiptSha256(receipt),
+    value.stageTwo.contract_state.royalty_release_history_receipt_sha256,
+  );
+
+  const receiptProjectionDrift = structuredClone(receipt);
+  receiptProjectionDrift.royalty_release_active_state.paused = true;
+  assert.throws(
+    () => normalizeRoyaltyReleaseHistoryReceipt(receiptProjectionDrift),
+    /phase-two RoyaltyDistributor state must be active/,
+  );
+
+  const receiptCommonDigestDrift = structuredClone(receipt);
+  receiptCommonDigestDrift.common_finalized_state_sha256 = pin("fa");
+  assert.throws(
+    () => normalizeRoyaltyReleaseHistoryReceipt(receiptCommonDigestDrift),
+    /common finalized state digest is invalid/,
+  );
+
+  const extraTopLevelField = structuredClone(history);
+  extraTopLevelField.attacker = true;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(extraTopLevelField, options),
+    /exact schema/,
+  );
+
+  const extraPhaseField = structuredClone(history);
+  extraPhaseField.phase_two.attacker = true;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(extraPhaseField, options),
+    /phase-two history fields do not match the exact schema/,
+  );
+
+  const missingMutation = structuredClone(history);
+  delete missingMutation.phase_two.unpause_transaction;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(missingMutation, options),
+    /phase-two history fields do not match the exact schema/,
+  );
+
+  const wrongPhaseState = structuredClone(history);
+  wrongPhaseState.phase_one.poststate = structuredClone(history.fresh_state);
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(wrongPhaseState, options),
+    /phase_one_pending evidence phase|phase-one RoyaltyDistributor state/,
+  );
+
+  const aliasedRpc = structuredClone(history);
+  aliasedRpc.phase_two.activation_transaction.secondary_rpc_id_sha256 =
+    aliasedRpc.phase_two.activation_transaction.primary_rpc_id_sha256;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(aliasedRpc, options),
+    /does not use the common dual-RPC authority/,
+  );
+});
+
+test("Royalty H v2 proves a finalized reverted unpause and one contiguous recovery retry", async () => {
+  const value = await syntheticReleaseAuthorityStagesFixture({
+    royaltyExecutionMode: "recover_reverted_unpause",
+  });
+  const live = normalizeLiveActivationAuthority(
+    value.stageTwo,
+    value.stageTwoOptions,
+  );
+  const history = live.contract_state.royalty_release_history;
+  const options = {
+    contracts: live.contract_state.contracts,
+    commonFinalizedState: live.common_finalized_state,
+  };
+  const activation = history.phase_two.activation_transaction;
+  const reverted = history.phase_two.reverted_unpause_transaction;
+  const recovery = history.phase_two.unpause_transaction;
+  assert.equal(history.schema, ROYALTY_RELEASE_HISTORY_V2_SCHEMA);
+  assert.equal(history.execution_mode, "recover_reverted_unpause");
+  assert.equal(reverted.primary_rpc_receipt.status, 0);
+  assert.equal(reverted.primary_rpc_receipt.logs.length, 0);
+  assert.equal(
+    BigInt(reverted.primary_rpc_transaction.nonce),
+    BigInt(activation.primary_rpc_transaction.nonce) + 1n,
+  );
+  assert.equal(
+    BigInt(recovery.primary_rpc_transaction.nonce),
+    BigInt(reverted.primary_rpc_transaction.nonce) + 1n,
+  );
+
+  const receipt = projectRoyaltyReleaseHistoryReceipt({
+    contracts: options.contracts,
+    commonFinalizedState: options.commonFinalizedState,
+    royaltyReleaseHistory: history,
+  });
+  assert.equal(receipt.schema, ROYALTY_RELEASE_HISTORY_RECEIPT_V2_SCHEMA);
+  assert.equal(receipt.execution_mode, "recover_reverted_unpause");
+  assert.deepEqual(normalizeRoyaltyReleaseHistoryReceipt(receipt), receipt);
+  assert.equal(
+    royaltyReleaseHistoryReceiptSha256(receipt),
+    live.contract_state.royalty_release_history_receipt_sha256,
+  );
+
+  const wrongStatus = structuredClone(history);
+  wrongStatus.phase_two.reverted_unpause_transaction
+    .primary_rpc_receipt.status = 1;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(wrongStatus, options),
+    /receipt status/,
+  );
+
+  const missingRevert = structuredClone(history);
+  delete missingRevert.phase_two.reverted_unpause_transaction;
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(missingRevert, options),
+    /phase-two history fields do not match the exact schema/,
+  );
+
+  const disguisedNormalMode = structuredClone(history);
+  disguisedNormalMode.execution_mode = "activate_and_unpause";
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(disguisedNormalMode, options),
+    /phase-two history fields do not match the exact schema/,
+  );
+
+  const skippedNonce = structuredClone(history);
+  const skippedRecovery = skippedNonce.phase_two.unpause_transaction;
+  for (const rpc of ["primary", "secondary"]) {
+    const transaction = skippedRecovery[`${rpc}_rpc_transaction`];
+    transaction.nonce = String(BigInt(transaction.nonce) + 1n);
+    skippedRecovery[`${rpc}_rpc_transaction_sha256`] =
+      ceremonyTransactionRpcObservationSha256(transaction);
+  }
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(skippedNonce, options),
+    /contiguous retry/,
+  );
+
+  const revertedWithLogs = structuredClone(history);
+  const revertedMutation =
+    revertedWithLogs.phase_two.reverted_unpause_transaction;
+  const successLogs = history.phase_two.unpause_transaction
+    .primary_rpc_receipt.logs;
+  for (const rpc of ["primary", "secondary"]) {
+    const failedReceipt = revertedMutation[`${rpc}_rpc_receipt`];
+    failedReceipt.logs = structuredClone(successLogs);
+    revertedMutation[`${rpc}_rpc_receipt_sha256`] =
+      ceremonyReceiptRpcObservationSha256(failedReceipt, {
+        expectedStatus: 0,
+      });
+  }
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(revertedWithLogs, options),
+    /one finalized reverted unpause/,
+  );
+
+  const receiptModeDrift = structuredClone(receipt);
+  receiptModeDrift.execution_mode = "activate_and_unpause";
+  assert.throws(
+    () => normalizeRoyaltyReleaseHistoryReceipt(receiptModeDrift),
+    /execution mode drifts/,
+  );
+});
+
+test("Royalty H v2 keeps normal activation and unpause contiguous", async () => {
+  const value = await syntheticReleaseAuthorityStagesFixture({
+    royaltyExecutionMode: "activate_and_unpause",
+  });
+  const history = value.stageTwo.contract_state.royalty_release_history;
+  const options = {
+    contracts: value.stageTwo.contract_state.contracts,
+    commonFinalizedState: value.stageTwo.common_finalized_state,
+  };
+  assert.equal(history.schema, ROYALTY_RELEASE_HISTORY_V2_SCHEMA);
+  assert.equal(history.execution_mode, "activate_and_unpause");
+  assert.equal(
+    normalizedRoyaltyReleaseHistorySha256(history, options),
+    value.stageTwo.contract_state.royalty_release_history_sha256,
+  );
+  const skippedNonce = structuredClone(history);
+  const unpause = skippedNonce.phase_two.unpause_transaction;
+  for (const rpc of ["primary", "secondary"]) {
+    const transaction = unpause[`${rpc}_rpc_transaction`];
+    transaction.nonce = String(BigInt(transaction.nonce) + 1n);
+    unpause[`${rpc}_rpc_transaction_sha256`] =
+      ceremonyTransactionRpcObservationSha256(transaction);
+  }
+  assert.throws(
+    () => normalizedRoyaltyReleaseHistorySha256(skippedNonce, options),
+    /activation and unpause must be contiguous/,
   );
 });
 

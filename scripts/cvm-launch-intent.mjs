@@ -12,6 +12,7 @@ import {
   canonicalCvmLaunchIntentCoreArtifactText,
   createDraftCvmLaunchIntentCore,
   CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS,
+  CVM_MAIN_LATE_INPUT_FAIL_CLOSED_DEFAULTS,
   CVM_LAUNCH_DESCRIPTOR_FILES,
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
@@ -34,7 +35,7 @@ import {
 } from "./operator-policy-packet-core.mjs";
 
 const USAGE = `Usage:
-  node scripts/cvm-launch-intent.mjs build --topology FILE --ledger FILE --out FILE --contract-receipt-out FILE
+  node scripts/cvm-launch-intent.mjs build --topology FILE --ledger FILE --tinker-account-binding-ceremony-receipt-sha256 SHA256 --out FILE --contract-receipt-out FILE
   node scripts/cvm-launch-intent.mjs init-template --out FILE
   node scripts/cvm-launch-intent.mjs check --in FILE [--receipt-out FILE]
   node scripts/cvm-launch-intent.mjs hash --in FILE
@@ -61,6 +62,16 @@ function exactAliasOccurrence(service, destinationEnvironmentKey, interpolationS
   });
 }
 
+function exactNonEnvironmentOccurrence(service, path, interpolationSuffix) {
+  return Object.freeze({
+    service,
+    destination_environment_key: null,
+    path,
+    interpolation_suffix: interpolationSuffix,
+    environment_destination: false,
+  });
+}
+
 function exactAliasContractEntry(sourceEnvironmentKey, occurrences) {
   return Object.freeze({
     source_environment_key: sourceEnvironmentKey,
@@ -79,8 +90,43 @@ export const CVM_MAIN_EXACT_ENVIRONMENT_REFERENCE_ALIAS_CONTRACT = Object.freeze
       ":?Canonical main runtime CVM ID required",
     ),
     exactAliasOccurrence(
+      "delegate",
+      "TINKER_MAIN_RUNTIME_CVM_ID",
+      ":?Canonical main runtime CVM ID required",
+    ),
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_REVIEW_NOTIFICATION_MAIN_RUNTIME_CVM_ID",
+      ":?prepare-derived value required before CVM commit",
+    ),
+    exactAliasOccurrence(
+      "review-operations",
+      "TINKER_REVIEW_OPERATIONS_MAIN_RUNTIME_CVM_ID",
+      ":?prepare-derived value required before CVM commit",
+    ),
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_CVM_ID",
+      ":?Canonical main runtime CVM ID required",
+    ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_MAIN_RUNTIME_CVM_ID",
+      ":?Canonical main runtime CVM ID required",
+    ),
+    exactAliasOccurrence(
       "arena-worker",
       "TINKER_MAIN_RUNTIME_CVM_ID",
+      ":?Canonical main runtime CVM ID required",
+    ),
+    exactAliasOccurrence(
+      "mailbox-genesis",
+      "ORACLE_GENESIS_MAIN_RUNTIME_CVM_ID",
+      ":?Canonical main runtime CVM ID required",
+    ),
+    exactAliasOccurrence(
+      "tinker-account-genesis",
+      "TINKER_ACCOUNT_GENESIS_MAIN_RUNTIME_CVM_ID",
       ":?Canonical main runtime CVM ID required",
     ),
   ]),
@@ -91,8 +137,33 @@ export const CVM_MAIN_EXACT_ENVIRONMENT_REFERENCE_ALIAS_CONTRACT = Object.freeze
       ":?Signed seven-CVM deployment intent required",
     ),
     exactAliasOccurrence(
+      "delegate",
+      "TINKER_RELEASE_DEPLOYMENT_INTENT_SHA256",
+      ":?Signed seven-CVM deployment intent required",
+    ),
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256",
+      ":?Signed seven-CVM deployment intent required",
+    ),
+    exactAliasOccurrence(
       "arena-worker",
       "TINKER_RELEASE_DEPLOYMENT_INTENT_SHA256",
+      ":?Signed seven-CVM deployment intent required",
+    ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_RELEASE_DEPLOYMENT_INTENT_SHA256",
+      ":?Signed seven-CVM deployment intent required",
+    ),
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_REVIEW_NOTIFICATION_DEPLOYMENT_INTENT_SHA256",
+      ":?Signed seven-CVM deployment intent required",
+    ),
+    exactAliasOccurrence(
+      "review-operations",
+      "TINKER_REVIEW_OPERATIONS_DEPLOYMENT_INTENT_SHA256",
       ":?Signed seven-CVM deployment intent required",
     ),
   ]),
@@ -103,8 +174,33 @@ export const CVM_MAIN_EXACT_ENVIRONMENT_REFERENCE_ALIAS_CONTRACT = Object.freeze
       ":-",
     ),
     exactAliasOccurrence(
+      "delegate",
+      "TINKER_RELEASE_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
       "arena-worker",
       "TINKER_RELEASE_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_RELEASE_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_REVIEW_NOTIFICATION_RELEASE_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "review-operations",
+      "TINKER_REVIEW_OPERATIONS_RELEASE_AUTHORITY_SHA256",
       ":-",
     ),
   ]),
@@ -115,11 +211,103 @@ export const CVM_MAIN_EXACT_ENVIRONMENT_REFERENCE_ALIAS_CONTRACT = Object.freeze
       ":?Release ceremony nonce required",
     ),
     exactAliasOccurrence(
+      "delegate",
+      "TINKER_RELEASE_CEREMONY_NONCE",
+      ":?Release ceremony nonce required",
+    ),
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE",
+      ":?Release ceremony nonce required",
+    ),
+    exactAliasOccurrence(
       "arena-worker",
       "TINKER_RELEASE_CEREMONY_NONCE",
       ":?Release ceremony nonce required",
     ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_RELEASE_CEREMONY_NONCE",
+      ":?Release ceremony nonce required",
+    ),
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_REVIEW_NOTIFICATION_CEREMONY_NONCE",
+      ":?Release ceremony nonce required",
+    ),
+    exactAliasOccurrence(
+      "review-operations",
+      "TINKER_REVIEW_OPERATIONS_CEREMONY_NONCE",
+      ":?Release ceremony nonce required",
+    ),
   ]),
+  exactAliasContractEntry("ORACLE_REVIEW_NOTIFICATIONS_ENABLED", [
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
+      ":-false",
+    ),
+    exactAliasOccurrence(
+      "review-operations",
+      "TINKER_REVIEW_OPERATIONS_NOTIFICATIONS_ENABLED",
+      ":-false",
+    ),
+  ]),
+  ...[
+    "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
+    "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
+    "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+  ].map((sourceEnvironmentKey) => exactAliasContractEntry(
+    sourceEnvironmentKey,
+    [
+      exactAliasOccurrence("oracle", sourceEnvironmentKey, ":-"),
+    ],
+  )),
+  ...[
+    [
+      "TINKER_REVIEW_AUTHORITY_POLICY_SHA256",
+      "ORACLE_REVIEW_NOTIFICATION_POLICY_SHA256",
+      "TINKER_REVIEW_OPERATIONS_POLICY_SHA256",
+      ":?Review authority policy digest required",
+    ],
+    [
+      "TINKER_RELEASE_REVIEWER_AUTHORITY_ACTIVE_REVIEWERS_SHA256",
+      "ORACLE_REVIEW_NOTIFICATION_ACTIVE_REVIEWERS_SHA256",
+      "TINKER_REVIEW_OPERATIONS_ACTIVE_REVIEWERS_SHA256",
+      ":?Active-reviewer projection digest required",
+    ],
+    [
+      "TINKER_RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256",
+      "ORACLE_REVIEW_NOTIFICATION_GENESIS_ACCEPTANCE_SHA256",
+      "TINKER_REVIEW_OPERATIONS_GENESIS_ACCEPTANCE_SHA256",
+      ":?Reviewer genesis-acceptance digest required",
+    ],
+    [
+      "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_EPOCH",
+      "ORACLE_REVIEW_NOTIFICATION_CURRENT_STATUS_EPOCH",
+      "TINKER_REVIEW_OPERATIONS_CURRENT_STATUS_EPOCH",
+      ":?Reviewer current-status epoch required",
+    ],
+    [
+      "TINKER_RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_SHA256",
+      "ORACLE_REVIEW_NOTIFICATION_CURRENT_STATUS_SHA256",
+      "TINKER_REVIEW_OPERATIONS_CURRENT_STATUS_SHA256",
+      ":?Reviewer current-status digest required",
+    ],
+  ].map(([
+    sourceEnvironmentKey,
+    oracleDestination,
+    workerDestination,
+    interpolationSuffix,
+  ]) => exactAliasContractEntry(sourceEnvironmentKey, [
+    exactAliasOccurrence("delegate", sourceEnvironmentKey, interpolationSuffix),
+    exactAliasOccurrence("oracle", oracleDestination, interpolationSuffix),
+    exactAliasOccurrence(
+      "review-operations",
+      workerDestination,
+      interpolationSuffix,
+    ),
+  ])),
   exactAliasContractEntry(
     "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
     [
@@ -169,7 +357,799 @@ export const CVM_MAIN_EXACT_ENVIRONMENT_REFERENCE_ALIAS_CONTRACT = Object.freeze
       ":-",
     ),
   ]),
+  ...[
+    ["TINKER_ARENA_WORKER_COMPOSE_HASH", "TINKER_ROYALTY_MAIN_RUNTIME_COMPOSE_HASH"],
+    ["TINKER_ARENA_WORKER_APP_ID", "TINKER_ROYALTY_MAIN_RUNTIME_APP_ID"],
+    ["TINKER_ARENA_WORKER_OS_IMAGE_HASH", "TINKER_ROYALTY_MAIN_RUNTIME_OS_IMAGE_HASH"],
+  ].map(([sourceEnvironmentKey, royaltyDestination]) => (
+    exactAliasContractEntry(sourceEnvironmentKey, [
+      exactAliasOccurrence(
+        "delegate",
+        sourceEnvironmentKey,
+        ":?prepare-derived value required before CVM commit",
+      ),
+      exactAliasOccurrence(
+        "delegate",
+        royaltyDestination,
+        ":?prepare-derived value required before CVM commit",
+      ),
+      exactAliasOccurrence(
+        "arena-worker",
+        sourceEnvironmentKey,
+        ":?prepare-derived value required before CVM commit",
+      ),
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        royaltyDestination,
+        ":?prepare-derived value required before CVM commit",
+      ),
+    ])
+  )),
+  ...[
+    "TINKER_COMPUTE_VAULT_ADDRESS",
+    "TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH",
+    "TINKER_COMPUTE_METERING_POLICY_SET_HASH",
+    "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256",
+    "TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256",
+    "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
+    "TINKER_COMPUTE_WORKLOAD_QVL_MAX_VERDICT_AGE_SECONDS",
+    "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH",
+    "TINKER_COMPUTE_WORKLOAD_QVL_REVOKED_QUOTE_HASHES_JSON",
+    "TINKER_COMPUTE_WORKLOAD_QVL_URL",
+    "TINKER_COMPUTE_WORKLOAD_QVL_VERIFIER_ADDRESS",
+  ].map((sourceEnvironmentKey) => exactAliasContractEntry(
+    sourceEnvironmentKey,
+    [
+      exactAliasOccurrence("delegate", sourceEnvironmentKey, ":-"),
+      exactAliasOccurrence("compute-execution-worker", sourceEnvironmentKey, ":-"),
+      ...(
+        sourceEnvironmentKey === "TINKER_COMPUTE_VAULT_ADDRESS"
+          || sourceEnvironmentKey === "TINKER_COMPUTE_VAULT_RUNTIME_CODE_HASH"
+          ? [exactAliasOccurrence(
+              "collaboration-execution-worker",
+              sourceEnvironmentKey,
+              ":-",
+            )]
+          : []
+      ),
+    ],
+  )),
+  exactAliasContractEntry("TINKER_COMPUTE_VAULT_COMPOSE_HASH", [
+    exactAliasOccurrence(
+      "delegate",
+      "TINKER_COMPUTE_VAULT_COMPOSE_HASH",
+      ":?Compute execution compose hash required",
+    ),
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_VAULT_COMPOSE_HASH",
+      ":?Compute execution compose hash required",
+    ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_COMPUTE_VAULT_COMPOSE_HASH",
+      ":?Compute execution compose hash required",
+    ),
+  ]),
+  exactAliasContractEntry("TINKER_COMPUTE_CHAIN_RPC_URL", [
+    exactAliasOccurrence(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_CHAIN_RPC_URL",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "collaboration-execution-worker",
+      "TINKER_COMPUTE_CHAIN_RPC_URL",
+      ":-",
+    ),
+  ]),
+  exactAliasContractEntry("TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL", [
+    exactAliasOccurrence(
+      "delegate",
+      "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+      ":-",
+    ),
+    ...[
+      "arena-worker",
+      "compute-execution-worker",
+      "collaboration-execution-worker",
+    ].map((service) => exactAliasOccurrence(
+      service,
+      "TINKER_EXECUTION_POLICY_ANCHOR_RPC_URL",
+      ":?Execution-policy anchor Base Sepolia HTTPS RPC URL required",
+    )),
+  ]),
+  ...[
+    [
+      "TINKER_EXECUTION_POLICY_ANCHOR_ADDRESS",
+      [
+        "arena-worker",
+        "anchor-writer-evidence",
+        "compute-execution-worker",
+        "collaboration-execution-worker",
+      ],
+      ":?Execution-policy anchor contract address required",
+    ],
+    [
+      "TINKER_EXECUTION_POLICY_ANCHOR_RUNTIME_CODE_HASH",
+      [
+        "arena-worker",
+        "compute-execution-worker",
+        "collaboration-execution-worker",
+      ],
+      ":?Execution-policy anchor runtime code hash required",
+    ],
+    [
+      "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_ADDRESS",
+      [
+        "arena-worker",
+        "anchor-writer-evidence",
+        "compute-execution-worker",
+        "collaboration-execution-worker",
+      ],
+      ":?Execution-policy anchor writer address required",
+    ],
+    [
+      "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+      [
+        "arena-worker",
+        "anchor-writer-evidence",
+        "compute-execution-worker",
+        "collaboration-execution-worker",
+      ],
+      ":?Execution-policy anchor writer release commitment required",
+    ],
+  ].map(([sourceEnvironmentKey, strictServices, strictSuffix]) => (
+    exactAliasContractEntry(sourceEnvironmentKey, [
+      exactAliasOccurrence("delegate", sourceEnvironmentKey, ":-"),
+      ...strictServices.map((service) => exactAliasOccurrence(
+        service,
+        sourceEnvironmentKey,
+        strictSuffix,
+      )),
+    ])
+  )),
+  exactAliasContractEntry("TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH", [
+    ...[
+      "delegate",
+      "anchor-writer-evidence",
+      "collaboration-execution-worker",
+    ].map((service) => exactAliasOccurrence(
+      service,
+      "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_KEY_PATH",
+      ":-tinker/execution_policy_anchor_writer",
+    )),
+  ]),
+  ...[
+    ["TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATIONS", ":-12"],
+    ["TINKER_EXECUTION_POLICY_ANCHOR_POLL_INTERVAL_SECONDS", ":-1"],
+    ["TINKER_EXECUTION_POLICY_ANCHOR_CONFIRMATION_WAIT_SECONDS", ":-60"],
+    ["TINKER_EXECUTION_POLICY_ANCHOR_MAX_BLOCK_AGE_SECONDS", ":-3600"],
+    ["TINKER_EXECUTION_POLICY_ANCHOR_MAX_FUTURE_BLOCK_SKEW_SECONDS", ":-30"],
+  ].map(([sourceEnvironmentKey, interpolationSuffix]) => (
+    exactAliasContractEntry(sourceEnvironmentKey, [
+      ...[
+        "delegate",
+        "arena-worker",
+        "compute-execution-worker",
+        "collaboration-execution-worker",
+      ].map((service) => exactAliasOccurrence(
+        service,
+        sourceEnvironmentKey,
+        interpolationSuffix,
+      )),
+    ])
+  )),
+  exactAliasContractEntry(
+    "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+    [
+      exactAliasOccurrence(
+        "delegate",
+        "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+        ":-false",
+      ),
+      exactAliasOccurrence(
+        "compute-execution-worker",
+        "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+        ":-false",
+      ),
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        "TINKER_COMPUTE_WORKLOAD_WALLET_ADOPTION_ENABLED",
+        ":-false",
+      ),
+    ],
+  ),
+  exactAliasContractEntry(
+    "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+    [
+      exactAliasOccurrence(
+        "delegate",
+        "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+        ":-900",
+      ),
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        "TINKER_COLLABORATION_EXECUTION_ROYALTY_RESERVATION_SAFETY_SECONDS",
+        ":-900",
+      ),
+    ],
+  ),
+  ...[
+    ["TINKER_COLLABORATION_EXECUTION_ENABLED", ":-false"],
+    ["TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA", ":-"],
+    [
+      "TINKER_COLLABORATION_EXECUTION_RELEASE_VERIFICATION_SHA256",
+      ":-",
+    ],
+  ].map(([sourceEnvironmentKey, interpolationSuffix]) => (
+    exactAliasContractEntry(sourceEnvironmentKey, [
+      exactAliasOccurrence(
+        "delegate",
+        sourceEnvironmentKey,
+        interpolationSuffix,
+      ),
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        sourceEnvironmentKey,
+        interpolationSuffix,
+      ),
+    ])
+  )),
+  ...[
+    "TINKER_ROYALTY_ANCHOR_WRITER_RELEASE_COMMITMENT",
+    "TINKER_ROYALTY_AUTHORITY_NONCE",
+    "TINKER_ROYALTY_DISTRIBUTOR_ADDRESS",
+    "TINKER_ROYALTY_DISTRIBUTOR_RUNTIME_CODE_HASH",
+    "TINKER_ROYALTY_EXECUTION_POLICY_ANCHOR",
+    "TINKER_ROYALTY_MEASUREMENT_POLICY_SHA256",
+    "TINKER_ROYALTY_OWNER_ADDRESS",
+    "TINKER_ROYALTY_QVL_POLICY_COMMITMENT",
+    "TINKER_ROYALTY_QVL_RELEASE_POLICY_HASH",
+    "TINKER_ROYALTY_QVL_SIGNER_KEY_ID",
+    "TINKER_ROYALTY_QVL_VERIFIER",
+    "TINKER_ROYALTY_RELEASE_POLICY_COMMITMENT",
+    "TINKER_ROYALTY_SETTLEMENT_VERIFIER",
+  ].map((sourceEnvironmentKey) => exactAliasContractEntry(
+    sourceEnvironmentKey,
+    [
+      exactAliasOccurrence("delegate", sourceEnvironmentKey, ":-"),
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        sourceEnvironmentKey,
+        ":-",
+      ),
+    ],
+  )),
+  ...[
+    [
+      "TINKER_ROYALTY_SETTLEMENT_QVL_URL",
+      ":?Dedicated Royalty QVL HTTPS endpoint required",
+    ],
+    [
+      "TINKER_ROYALTY_SETTLEMENT_QVL_AUTH_TOKEN",
+      ":?Dedicated Royalty QVL bearer required",
+    ],
+    [
+      "TINKER_ROYALTY_QVL_VERDICT_VERIFIER_ADDRESS",
+      ":?Royalty QVL verdict verifier required",
+    ],
+    ["TINKER_ROYALTY_QVL_MAX_VERDICT_AGE_SECONDS", ":-120"],
+    [
+      "TINKER_ROYALTY_QVL_REVOKED_QUOTE_HASHES_JSON",
+      ":?Royalty QVL quote revocations required",
+    ],
+  ].map(([sourceEnvironmentKey, interpolationSuffix]) => (
+    exactAliasContractEntry(sourceEnvironmentKey, [
+      exactAliasOccurrence(
+        "collaboration-execution-worker",
+        sourceEnvironmentKey,
+        interpolationSuffix,
+      ),
+    ])
+  )),
+  ...[
+    [
+      "TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256",
+      ":?Signed QVL measurement-policy set required",
+    ],
+    [
+      "TINKER_COMPUTE_WORKLOAD_QVL_MEASUREMENT_POLICY_SHA256",
+      ":?Linked Compute-workload QVL measurement policy required",
+    ],
+  ].map(([sourceEnvironmentKey, interpolationSuffix]) => exactAliasContractEntry(
+    sourceEnvironmentKey,
+    [
+      exactAliasOccurrence("delegate", sourceEnvironmentKey, interpolationSuffix),
+      exactAliasOccurrence(
+        "compute-execution-worker",
+        sourceEnvironmentKey,
+        interpolationSuffix,
+      ),
+    ],
+  )),
+  exactAliasContractEntry("EMAIL_ORACLE_CONSUMER_APP_ID", [
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_AUTH_CONSUMER_APP_ID",
+      ":?Release-bound main CVM TEE identity required",
+    ),
+    exactAliasOccurrence(
+      "mailbox-genesis",
+      "ORACLE_GENESIS_MAIN_APP_ID",
+      ":?Release-bound main CVM TEE identity required",
+    ),
+    exactAliasOccurrence(
+      "tinker-account-genesis",
+      "TINKER_ACCOUNT_GENESIS_MAIN_APP_ID",
+      ":?Release-bound main CVM TEE identity required",
+    ),
+  ]),
+  exactAliasContractEntry("EMAIL_ORACLE_CONSUMER_COMPOSE_HASH", [
+    exactAliasOccurrence(
+      "oracle",
+      "ORACLE_AUTH_CONSUMER_COMPOSE_HASH",
+      ":?Release-bound main CVM compose hash required",
+    ),
+    exactAliasOccurrence(
+      "mailbox-genesis",
+      "ORACLE_GENESIS_MAIN_COMPOSE_HASH",
+      ":?Release-bound main CVM compose hash required",
+    ),
+    exactAliasOccurrence(
+      "tinker-account-genesis",
+      "TINKER_ACCOUNT_GENESIS_MAIN_COMPOSE_HASH",
+      ":?Release-bound main CVM compose hash required",
+    ),
+  ]),
+  exactAliasContractEntry("TINKER_DILIGENCE_ALLOWED_OS_IMAGE_HASH", [
+    exactNonEnvironmentOccurrence(
+      "deal-runtime",
+      "$.services.deal-runtime.command[10]",
+      ":?Reviewed main CVM OS image hash required",
+    ),
+    exactAliasOccurrence(
+      "mailbox-genesis",
+      "ORACLE_GENESIS_MAIN_OS_IMAGE_HASH",
+      ":?Release-bound main CVM OS image hash required",
+    ),
+    exactAliasOccurrence(
+      "tinker-account-genesis",
+      "TINKER_ACCOUNT_GENESIS_MAIN_OS_IMAGE_HASH",
+      ":?Release-bound main CVM OS image hash required",
+    ),
+  ]),
+  ...[
+    "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
+    "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
+    "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
+  ].map((sourceEnvironmentKey) => {
+    const suffix = sourceEnvironmentKey.slice("TINKER_ACCOUNT_GENESIS_".length);
+    return exactAliasContractEntry(sourceEnvironmentKey, [
+      exactAliasOccurrence(
+        "mailbox-genesis",
+        `ORACLE_GENESIS_${suffix}`,
+        ":-",
+      ),
+      exactAliasOccurrence(
+        "tinker-account-genesis",
+        sourceEnvironmentKey,
+        ":-",
+      ),
+    ]);
+  }),
+  ...[
+    "TINKER_ACCOUNT_BINDING_SHARE_ONE",
+    "TINKER_ACCOUNT_BINDING_SHARE_TWO",
+  ].map((sourceEnvironmentKey) => exactAliasContractEntry(
+    sourceEnvironmentKey,
+    [
+      exactAliasOccurrence(
+        "tinker-account-genesis",
+        sourceEnvironmentKey,
+        ":-",
+      ),
+    ],
+  )),
+  exactAliasContractEntry("TINKER_CUSTOMER_ENABLED", [
+    exactAliasOccurrence(
+      "delegate",
+      "TINKER_CUSTOMER_ENABLED",
+      ":-false",
+    ),
+    exactAliasOccurrence(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_ENABLED",
+      ":-false",
+    ),
+  ]),
+  exactAliasContractEntry("TINKER_CUSTOMER_AUTHORITY_SHA256", [
+    exactAliasOccurrence(
+      "delegate",
+      "TINKER_CUSTOMER_AUTHORITY_SHA256",
+      ":-",
+    ),
+    exactAliasOccurrence(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_AUTHORITY_SHA256",
+      ":-",
+    ),
+  ]),
+  exactAliasContractEntry("TINKER_CUSTOMER_AUTHORITY_B64", [
+    exactAliasOccurrence(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_AUTHORITY_B64",
+      ":-",
+    ),
+  ]),
 ]);
+
+function exactLiteralEnvironmentValue(
+  service,
+  destinationEnvironmentKey,
+  value,
+) {
+  return Object.freeze({
+    service,
+    destination_environment_key: destinationEnvironmentKey,
+    path: `$.services.${service}.environment.${destinationEnvironmentKey}`,
+    value,
+  });
+}
+
+export const CVM_MAIN_COMPUTE_PROVIDER_LITERAL_ENVIRONMENT = Object.freeze({
+  TINKER_COMPUTE_PROVIDER_EXECUTION_ENABLED: "true",
+  TINKER_COMPUTE_PROVIDER_ADAPTER_ID: "tinker_sdk_0_22_7_at_most_once_v1",
+  TINKER_COMPUTE_PROVIDER_SDK_VERSION: "0.22.7",
+  TINKER_COMPUTE_PROVIDER_SDK_SOURCE_SHA256:
+    "sha256:3ab30e85f4d1ae21ab4a8b415d382e719decd3abb31e61f6e481e8e5296dac62",
+  TINKER_COMPUTE_PROVIDER_REQUEST_CONTRACT_SHA256:
+    "sha256:15f112c2e285ba2463d36fe32a47f78eda40f7ca81d7b49f6d51dc4378feef0d",
+  TINKER_COMPUTE_PROVIDER_BASE_URL_SHA256:
+    "sha256:e3ae09c22c856fa175bfbeded8819e1665f39c235869a15e3e0729bfb4f39533",
+  TINKER_COMPUTE_PROVIDER_TOKENIZER_PATH: "/opt/dnai/qwen3-8b-tokenizer",
+  TINKER_COMPUTE_PROVIDER_TOKENIZER_RELEASE_SHA256:
+    "sha256:d933156af48aa90a117025537b4291c2e72b62ad14ddcfa7d77f3258928cd2e0",
+  TINKER_COMPUTE_PROVIDER_RESULT_KEY_PATH: "tinker/compute_provider_result",
+  TINKER_COMPUTE_PROVIDER_STATUS_PATH: "/data/compute_provider_status.json",
+  TINKER_COMPUTE_PROVIDER_STATUS_KEY_PATH: "tinker/compute_provider_status",
+  TINKER_COMPUTE_PROVIDER_STATUS_INTEGRITY_KEY: "",
+  TINKER_COMPUTE_PROVIDER_STATUS_TTL_SECONDS: "30",
+  TINKER_COMPUTE_PROVIDER_REQUEST_TIMEOUT_SECONDS: "120.0",
+  TINKER_TELEMETRY: "0",
+  HF_HUB_OFFLINE: "1",
+  TRANSFORMERS_OFFLINE: "1",
+  TINKER_API_KEY_STORE_PATH: "/data/tinker_api_key.enc",
+  TINKER_CLIENT_CONFIG_STORE_PATH: "/data/tinker_client_config.enc",
+});
+
+export const CVM_MAIN_COLLABORATION_LITERAL_ENVIRONMENT = Object.freeze({
+  TINKER_COLLABORATION_WALLET_AUTH_SIGNING_KEY: "",
+  TINKER_COLLABORATION_WALLET_AUTH_KEY_PATH:
+    "tinker/collaboration_wallet_auth",
+  TINKER_COLLABORATION_WALLET_AUTH_CHALLENGE_TTL_SECONDS: "300",
+  TINKER_COLLABORATION_WALLET_AUTH_TOKEN_TTL_SECONDS: "600",
+  TINKER_COLLABORATION_WALLET_AUTH_MAX_PENDING_CHALLENGES: "1024",
+  TINKER_COLLABORATION_WALLET_AUTH_ISSUER:
+    "dnai-wikigen:collaboration-wallet-auth",
+  TINKER_COLLABORATION_WALLET_AUTH_AUDIENCE:
+    "dnai-wikigen:collaboration-console",
+  TINKER_COLLABORATION_CONSENT_CHALLENGE_TTL_SECONDS: "300",
+  TINKER_COLLABORATION_STORE_PATH: "/data/collaboration_state.json",
+  TINKER_COLLABORATION_STORE_INTEGRITY_KEY: "",
+  TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH:
+    "tinker/collaboration_store_integrity",
+});
+
+export const CVM_MAIN_COLLABORATION_EXECUTION_LITERAL_ENVIRONMENT =
+  Object.freeze({
+    TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH:
+      "/data/collaboration_execution.json",
+    TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY: "",
+    TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH:
+      "tinker/collaboration_execution_journal_integrity",
+    TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH:
+      "/data/collaboration_royalty_settlement.json",
+    TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY: "",
+    TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH:
+      "tinker/collaboration_royalty_settlement_store",
+    TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS: "300",
+    TINKER_COLLABORATION_EXECUTION_POLL_INTERVAL_SECONDS: "1.0",
+    TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH:
+      "/data/collaboration_execution_worker_heartbeat.json",
+    TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY: "",
+    TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH:
+      "tinker/collaboration_execution_worker_heartbeat",
+    TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS: "30",
+    TINKER_COLLABORATION_STORE_PATH: "/data/collaboration_state.json",
+    TINKER_COLLABORATION_STORE_INTEGRITY_KEY: "",
+    TINKER_COLLABORATION_STORE_INTEGRITY_KEY_PATH:
+      "tinker/collaboration_store_integrity",
+    TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS: "300",
+  });
+
+export const CVM_MAIN_COLLABORATION_EXECUTION_SHARED_LITERAL_KEYS =
+  Object.freeze([
+    "TINKER_COLLABORATION_EXECUTION_GRANT_TTL_SECONDS",
+    "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY",
+    "TINKER_COLLABORATION_EXECUTION_JOURNAL_INTEGRITY_KEY_PATH",
+    "TINKER_COLLABORATION_EXECUTION_JOURNAL_PATH",
+    "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY",
+    "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_INTEGRITY_KEY_PATH",
+    "TINKER_COLLABORATION_ROYALTY_SETTLEMENT_STORE_PATH",
+    "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_INTEGRITY_KEY",
+    "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_KEY_PATH",
+    "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_PATH",
+    "TINKER_COLLABORATION_EXECUTION_WORKER_HEARTBEAT_TTL_SECONDS",
+  ]);
+
+export const CVM_MAIN_EXECUTION_POLICY_JOURNAL_LITERAL_ENVIRONMENT =
+  Object.freeze({
+    TINKER_EXECUTION_POLICY_STORE_PATH:
+      "/data/execution_policy_state.json",
+    TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY: "",
+    TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:
+      "tinker/execution_policy_store_integrity",
+  });
+
+export const CVM_MAIN_TINKER_CUSTOMER_LITERAL_ENVIRONMENT = Object.freeze({
+  TINKER_CUSTOMER_AUTHORITY_PATH: "/sealed/tinker-customer/authority.json",
+  TINKER_CUSTOMER_STORE_PATH: "/data/tinker-customer/state.json",
+  TINKER_CUSTOMER_STORE_INTEGRITY_KEY: "",
+  TINKER_CUSTOMER_STORE_INTEGRITY_KEY_PATH:
+    "tinker/customer_store_integrity",
+  TINKER_CUSTOMER_CREDENTIAL_SIGNING_KEY: "",
+  TINKER_CUSTOMER_CREDENTIAL_KEY_PATH: "tinker/customer_credentials",
+  TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY: "",
+  TINKER_CUSTOMER_SETTLEMENT_KEY_PATH:
+    "tinker/customer_settlement_evidence",
+});
+
+export const CVM_MAIN_REVIEW_NOTIFICATION_LITERAL_ENVIRONMENT = Object.freeze({
+  ORACLE_REVIEW_NOTIFICATION_CALLER_IDENTITY:
+    "tinker-delegate.review-operations",
+  ORACLE_REVIEW_NOTIFICATION_SMTP_PORT: "465",
+  ORACLE_REVIEW_NOTIFICATION_SMTP_TIMEOUT_SECONDS: "10",
+  ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_PATH:
+    "/data/review_notification_receipts.json",
+  ORACLE_REVIEW_NOTIFICATION_RECEIPT_STORE_KEY: "",
+  ORACLE_REVIEW_NOTIFICATION_RECEIPT_KEY_PATH:
+    "email/review_notification_receipts",
+});
+
+export const CVM_MAIN_REVIEW_OPERATIONS_LITERAL_ENVIRONMENT = Object.freeze({
+  TINKER_REVIEW_OPERATIONS_ENABLED: "true",
+  TINKER_REVIEW_OPERATIONS_PRODUCTION_RELEASE: "true",
+  TINKER_REVIEW_OPERATIONS_DELEGATE_URL: "http://delegate:8080",
+  TINKER_REVIEW_OPERATIONS_ORACLE_URL: "http://oracle:8000",
+  TINKER_REVIEW_OPERATIONS_POLL_INTERVAL_SECONDS:
+    "${TINKER_REVIEW_OPERATIONS_POLL_INTERVAL_SECONDS:-60}",
+  TINKER_REVIEW_OPERATIONS_REQUEST_TIMEOUT_SECONDS:
+    "${TINKER_REVIEW_OPERATIONS_REQUEST_TIMEOUT_SECONDS:-10}",
+  TINKER_REVIEW_OPERATIONS_MAXIMUM_QUEUE_PAGES:
+    "${TINKER_REVIEW_OPERATIONS_MAXIMUM_QUEUE_PAGES:-8}",
+  TINKER_REVIEW_OPERATIONS_MAXIMUM_NOTIFICATIONS_PER_TICK:
+    "${TINKER_REVIEW_OPERATIONS_MAXIMUM_NOTIFICATIONS_PER_TICK:-64}",
+  TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_TOKEN: "",
+  TINKER_REVIEW_OPERATIONS_RUNTIME_AUTH_KEY_PATH: "tinker/runtime-auth",
+  TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_TOKEN: "",
+  TINKER_REVIEW_OPERATIONS_ORACLE_AUTH_KEY_PATH: "oracle/runtime-auth",
+});
+
+export const CVM_MAIN_ARENA_STORE_LITERAL_ENVIRONMENT = Object.freeze({
+  TINKER_ARENA_STORE_INTEGRITY_KEY: "",
+  TINKER_ARENA_STORE_INTEGRITY_KEY_PATH: "tinker/arena_store_integrity",
+  TINKER_ARENA_LEGACY_INTERNAL_API_ENABLED: "false",
+});
+
+// These production wallet-auth values are public policy, but they are not
+// encrypted operator inputs. They are signed as exact descriptor bytes and
+// deliberately omitted from Phala's allowed-env list. The origin and chain are
+// literal scalars; the challenge-limiter entries retain one reviewed Compose
+// default expression for local parity while remaining unavailable to Phala's
+// runtime environment-mutation surface.
+export const CVM_MAIN_EXACT_DESCRIPTOR_LITERAL_ENVIRONMENT_CONTRACT =
+  Object.freeze([
+    ...["delegate", "arena-worker"].flatMap((service) => (
+      Object.entries(CVM_MAIN_ARENA_STORE_LITERAL_ENVIRONMENT).map(
+        ([key, value]) => exactLiteralEnvironmentValue(service, key, value),
+      )
+    )),
+    ...Object.entries(CVM_MAIN_REVIEW_NOTIFICATION_LITERAL_ENVIRONMENT)
+      .map(([key, value]) => exactLiteralEnvironmentValue(
+      "oracle",
+      key,
+      value,
+    )),
+    ...Object.entries(CVM_MAIN_REVIEW_OPERATIONS_LITERAL_ENVIRONMENT)
+      .map(([key, value]) => exactLiteralEnvironmentValue(
+      "review-operations",
+      key,
+      value,
+    )),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_DOMAIN",
+      "www.wikigen.me",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_URI",
+      "https://www.wikigen.me",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHAIN_ID",
+      "84532",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+      "84532",
+    ),
+    exactLiteralEnvironmentValue(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+      "84532",
+    ),
+    exactLiteralEnvironmentValue(
+      "collaboration-execution-worker",
+      "TINKER_COMPUTE_WORKLOAD_CHAIN_ID",
+      "84532",
+    ),
+    exactLiteralEnvironmentValue(
+      "compute-execution-worker",
+      "TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS",
+      "${TINKER_COMPUTE_EXECUTION_MAX_BLOCK_AGE_SECONDS:-300}",
+    ),
+    ...["delegate", "compute-execution-worker"].flatMap((service) => (
+      Object.entries(CVM_MAIN_COMPUTE_PROVIDER_LITERAL_ENVIRONMENT).map(
+        ([key, value]) => exactLiteralEnvironmentValue(service, key, value),
+      )
+    )),
+    ...["delegate", "collaboration-execution-worker"].flatMap((service) => (
+      Object.entries(CVM_MAIN_COLLABORATION_EXECUTION_LITERAL_ENVIRONMENT)
+        .filter(([key]) => service === "collaboration-execution-worker"
+          || CVM_MAIN_COLLABORATION_EXECUTION_SHARED_LITERAL_KEYS.includes(key))
+        .map(([key, value]) => exactLiteralEnvironmentValue(
+          service,
+          key,
+          value,
+        ))
+    )),
+    ...[
+      "arena-worker",
+      "compute-execution-worker",
+      "collaboration-execution-worker",
+    ].map((service) => exactLiteralEnvironmentValue(
+      service,
+      "TINKER_EXECUTION_POLICY_STORE_PATH",
+      CVM_MAIN_EXECUTION_POLICY_JOURNAL_LITERAL_ENVIRONMENT
+        .TINKER_EXECUTION_POLICY_STORE_PATH,
+    )),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_EXECUTION_POLICY_STORE_PATH",
+      "${TINKER_EXECUTION_POLICY_STORE_PATH:-/data/execution_policy_state.json}",
+    ),
+    ...[
+      "delegate",
+      "arena-worker",
+      "compute-execution-worker",
+      "collaboration-execution-worker",
+    ].map((service) => exactLiteralEnvironmentValue(
+      service,
+      "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY",
+      CVM_MAIN_EXECUTION_POLICY_JOURNAL_LITERAL_ENVIRONMENT
+        .TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY,
+    )),
+    ...["delegate", "arena-worker", "compute-execution-worker"].map(
+      (service) => exactLiteralEnvironmentValue(
+        service,
+        "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH",
+        "${TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH:-tinker/execution_policy_store_integrity}",
+      ),
+    ),
+    exactLiteralEnvironmentValue(
+      "collaboration-execution-worker",
+      "TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH",
+      CVM_MAIN_EXECUTION_POLICY_JOURNAL_LITERAL_ENVIRONMENT
+        .TINKER_EXECUTION_POLICY_STORE_INTEGRITY_KEY_PATH,
+    ),
+    exactLiteralEnvironmentValue(
+      "tinker-account-genesis",
+      "TINKER_API_KEY_STORE_PATH",
+      CVM_MAIN_COMPUTE_PROVIDER_LITERAL_ENVIRONMENT.TINKER_API_KEY_STORE_PATH,
+    ),
+    ...[
+      CVM_MAIN_COLLABORATION_LITERAL_ENVIRONMENT,
+      CVM_MAIN_TINKER_CUSTOMER_LITERAL_ENVIRONMENT,
+    ].flatMap((environment) => (
+      Object.entries(environment).map(
+        ([key, value]) => exactLiteralEnvironmentValue(
+          "delegate",
+          key,
+          value,
+        ),
+      )
+    )),
+    ...[
+      "delegate",
+      "tinker-account-genesis",
+      "tinker-customer-authority-init",
+      "arena-worker",
+      "anchor-writer-evidence",
+      "deal-runtime",
+      "compute-execution-worker",
+      "collaboration-execution-worker",
+      "review-operations",
+    ].map((service) => exactLiteralEnvironmentValue(
+      service,
+      "DSTACK_ENABLED",
+      "true",
+    )),
+    ...[
+      "tinker-customer-authority-init",
+      "arena-worker",
+      "anchor-writer-evidence",
+      "deal-runtime",
+      "compute-execution-worker",
+      "collaboration-execution-worker",
+      "review-operations",
+    ].map((service) => exactLiteralEnvironmentValue(
+      service,
+      "DSTACK_SIMULATOR_ENDPOINT",
+      "",
+    )),
+    exactLiteralEnvironmentValue(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_AUTHORITY_PATH",
+      CVM_MAIN_TINKER_CUSTOMER_LITERAL_ENVIRONMENT
+        .TINKER_CUSTOMER_AUTHORITY_PATH,
+    ),
+    exactLiteralEnvironmentValue(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY",
+      CVM_MAIN_TINKER_CUSTOMER_LITERAL_ENVIRONMENT
+        .TINKER_CUSTOMER_SETTLEMENT_SIGNING_KEY,
+    ),
+    exactLiteralEnvironmentValue(
+      "tinker-customer-authority-init",
+      "TINKER_CUSTOMER_SETTLEMENT_KEY_PATH",
+      CVM_MAIN_TINKER_CUSTOMER_LITERAL_ENVIRONMENT
+        .TINKER_CUSTOMER_SETTLEMENT_KEY_PATH,
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS",
+      "${TINKER_WALLET_AUTH_CHALLENGE_LIMIT_WINDOW_SECONDS:-600}",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT",
+      "${TINKER_WALLET_AUTH_CHALLENGE_GLOBAL_LIMIT:-768}",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT",
+      "${TINKER_WALLET_AUTH_CHALLENGE_ADDRESS_LIMIT:-64}",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT",
+      "${TINKER_WALLET_AUTH_CHALLENGE_PEER_LIMIT:-256}",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS",
+      "${TINKER_WALLET_AUTH_CHALLENGE_TRUSTED_PROXY_CIDRS:-}",
+    ),
+    exactLiteralEnvironmentValue(
+      "delegate",
+      "TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER",
+      "${TINKER_WALLET_AUTH_CHALLENGE_CLIENT_IP_HEADER:-}",
+    ),
+  ]);
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -181,6 +1161,7 @@ function parseArgs(argv) {
     contractReceiptOutput: "",
     topology: "",
     ledger: "",
+    tinkerAccountBindingCeremonyReceiptSha256: "",
   };
   const flags = new Set([
     "--in",
@@ -189,6 +1170,7 @@ function parseArgs(argv) {
     "--contract-receipt-out",
     "--topology",
     "--ledger",
+    "--tinker-account-binding-ceremony-receipt-sha256",
   ]);
   const seen = new Set();
   for (let index = 0; index < rest.length; index += 1) {
@@ -206,7 +1188,8 @@ function parseArgs(argv) {
     else if (flag === "--receipt-out") values.receiptOutput = next;
     else if (flag === "--contract-receipt-out") values.contractReceiptOutput = next;
     else if (flag === "--topology") values.topology = next;
-    else values.ledger = next;
+    else if (flag === "--ledger") values.ledger = next;
+    else values.tinkerAccountBindingCeremonyReceiptSha256 = next;
     index += 1;
   }
   return values;
@@ -696,6 +1679,47 @@ function yamlExactEnvironmentInterpolationPath({
   return mapping.path;
 }
 
+function yamlExactCommandInterpolationPath({
+  lines,
+  blocks,
+  lineIndex,
+  name,
+  suffix,
+}) {
+  const block = blocks.find(({ start, end }) => (
+    lineIndex > start && lineIndex < end
+  ));
+  if (!block) return null;
+  const item = lines[lineIndex].match(/^([ ]*)-\s+(.+?)\s*$/);
+  if (!item) return null;
+  const itemIndent = item[1].length;
+  let commandLine = -1;
+  let commandIndent = -1;
+  for (let cursor = lineIndex - 1; cursor > block.start; cursor -= 1) {
+    if (!lines[cursor].trim()) continue;
+    const indent = leadingSpaces(lines[cursor], `descriptor line ${cursor + 1}`);
+    if (indent >= itemIndent) continue;
+    const command = lines[cursor].match(/^([ ]*)command:\s*$/);
+    if (!command) return null;
+    commandLine = cursor;
+    commandIndent = command[1].length;
+    break;
+  }
+  if (commandLine === -1 || commandIndent >= itemIndent) return null;
+  let scalar = item[2].trim();
+  if ((scalar.startsWith('"') && scalar.endsWith('"'))
+    || (scalar.startsWith("'") && scalar.endsWith("'"))) {
+    scalar = scalar.slice(1, -1);
+  }
+  if (scalar !== `\${${name}${suffix}}`) return null;
+  let index = 0;
+  for (let cursor = commandLine + 1; cursor < lineIndex; cursor += 1) {
+    const prior = lines[cursor].match(/^([ ]*)-\s+.+?\s*$/);
+    if (prior && prior[1].length === itemIndent) index += 1;
+  }
+  return `$.services.${block.name}.command[${index}]`;
+}
+
 function interpolationOccurrencesInJson(source) {
   const { descriptor, blocks } = jsonDescriptorLocations(source);
   const occurrences = [];
@@ -783,7 +1807,14 @@ function referencedEnvironmentKeys(text) {
       pattern.lastIndex = 0;
       let match;
       while ((match = pattern.exec(semanticLines[line])) !== null) {
-        const path = yamlExactEnvironmentInterpolationPath({
+        const environmentPath = yamlExactEnvironmentInterpolationPath({
+          lines: semanticLines,
+          blocks: locations.blocks,
+          lineIndex: line,
+          name: match[1],
+          suffix: match[2],
+        });
+        const path = environmentPath || yamlExactCommandInterpolationPath({
           lines: semanticLines,
           blocks: locations.blocks,
           lineIndex: line,
@@ -819,6 +1850,81 @@ function referencedEnvironmentKeys(text) {
     serviceBlocks: locations.blocks,
     profilesByService: locations.profilesByService,
   };
+}
+
+function literalEnvironmentValuesByPath(text) {
+  const semanticLines = text.split(/\r?\n/).map(stripYamlComment);
+  const semanticSource = semanticLines.join("\n").trim();
+  const values = new Map();
+  if (semanticSource.startsWith("{")) {
+    const { blocks } = jsonDescriptorLocations(semanticSource);
+    for (const block of blocks) {
+      if (block.value.environment === undefined) continue;
+      const environment = record(
+        block.value.environment,
+        `JSON Compose descriptor service ${block.name} environment`,
+      );
+      for (const [key, value] of Object.entries(environment)) {
+        const location = `$.services.${block.name}.environment.${key}`;
+        if (values.has(location)
+          || !["string", "number", "boolean"].includes(typeof value)) {
+          throw new Error(
+            `JSON Compose descriptor environment ${location} is not one unambiguous scalar`,
+          );
+        }
+        values.set(location, String(value));
+      }
+    }
+    return values;
+  }
+  const locations = serviceProfileLocations(semanticLines);
+  for (let lineIndex = 0; lineIndex < semanticLines.length; lineIndex += 1) {
+    const mapping = yamlEnvironmentMappingLocation({
+      lines: semanticLines,
+      blocks: locations.blocks,
+      lineIndex,
+    });
+    if (!mapping) continue;
+    if (values.has(mapping.path)) {
+      throw new Error(
+        `Compose descriptor environment ${mapping.path} is duplicated`,
+      );
+    }
+    values.set(mapping.path, mapping.scalar);
+  }
+  return values;
+}
+
+function assertExactMainDescriptorLiteralEnvironment(domain, descriptorText) {
+  if (domain !== "main_runtime_cvm") return;
+  const values = literalEnvironmentValuesByPath(descriptorText);
+  const exactPathsByDestination = new Map();
+  for (const expected of CVM_MAIN_EXACT_DESCRIPTOR_LITERAL_ENVIRONMENT_CONTRACT) {
+    const exactPaths = exactPathsByDestination.get(
+      expected.destination_environment_key,
+    ) || [];
+    exactPaths.push(expected.path);
+    exactPathsByDestination.set(
+      expected.destination_environment_key,
+      exactPaths,
+    );
+    if (values.get(expected.path) !== expected.value) {
+      throw new Error(
+        `${domain} descriptor ${expected.path} must equal the exact non-injectable production literal ${expected.value}`,
+      );
+    }
+  }
+  for (const [destination, exactPaths] of exactPathsByDestination) {
+    const suffix = `.environment.${destination}`;
+    const actualPaths = [...values.keys()]
+      .filter((path) => path.endsWith(suffix))
+      .sort();
+    if (JSON.stringify(actualPaths) !== JSON.stringify([...exactPaths].sort())) {
+      throw new Error(
+        `${domain} descriptor literal ${destination} must use only its exact immutable service path contract`,
+      );
+    }
+  }
 }
 
 function assertRenderedComposeName(domain, descriptorText) {
@@ -860,7 +1966,7 @@ function assertExactMainEnvironmentReferenceAliases(domain, references) {
       )).length === 1
       && references.environmentDestinationPaths.filter(
         (path) => path === expected.path,
-      ).length === 1
+      ).length === (expected.environment_destination === false ? 0 : 1)
     ));
     if (actual.length !== contract.occurrences.length || !exactMatches) {
       throw new Error(
@@ -892,6 +1998,7 @@ function assertEnvironmentClassification(domain, descriptorText) {
     domain,
     references,
   );
+  assertExactMainDescriptorLiteralEnvironment(domain, descriptorText);
   for (const key of references.nonemptyRequired) {
     if (references.nonStrict.includes(key) && !exactAliasSources.has(key)) {
       throw new Error(`${domain} environment input ${key} cannot mix strict and fallback interpolation modes`);
@@ -918,11 +2025,27 @@ function assertEnvironmentClassification(domain, descriptorText) {
       .flatMap(([, keys]) => keys),
   ])];
   for (const key of lateDescriptorInputs) {
-    if (!references.emptyDefault.includes(key)
-      || (!exactAliasSources.has(key)
-        && references.nonemptyRequired.includes(key))
-      || references.fallbackDefault.includes(key)) {
-      throw new Error(`${domain} post-measurement environment input ${key} must use exact empty-default \${KEY:-} interpolation`);
+    // Exact alias contracts may deliberately combine an empty fail-closed
+    // value on the active delegate with a strict nonempty requirement on a
+    // disabled worker that cannot start until activation installs the value.
+    // Their complete service/path/suffix matrix has already been validated by
+    // assertExactMainEnvironmentReferenceAliases(), so applying the generic
+    // one-suffix rule here would reject that stronger, closed contract.
+    if (exactAliasSources.has(key)) continue;
+    const failClosedDefault =
+      CVM_MAIN_LATE_INPUT_FAIL_CLOSED_DEFAULTS[key];
+    const expectedSuffix = failClosedDefault === undefined
+      ? ":-"
+      : `:-${failClosedDefault}`;
+    const occurrences = references.occurrences.filter(
+      ({ name }) => name === key,
+    );
+    const exactExpectedDefault = occurrences.length > 0
+      && occurrences.every(({ suffix }) => suffix === expectedSuffix);
+    if (!exactExpectedDefault || references.nonemptyRequired.includes(key)) {
+      throw new Error(
+        `${domain} post-measurement environment input ${key} must use exact fail-closed \${KEY${expectedSuffix}} interpolation`,
+      );
     }
   }
   const disabledProfiles = new Set(policy.launch_settings.initially_disabled_profiles);
@@ -949,15 +2072,18 @@ function assertEnvironmentClassification(domain, descriptorText) {
     const profiles = occurrence.service === null
       ? []
       : references.profilesByService.get(occurrence.service) || [];
-    // Compute-workload ingress and ChallengeRegistry admission are implemented
-    // by the already-active delegate, not new sidecars. These values remain
-    // empty at bootstrap and both request paths fail closed until their exact
-    // post-measurement authority projectors install them. No other late value
-    // may appear in an initially active service.
+    // Compute-workload ingress, ChallengeRegistry admission, and the Tinker
+    // customer adapter are implemented by the already-active delegate, not new
+    // sidecars. These values remain empty or use their one exact disabled
+    // bootstrap marker, and their request paths fail closed until exact
+    // post-measurement authority installs them. No other late value may appear
+    // in an initially active service.
     const boundedActiveDelegateInput = domain === "main_runtime_cvm"
       && occurrence.service === "delegate"
       && boundedActiveServiceLateInputs.has(occurrence.name);
-    if (!boundedActiveDelegateInput && (occurrence.service === null
+    const boundedExactAliasInput = domain === "main_runtime_cvm"
+      && exactAliasSources.has(occurrence.name);
+    if (!boundedActiveDelegateInput && !boundedExactAliasInput && (occurrence.service === null
       || initialServices.has(occurrence.service)
       || profiles.length !== 1
       || !disabledProfiles.has(profiles[0]))) {
@@ -1005,7 +2131,11 @@ async function validateReferencedFile(directory, reference, expectedBareSha, lab
   return { ...file, digest };
 }
 
-export async function buildCvmLaunchIntentBundleFromFiles({ topologyPath, ledgerPath }) {
+export async function buildCvmLaunchIntentBundleFromFiles({
+  topologyPath,
+  ledgerPath,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
+}) {
   const topologyFile = await readBoundedRegularFile(topologyPath, "topology");
   const topologyValue = parseJson(topologyFile.text, "topology");
   const topology = validateTopology(
@@ -1041,6 +2171,7 @@ export async function buildCvmLaunchIntentBundleFromFiles({ topologyPath, ledger
     expectedReviewerAuthorityGenesisAcceptanceSha256:
       deploymentIntentValidation.intent.release
         .reviewerAuthorityGenesisAcceptanceSha256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256,
   };
   const contractDeploymentReceipt = projectFreshContractDeploymentReceipt(
     ledgerValue,
@@ -1199,7 +2330,8 @@ export async function runCvmLaunchIntentCli(argv, io = {}) {
   try {
     if (args.command === "init-template") {
       if (!args.output || args.input || args.receiptOutput || args.contractReceiptOutput
-        || args.topology || args.ledger) {
+        || args.topology || args.ledger
+        || args.tinkerAccountBindingCeremonyReceiptSha256) {
         throw new Error("init-template requires only --out FILE");
       }
       const output = await writeNewRegularFile(args.output, draftText());
@@ -1213,8 +2345,9 @@ export async function runCvmLaunchIntentCli(argv, io = {}) {
     }
     if (args.command === "build") {
       if (!args.topology || !args.ledger || !args.output || !args.contractReceiptOutput
+        || !args.tinkerAccountBindingCeremonyReceiptSha256
         || args.input || args.receiptOutput) {
-        throw new Error("build requires only --topology FILE --ledger FILE --out FILE --contract-receipt-out FILE");
+        throw new Error("build requires only --topology FILE --ledger FILE --tinker-account-binding-ceremony-receipt-sha256 SHA256 --out FILE --contract-receipt-out FILE");
       }
       if (path.resolve(args.output) === path.resolve(args.contractReceiptOutput)) {
         throw new Error("launch intent and contract receipt outputs must be distinct paths");
@@ -1227,6 +2360,8 @@ export async function runCvmLaunchIntentCli(argv, io = {}) {
         await buildCvmLaunchIntentBundleFromFiles({
         topologyPath: args.topology,
         ledgerPath: args.ledger,
+        expectedTinkerAccountBindingCeremonyReceiptSha256:
+          args.tinkerAccountBindingCeremonyReceiptSha256,
       });
       let output;
       let contractReceiptOutput;
@@ -1270,6 +2405,7 @@ export async function runCvmLaunchIntentCli(argv, io = {}) {
     }
     if (!args.input || args.output || args.topology || args.ledger
       || args.contractReceiptOutput
+      || args.tinkerAccountBindingCeremonyReceiptSha256
       || (args.command === "hash" && args.receiptOutput)) {
       throw new Error(`${args.command} received the wrong flags`);
     }

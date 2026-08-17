@@ -102,8 +102,20 @@ and only one concurrent writer can win.
    reconstruct the exact v3 canonical hash-only message locally, require a byte
    match with the delegate response, and sign it with a configured independent
    wallet.
-4. Send the same request/policy/expiry plus `approver_address` and
-   `approval_signature` to `POST /policy/evaluate`.
+4. Send the same request/policy/expiry plus `approver_address`,
+   `approval_signature`, and a caller-retained `idempotency_key` to
+   `POST /policy/evaluate`. The key has the exact lowercase shape
+   `sha256:<64hex>` and is derived independently from the approval preview:
+
+   ```text
+   "sha256:" + hex(SHA256(
+     "dnai-wikigen/execution-policy-evaluate-idempotency/v1\0"
+     || raw_32_bytes(approval_message_hash)
+   ))
+   ```
+
+   The field is optional only for compatibility with older internal clients;
+   release browser and automation callers should always send it.
 5. The CVM independently recomputes the kernel result, recovers the signer,
    checks the immutable allowlist/root and exact deployment domain, compares
    the previewed resource head, then durably appends the bounded record. Before
@@ -116,6 +128,22 @@ and only one concurrent writer can win.
    it against a fresh same-RPC reported-finalized plus confirmation-depth
    anchor snapshot; they do not call the approval
    endpoints, hold a chain writer, or auto-approve themselves.
+
+`POST /policy/evaluate` provides exact ambiguous-delivery recovery. The
+idempotency key is fixed by the signed hash-only approval message rather than
+being an arbitrary caller namespace. The durable record comparison additionally
+binds the exact recovered approver and signature commitment. An exact retry
+therefore returns the original bounded decision and sequence without appending
+or anchoring a second record; if the first call stopped after local persistence,
+the retry first reconciles that one permitted pending record to its exact chain
+anchor. Reusing the key with a changed request, policy, expiry, previous head,
+execution context, approver, or signature returns bounded `409`.
+
+Replay is not an authentication bypass or a way to revive authority. Runtime
+bearer authentication runs before recovery, and an expired decision intent is
+rejected before journal lookup. A caller must retain the complete immutable
+evaluate body, signature, and key; rebuilding a request with a new expiry is a
+new approval intent.
 
 The operator UI may keep an explicitly entered runtime bearer in memory for a
 single administrative session, but it must never persist, log, embed, or ship
@@ -197,7 +225,7 @@ request, corpus reference, purpose, category, pipeline, operation, or artifact.
 Missing configuration, missing state, corruption, expiry, hold, or deny all fail
 closed.
 
-Store schema v5 places both `approver_root_hash` and
+Store schema v6 places both `approver_root_hash` and
 `execution_context_hash` inside the canonical decision core, so the signed
 release authority root and immutable execution binding are transitively
 committed by the on-chain `decisionHash`. The v3 approval message signs that
@@ -213,8 +241,12 @@ The file HMAC and internal hash chains authenticate content but, by themselves,
 do **not** prove freshness against restoration of an older HMAC-valid volume
 snapshot. The runtime therefore requires the release-pinned Base Sepolia
 `ExecutionPolicyAnchor` before approval preview, persistence success, status,
-or execution. The local sequence maps one-to-one to the contract global
-sequence. A chain sequence ahead of the local file proves rollback and fails
+or execution. One mandatory release marker occupies contract sequence one and
+commits the final-authority SHA-256 under resource domain
+`dnai-wikigen/execution-policy/final-release-authority/v1`. Local records remain
+numbered from one and map to contract sequence `local + 1`; Royalty
+`anchorSequence` always uses that marker-inclusive contract sequence. A chain
+sequence beyond the marker plus the local file proves rollback and fails
 globally closed; a same-sequence head mismatch also fails closed. The only
 recoverable intermediate state is one exact locally persisted final record
 ahead of the selected RPC-observed chain boundary, which the writer reconciles idempotently before
@@ -255,6 +287,11 @@ response.
 ## Failure behavior
 
 - Missing/invalid runtime authentication: fixed `401`/`403` before evaluation.
+- Expired evaluate intent: bounded `400`, including an otherwise exact retry.
+- Malformed or body-conflicting evaluate idempotency key: fixed `422`/bounded
+  `409`; no record is written.
+- Same signed-message idempotency key with a different valid approver/signature:
+  bounded `409`; the original decision remains the only record.
 - Missing signer roots or approval domain: bounded `503`.
 - Missing, malformed, unapproved, mismatched, or cross-domain pass signature:
   bounded `400`; no record is written.

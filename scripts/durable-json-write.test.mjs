@@ -5,7 +5,11 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { durablyPublishJson, durablyRemoveJson } from "./durable-json-write.mjs";
+import {
+  DurableJsonPublicationIndeterminateError,
+  durablyPublishJson,
+  durablyRemoveJson,
+} from "./durable-json-write.mjs";
 
 function fixture() {
   const directory = fs.realpathSync.native(
@@ -60,14 +64,80 @@ for (const faultStage of ["partial-write", "complete-write", "file-fsync", "publ
 test("directory fsync failure reports an indeterminate but complete first publication", (t) => {
   const value = fixture();
   t.after(() => fs.rmSync(value.directory, { recursive: true, force: true }));
-  assert.throws(() => durablyPublishJson({
-    sourcePath: value.sourcePath,
-    outputPath: value.outputPath,
-    publishMode: "create",
-    fileMode: 0o600,
-    faultStage: "directory-fsync",
-  }), /injected durable-write failure/);
+  assert.throws(
+    () => durablyPublishJson({
+      sourcePath: value.sourcePath,
+      outputPath: value.outputPath,
+      publishMode: "create",
+      fileMode: 0o600,
+      faultStage: "directory-fsync",
+    }),
+    (error) => (
+      error instanceof DurableJsonPublicationIndeterminateError
+      && error.code === "durable_json_publication_indeterminate"
+    ),
+  );
   assert.equal(fs.readFileSync(value.outputPath, "utf8"), fs.readFileSync(value.sourcePath, "utf8"));
+});
+
+for (const faultStage of ["after-link", "after-temp-unlink"]) {
+  test(`${faultStage} quarantines the complete no-clobber target as indeterminate`, (t) => {
+    const value = fixture();
+    t.after(() => fs.rmSync(value.directory, { recursive: true, force: true }));
+    assert.throws(
+      () => durablyPublishJson({
+        sourcePath: value.sourcePath,
+        outputPath: value.outputPath,
+        publishMode: "create",
+        fileMode: 0o600,
+        faultStage,
+      }),
+      (error) => (
+        error instanceof DurableJsonPublicationIndeterminateError
+        && error.code === "durable_json_publication_indeterminate"
+      ),
+    );
+    assert.equal(
+      fs.readFileSync(value.outputPath, "utf8"),
+      fs.readFileSync(value.sourcePath, "utf8"),
+    );
+    assert.equal(fs.lstatSync(value.outputPath).nlink, 1);
+    assert.equal(
+      fs.readdirSync(value.directory).some((name) => name.endsWith(".tmp")),
+      false,
+    );
+  });
+}
+
+test("late output-directory replacement cannot redirect the retained-fd durability commit", (t) => {
+  const value = fixture();
+  const displaced = `${value.directory}.displaced`;
+  t.after(() => {
+    fs.rmSync(value.directory, { recursive: true, force: true });
+    fs.rmSync(displaced, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => durablyPublishJson({
+      sourcePath: value.sourcePath,
+      outputPath: value.outputPath,
+      publishMode: "create",
+      fileMode: 0o600,
+      testHookBeforeDirectoryFsync() {
+        fs.renameSync(value.directory, displaced);
+        fs.mkdirSync(value.directory, { mode: 0o700 });
+      },
+    }),
+    (error) => (
+      error instanceof DurableJsonPublicationIndeterminateError
+      && error.code === "durable_json_publication_indeterminate"
+    ),
+  );
+  assert.equal(fs.existsSync(value.outputPath), false);
+  assert.equal(
+    fs.readFileSync(path.join(displaced, "output.json"), "utf8"),
+    fs.readFileSync(path.join(displaced, "source.json"), "utf8"),
+  );
 });
 
 test("failed replacement never truncates the previously durable journal", (t) => {

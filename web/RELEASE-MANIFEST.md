@@ -1,38 +1,164 @@
 # Production web release manifest
 
 The browser release is intended to be generated from evidence; operators do
-not hand-edit live `VITE_ENABLE_*` flags. In this revision,
-`npm run release:env` is deliberately sealed before output: it authenticates
-the exact 37-input Model-A boundary and then exits without writing
-`web/.env.production.local`. That boundary must remain visibly distinct from
-the operational argument-free modeled preview.
+not hand-edit live `VITE_ENABLE_*` flags. `npm run release:env` implements an
+exact-36 pre-D build and an exact-38 final replay. Both phases independently
+authenticate the exact Royalty history receipt `H`; the latter authenticates
+the complete `L → R → signed B → H → O → D → signed C` chain and emits an in-process,
+hash-only 19-field semantic receipt. `--check-only` writes nothing; normal
+exact-38 mode writes only the ignored, no-clobber
+`web/.env.production.local`. That production boundary remains visibly
+distinct from the argument-free modeled preview.
 
 The existing `deployments/base-sepolia.json` ledger is an input, not an
 authorization. In particular, its historical `currentOperatorControlled`
 markers and service-produced attestation envelopes can never enable a browser
 mutation by themselves.
 
-## Current live-release boundary
+## Supported release procedure
 
-There is currently no supported production release command. Do not reconstruct
-one from an older eight-artifact example, and do not bypass the wrapper with a
-raw Wrangler upload. The parser intentionally rejects the retired
-`--authority-review-envelope` option; after loading all exact-37 inputs,
-`build-release-env.mjs` terminates with
-`Model-A exact-37 semantic validator integration is incomplete` before any
-dotenv write or Cloudflare invocation.
+The commands below are the supported production interface. They become
+authorizing only when their paths name the current artifacts from a committed
+reviewed source, fresh project-owned contracts, all seven non-dev CVMs,
+finalized approval/freeze transactions, fresh independent DCAP/QVL verdicts,
+and the current operator signatures. The existence of this workflow is not
+evidence that those deployments have happened.
 
-A production command can be documented only after the exact reviewed source is
-committed, images are built from that commit, fresh contracts and all seven
-non-dev CVMs are deployed, on-chain approval/freeze transactions are final,
-fresh independent DCAP/QVL verdicts exist, and the Model-A exact-37 validator
-can emit its in-process hash-only semantic receipt. The live runner is designed
-to require that receipt to equal the exact allowlisted `VITE_*` environment and
-to bind the stable deployment intent, final authority, current review evidence,
-clean release SHA, and production branch. Semantic drift, stale review,
-unexpected Vite keys, a dirty worktree, or SHA mismatch must abort before
-Wrangler runs. The argument-free path remains reserved for the explicitly
-modeled preview and cannot consume live evidence.
+Start at the canonical repository root and use canonical absolute paths. The
+exact-38 order is part of the interface:
+
+```bash
+ROOT="$(pwd -P)"
+EVIDENCE="/absolute/private/path/to/current-release-evidence"
+PRE_LIVE_CANDIDATE="$EVIDENCE/web-release.pre-live.json"
+LIVE_CANDIDATE="$EVIDENCE/web-release.live.json"
+D_RECEIPT="$ROOT/.release/frontend-build-candidate-receipt.json"
+
+EXACT38=(
+  --release "$LIVE_CANDIDATE"
+  --release-core "$EVIDENCE/final-release-authority-core.json"
+  --runtime-authority-dependency "$EVIDENCE/pre-ceremony-runtime-authority.json"
+  --deployment-intent "$EVIDENCE/deployment-intent-core.json"
+  --contract-receipt "$EVIDENCE/fresh-contract-deployment-receipt.json"
+  --reviewer-authority-genesis "$EVIDENCE/reviewer-authority-genesis.json"
+  --reviewer-authority-genesis-acceptance "$EVIDENCE/reviewer-authority-genesis-acceptance.json"
+  --bootstrap-authority "$EVIDENCE/bootstrap-public-environment-authority.json"
+  --bootstrap-authorization "$EVIDENCE/nonlive-bootstrap-authorization.json"
+  --bootstrap-authorization-receipt "$EVIDENCE/nonlive-bootstrap-authorization-receipt.json"
+  --seven-cvm-launch-completion-receipt "$EVIDENCE/seven-cvm-launch-completion-receipt.json"
+  --main-runtime-qvl-challenge "$EVIDENCE/main-runtime-qvl-challenge.json"
+  --main-runtime-independent-tdx-verdict "$EVIDENCE/main-runtime-independent-tdx-verdict.json"
+  --diligence-qvl-identity-request "$EVIDENCE/diligence-qvl-identity-request.json"
+  --diligence-qvl-identity-response "$EVIDENCE/diligence-qvl-identity-response.json"
+  --arena-qvl-identity-request "$EVIDENCE/arena-qvl-identity-request.json"
+  --arena-qvl-identity-response "$EVIDENCE/arena-qvl-identity-response.json"
+  --anchor-writer-qvl-identity-request "$EVIDENCE/anchor-writer-qvl-identity-request.json"
+  --anchor-writer-qvl-identity-response "$EVIDENCE/anchor-writer-qvl-identity-response.json"
+  --compute-workload-qvl-identity-request "$EVIDENCE/compute-workload-qvl-identity-request.json"
+  --compute-workload-qvl-identity-response "$EVIDENCE/compute-workload-qvl-identity-response.json"
+  --compute-metering-qvl-identity-request "$EVIDENCE/compute-metering-qvl-identity-request.json"
+  --compute-metering-qvl-identity-response "$EVIDENCE/compute-metering-qvl-identity-response.json"
+  --independent-metering-qvl-challenge "$EVIDENCE/independent-metering-qvl-challenge.json"
+  --independent-metering-independent-tdx-verdict "$EVIDENCE/independent-metering-independent-tdx-verdict.json"
+  --image-release-sigstore-verification-receipt "$EVIDENCE/image-release-sigstore-verification-receipt.json"
+  --cvm-descriptor-set-receipt "$EVIDENCE/cvm-descriptor-set-receipt.json"
+  --phala-executor-final-state "$EVIDENCE/phala-executor-final-state.json"
+  --ceremony-authorization "$EVIDENCE/ceremony-authorization.signed.json"
+  --ledger "$EVIDENCE/base-sepolia.release-ledger.json"
+  --artifact-evidence "$EVIDENCE/artifact-evidence.json"
+  --arena-evidence "$EVIDENCE/arena-evidence.json"
+  --anchor-writer-evidence "$EVIDENCE/anchor-writer-evidence.json"
+  --email-oracle-evidence "$EVIDENCE/email-oracle-evidence.json"
+  --live-activation-authority "$EVIDENCE/live-activation-authority.signed.json"
+  --royalty-release-history-receipt "$EVIDENCE/royalty-release-history-receipt.json"
+  --compute-workload-activation-observation "$EVIDENCE/compute-workload-activation-observation.json"
+  --frontend-build-candidate-receipt "$D_RECEIPT"
+)
+```
+
+The pre-D input set is the same ordered list with signed C and D removed, and
+with `--release` pointed at the pre-live candidate. `H` remains an independent
+input immediately before `O`. This loop constructs that exact 36-pair array
+without maintaining a second hand-copied list:
+
+```bash
+EXACT36=()
+for ((i = 0; i < ${#EXACT38[@]}; i += 2)); do
+  flag="${EXACT38[i]}"
+  value="${EXACT38[i + 1]}"
+  case "$flag" in
+    --live-activation-authority|--frontend-build-candidate-receipt) continue ;;
+    --release) value="$PRE_LIVE_CANDIDATE" ;;
+  esac
+  EXACT36+=("$flag" "$value")
+done
+```
+
+1. Create the private publication directory before the ceremony. The producer
+   independently requires this exact directory to be canonical,
+   operator-owned, mode `0700`, and already present:
+
+   ```bash
+   install -d -m 700 "$ROOT/.release"
+   ```
+
+2. Produce D from the exact-36 pre-live authority. The fixed output is
+   `$ROOT/.release/frontend-build-candidate-receipt.json`, written mode `0600`
+   with durable no-clobber semantics. D contains hashes and public release
+   lineage, not raw environment values, quotes, collateral, or secrets:
+
+   ```bash
+   npm --prefix "$ROOT/web" run release:env -- \
+     --produce-candidate "${EXACT36[@]}"
+   ```
+
+3. Use the reviewed ceremony signer to produce separately signed C only after
+   H, O, and D exist. C must bind both H digests, the exact O browser projection, D digest,
+   frontend environment hash, reproduced dist-manifest hash, final seven-CVM
+   identities, and the signed-B/R/L lineage. Create the final live candidate by
+   replacing only the pre-live operator-policy projection with the exact signed
+   C digest projection; the validator independently reconstructs and compares
+   the pre-live candidate.
+
+4. Run both read-only gates. Exact-38 regenerates the pre-D build in a fresh
+   private workspace and compares it to supplied D and signed C. Activation
+   preflight invokes the same check-only validator and adds current chain,
+   auth, source, image-attestation, compose, and topology checks:
+
+   ```bash
+   npm --prefix "$ROOT/web" run release:env -- \
+     --check-only "${EXACT38[@]}"
+
+   node "$ROOT/scripts/activation-preflight.mjs" \
+     --stage live-activation \
+     --env "$ROOT/.env" \
+     "${EXACT38[@]}"
+   ```
+
+5. Publish the ignored production environment, then deploy with the identical
+   exact-38 array. Environment publication is also durable and no-clobber. The
+   Cloudflare runner internally replays exact-38 in check-only mode before it
+   builds or invokes Wrangler:
+
+   ```bash
+   npm --prefix "$ROOT/web" run release:env -- "${EXACT38[@]}"
+   npm --prefix "$ROOT/web" run deploy:cloudflare -- "${EXACT38[@]}"
+   ```
+
+An existing D or `.env.production.local` aborts instead of being overwritten;
+retire or archive ceremony outputs only under the operator's release-retention
+policy before beginning a new ceremony. Semantic drift, stale reviewer status,
+an unexpected field or Vite key, mutable evidence, a dirty worktree, a SHA or
+dist mismatch, an unsafe publication directory, or current-chain divergence
+aborts before Wrangler runs. Do not bypass the runner with a raw Wrangler
+upload.
+
+The parser intentionally rejects retired renewable review-envelope options,
+including `--authority-review-envelope` and `--authority-review-evidence`.
+They cannot replace signed C, current reviewer-status validation, or any member
+of the exact-38 dependency chain. The argument-free deploy path remains
+reserved for an explicitly modeled preview with no live `VITE_*` bindings and
+accepts no evidence arguments.
 
 `TRUSTED_ATTESTATION_VERIFIER_ADDRESSES` is deliberately external to the JSON
 manifest. It is the human-reviewed trust-root input established only after the
@@ -44,9 +170,10 @@ Compute-metering descriptor addresses. Previously reviewed or otherwise extra
 addresses are rejected; a rotation therefore requires a newly reviewed exact
 five-root set rather than an additive allowlist.
 
-The deployment operator, main dstack-derived execution signer, diligence result
-verifier, purpose-separated anchor writer, Compute developer, Diligence QVL
-signer, Arena QVL signer, anchor-writer QVL signer, Compute-workload QVL signer,
+The deployment operator, permanent Diligence governance/developer controller,
+main dstack-derived execution signer, diligence result verifier,
+purpose-separated anchor writer, Compute developer, Diligence QVL signer, Arena
+QVL signer, anchor-writer QVL signer, Compute-workload QVL signer,
 Compute-metering QVL signer, and independent Compute-meter signer are all
 distinct identities. Their
 main/QVL/metering app IDs, CVM IDs, compose hashes, and HTTPS origins are also
@@ -103,6 +230,8 @@ fields:
     "contract_writes": true,
     "artifact_upload": true,
     "compute_console": true,
+    "tinker_customer": false,
+    "collaboration": false,
     "compute_vault_funding": true,
     "compute_vault_authorization": true,
     "compute_workload_upload": false,
@@ -113,15 +242,15 @@ fields:
 <!-- release-candidate-shape:end -->
 
 `deployment_intent_sha256` and `cvm_launch_intent_sha256` are committed inside
-the canonical immutable `dnai.final-release-authority-core.v2`. That core is
+the canonical immutable `dnai.final-release-authority-core.v4`. That core is
 not serialized directly as the candidate's `operator_policy`: the live browser
 candidate instead carries the exact `dnai.live-activation-authority-evidence.v1`
 digest projection shown above. Its ceremony-authorization digest binds the
 reviewed pre-ceremony authority, its live-activation digest binds the signed
-post-ceremony `dnai.live-activation-authority.v5`, and its runtime-authority
+post-ceremony `dnai.live-activation-authority.v6`, and its runtime-authority
 dependency must equal `sha256:` plus the bare
 `execution_policy.rollback_anchor.release_manifest_commitment`. Review
-signatures and reviewer-status histories are authenticated by the exact-37
+signatures and reviewer-status histories are authenticated by the exact-38
 validator rather than copied into the candidate as the retired
 `dnai.final-release-authority-evidence.v1` envelope fields. Independently, the
 anchor `writer_release_commitment` must equal `0x` plus the bare reviewed CVM
@@ -149,7 +278,7 @@ descriptor shape is:
   "canonicalization_version": "policy-kernel-canonicalization/v2",
   "approval_schema": "dnai-wikigen/execution-policy-approval/v3",
   "api_schema_version": 3,
-  "store_schema_version": 5,
+  "store_schema_version": 6,
   "approval_domain": "base-sepolia:84532:<release-manifest-commitment>:0x<compose-hash>:<sha256-app-id>:<approver-root>",
   "approval_domain_hash": "<64 lowercase hex>",
   "approver_hashes": ["<64 lowercase hex, sorted and unique>"],
@@ -191,7 +320,7 @@ approval reuse across a different suite, CVM release, or signer set. The Arena
 worker release manifest commits the same versions, domain, hash set, root, and
 anchor descriptor into its frozen registry release-policy commitment.
 
-Approval schema v3 and authenticated store schema v5 additionally bind the
+Approval schema v3 and authenticated store schema v6 additionally bind the
 runtime-derived hash-only `execution_context_hash` to each PASS approval and
 decision record. For Compute this context is derived from both the exact intent
 commitment and exact compiled-recipe commitment, so a valid approval for one
@@ -200,6 +329,26 @@ context is runtime data rather than a new release-descriptor field; the reviewed
 derivation code is transitively pinned by the exact image, compose, and release
 commitments above. API schema v3 exposes the bounded context hash so every
 consumer can require it at the execution boundary.
+
+The canonical final-authority v4 core also prescribes mandatory release-marker
+genesis without serializing its own digest. After canonical review,
+`TINKER_RELEASE_AUTHORITY_SHA256` becomes the marker decision at chain sequence
+one for resource domain
+`dnai-wikigen/execution-policy/final-release-authority/v1`. Local store records
+still start at sequence one, map to chain sequence `local + 1`, and Royalty
+`anchorSequence` is always that marker-inclusive chain sequence.
+
+The same v4 anchor target carries
+`dnai.execution-policy-anchor-writer-gas-reserve.v1`: exactly one marker plus
+32 subsequent anchors, no more than 500,000 gas each under the reviewed
+2,000,000,000 wei-per-gas budget, for a minimum
+`33000000000000000` wei (0.033 ETH). Preflight v4/readiness v5 queries the
+exact final-authority writer with `eth_getBalance` on both independent Base
+Sepolia RPCs at the common finalized block and requires identical canonical
+decimal wei at or above that minimum. Missing, divergent, or underfunded
+evidence blocks post-Compute Royalty activation. The reserve is bounded runway,
+not indefinite funding, and no operator, USDC, QVL, relayer, paymaster, or
+hot-key substitute is accepted.
 
 The rollback anchor is a bounded same-RPC observation, not a QVL result,
 independent-RPC quorum, consensus proof, or generic claim of chain finality.
@@ -278,13 +427,50 @@ runtime bytecode in `runtime_code_hash`. Additional exact fields are:
 
 | Contract key | Additional fields |
 | --- | --- |
-| `diligence_room` | `developer`, `result_verifier`, immutable attestation verifier/policy binding; final-authority v2 additionally commits the exact one-compose/one-TEE frozen admission set |
+| `diligence_room` | permanent `developer` governance controller, `result_verifier`, immutable attestation verifier/policy binding; final-authority v4 additionally commits the exact one-compose/one-TEE frozen admission set, and live activation requires the delayed developer handoff complete with both pending developer getters zero |
 | `challenge_registry` | `owner` |
-| `royalty_distributor` | none |
+| `royalty_distributor` | current frontend-v4 adds the H-derived owner, settlement verifier, QVL verifier, execution-policy anchor, anchor-writer release commitment, Solidity release-policy commitment, authority nonce, exact active/unpaused clear-pending state, and distinct normalized-history / H-receipt digests |
 | `tinker_account_encumbrance` | `owner`, `account_commitment` |
-| `compute_credit_vault` | `owner`, `developer`, `metering_verifier`, `developer_fee_bps`, `tee_identity`, `compose_hash`, `native_rate_policy_commitment`, `native_provider`, `erc20_asset_address`, `erc20_rate_policy_commitment`, `erc20_provider`; final-authority v2 projects these into complete native/ERC20 policy tuples |
+| `compute_credit_vault` | `owner`, `developer`, `metering_verifier`, `developer_fee_bps`, `tee_identity`, `compose_hash`, `native_rate_policy_commitment`, `native_provider`, `erc20_asset_address`, `erc20_rate_policy_commitment`, `erc20_provider`; final-authority v4 projects these into complete native/ERC20 policy tuples |
 | `email_oracle_auth` | `owner`, `consumer_address`, `upgrade_delay_seconds`, plus exact `release` compose/device/KMS/boot/restart/evidence bindings |
 | `usdc` | Circle's canonical Base Sepolia address, `symbol: "USDC"`, `decimals: 6` |
+
+The current Royalty frontend projection is deliberately downstream of an
+independent post-transaction/pre-build artifact H:
+
+`L -> R -> signed B -> Royalty mutations -> H -> O -> D -> signed C`.
+
+H has schema `dnai.royalty-release-history-receipt.v1` and truth status
+`observed_dual_rpc_release_evidence_not_signed_live_authority`. The release
+environment publishes only its canonical public authority JSON, exact
+phase-two active-state JSON, normalized history digest, and H-receipt digest.
+Signed C must bind those same two digests and the exact environment/build before
+Cloudflare can call the site live. Missing fields, a paused state, any pending
+owner or authority role, a mismatched policy/anchor/runtime, or digest drift all
+fail closed. This successor does not rewrite historical frontend-v3 fixtures.
+
+The browser then makes a separate one-RPC observation of the current authority.
+That read is not dual-RPC evidence and never claims TDX or QVL verification.
+Authority readiness permits only a later new-settlement flow; it does not prove
+funding or an active onchain reservation. Conversely, a runtime-verified owner
+may continue withdrawing already-accrued balances if settlement authority is
+paused or has drifted.
+
+Final-authority v4 also projects a purpose-specific Collaboration execution
+configuration into the browser: the exact final-authority digest, release
+verification digest, canonical service/profile, release SHA, main-runtime CVM
+ID, Collaboration execution decision, Compute-workload wallet-adoption
+decision, Royalty active-state digest, and both H digests. A canonical signed
+`false` decision is valid release configuration and remains disabled; it is not
+a malformed release. This projection proves configuration only. It never
+proves worker presence, TDX appraisal, QVL verification, funding, an active
+reservation, or settlement authority. A current wallet session and signed
+execution decision may open only the authenticated control-plane calls.
+Reservation writes additionally require a fresh authenticated worker
+capability, finalized Royalty authority, and an exact reservation. Settlement
+additionally requires current per-plan TDX evidence and independent-QVL
+authorization. Modeled state and client DTO fields cannot satisfy any of those
+gates.
 
 The CVM object has exactly this shape:
 
@@ -760,10 +946,12 @@ No environment file is written unless all of the following pass:
   single-RPC-reported finalized/depth model with no independent RPC quorum and
   no consensus proof; release copy and evidence must not call it QVL or
   consensus finality.
-- `DiligenceRoom` has the exact developer/result verifier, a permanently frozen
-  100 bps protocol fee, the one-way 100 bps artifact-independent compute tariff
-  enabled, mandatory compose and TEE gates enabled and irreversibly frozen, the
-  exact compose approved, and the exact TEE identity compose-bound. The live
+- `DiligenceRoom` has the exact permanent developer controller/result verifier,
+  a completed delayed two-step developer handoff with zero pending controller
+  state and the fixed 172800-second delay, a permanently frozen 100 bps protocol
+  fee, the one-way 100 bps artifact-independent compute tariff enabled,
+  mandatory compose and TEE gates enabled and irreversibly frozen, the exact
+  compose approved, and the exact TEE identity compose-bound. The live
   pinned-block snapshot must also prove exactly one approved compose, exactly
   one approved TEE identity, zero pending compose/TEE proposals, and permanent
   freezes on both addition paths. Both the current ledger entry and matching

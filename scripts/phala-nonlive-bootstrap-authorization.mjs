@@ -74,7 +74,7 @@ import {
   cvmReleaseDescriptorSetReceiptSha256,
   validateCanonicalGeneratedCvmDescriptorSet,
   verifyExactTrackedSourceDescriptorReproduction,
-} from "./cvm-release-descriptor-set.mjs";
+} from "./cvm-release-descriptor-set-v3.mjs";
 import {
   FRESH_CONTRACT_AUTHORITY_COMMITMENT_READ_PROOF,
   canonicalFreshContractDeploymentReceiptText,
@@ -742,12 +742,14 @@ export function readAndValidateFreshContractDeploymentAnchorEvidence({
   freshContractDeploymentReceiptPath,
   bootstrapAuthorityEvidence,
   reviewerAuthorityEvidence,
+  expectedTinkerAccountBindingCeremonyReceiptSha256,
 } = {}) {
   const authorityPins = {
     expectedDeploymentIntentSha256:
       reviewerAuthorityEvidence.deployment_intent_sha256,
     expectedReviewerAuthorityGenesisAcceptanceSha256:
       reviewerAuthorityEvidence.reviewer_authority_genesis_acceptance_sha256,
+    expectedTinkerAccountBindingCeremonyReceiptSha256,
   };
   const receiptFile = readStableCanonicalJson(
     freshContractDeploymentReceiptPath,
@@ -1247,6 +1249,8 @@ export async function readReverifyDescriptorSetAndCheckpointPhalaBootstrap({
     freshContractDeploymentReceiptPath,
     bootstrapAuthorityEvidence: verified.bootstrap_authority_evidence,
     reviewerAuthorityEvidence: verified.reviewer_authority_evidence,
+    expectedTinkerAccountBindingCeremonyReceiptSha256:
+      descriptorReceipt.tinker_account_binding_ceremony_receipt_sha256,
   });
   const finalVerified = readReverifyAndCheckpointPhalaNonLiveBootstrapAuthorization({
     authorizationPath,

@@ -23,6 +23,7 @@ from tinker_delegate.arena_ingress import (
     INGRESS_ALGORITHM,
     INGRESS_ENCODING,
     INGRESS_HKDF_INFO,
+    ArenaIngressError,
     arena_candidate_aad,
     build_arena_candidate_binding,
 )
@@ -66,7 +67,9 @@ LOCAL_SIGNING_KEY = "local-test-arena-api-wallet-key-" + ("9" * 48)
 AGENT_SIGNING_KEY = "local-test-arena-agent-key-" + ("7" * 48)
 AGENT_STORE_KEY = "local-test-arena-agent-store-key-" + ("6" * 48)
 SUBMITTER_KEY = "0x" + ("55" * 32)
+OTHER_OWNER_KEY = "0x" + ("56" * 32)
 RUNTIME_TOKEN = "arena-runtime-operator-token-" + ("8" * 40)
+ARENA_STORE_INTEGRITY_SECRET = "arena-store-test-integrity-secret-" + ("a" * 32)
 
 
 def _signature(message: str, private_key: str) -> str:
@@ -101,6 +104,8 @@ class ArenaApiTest(unittest.TestCase):
             wallet_auth_uri="https://arena.example",
             wallet_auth_chain_id=84532,
             arena_store_path=str(self.store_path),
+            arena_store_integrity_key=ARENA_STORE_INTEGRITY_SECRET,
+            arena_legacy_internal_api_enabled=True,
             arena_candidate_ingress_store_path=str(self.ingress_path),
             arena_candidate_ingress_local_key_file=str(self.ingress_key_path),
             arena_agent_credential_signing_key=AGENT_SIGNING_KEY,
@@ -196,10 +201,24 @@ class ArenaApiTest(unittest.TestCase):
         challenge_id: str = BIO_CHALLENGE_ID,
         challenge_version: str = BIO_CHALLENGE_VERSION,
     ) -> str:
+        return self._arena_token_for(
+            SUBMITTER_KEY,
+            challenge_id=challenge_id,
+            challenge_version=challenge_version,
+        )
+
+    def _arena_token_for(
+        self,
+        private_key: str,
+        *,
+        challenge_id: str = BIO_CHALLENGE_ID,
+        challenge_version: str = BIO_CHALLENGE_VERSION,
+    ) -> str:
+        account = Account.from_key(private_key)
         challenge = self.client.post(
             "/auth/arena/challenge",
             json={
-                "address": self.submitter.address,
+                "address": account.address,
                 "challenge_id": challenge_id,
                 "challenge_version": challenge_version,
                 "purpose": "session",
@@ -212,7 +231,7 @@ class ArenaApiTest(unittest.TestCase):
             "/auth/arena/token",
             json={
                 "nonce": body["nonce"],
-                "signature": _signature(body["message"], SUBMITTER_KEY),
+                "signature": _signature(body["message"], private_key),
             },
         )
         self.assertEqual(exchanged.status_code, 200, exchanged.text)
@@ -222,6 +241,7 @@ class ArenaApiTest(unittest.TestCase):
             [
                 "challenge:submit",
                 "challenge:submissions:read",
+                "challenge:submissions:manage",
             ],
         )
         return exchanged.json()["access_token"]
@@ -502,6 +522,29 @@ class ArenaApiTest(unittest.TestCase):
         self.assertFalse(safe_ir["execution_capability"]["worker_connected"])
         self.assertIn("Execution remains disabled", safe_ir["execution_capability"]["warning"])
         self.assertNotIn("seed", json.dumps(body).lower())
+
+    def test_persistent_arena_api_fails_closed_without_integrity_key(self):
+        api.settings = api.settings.model_copy(
+            update={
+                "arena_store_integrity_key": "",
+                "wallet_auth_signing_key": "",
+            }
+        )
+        api._arena_store_instance = None
+        api._arena_store_instance_path = ""
+        with patch(
+            "tinker_delegate.arena_auth.dstack_utils.is_dstack_enabled",
+            return_value=False,
+        ):
+            response = self.client.get(
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/queue"
+            )
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Arena durable store integrity key is unavailable"},
+        )
 
     def test_agent_post_cap_counts_canonical_body_and_blocks_ingress_writes(self):
         agent_token, issuance, private_key, wallet_token = self._arena_agent_token(
@@ -1145,9 +1188,31 @@ class ArenaApiTest(unittest.TestCase):
         self.assertEqual(page_one.headers["cache-control"], "no-store, max-age=0")
         body = page_one.json()
         self.assertEqual(body["surface"], "arena_owner_submissions")
+        self.assertEqual(body["schema_version"], 3)
         self.assertEqual(body["page_count"], 1)
         self.assertTrue(body["has_more"])
         self.assertNotEqual(body["submissions"][0]["submission_id"], outsider.submission_id)
+        owner_row = body["submissions"][0]
+        self.assertEqual(owner_row["schema_version"], 3)
+        self.assertTrue(owner_row["owner_actions"]["can_cancel"])
+        self.assertFalse(
+            owner_row["owner_actions"]["can_retry_ciphertext_erasure"]
+        )
+        self.assertEqual(
+            owner_row["ciphertext_lifecycle"]["state"],
+            "retained",
+        )
+        self.assertEqual(
+            owner_row["ciphertext_lifecycle"]["max_terminal_retention_seconds"],
+            3_600,
+        )
+        self.assertFalse(
+            owner_row["ciphertext_lifecycle"]["physical_erasure_claimed"]
+        )
+        self.assertRegex(
+            owner_row["ciphertext_lifecycle"]["receipt"]["blob_sha256"],
+            r"^sha256:[0-9a-f]{64}$",
+        )
         rendered = json.dumps(body, sort_keys=True)
         self.assertNotIn(self.submitter.address.lower(), rendered.lower())
         self.assertNotIn("0x" + "77" * 20, rendered.lower())
@@ -1182,6 +1247,240 @@ class ArenaApiTest(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
         )
         self.assertEqual(oversized.status_code, 400, oversized.text)
+
+    def test_owner_cancel_is_wallet_bound_fail_closed_and_cleanup_is_retryable(self):
+        token = self._arena_token()
+        submitted = self._submit(key="owner-cancel", token=token)
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        submission_id = submitted.json()["submission"]["submission_id"]
+        record = api._get_arena_store().get_submission(submission_id)
+        cancel_path = (
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+            f"{BIO_CHALLENGE_VERSION}/submissions/{submission_id}/cancel"
+        )
+
+        unauthenticated = self.client.post(cancel_path)
+        self.assertEqual(unauthenticated.status_code, 401, unauthenticated.text)
+        wrong_owner = self.client.post(
+            cancel_path,
+            headers={
+                "Authorization": (
+                    f"Bearer {self._arena_token_for(OTHER_OWNER_KEY)}"
+                )
+            },
+        )
+        self.assertEqual(wrong_owner.status_code, 404, wrong_owner.text)
+        agent_token, _issuance, _private_key, _management = (
+            self._arena_agent_token()
+        )
+        agent_denied = self.client.post(
+            cancel_path,
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
+        self.assertEqual(agent_denied.status_code, 401, agent_denied.text)
+
+        with patch(
+            "tinker_delegate.arena_ingress."
+            "ArenaCandidateIngressStore._unlink_blob_entry",
+            side_effect=OSError("simulated unlink failure"),
+        ):
+            cancelled = self.client.post(
+                cancel_path,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(
+            cancelled.headers["cache-control"],
+            "no-store, max-age=0",
+        )
+        cancelled_body = cancelled.json()
+        self.assertTrue(cancelled_body["changed"])
+        self.assertFalse(cancelled_body["idempotent_replay"])
+        self.assertEqual(cancelled_body["submission"]["state"], "cancelled")
+        lifecycle = cancelled_body["ciphertext_lifecycle"]
+        self.assertEqual(lifecycle["state"], "erasure_retry_required")
+        self.assertEqual(lifecycle["current_state_evidence"], "unlink_failed")
+        self.assertTrue(lifecycle["retryable"])
+        self.assertFalse(lifecycle["physical_erasure_claimed"])
+        self.assertEqual(
+            lifecycle["receipt"]["blob_sha256"],
+            submitted.json()["candidate_ingress"]["blob_sha256"],
+        )
+        self.assertNotIn("sealed://", cancelled.text)
+        with self.assertRaises(ArenaIngressError):
+            api._get_arena_ingress().store.load_envelope(
+                record.encrypted_reference
+            )
+        worker_transition = self.client.post(
+            f"/arena/internal/submissions/{submission_id}/transition",
+            json={
+                "to_state": "policy_screen",
+                "reason": "policy_check_started",
+            },
+            headers=self._runtime_headers(),
+        )
+        self.assertEqual(worker_transition.status_code, 409, worker_transition.text)
+
+        retry_path = cancel_path.removesuffix("/cancel") + "/ciphertext-erasure/retry"
+        retried = self.client.post(
+            retry_path,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertTrue(retried.json()["changed"])
+        self.assertFalse(retried.json()["physical_erasure_claimed"])
+        self.assertEqual(
+            retried.json()["ciphertext_lifecycle"]["state"],
+            "unlinked",
+        )
+        self.assertIn(
+            retried.json()["ciphertext_lifecycle"]["current_state_evidence"],
+            {"directory_entry_unlinked", "directory_entry_absent"},
+        )
+        replay = self.client.post(
+            retry_path,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertFalse(replay.json()["changed"])
+
+    def test_worker_claim_rejects_owner_cancel_then_terminal_failure_unlinks(self):
+        token = self._arena_token()
+        submitted = self._submit(key="worker-claim-wins", token=token)
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        submission_id = submitted.json()["submission"]["submission_id"]
+        record = api._get_arena_store().get_submission(submission_id)
+        for to_state, reason in (
+            ("policy_screen", "policy_check_started"),
+            ("queued", "policy_passed"),
+            ("provisioning", "worker_claimed"),
+        ):
+            response = self.client.post(
+                f"/arena/internal/submissions/{submission_id}/transition",
+                json={"to_state": to_state, "reason": reason},
+                headers=self._runtime_headers(),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+        cancel = self.client.post(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/submissions/{submission_id}/cancel"
+            ),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(cancel.status_code, 409, cancel.text)
+        self.assertIn("durably claimed", cancel.json()["detail"])
+        self.assertIsNotNone(
+            api._get_arena_ingress().store.load_envelope(
+                record.encrypted_reference
+            )
+        )
+
+        failed = self.client.post(
+            f"/arena/internal/submissions/{submission_id}/transition",
+            json={"to_state": "failed", "reason": "execution_failed"},
+            headers=self._runtime_headers(),
+        )
+        self.assertEqual(failed.status_code, 200, failed.text)
+        with self.assertRaises(ArenaIngressError):
+            api._get_arena_ingress().store.load_envelope(
+                record.encrypted_reference
+            )
+        owner_page = self.client.get(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/submissions/mine"
+            ),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        owner = next(
+            item
+            for item in owner_page.json()["submissions"]
+            if item["submission_id"] == submission_id
+        )
+        self.assertEqual(owner["state"], "failed")
+        self.assertEqual(owner["ciphertext_lifecycle"]["state"], "unlinked")
+
+    def test_expired_terminal_transition_unlinks_and_preserves_commitment_receipt(self):
+        token = self._arena_token()
+        submitted = self._submit(key="terminal-expired", token=token)
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        submission_id = submitted.json()["submission"]["submission_id"]
+        record = api._get_arena_store().get_submission(submission_id)
+        for to_state, reason in (
+            ("policy_screen", "policy_check_started"),
+            ("queued", "policy_passed"),
+            ("expired", "queue_expired"),
+        ):
+            response = self.client.post(
+                f"/arena/internal/submissions/{submission_id}/transition",
+                json={"to_state": to_state, "reason": reason},
+                headers=self._runtime_headers(),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        with self.assertRaises(ArenaIngressError):
+            api._get_arena_ingress().store.load_envelope(
+                record.encrypted_reference
+            )
+        owner_page = self.client.get(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/submissions/mine"
+            ),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        owner = owner_page.json()["submissions"][0]
+        self.assertEqual(owner["state"], "expired")
+        self.assertEqual(owner["ciphertext_lifecycle"]["state"], "unlinked")
+        self.assertEqual(
+            owner["ciphertext_lifecycle"]["receipt"]["ciphertext_sha256"],
+            submitted.json()["candidate_ingress"]["ciphertext_sha256"],
+        )
+        self.assertNotIn("sealed://", owner_page.text)
+
+    def test_other_terminal_runtime_outcomes_also_invoke_cleanup(self):
+        token = self._arena_token()
+        cases = (
+            (
+                "terminal-withheld",
+                (
+                    ("policy_screen", "policy_check_started"),
+                    ("withheld", "policy_withheld"),
+                ),
+                "withheld",
+            ),
+            (
+                "terminal-dead-letter",
+                (
+                    ("policy_screen", "policy_check_started"),
+                    ("queued", "policy_passed"),
+                    ("dead_letter", "retry_exhausted"),
+                ),
+                "dead_letter",
+            ),
+        )
+        for key, transitions, terminal_state in cases:
+            with self.subTest(terminal_state=terminal_state):
+                submitted = self._submit(key=key, token=token)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                submission_id = submitted.json()["submission"]["submission_id"]
+                record = api._get_arena_store().get_submission(submission_id)
+                for to_state, reason in transitions:
+                    response = self.client.post(
+                        f"/arena/internal/submissions/{submission_id}/transition",
+                        json={"to_state": to_state, "reason": reason},
+                        headers=self._runtime_headers(),
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+                with self.assertRaises(ArenaIngressError):
+                    api._get_arena_ingress().store.load_envelope(
+                        record.encrypted_reference
+                    )
+                stored = api._get_arena_store().get_submission(submission_id)
+                self.assertEqual(stored.state.value, terminal_state)
+                self.assertEqual(stored.ciphertext_state.value, "unlinked")
 
     def test_plaintext_and_caller_reference_are_rejected_without_echo_or_persistence(self):
         token = self._arena_token()
@@ -1265,10 +1564,97 @@ class ArenaApiTest(unittest.TestCase):
         index = json.loads((self.ingress_path / "index.json").read_text("utf-8"))
         self.assertEqual(index["records"], [])
 
+    def test_public_queue_api_paginates_and_rejects_unscoped_cursors(self):
+        first_submission = self._submit(key="public-page-first")
+        second_submission = self._submit(key="public-page-second")
+        self.assertEqual(first_submission.status_code, 200, first_submission.text)
+        self.assertEqual(second_submission.status_code, 200, second_submission.text)
+        expected_ids = {
+            first_submission.json()["submission"]["submission_id"],
+            second_submission.json()["submission"]["submission_id"],
+        }
+        queue_path = (
+            f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+            f"{BIO_CHALLENGE_VERSION}/queue"
+        )
+
+        first = self.client.get(queue_path, params={"limit": 1})
+        self.assertEqual(first.status_code, 200, first.text)
+        first_body = first.json()
+        self.assertEqual(first_body["submission_count"], 1)
+        self.assertTrue(first_body["has_more"])
+        self.assertIsInstance(first_body["next_cursor"], str)
+
+        second = self.client.get(
+            queue_path,
+            params={"limit": 1, "cursor": first_body["next_cursor"]},
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        second_body = second.json()
+        self.assertEqual(second_body["submission_count"], 1)
+        self.assertFalse(second_body["has_more"])
+        self.assertIsNone(second_body["next_cursor"])
+        self.assertEqual(
+            {
+                first_body["submissions"][0]["submission_id"],
+                second_body["submissions"][0]["submission_id"],
+            },
+            expected_ids,
+        )
+
+        cursor = first_body["next_cursor"]
+        tampered = cursor[:-1] + ("0" if cursor[-1] != "0" else "1")
+        rejected = self.client.get(
+            queue_path,
+            params={"limit": 1, "cursor": tampered},
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+
+        cross_challenge = self.client.get(
+            (
+                f"/arena/challenges/{DNASEQ_SAFE_IR_CHALLENGE_ID}/versions/"
+                f"{DNASEQ_SAFE_IR_CHALLENGE_VERSION}/queue"
+            ),
+            params={"limit": 1, "cursor": cursor},
+        )
+        self.assertEqual(cross_challenge.status_code, 400, cross_challenge.text)
+
+        cross_surface = self.client.get(
+            (
+                f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/"
+                f"{BIO_CHALLENGE_VERSION}/leaderboard"
+            ),
+            params={"limit": 1, "cursor": cursor},
+        )
+        self.assertEqual(cross_surface.status_code, 400, cross_surface.text)
+        self.assertEqual(
+            self.client.get(queue_path, params={"limit": 0}).status_code,
+            422,
+        )
+        self.assertEqual(
+            self.client.get(queue_path, params={"limit": 101}).status_code,
+            422,
+        )
+
+        rendered = json.dumps([first_body, second_body], sort_keys=True)
+        self.assertNotIn(self.submitter.address.lower(), rendered.lower())
+        self.assertNotIn("sealed://", rendered)
+        self.assertNotIn("encrypted_reference\"", rendered)
+        for timing_key in (
+            "created_at",
+            "updated_at",
+            "occurred_at",
+            "ladder_released_at",
+        ):
+            self.assertNotIn(timing_key, rendered)
+
     def test_runtime_queue_projection_and_bounded_ladder_release(self):
         submitted = self._submit()
         self.assertEqual(submitted.status_code, 200, submitted.text)
         submission_id = submitted.json()["submission"]["submission_id"]
+        encrypted_reference = api._get_arena_store().get_submission(
+            submission_id
+        ).encrypted_reference
 
         unauthorized = self.client.post(
             f"/arena/internal/submissions/{submission_id}/transition",
@@ -1296,12 +1682,18 @@ class ArenaApiTest(unittest.TestCase):
             headers=self._runtime_headers(),
         )
         self.assertEqual(completed.status_code, 200, completed.text)
+        with self.assertRaises(ArenaIngressError):
+            api._get_arena_ingress().store.load_envelope(
+                encrypted_reference
+            )
 
         queue = self.client.get(
             f"/arena/challenges/{BIO_CHALLENGE_ID}/versions/{BIO_CHALLENGE_VERSION}/queue"
         )
         self.assertEqual(queue.status_code, 200, queue.text)
         self.assertEqual(queue.json()["submission_count"], 1)
+        self.assertFalse(queue.json()["has_more"])
+        self.assertIsNone(queue.json()["next_cursor"])
         self.assertNotIn("candidate-a.enc", queue.text)
         self.assertEqual(queue.json()["product_status"], "per_row")
         self.assertEqual(
@@ -1323,6 +1715,8 @@ class ArenaApiTest(unittest.TestCase):
         self.assertEqual(leaderboard.status_code, 200, leaderboard.text)
         board = leaderboard.json()
         self.assertEqual(board["row_count"], 1)
+        self.assertFalse(board["has_more"])
+        self.assertIsNone(board["next_cursor"])
         self.assertEqual(board["product_status"], "per_row")
         self.assertEqual(board["rows"][0]["product_status"], "modeled")
         self.assertEqual(
@@ -1349,6 +1743,22 @@ class ArenaApiTest(unittest.TestCase):
 
         denied = self.client.get(f"/arena/internal/submissions/{submission_id}")
         self.assertEqual(denied.status_code, 401, denied.text)
+        unclaimed = self.client.get(
+            f"/arena/internal/submissions/{submission_id}",
+            headers=self._runtime_headers(),
+        )
+        self.assertEqual(unclaimed.status_code, 404, unclaimed.text)
+        for to_state, reason in (
+            ("policy_screen", "policy_check_started"),
+            ("queued", "policy_passed"),
+            ("provisioning", "worker_claimed"),
+        ):
+            transition = self.client.post(
+                f"/arena/internal/submissions/{submission_id}/transition",
+                json={"to_state": to_state, "reason": reason},
+                headers=self._runtime_headers(),
+            )
+            self.assertEqual(transition.status_code, 200, transition.text)
         internal = self.client.get(
             f"/arena/internal/submissions/{submission_id}",
             headers=self._runtime_headers(),
@@ -1359,6 +1769,46 @@ class ArenaApiTest(unittest.TestCase):
             r"^sealed://arena/candidate-[0-9a-f]{64}$",
         )
         self.assertNotIn(self.submitter.address.lower(), internal.text.lower())
+
+    def test_legacy_internal_http_routes_are_default_closed_and_never_open_in_dstack(self):
+        submission_id = self._submit().json()["submission"]["submission_id"]
+        routes = (
+            ("get", f"/arena/internal/submissions/{submission_id}", None),
+            (
+                "post",
+                f"/arena/internal/submissions/{submission_id}/transition",
+                {},
+            ),
+            (
+                "post",
+                f"/arena/internal/submissions/{submission_id}/ladder-release",
+                {},
+            ),
+        )
+        api.settings.arena_legacy_internal_api_enabled = False
+        for method, route, body in routes:
+            with self.subTest(mode="default_closed", route=route):
+                response = self.client.request(
+                    method,
+                    route,
+                    json=body,
+                    headers=self._runtime_headers(),
+                )
+                self.assertEqual(response.status_code, 404, response.text)
+                self.assertEqual(response.json(), {"detail": "Not found"})
+
+        api.settings.arena_legacy_internal_api_enabled = True
+        with patch("tinker_delegate.api.is_dstack_enabled", return_value=True):
+            for method, route, body in routes:
+                with self.subTest(mode="dstack_closed", route=route):
+                    response = self.client.request(
+                        method,
+                        route,
+                        json=body,
+                        headers=self._runtime_headers(),
+                    )
+                    self.assertEqual(response.status_code, 404, response.text)
+                    self.assertEqual(response.json(), {"detail": "Not found"})
 
 
 if __name__ == "__main__":

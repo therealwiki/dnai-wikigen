@@ -27,7 +27,10 @@ from attestation_qvl.qvl import (
     derive_compute_workload_recipient_report_data,
     derive_email_oracle_kms_restart_report_data,
     derive_release_report_data,
+    derive_royalty_settlement_policy_commitment,
+    derive_royalty_settlement_report_data,
 )
+from attestation_qvl.signing import royalty_release_policy_commitment
 
 
 NOW = 1_800_000_000
@@ -43,6 +46,17 @@ CEREMONY_NONCE = "0x" + "43" * 32
 MEASUREMENT_POLICY_SHA256 = "sha256:" + "44" * 32
 MAIN_RUNTIME_CVM_ID = "cvm-main-runtime-0001"
 METERING_CVM_ID = "cvm-independent-metering-0001"
+ROYALTY_DISTRIBUTOR = "0x5555555555555555555555555555555555555555"
+ROYALTY_OWNER = "0x7777777777777777777777777777777777777777"
+ROYALTY_ANCHOR = "0x6666666666666666666666666666666666666666"
+ROYALTY_SETTLEMENT_PRIVATE_KEY = bytes.fromhex("13" * 32)
+ROYALTY_SETTLEMENT_ADDRESS = Account.from_key(
+    ROYALTY_SETTLEMENT_PRIVATE_KEY
+).address.lower()
+ROYALTY_QVL_PRIVATE_KEY = bytes.fromhex("12" * 32)
+ROYALTY_QVL_ADDRESS = Account.from_key(ROYALTY_QVL_PRIVATE_KEY).address.lower()
+ROYALTY_QVL_KEY_ID = "0x" + "67" * 32
+ROYALTY_ANCHOR_WRITER_RELEASE = "0x" + "68" * 32
 WORKLOAD_RECIPIENT_PUBLIC_KEY = "33" * 32
 WORKLOAD_RECIPIENT_KEY_ID = (
     "sha256:"
@@ -82,9 +96,12 @@ def policy_payload(
     compute_workload: bool = False,
     compute_metering: bool = False,
     email_restart: bool = False,
+    royalty: bool = False,
 ) -> dict[str, object]:
     if sum((arena, anchor_writer, compute_workload, compute_metering)) > 1:
         raise ValueError("report-data bindings are mutually exclusive")
+    if royalty and any((arena, anchor_writer, compute_workload, compute_metering)):
+        raise ValueError("royalty settlement is a secondary Diligence profile")
     arena_key = bytes.fromhex("33" * 32)
     binding: dict[str, str] = {"kind": "diligence_result_signer_v1"}
     if arena:
@@ -143,6 +160,40 @@ def policy_payload(
             "target_boot_tuple_hash": "0x" + "bc" * 32,
             "restart_proof_hash": "0x" + "de" * 32,
         }
+    if royalty:
+        payload["allowed_signer_addresses"] = [ROYALTY_SETTLEMENT_ADDRESS]
+        release_commitment = royalty_release_policy_commitment(
+            chain_id=84_532,
+            distributor_address=ROYALTY_DISTRIBUTOR,
+            authority_nonce=7,
+            settlement_verifier=ROYALTY_SETTLEMENT_ADDRESS,
+            qvl_verifier=ROYALTY_QVL_ADDRESS,
+            execution_policy_anchor=ROYALTY_ANCHOR,
+            anchor_writer_release_commitment=ROYALTY_ANCHOR_WRITER_RELEASE,
+        )
+        payload["royalty_settlement_binding"] = {
+            "kind": "royalty_settlement_qvl_v2",
+            "owner": ROYALTY_OWNER,
+            "distributor_address": ROYALTY_DISTRIBUTOR,
+            "distributor_runtime_code_hash": "0x" + "56" * 32,
+            "settlement_verifier": ROYALTY_SETTLEMENT_ADDRESS,
+            "settlement_verifier_key_path": (
+                "tinker/collaboration_royalty_settlement_signer"
+            ),
+            "settlement_verifier_custody": (
+                "dstack_derived_main_runtime_royalty_settlement_signer"
+            ),
+            "execution_policy_anchor": ROYALTY_ANCHOR,
+            "anchor_writer_release_commitment": ROYALTY_ANCHOR_WRITER_RELEASE,
+            "release_policy_commitment": release_commitment,
+            "authority_nonce": "7",
+            "qvl_signer_key_id": ROYALTY_QVL_KEY_ID,
+            "main_runtime_cvm_id": MAIN_RUNTIME_CVM_ID,
+            "deployment_intent_sha256": DEPLOYMENT_INTENT_SHA256,
+            "release_authority_sha256": RELEASE_AUTHORITY_SHA256,
+            "measurement_policy_sha256": MEASUREMENT_POLICY_SHA256,
+            "max_authorization_lifetime_seconds": 600,
+        }
     return payload
 
 
@@ -184,6 +235,21 @@ class FakeVerdictSigner:
         return "0x" + bytes(signed.signature).hex()
 
 
+class FakeRoyaltySigner:
+    custody = "test_injected_royalty"
+    key_path = "test/royalty-settlement"
+
+    def __init__(self) -> None:
+        self.account = Account.from_key(ROYALTY_QVL_PRIVATE_KEY)
+        self.address = self.account.address.lower()
+        self.digests: list[str] = []
+
+    def sign_raw_digest(self, digest: str) -> str:
+        self.digests.append(digest)
+        signed = self.account.unsafe_sign_hash(bytes.fromhex(digest[2:]))
+        return "0x" + bytes(signed.signature).hex()
+
+
 @dataclass
 class Context:
     release: LoadedReleasePolicy
@@ -191,6 +257,7 @@ class Context:
     report_data: bytes
     backend: FakeBackend
     signer: FakeVerdictSigner
+    royalty_signer: FakeRoyaltySigner | None
     verifier: IndependentQuoteVerifier
     challenge: QvlChallenge
     challenge_request: QvlChallengeRequest
@@ -210,6 +277,7 @@ def make_context(
     compute_workload: bool = False,
     compute_metering: bool = False,
     email_restart: bool = False,
+    royalty: bool = False,
     policy_valid_until: int | None = None,
     challenge_expires_at: int | None = None,
     max_verdict_ttl_seconds: int | None = None,
@@ -221,6 +289,7 @@ def make_context(
         compute_workload=compute_workload,
         compute_metering=compute_metering,
         email_restart=email_restart,
+        royalty=royalty,
     )
     if policy_valid_until is not None:
         payload["valid_until"] = policy_valid_until
@@ -230,9 +299,24 @@ def make_context(
         tmp_path / "release-policy.json",
         payload,
     )
+    royalty_signer = FakeRoyaltySigner() if royalty else None
     raw_quote = bytes((index % 251 for index in range(2048)))
     workload_attestation = None
-    if compute_workload:
+    if royalty:
+        binding = release.policy.royalty_settlement_binding
+        assert binding is not None and royalty_signer is not None
+        royalty_policy_commitment = derive_royalty_settlement_policy_commitment(
+            release=release,
+            binding=binding,
+            royalty_verifier_address=royalty_signer.address,
+        )
+        report_data = derive_royalty_settlement_report_data(
+            release=release,
+            binding=binding,
+            royalty_verifier_address=royalty_signer.address,
+            royalty_policy_commitment=royalty_policy_commitment,
+        )
+    elif compute_workload:
         workload_attestation = ComputeWorkloadRecipientAttestation.model_validate(
             {
                 "schema": "dnai.compute-workload-recipient-attestation.v1",
@@ -283,9 +367,13 @@ def make_context(
             "chain_id": release.policy.chain_id,
             "domain": target_domain,
             "profile": (
-                "email_oracle_kms_restart"
-                if email_restart
-                else qvl_profile(release.policy.report_data_binding)
+                "royalty_settlement"
+                if royalty
+                else (
+                    "email_oracle_kms_restart"
+                    if email_restart
+                    else qvl_profile(release.policy.report_data_binding)
+                )
             ),
             "cvm_id": target_cvm_id,
             "deployment_intent_sha256": DEPLOYMENT_INTENT_SHA256,
@@ -339,6 +427,7 @@ def make_context(
         release=release,
         backend=backend,
         signer=signer,
+        royalty_signer=royalty_signer,
         clock=lambda: NOW,
     )
     quote_hash = "0x" + hashlib.sha256(raw_quote).hexdigest()
@@ -349,9 +438,15 @@ def make_context(
         "quote": "0x" + raw_quote.hex(),
         "expectation": {
             "mode": "tdx",
-            "signer_address": SIGNER_ADDRESS,
+            "signer_address": (
+                ROYALTY_SETTLEMENT_ADDRESS if royalty else SIGNER_ADDRESS
+            ),
             "chain_id": release.policy.chain_id,
-            "contract_address": release.policy.contract_address,
+            "contract_address": (
+                release.policy.royalty_settlement_binding.distributor_address
+                if royalty and release.policy.royalty_settlement_binding is not None
+                else release.policy.contract_address
+            ),
             "report_data": report_data_hex,
             "quote_report_data": report_data_hex + freshness_digest[2:],
             "quote_hash": quote_hash,
@@ -372,6 +467,7 @@ def make_context(
         report_data=report_data,
         backend=backend,
         signer=signer,
+        royalty_signer=royalty_signer,
         verifier=verifier,
         challenge=challenge,
         challenge_request=challenge_request,

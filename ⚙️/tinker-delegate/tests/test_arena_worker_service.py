@@ -14,6 +14,7 @@ from eth_account.messages import encode_defunct
 
 from tests.test_arena_safe_worker import (
     APP_ID,
+    ARENA_STORE_KEY,
     COMPOSE_HASH,
     OS_IMAGE_HASH,
     QUOTE_BYTES,
@@ -30,9 +31,17 @@ from tinker_delegate.arena_safe_worker import (
     RefreshingArenaActivationProvider,
     activation_from_independent_verdict,
 )
-from tinker_delegate.arena_ingress import arena_submission_manifest_hash
+from tinker_delegate.arena_ingress import (
+    ArenaIngressError,
+    arena_submission_manifest_hash,
+)
 from tinker_delegate.arena_safe_ir import SAFE_IR_POLICY_COMMITMENT
-from tinker_delegate.arena_store import ArenaStore, QueueReason, QueueState
+from tinker_delegate.arena_store import (
+    ArenaStore,
+    CiphertextState,
+    QueueReason,
+    QueueState,
+)
 from tinker_delegate.arena_worker_service import (
     EXIT_ACTIVATION_UNAVAILABLE,
     EXIT_OK,
@@ -373,6 +382,33 @@ class ArenaWorkerServiceTest(unittest.TestCase):
         self.assertEqual([status.state for status in statuses], ["idle"])
         self.assertEqual(heartbeats, [("idle", 200), ("idle", 200), ("idle", 200)])
 
+    def test_poll_cycle_retries_terminal_cleanup_left_pending_by_prior_crash(self):
+        record = self.harness.submit(
+            _valid_source(),
+            name="pending-terminal-cleanup",
+        )
+        cancelled = self.harness.arena.cancel_owner_submission(
+            record.submission_id,
+            wallet_address=record.identity.wallet_address,
+            challenge_id=record.challenge_id,
+            challenge_version=record.challenge_version,
+            occurred_at=150,
+        )
+        self.assertEqual(
+            cancelled.submission.ciphertext_state,
+            CiphertextState.ERASURE_PENDING,
+        )
+
+        status = self._service().run_once(occurred_at=200)
+
+        self.assertEqual(status.state, "idle")
+        cleaned = self.harness.arena.get_submission(record.submission_id)
+        self.assertEqual(cleaned.ciphertext_state, CiphertextState.UNLINKED)
+        with self.assertRaises(ArenaIngressError):
+            self.harness.ingress_store.load_envelope(
+                record.encrypted_reference
+            )
+
     def test_process_lease_refuses_a_second_worker_and_is_kernel_releasable(self):
         first = ArenaWorkerProcessLease(self.harness.arena.path)
         second = ArenaWorkerProcessLease(self.harness.arena.path)
@@ -440,7 +476,8 @@ class ArenaWorkerServiceTest(unittest.TestCase):
         registry_stored = self.harness.arena.get_submission(
             registry_record.submission_id
         )
-        self.assertEqual(registry_stored.state, QueueState.QUEUED)
+        self.assertEqual(registry_stored.state, QueueState.SUBMITTED)
+        self.assertIsNone(registry_stored.worker_claimed_at)
         self.assertFalse(
             any(
                 event.reason == QueueReason.WORKER_CLAIMED
@@ -450,7 +487,10 @@ class ArenaWorkerServiceTest(unittest.TestCase):
 
     def test_store_instances_refresh_and_claim_atomically(self):
         record = self.harness.submit(_valid_source())
-        other = ArenaStore(Path(self.temp.name) / "arena.json")
+        other = ArenaStore(
+            Path(self.temp.name) / "arena.json",
+            integrity_key=ARENA_STORE_KEY,
+        )
         self.assertEqual(other.get_submission(record.submission_id), record)
         for state, reason in (
             (QueueState.POLICY_SCREEN, QueueReason.POLICY_CHECK_STARTED),
@@ -828,6 +868,7 @@ class ArenaWorkerServiceTest(unittest.TestCase):
         )
         service = build_verified_arena_worker_service(
             arena_store_path=self.harness.arena.path,
+            arena_store_integrity_key=ARENA_STORE_KEY,
             ingress_store_path=self.harness.ingress_store.root_dir,
             recipient=self.harness.recipient,
             evaluator=self.harness.evaluator,

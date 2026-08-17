@@ -13,7 +13,7 @@ contract DiligenceRoomScript is Script {
 
         vm.startBroadcast();
 
-        DiligenceRoom room = new DiligenceRoom(false);
+        DiligenceRoom room = new DiligenceRoom(false, address(0));
         require(room.developer() == operator, "broadcast signer does not match DEPLOYMENT_OPERATOR");
         console.log("DiligenceRoom deployed at:", address(room));
         console.log("Developer (fee recipient):", room.developer());
