@@ -488,6 +488,14 @@ export function normalizeReleaseReviewerAuthorityGenesis(value, optionsValue) {
     controllerId,
     "deployment role controller IDs",
   );
+  const reviewerAddresses = reviewers.flatMap(
+    (entry) => entry.preauthorized_addresses,
+  );
+  const reviewerControllerIds = reviewers.map((entry) => entry.controller_id);
+  if (reviewerAddresses.some((entry) => roleAddresses.has(entry))
+    || reviewerControllerIds.some((entry) => roleControllerIds.has(entry))) {
+    fail("reviewer keys and controllers must be distinct from supplied deployment-role identities");
+  }
   const guardians = normalizeStatusGuardians(parsed.status_guardians, {
     reviewerControllers: reviewers,
     deploymentRoleAddresses: roleAddresses,

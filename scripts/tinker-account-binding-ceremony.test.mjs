@@ -1015,6 +1015,38 @@ test("post-intent commands require exact environment and canonical deployment-in
       },
       pattern: /genesis acceptance differs from the immutable deployment-intent pins/,
     },
+    {
+      name: "diligence governance controller reuses a status guardian",
+      environment: {
+        TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT: EXPECTED_COMMITMENT,
+      },
+      mutate: (intent) => {
+        intent.staticContractInputs.diligenceRoom.governanceController =
+          addressOf(GUARDIAN_ACCOUNTS[0]);
+      },
+      pattern: /distinct from supplied deployment-role identities/,
+    },
+    {
+      name: "deployment operator reuses an active reviewer key",
+      environment: {
+        TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT: EXPECTED_COMMITMENT,
+      },
+      mutate: (intent) => {
+        intent.deploymentControl.operatorAddress =
+          addressOf(REVIEWER_ACCOUNTS[0]);
+      },
+      pattern: /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
+    },
+    {
+      name: "deployment operator reuses an active reviewer controller",
+      environment: {
+        TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT: EXPECTED_COMMITMENT,
+      },
+      mutate: (intent) => {
+        intent.deploymentControl.controllerId = "reviewer-alpha";
+      },
+      pattern: /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
+    },
   ];
   for (const scenario of cases) {
     await t.test(scenario.name, async (st) => {

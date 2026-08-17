@@ -86,7 +86,7 @@ test("reviewed release runtime pins Node, all Homebrew dylibs, and the npm tree"
   assert.equal(PINNED_NODE_HOMEBREW_DYLIBS.length, 17);
   assert.equal(
     PINNED_NODE_DYLIB_CLOSURE_SHA256,
-    "89b882767a822b96a856e3205d4bcfc316c44766373299b3c92b3ee00890f4ef",
+    "9d7a826fa8ec4a1f1a2d3d4f3b0f02e36312440234cd4ce45f9581a6771721c7",
   );
   assert.equal(PINNED_NPM_RUNTIME.version, "11.6.0");
   assert.equal(PINNED_NPM_RUNTIME.entryCount, 2_857);

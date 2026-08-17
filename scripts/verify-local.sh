@@ -28,6 +28,10 @@ run_foundry() {
   ./scripts/test-royalty-release-safety.sh
   ./scripts/test-tinker-release-safety.sh
   node --test \
+    "$ROOT_DIR/scripts/royalty-release-finalized-history-evidence.test.mjs" \
+    "$ROOT_DIR/scripts/royalty-release-history-receipt.test.mjs" \
+    "$ROOT_DIR/scripts/release-ceremony-ledger.test.mjs" \
+    "$ROOT_DIR/scripts/release-authority-stages.test.mjs" \
     scripts/royalty-release-phase-plan.test.mjs \
     scripts/royalty-release-manifest-filter.test.mjs \
     scripts/royalty-release-runtime-binding-adapter.test.mjs \

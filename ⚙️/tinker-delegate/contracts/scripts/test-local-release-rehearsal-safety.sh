@@ -14,6 +14,16 @@ for required_boundary in \
   'export FOUNDRY_OUT="$EVIDENCE_DIR/out"' \
   --unlocked \
   'merge-base-sepolia-suite-manifest.jq' \
+  'dnai/local-rehearsal/no-account-binding-ceremony/v1' \
+  '--arg tinkerAccountBindingCeremonyReceiptSha256 "$LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256"' \
+  'syntheticAccountBindingPlaceholderSha256: $localTinkerAccountBindingPlaceholderSha256' \
+  'notCeremonyEvidence: true' \
+  'accountBindingCeremonyPerformed: false' \
+  'local_domain_separated_placeholder_not_ceremony_evidence_or_signed_reviewer_authority' \
+  '.deploymentHistory[-1].tinkerAccountBindingCeremonyReceiptSha256 = null' \
+  '.freshDeployment.contractSuite.tinkerAccountBindingCeremonyReceiptSha256 = null' \
+  'and .deploymentHistory[-1].tinkerAccountBindingCeremonyReceiptSha256 == null' \
+  'and .freshDeployment.contractSuite.tinkerAccountBindingCeremonyReceiptSha256 == null' \
   'local_ephemeral_anvil_only' \
   'rawSigningMaterialReadOrSupplied: false' \
   'select(.transactionType == "CREATE" and .contractName == $name)' \
@@ -87,6 +97,20 @@ for required_boundary in \
     exit 1
   fi
 done
+
+if [ "$(grep -Fc -- \
+  '--arg tinkerAccountBindingCeremonyReceiptSha256' \
+  "$REHEARSAL")" -ne 1 ]; then
+  echo "Local rehearsal must pass exactly one account-binding placeholder to the shared manifest filter." >&2
+  exit 1
+fi
+
+if [ "$(grep -Fc -- \
+  'tinkerAccountBindingCeremonyReceiptSha256 = null' \
+  "$REHEARSAL")" -ne 2 ]; then
+  echo "Local rehearsal must null both production account-binding receipt fields." >&2
+  exit 1
+fi
 
 forbidden_signing_flag="--private""-key"
 if grep -Fq -- "$forbidden_signing_flag" "$REHEARSAL"; then

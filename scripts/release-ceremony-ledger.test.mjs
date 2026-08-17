@@ -547,6 +547,173 @@ test("CLI initializes once and commits every helper candidate to the one externa
   assert.equal(fs.statSync(f.sourceManifestPath).mode & 0o777, 0o444);
   assert.equal(fs.statSync(f.ledgerPath).mode & 0o777, 0o600);
   assert.equal(currentReplay(f).revision_count, 1);
+
+  const finalizeToken = "a3".repeat(32);
+  acquire(f, "ceremony_ledger_finalization", finalizeToken);
+  try {
+    const finalized = spawnSync(process.execPath, [
+      cli, "finalize", ...common,
+      "--writer-id", "ceremony_ledger_finalization",
+      "--owner-token", finalizeToken,
+    ], { encoding: "utf8" });
+    assert.equal(finalized.status, 0, finalized.stderr);
+    const receipt = JSON.parse(finalized.stdout);
+    assert.equal(receipt.finalized, true);
+    assert.equal(receipt.ledger_mode, "0444");
+    assert.match(receipt.finalization_receipt_sha256, /^sha256:[0-9a-f]{64}$/);
+  } finally {
+    release(f, "ceremony_ledger_finalization", finalizeToken);
+  }
+  assert.equal(fs.statSync(f.ledgerPath).mode & 0o777, 0o444);
+
+  const incompleteRecovery = spawnSync(process.execPath, [
+    cli, "recover", ...common,
+    "--writer-id", "ceremony_ledger_recovery",
+    "--owner-token", "b3".repeat(32),
+  ], { encoding: "utf8" });
+  assert.notEqual(incompleteRecovery.status, 0);
+  assert.match(incompleteRecovery.stderr, /--lock-recovery-receipt is required/);
+});
+
+test("CLI rejects noncanonical, aliased, linked, writable, and noncanonical candidate inputs", (t) => {
+  const f = fixture(t);
+  initialize(f);
+  const cli = path.join(ROOT, "scripts", "release-ceremony-ledger-cli.mjs");
+  const common = [
+    "--repository-root", f.repositoryRoot,
+    "--source-manifest", f.sourceManifestPath,
+    "--ledger", f.ledgerPath,
+    "--evidence-root", f.evidenceRoot,
+    "--lock-root", f.lockRoot,
+    "--release-sha", f.releaseSha,
+    "--deployment-intent-sha256", f.deploymentIntentSha256,
+    "--reviewer-genesis-acceptance-sha256",
+    f.reviewerAuthorityGenesisAcceptanceSha256,
+    "--tinker-account-binding-ceremony-receipt-sha256",
+    f.tinkerAccountBindingCeremonyReceiptSha256,
+  ];
+  const canonical = candidateText(f, "candidate-read-hardening");
+  const createCandidate = (name, text, mode = 0o600) => {
+    const filePath = path.join(f.ledgerRoot, name);
+    fs.writeFileSync(filePath, text, { flag: "wx", mode });
+    fs.chmodSync(filePath, mode);
+    return filePath;
+  };
+
+  const validPath = createCandidate("canonical-candidate.json", canonical);
+  const symlinkPath = path.join(f.ledgerRoot, "candidate-symlink.json");
+  fs.symlinkSync(validPath, symlinkPath);
+  const hardlinkSource = createCandidate("candidate-hardlink-source.json", canonical);
+  fs.linkSync(
+    hardlinkSource,
+    path.join(f.ledgerRoot, "candidate-hardlink-alias.json"),
+  );
+  const writablePath = createCandidate(
+    "candidate-other-writable.json",
+    canonical,
+    0o622,
+  );
+  const noFinalNewlinePath = createCandidate(
+    "candidate-no-final-newline.json",
+    canonical.slice(0, -1),
+  );
+  const duplicateValue = JSON.parse(canonical);
+  duplicateValue._duplicate_key_probe = "same";
+  const duplicateCanonical = canonicalReleaseCeremonyLedgerJsonText(duplicateValue);
+  const duplicateLine = '  "_duplicate_key_probe": "same",\n';
+  assert.match(duplicateCanonical, /"_duplicate_key_probe": "same"/);
+  const duplicateKeyPath = createCandidate(
+    "candidate-duplicate-key.json",
+    duplicateCanonical.replace(duplicateLine, `${duplicateLine}${duplicateLine}`),
+  );
+
+  const ownerToken = "c6".repeat(32);
+  acquire(f, "diligence_release", ownerToken);
+  try {
+    const reject = (candidatePath, expected) => {
+      const result = spawnSync(process.execPath, [
+        cli, "commit", ...common,
+        "--writer-id", "diligence_release",
+        "--owner-token", ownerToken,
+        "--candidate", candidatePath,
+      ], { cwd: ROOT, encoding: "utf8" });
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.match(result.stderr, expected);
+    };
+
+    reject(path.relative(ROOT, validPath), /path must be canonical and absolute/);
+    reject(
+      `${path.dirname(validPath)}/./${path.basename(validPath)}`,
+      /path must be canonical and absolute/,
+    );
+    reject(symlinkPath, /path must be canonical and symlink-free/);
+    reject(hardlinkSource, /single-link non-symlink regular file/);
+    reject(writablePath, /operator-owned and private/);
+    reject(noFinalNewlinePath, /one trailing newline/);
+    reject(duplicateKeyPath, /one trailing newline/);
+  } finally {
+    release(f, "diligence_release", ownerToken);
+  }
+  assert.equal(currentReplay(f).revision_count, 0);
+});
+
+test("CLI recovers a journaled finalization only through signed explicit recovery", (t) => {
+  const f = fixture(t);
+  initialize(f);
+  const cli = path.join(ROOT, "scripts", "release-ceremony-ledger-cli.mjs");
+  const common = [
+    "--repository-root", f.repositoryRoot,
+    "--source-manifest", f.sourceManifestPath,
+    "--ledger", f.ledgerPath,
+    "--evidence-root", f.evidenceRoot,
+    "--lock-root", f.lockRoot,
+    "--release-sha", f.releaseSha,
+    "--deployment-intent-sha256", f.deploymentIntentSha256,
+    "--reviewer-genesis-acceptance-sha256",
+    f.reviewerAuthorityGenesisAcceptanceSha256,
+    "--tinker-account-binding-ceremony-receipt-sha256",
+    f.tinkerAccountBindingCeremonyReceiptSha256,
+  ];
+
+  const finalizeToken = "b4".repeat(32);
+  acquire(f, "ceremony_ledger_finalization", finalizeToken);
+  const staleOwnerSha256 = inspectOwner(f);
+  try {
+    const crashed = spawnSync(process.execPath, [
+      cli, "finalize", ...common,
+      "--writer-id", "ceremony_ledger_finalization",
+      "--owner-token", finalizeToken,
+      "--fault-stage", "after-ledger-replace",
+    ], { encoding: "utf8" });
+    assert.notEqual(crashed.status, 0);
+    assert.match(crashed.stderr, /injected crash at after-ledger-replace/);
+  } finally {
+    release(f, "ceremony_ledger_finalization", finalizeToken);
+  }
+  assert.equal(fs.existsSync(path.join(f.evidenceRoot, "pending.json")), true);
+
+  const signed = signedRecoveryReceipt(f, staleOwnerSha256, "2");
+  const recoveryToken = "b5".repeat(32);
+  acquire(f, "ceremony_ledger_recovery", recoveryToken);
+  try {
+    const recovered = spawnSync(process.execPath, [
+      cli, "recover", ...common,
+      "--writer-id", "ceremony_ledger_recovery",
+      "--owner-token", recoveryToken,
+      "--lock-recovery-receipt", signed.lockRecoveryReceiptPath,
+      "--lock-recovery-receipt-sha256", signed.lockRecoveryReceiptSha256,
+      "--onchain-signer-nonce-finalized-state-reconciliation-sha256",
+      signed.onchainSignerNonceFinalizedStateReconciliationSha256,
+    ], { encoding: "utf8" });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    const receipt = JSON.parse(recovered.stdout);
+    assert.equal(receipt.recovery_action, "completed_missing_finalization_receipt");
+    assert.equal(receipt.finalized, true);
+    assert.equal(receipt.ledger_mode, "0444");
+    assert.equal(fs.existsSync(path.join(f.evidenceRoot, "pending.json")), false);
+  } finally {
+    release(f, "ceremony_ledger_recovery", recoveryToken);
+  }
 });
 
 test("CAS commits canonical candidates and replay rejects stale or malformed writers", (t) => {

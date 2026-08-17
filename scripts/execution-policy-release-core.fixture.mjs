@@ -499,6 +499,70 @@ export const RELEASE_SHA = FIXTURE.release_sha;
 export const APPROVER_ROOT = FIXTURE.execution_policy.approver_root_hash;
 export const USDC = FIXTURE.contracts.usdc.address;
 
+export function rebindKnownVectorV4AuthorityFixture(authority, {
+  deploymentIntentSha256,
+  cvmLaunchIntentSha256 = authority.cvm_launch_intent_sha256,
+}) {
+  const writerReleaseCommitment =
+    `0x${cvmLaunchIntentSha256.slice("sha256:".length)}`;
+
+  authority.deployment_intent_sha256 = deploymentIntentSha256;
+  authority.cvm_launch_intent_sha256 = cvmLaunchIntentSha256;
+  authority.execution_policy.rollback_anchor_target.writer_release_commitment =
+    writerReleaseCommitment;
+
+  Object.assign(authority.shared_release_lineage, {
+    release_sha: authority.release_sha,
+    deployment_intent_sha256: deploymentIntentSha256,
+    cvm_launch_intent_sha256: cvmLaunchIntentSha256,
+    seven_cvm_release_verification_authority_sha256:
+      authority.seven_cvm_release_verification_authority_sha256,
+    main_runtime_cvm_id: authority.cvm.cvm_id,
+    main_runtime_compose_hash: authority.cvm.compose_hash,
+    main_runtime_app_id: authority.cvm.app_id,
+    main_runtime_os_image_hash: authority.cvm.os_image_hash,
+  });
+  Object.assign(authority.collaboration_execution, {
+    enabled: authority.requested_features.collaboration_execution,
+    release_sha: authority.release_sha,
+    release_verification_sha256:
+      authority.seven_cvm_release_verification_authority_sha256,
+  });
+
+  const royaltyAuthority = authority.royalty_release_authority;
+  royaltyAuthority.anchor_writer_release_commitment = writerReleaseCommitment;
+  const releasePolicyCommitment = royaltyReleasePolicyCommitment({
+    chainId: royaltyAuthority.chain_id,
+    distributorAddress: royaltyAuthority.distributor_address,
+    authorityNonce: royaltyAuthority.authority_nonce,
+    settlementVerifier: royaltyAuthority.settlement_verifier,
+    qvlVerifier: royaltyAuthority.qvl_verifier,
+    executionPolicyAnchor: royaltyAuthority.execution_policy_anchor,
+    anchorWriterReleaseCommitment: writerReleaseCommitment,
+  });
+  royaltyAuthority.release_policy_commitment = releasePolicyCommitment;
+
+  const activeState = authority.royalty_release_active_state;
+  activeState.anchor_writer_release_commitment = writerReleaseCommitment;
+  activeState.release_policy_commitment = releasePolicyCommitment;
+  activeState.computed_release_policy_commitment = releasePolicyCommitment;
+  authority.royalty_release_active_state_sha256 = royaltyReleaseStateSha256(
+    activeState,
+    { authority: royaltyAuthority, phase: "phase_two_active" },
+  );
+
+  Object.assign(authority.royalty_settlement_release_binding_template, {
+    anchor_writer_release_commitment: writerReleaseCommitment,
+    release_policy_commitment: releasePolicyCommitment,
+    main_runtime_cvm_id: authority.cvm.cvm_id,
+    deployment_intent_sha256: deploymentIntentSha256,
+    compose_hash: `0x${authority.cvm.compose_hash}`,
+    app_id: authority.cvm.app_id,
+    os_image_hash: authority.cvm.os_image_hash,
+  });
+  return authority;
+}
+
 export function address(index) {
   return `0x${index.toString(16).padStart(40, "0")}`;
 }

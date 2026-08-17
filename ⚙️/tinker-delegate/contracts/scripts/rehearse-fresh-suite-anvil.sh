@@ -587,6 +587,23 @@ REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256_BYTES32="0x$(node -e '
 ')"
 DEPLOYMENT_INTENT_SHA256="sha256:${DEPLOYMENT_INTENT_SHA256_BYTES32#0x}"
 REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256="sha256:${REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256_BYTES32#0x}"
+# The production wrapper obtains this digest from the verified, two-reviewer
+# account-binding ceremony receipt. The local rehearsal must still exercise
+# the shared manifest projection, but it must not fabricate reviewer
+# signatures or present synthetic Anvil evidence as production authority.
+# Hash an explicit "no ceremony" domain, pass that placeholder through the
+# production-shaped intermediate manifest, then erase the production-named
+# fields and relabel it as synthetic local evidence before publication.
+LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256="sha256:$(
+  node -e '
+    process.stdout.write(require("node:crypto").createHash("sha256")
+      .update("dnai/local-rehearsal/no-account-binding-ceremony/v1", "utf8")
+      .digest("hex"));
+  '
+)"
+validate_sha256 \
+  "local Tinker account-binding placeholder digest" \
+  "$LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256"
 TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI=5000000000000000000
 TINKER_ENCUMBRANCE_MAX_SPEND_WEI=2000000000000000000
 EMAIL_ORACLE_UPGRADE_DELAY=172800
@@ -1746,6 +1763,7 @@ jq -n '{}' | jq \
   --arg sourceCommit "$SOURCE_COMMIT" \
   --arg deploymentIntentSha256 "$DEPLOYMENT_INTENT_SHA256" \
   --arg reviewerAuthorityGenesisAcceptanceSha256 "$REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_SHA256" \
+  --arg tinkerAccountBindingCeremonyReceiptSha256 "$LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256" \
   --argjson deploymentReviewEnvelopeSha256 null \
   --argjson deploymentReviewEvidenceSha256 null \
   --argjson deploymentReceipts "$DEPLOYMENT_RECEIPTS" \
@@ -1926,6 +1944,7 @@ jq \
   --arg clientVersion "$CLIENT_VERSION" \
   --arg helper "⚙️/tinker-delegate/contracts/scripts/rehearse-fresh-suite-anvil.sh" \
   --arg broadcastArtifact "$RUN_PATH" \
+  --arg localTinkerAccountBindingPlaceholderSha256 "$LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256" \
   --argjson sourceTreeClean "$SOURCE_TREE_CLEAN" \
   --arg tinkerProposeReleaseTx "$TINKER_PROPOSE_RELEASE_TX" \
   --arg tinkerActivateReleaseTx "$TINKER_ACTIVATE_RELEASE_TX" \
@@ -2034,6 +2053,7 @@ jq \
     | .deploymentHistory[-1].localEphemeral = true
     | .deploymentHistory[-1].deploymentIntentSha256 = null
     | .deploymentHistory[-1].reviewerAuthorityGenesisAcceptanceSha256 = null
+    | .deploymentHistory[-1].tinkerAccountBindingCeremonyReceiptSha256 = null
     | .deploymentHistory[-1].deploymentReviewEnvelopeSha256 = null
     | .deploymentHistory[-1].deploymentReviewEvidenceSha256 = null
     | .deploymentHistory[-1].authorityStage = "local_ephemeral_unreviewed_rehearsal"
@@ -2047,6 +2067,7 @@ jq \
     | .freshDeployment.contractSuite.localEphemeral = true
     | .freshDeployment.contractSuite.deploymentIntentSha256 = null
     | .freshDeployment.contractSuite.reviewerAuthorityGenesisAcceptanceSha256 = null
+    | .freshDeployment.contractSuite.tinkerAccountBindingCeremonyReceiptSha256 = null
     | .freshDeployment.contractSuite.deploymentReviewEnvelopeSha256 = null
     | .freshDeployment.contractSuite.deploymentReviewEvidenceSha256 = null
     | .freshDeployment.contractSuite.authorityStage = "local_ephemeral_unreviewed_rehearsal"
@@ -2111,6 +2132,11 @@ jq \
         broadcastArtifact: $broadcastArtifact,
         runtimeCodeProof: "exact_creation_reexecution_match_all_contracts",
         tinkerAccountEncumbrance: {
+          syntheticAccountBindingPlaceholderSha256: $localTinkerAccountBindingPlaceholderSha256,
+          syntheticLocalOnly: true,
+          notCeremonyEvidence: true,
+          accountBindingCeremonyPerformed: false,
+          syntheticAccountBindingPlaceholderSemantics: "local_domain_separated_placeholder_not_ceremony_evidence_or_signed_reviewer_authority",
           releasePolicyCommitment: $tinkerReleaseCommitment,
           reviewEligibleAt: ($tinkerReleaseEligibleAt | tonumber),
           composeRoot: $tinkerReleaseComposeRoot,
@@ -2252,12 +2278,15 @@ jq -e \
   --arg computeVault "$COMPUTE_VAULT_ADDRESS" \
   --arg emailOracle "$EMAIL_ORACLE_ADDRESS" \
   --arg executionPolicyAnchor "$EXECUTION_POLICY_ANCHOR_ADDRESS" \
+  --arg localTinkerAccountBindingPlaceholderSha256 "$LOCAL_TINKER_ACCOUNT_BINDING_PLACEHOLDER_SHA256" \
   '
     .status == "local_ephemeral_rehearsal_complete"
     and .network.chainId == 84532
     and .network.localEphemeral == true
     and .currentOperatorDeployer.signerMode == "anvil_unlocked_json_rpc"
     and .currentOperatorDeployer.privateKeyMaterial == "not_read_or_supplied"
+    and .deploymentHistory[-1].tinkerAccountBindingCeremonyReceiptSha256 == null
+    and .freshDeployment.contractSuite.tinkerAccountBindingCeremonyReceiptSha256 == null
     and .freshDeployment.contractSuite.runtimeCodeProof == "exact_creation_reexecution_match_all_contracts"
     and .contracts.diligenceRoom.address == $diligence
     and .contracts.diligenceRoom.status == "deployed_fail_closed_pending_tee_binding"
@@ -2341,6 +2370,12 @@ jq -e \
     and .rehearsalEvidence.externallyDeployed == false
     and .rehearsalEvidence.rawSigningMaterialReadOrSupplied == false
     and .rehearsalEvidence.tinkerAccountEncumbrance.releasePolicyFrozen == true
+    and .rehearsalEvidence.tinkerAccountEncumbrance.syntheticAccountBindingPlaceholderSha256 == $localTinkerAccountBindingPlaceholderSha256
+    and (.rehearsalEvidence.tinkerAccountEncumbrance.syntheticAccountBindingPlaceholderSha256 | test("^sha256:[0-9a-f]{64}$"))
+    and .rehearsalEvidence.tinkerAccountEncumbrance.syntheticLocalOnly == true
+    and .rehearsalEvidence.tinkerAccountEncumbrance.notCeremonyEvidence == true
+    and .rehearsalEvidence.tinkerAccountEncumbrance.accountBindingCeremonyPerformed == false
+    and .rehearsalEvidence.tinkerAccountEncumbrance.syntheticAccountBindingPlaceholderSemantics == "local_domain_separated_placeholder_not_ceremony_evidence_or_signed_reviewer_authority"
     and .rehearsalEvidence.tinkerAccountEncumbrance.emergencyHalted == false
     and .rehearsalEvidence.tinkerAccountEncumbrance.fullCapOperationsAuthorized == 2
     and .rehearsalEvidence.tinkerAccountEncumbrance.perOperationCaps == true

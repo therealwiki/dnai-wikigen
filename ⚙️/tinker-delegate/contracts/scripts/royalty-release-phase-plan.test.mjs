@@ -954,7 +954,7 @@ test("pre-ceremony Royalty prescription brands one exact attach and verify conte
       ...contextInputs(),
       deploymentIntent: collidingDeploymentIntent,
     }),
-    /must not reuse the deployment controller identity/,
+    /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
   );
   assert.throws(() => attachRoyaltyReleasePhasePlan({
     core: value,

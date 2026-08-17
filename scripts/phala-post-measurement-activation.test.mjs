@@ -176,7 +176,7 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
   assert.equal(canonicalPhalaPostMeasurementActivationPlanText(plan).endsWith("\n"), true);
   assert.equal(
     phalaPostMeasurementActivationPlanSha256(plan),
-    "sha256:c5aad909c9bd318386c7ec807784521baf4fb9e95082c9e648724ad670387086",
+    "sha256:966f88ed1b0b3a1475a8238f90f83de6f72ca693e61c8e27120a6afa9d5f0ebc",
   );
   const runtimeAuthority =
     plan.release_verification_authority.cvm_descriptor_runtime_authority;
@@ -196,6 +196,7 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
       "anchor-writer-evidence",
       "deal-runtime",
       "compute-execution-worker",
+      "collaboration-execution-worker",
       "review-operations",
       "mailbox-genesis",
       "tinker-account-genesis",

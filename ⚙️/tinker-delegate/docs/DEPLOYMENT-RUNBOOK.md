@@ -1744,6 +1744,173 @@ settlement is valid for at most ten minutes, must still be the current anchor
 decision, and cannot be replayed under another funder because settlement ID and
 nonce are global.
 
+#### Freeze the Royalty ledger and materialize H
+
+After the terminal Royalty phase is dual-RPC-finalized and durably committed,
+freeze the one external ceremony ledger before constructing H. Finalization is
+a create-once terminal transition: it replays the complete revision chain,
+writes its finalization receipt, and changes the ledger to `0444`. Acquire the
+release-wide lock under the dedicated finalization writer, and release it only
+after `finalize` returns successfully. If finalization exits unsuccessfully,
+leave the lock and journal in place and use the signed recovery procedure below;
+never delete the lock, manually `chmod` the ledger, or rerun an ordinary writer.
+
+```bash
+set -euo pipefail
+
+OPERATOR_POLICY_REVIEWER_GENESIS_ACCEPTANCE_SHA256="$(
+  jq -er '.core.reviewer_authority_genesis_acceptance_sha256' \
+    "$ROYALTY_RELEASE_PHASE_PLAN_PATH"
+)"
+
+FINALIZATION_LOCK_RECEIPT="$(
+  node "$ROOT/scripts/release-ceremony-lock.mjs" acquire \
+    --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+    --repository-root "$ROOT" \
+    --release-sha "$RELEASE_SHA" \
+    --writer-id ceremony_ledger_finalization \
+    --owner-pid "$$"
+)"
+RELEASE_CEREMONY_LOCK_OWNER_TOKEN="$(
+  jq -er '.owner_token' <<<"$FINALIZATION_LOCK_RECEIPT"
+)"
+
+node "$ROOT/scripts/release-ceremony-ledger-cli.mjs" finalize \
+  --repository-root "$ROOT" \
+  --source-manifest "$DEPLOYMENT_MANIFEST_PATH" \
+  --ledger "$RELEASE_CEREMONY_LEDGER_PATH" \
+  --evidence-root "$RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT" \
+  --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+  --release-sha "$RELEASE_SHA" \
+  --deployment-intent-sha256 "$DEPLOYMENT_INTENT_SHA256" \
+  --reviewer-genesis-acceptance-sha256 \
+    "$OPERATOR_POLICY_REVIEWER_GENESIS_ACCEPTANCE_SHA256" \
+  --tinker-account-binding-ceremony-receipt-sha256 \
+    "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
+  --writer-id ceremony_ledger_finalization \
+  --owner-token "$RELEASE_CEREMONY_LOCK_OWNER_TOKEN"
+
+node "$ROOT/scripts/release-ceremony-lock.mjs" release \
+  --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+  --repository-root "$ROOT" \
+  --release-sha "$RELEASE_SHA" \
+  --writer-id ceremony_ledger_finalization \
+  --owner-token "$RELEASE_CEREMONY_LOCK_OWNER_TOKEN"
+unset RELEASE_CEREMONY_LOCK_OWNER_TOKEN
+```
+
+The online collector is read-only with respect to Base Sepolia. It replays the
+frozen `0444` ledger, requires exactly the phase-1 and terminal phase-2 Royalty
+records, authenticates the prescription and fresh receipt lineage, then queries
+two distinct archive-capable HTTPS RPC origins. It obtains full transactions,
+receipts, logs, and blocks for each Royalty mutation; historic fresh/pending and
+final active state; and a code-owned ordered configuration-getter projection
+for all seven contracts at one common finalized block. It repeats the complete
+block and full-suite read before publication. RPC URLs are accepted only from
+the two fixed environment variables and are never written to the artifact or
+printed in an error.
+
+```bash
+install -d -m 700 /absolute/operator-evidence/ceremony/royalty-history
+export ROYALTY_RELEASE_FINALIZED_HISTORY_EVIDENCE_PATH=/absolute/operator-evidence/ceremony/royalty-history/finalized-history.json
+export ROYALTY_RELEASE_HISTORY_RECEIPT_PATH=/absolute/operator-evidence/ceremony/royalty-history/H.json
+
+node "$ROOT/scripts/royalty-release-finalized-history-evidence.mjs" collect \
+  --repository-root "$ROOT" \
+  --source-manifest "$DEPLOYMENT_MANIFEST_PATH" \
+  --ledger "$RELEASE_CEREMONY_LEDGER_PATH" \
+  --evidence-root "$RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT" \
+  --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+  --release-sha "$RELEASE_SHA" \
+  --deployment-intent-sha256 "$DEPLOYMENT_INTENT_SHA256" \
+  --reviewer-genesis-acceptance-sha256 \
+    "$OPERATOR_POLICY_REVIEWER_GENESIS_ACCEPTANCE_SHA256" \
+  --tinker-account-binding-ceremony-receipt-sha256 \
+    "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
+  --royalty-release-prescription \
+    "$ROYALTY_RELEASE_PRESCRIPTIVE_AUTHORITY_PATH" \
+  --out "$ROYALTY_RELEASE_FINALIZED_HISTORY_EVIDENCE_PATH"
+```
+
+The offline materializer accepts only that exact canonical production-evidence
+schema and projects canonical H v2 with an explicit execution mode. It performs
+no RPC, wallet, Forge, CVM, signing, or deployment action. Both evidence and H
+are create-only, single-link, canonical artifacts under an operator-owned
+`0700` parent and are frozen to `0444`. Preserve the bounded create receipt and
+pin its domain-separated H digest independently before running `verify`:
+
+```bash
+ROYALTY_H_CREATE_RECEIPT="$(
+  node "$ROOT/scripts/royalty-release-history-receipt.mjs" create \
+    --repository-root "$ROOT" \
+    --source-manifest "$DEPLOYMENT_MANIFEST_PATH" \
+    --ledger "$RELEASE_CEREMONY_LEDGER_PATH" \
+    --evidence-root "$RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT" \
+    --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+    --release-sha "$RELEASE_SHA" \
+    --deployment-intent-sha256 "$DEPLOYMENT_INTENT_SHA256" \
+    --reviewer-genesis-acceptance-sha256 \
+      "$OPERATOR_POLICY_REVIEWER_GENESIS_ACCEPTANCE_SHA256" \
+    --tinker-account-binding-ceremony-receipt-sha256 \
+      "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
+    --input "$ROYALTY_RELEASE_FINALIZED_HISTORY_EVIDENCE_PATH" \
+    --out "$ROYALTY_RELEASE_HISTORY_RECEIPT_PATH"
+)"
+ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256="$(
+  jq -er '.royalty_release_history_receipt_sha256' \
+    <<<"$ROYALTY_H_CREATE_RECEIPT"
+)"
+
+node "$ROOT/scripts/royalty-release-history-receipt.mjs" verify \
+  --repository-root "$ROOT" \
+  --source-manifest "$DEPLOYMENT_MANIFEST_PATH" \
+  --ledger "$RELEASE_CEREMONY_LEDGER_PATH" \
+  --evidence-root "$RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT" \
+  --lock-root "$RELEASE_CEREMONY_LOCK_ROOT" \
+  --release-sha "$RELEASE_SHA" \
+  --deployment-intent-sha256 "$DEPLOYMENT_INTENT_SHA256" \
+  --reviewer-genesis-acceptance-sha256 \
+    "$OPERATOR_POLICY_REVIEWER_GENESIS_ACCEPTANCE_SHA256" \
+  --tinker-account-binding-ceremony-receipt-sha256 \
+    "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
+  --input "$ROYALTY_RELEASE_FINALIZED_HISTORY_EVIDENCE_PATH" \
+  --in "$ROYALTY_RELEASE_HISTORY_RECEIPT_PATH" \
+  --expected-royalty-release-history-receipt-sha256 \
+    "$ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256"
+```
+
+H is produced before, and is an input to, the new final-authority v4 and its
+separately signed C/O/D authority envelope. Neither the collector nor the H
+materializer accepts C, O, D, final-v4, or a settlement binding as input. The
+prescription and signed reviewer plan remain the only pre-ceremony authority.
+A future H or final-v4 must never authorize the transactions whose history
+it records.
+After the normal authority pipeline has produced the new reviewed final-v4 and
+the canonical settlement binding from H, reconcile all four artifacts:
+
+```bash
+node "$ROOT/⚙️/tinker-delegate/contracts/scripts/royalty-release-phase-plan.mjs" \
+  reconcile \
+  --final-release-authority-v4 "$FINAL_RELEASE_AUTHORITY_CORE_PATH" \
+  --royalty-release-history-receipt \
+    "$ROYALTY_RELEASE_HISTORY_RECEIPT_PATH" \
+  --royalty-release-prescription \
+    "$ROYALTY_RELEASE_PRESCRIPTIVE_AUTHORITY_PATH" \
+  --royalty-settlement-release-binding \
+    "$ROYALTY_SETTLEMENT_RELEASE_BINDING_PATH"
+```
+
+If finalization left a pending journal, first use
+`release-ceremony-lock.mjs recover` with the current two-reviewer recovery
+authority, reviewer genesis/acceptance, and genesis anchor proof. Preserve the
+resulting lock-recovery receipt. Then acquire a new lock with writer
+`ceremony_ledger_recovery` and invoke `release-ceremony-ledger-cli.mjs recover`
+with that receipt's absolute path and digest plus the separately produced
+dual-RPC on-chain signer/nonce/finalized-state reconciliation digest. Release
+the new recovery lock only after recovery returns successfully. These three
+external evidence inputs are mandatory; `recover` cannot be used as an
+unsigned journal-clearing shortcut.
+
 The fresh DiligenceRoom result ABI is
 `submitResult(uint256,ScoreBand,uint256,bytes32,uint256,bytes)`: deal ID, bounded
 score band, public compute tariff, compose hash, authorization expiry, and

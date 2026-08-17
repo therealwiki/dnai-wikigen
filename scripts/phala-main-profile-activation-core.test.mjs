@@ -69,7 +69,7 @@ test("production profile policy is a complete four-transition replacement sequen
   );
   assert.equal(
     CVM_MAIN_LIVE_DEAL_PROFILE_POLICY.compose_profiles_value,
-    "arena-runtime,compute-execution,deal-settlement,review-operations",
+    "arena-runtime,collaboration-execution,compute-execution,deal-settlement,review-operations",
   );
 });
 

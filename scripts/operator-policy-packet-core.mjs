@@ -670,6 +670,17 @@ export function validateDeploymentIntentCore(intent) {
     );
   }
   if (
+    typeof operatorAddress === "string"
+    && typeof computeDeveloper === "string"
+    && operatorAddress === computeDeveloper
+  ) {
+    addError(
+      errors,
+      "$.staticContractInputs.computeCreditVault.developer",
+      "must be distinct from the deployment operator",
+    );
+  }
+  if (
     typeof computeDeveloper === "string"
     && typeof diligenceGovernanceController === "string"
     && computeDeveloper === diligenceGovernanceController

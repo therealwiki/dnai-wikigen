@@ -1245,6 +1245,7 @@ function deploymentRoleSeparation(deploymentIntent) {
   return {
     deploymentRoleAddresses: [...new Set([
       deploymentIntent.deploymentControl.operatorAddress,
+      deploymentIntent.staticContractInputs.diligenceRoom.governanceController,
       deploymentIntent.staticContractInputs.computeCreditVault.developer,
     ])].sort(),
     deploymentRoleControllerIds: [

@@ -14,7 +14,10 @@ import {
   canonicalFinalReleaseAuthorityCoreArtifactText,
   finalReleaseAuthorityCoreDigest,
 } from "./execution-policy-release-core.mjs";
-import { knownVector } from "./execution-policy-release-core.fixture.mjs";
+import {
+  knownVector,
+  rebindKnownVectorV4AuthorityFixture,
+} from "./execution-policy-release-core.fixture.mjs";
 import {
   canonicalArtifactSha256,
   canonicalArtifactText,
@@ -115,8 +118,8 @@ function reviewedProjectionFixture(directory, { delegateUrl } = {}) {
     intent.numericPolicy.qvl[name] = validQvlPolicy();
   }
 
+  const deploymentIntentSha256 = canonicalArtifactSha256(intent);
   const authority = knownVector();
-  authority.deployment_intent_sha256 = canonicalArtifactSha256(intent);
   authority.cvm.app_id = "a".repeat(40);
   if (delegateUrl) authority.cvm.delegate_url = delegateUrl;
   const legacyBinding =
@@ -130,7 +133,7 @@ function reviewedProjectionFixture(directory, { delegateUrl } = {}) {
 
   const launch = createDraftCvmLaunchIntentCore();
   launch.release_sha = intent.release.releaseSha;
-  launch.deployment_intent_sha256 = canonicalArtifactSha256(intent);
+  launch.deployment_intent_sha256 = deploymentIntentSha256;
   launch.contract_deployment_receipt_sha256 = `sha256:${"a1".repeat(32)}`;
   launch.topology_sha256 = `sha256:${"a2".repeat(32)}`;
   launch.image_release_manifest_sha256 = `sha256:${"a3".repeat(32)}`;
@@ -146,9 +149,10 @@ function reviewedProjectionFixture(directory, { delegateUrl } = {}) {
       (index + 1).toString(16).repeat(64);
   });
   const launchDigest = cvmLaunchIntentCoreDigest(launch);
-  authority.cvm_launch_intent_sha256 = `sha256:${launchDigest}`;
-  authority.execution_policy.rollback_anchor_target.writer_release_commitment =
-    `0x${launchDigest}`;
+  rebindKnownVectorV4AuthorityFixture(authority, {
+    deploymentIntentSha256,
+    cvmLaunchIntentSha256: `sha256:${launchDigest}`,
+  });
 
   const finalAuthoritySha256 =
     `sha256:${finalReleaseAuthorityCoreDigest(authority)}`;

@@ -170,8 +170,9 @@ export function reviewerControllerSetSha256(value) {
 /**
  * Normalize the release-scoped finite reviewer inventory and its independent
  * two-guardian status root. When deployment identities are known, callers must
- * pass their canonical sorted address/controller sets so guardian separation is
- * checked transitively instead of being asserted by this artifact itself.
+ * pass their canonical sorted address/controller sets so reviewer and guardian
+ * separation is checked transitively instead of being asserted by this
+ * artifact itself.
  */
 export function normalizeReleaseReviewerAuthorityGenesis(value, {
   deploymentRoleAddresses,
@@ -208,6 +209,14 @@ export function normalizeReleaseReviewerAuthorityGenesis(value, {
     controllerId,
     "deployment role controller IDs",
   );
+  const reviewerAddresses = reviewers.flatMap(
+    (entry) => entry.preauthorized_addresses,
+  );
+  const reviewerControllerIds = reviewers.map((entry) => entry.controller_id);
+  if (reviewerAddresses.some((entry) => roleAddresses.has(entry))
+    || reviewerControllerIds.some((entry) => roleControllerIds.has(entry))) {
+    fail("reviewer keys and controllers must be distinct from supplied deployment-role identities");
+  }
   const guardians = normalizeStatusGuardians(parsed.status_guardians, {
     reviewerControllers: reviewers,
     deploymentRoleAddresses: roleAddresses,

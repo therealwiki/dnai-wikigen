@@ -36,6 +36,7 @@ const DECIMAL = /^(?:0|[1-9][0-9]{0,77})$/;
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 const ZERO_SHA256 = `sha256:${"0".repeat(64)}`;
+const MAX_ACCOUNT_NONCE = (1n << 64n) - 2n;
 
 function fail(message) {
   throw new TypeError(message);
@@ -81,6 +82,14 @@ function sha256(value, label) {
     fail(`${label} must be a nonzero SHA-256 pin`);
   }
   return value;
+}
+
+function transactionNonce(value, label) {
+  const normalized = decimal(value, label);
+  if (BigInt(normalized) > MAX_ACCOUNT_NONCE) {
+    fail(`${label} exceeds the Ethereum account-nonce protocol limit`);
+  }
+  return normalized;
 }
 
 function address(value, label, { allowZero = false } = {}) {
@@ -219,7 +228,7 @@ function normalizeTransaction(value) {
     transaction_index: integer(parsed.transaction_index, "royalty mutation index"),
     from: address(parsed.from, "royalty mutation signer"),
     to: address(parsed.to, "royalty mutation destination"),
-    nonce: decimal(parsed.nonce, "royalty mutation nonce"),
+    nonce: transactionNonce(parsed.nonce, "royalty mutation nonce"),
     value_wei: decimal(parsed.value_wei, "royalty mutation value"),
     input_sha256: sha256(parsed.input_sha256, "royalty mutation calldata digest"),
     gas_limit: gasLimit,
@@ -523,6 +532,9 @@ function normalizeMutation(value, {
     || primaryTransaction.to !== primaryReceipt.to
     || primaryTransaction.block_number !== primaryBlock.block_number
     || primaryTransaction.block_hash !== primaryBlock.block_hash
+    || BigInt(primaryReceipt.gas_used) > BigInt(primaryTransaction.gas_limit)
+    || BigInt(primaryTransaction.gas_limit) > BigInt(primaryBlock.gas_limit)
+    || BigInt(primaryReceipt.cumulative_gas_used) > BigInt(primaryBlock.gas_used)
     || primaryBlock.block_number > commonFinalizedState.primary_rpc_block.block_number) {
     fail(`royalty ${operation} dual-RPC mutation evidence is invalid`);
   }

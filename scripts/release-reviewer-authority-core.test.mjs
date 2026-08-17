@@ -242,6 +242,27 @@ test("pure core preserves the existing genesis/status/acceptance bytes and known
   );
 });
 
+test("pure core and facade reject reviewer reuse of deployment-role identities", () => {
+  const core = genesis();
+  const overlappingOptions = {
+    deploymentRoleAddresses: [
+      core.reviewer_controllers[0].preauthorized_addresses[0],
+    ],
+    deploymentRoleControllerIds: [
+      core.reviewer_controllers[1].controller_id,
+    ],
+  };
+  for (const implementation of [pure, genesisFacade]) {
+    assert.throws(
+      () => implementation.normalizeReleaseReviewerAuthorityGenesis(
+        core,
+        overlappingOptions,
+      ),
+      /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
+    );
+  }
+});
+
 test("historical reconstruction requires every external pin and returns replay evidence separately from wire signatures", async () => {
   const core = genesis();
   const status = await currentStatus(core);

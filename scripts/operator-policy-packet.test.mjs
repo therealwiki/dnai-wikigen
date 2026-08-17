@@ -42,6 +42,10 @@ import {
   canonicalFinalReleaseAuthorityCoreArtifactText,
   normalizeFinalReleaseAuthorityCore,
 } from "./execution-policy-release-core.mjs";
+import {
+  royaltyReleasePolicyCommitment,
+  royaltyReleaseStateSha256,
+} from "./royalty-release-authority-core.mjs";
 import { knownVector } from "./execution-policy-release-core.fixture.mjs";
 import {
   canonicalCvmLaunchIntentCoreArtifactText,
@@ -133,7 +137,7 @@ function validQvlPolicy() {
   };
 }
 
-function validIntent() {
+function validIntent({ computeDeveloper = address(30) } = {}) {
   const intent = createDraftDeploymentIntentCore();
   intent.release.releaseSha = "a".repeat(40);
   intent.release.reviewerAuthorityGenesisAcceptanceSha256 = `sha256:${"91".repeat(32)}`;
@@ -142,7 +146,7 @@ function validIntent() {
   intent.deploymentControl.controllerId = "operator-control-01";
   intent.deploymentControl.operatorAddress = address(1);
   intent.staticContractInputs.diligenceRoom.governanceController = address(29);
-  intent.staticContractInputs.computeCreditVault.developer = address(30);
+  intent.staticContractInputs.computeCreditVault.developer = computeDeveloper;
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment = bytes32(3);
   intent.numericPolicy.contract = {
     computeDeveloperFeeBps: 100,
@@ -193,6 +197,18 @@ test("deployment intent freezes the exact seven-CVM topology and five QVL budget
   assert.match(
     rejected.errors.map(({ message }) => message).join("\n"),
     /must equal the canonical ordered list|must contain exactly the documented fields/,
+  );
+});
+
+test("deployment intent rejects every deployment-role address collapse", () => {
+  const operatorDeveloperOverlap = validIntent();
+  operatorDeveloperOverlap.staticContractInputs.computeCreditVault.developer =
+    operatorDeveloperOverlap.deploymentControl.operatorAddress;
+  const result = validateDeploymentIntentCore(operatorDeveloperOverlap);
+  assert.equal(result.ok, false);
+  assert.match(
+    errorText(result),
+    /staticContractInputs\.computeCreditVault\.developer.*distinct from the deployment operator/,
   );
 });
 
@@ -361,8 +377,8 @@ function validFreshContractDeploymentReceipt(
   };
 }
 
-function validLaunchReviewContext() {
-  const deploymentIntent = validIntent();
+function validLaunchReviewContext({ computeDeveloper } = {}) {
+  const deploymentIntent = validIntent({ computeDeveloper });
   const tinkerAccountBindingCeremonyReceipt =
     validTinkerAccountBindingCeremonyReceipt(deploymentIntent);
   const freshContractDeploymentReceipt = validFreshContractDeploymentReceipt(
@@ -393,7 +409,9 @@ function validLaunchReviewContext() {
 }
 
 function validFinalReviewContext() {
-  const { launch, dependencies: launchDependencies } = validLaunchReviewContext();
+  const { launch, dependencies: launchDependencies } = validLaunchReviewContext({
+    computeDeveloper: address(50),
+  });
   const finalAuthority = knownVector();
   const deploymentIntent = launchDependencies.deploymentIntent;
   finalAuthority.release_sha = deploymentIntent.release.releaseSha;
@@ -403,8 +421,58 @@ function validFinalReviewContext() {
   finalAuthority.operator_address = deploymentIntent.deploymentControl.operatorAddress;
   finalAuthority.deployment_intent_sha256 = canonicalArtifactSha256(deploymentIntent);
   finalAuthority.cvm_launch_intent_sha256 = `sha256:${cvmLaunchIntentCoreDigest(launch)}`;
+  finalAuthority.shared_release_lineage.release_sha = finalAuthority.release_sha;
+  finalAuthority.shared_release_lineage.deployment_intent_sha256 =
+    finalAuthority.deployment_intent_sha256;
+  finalAuthority.shared_release_lineage.cvm_launch_intent_sha256 =
+    finalAuthority.cvm_launch_intent_sha256;
+  finalAuthority.collaboration_execution.release_sha = finalAuthority.release_sha;
+  finalAuthority.royalty_settlement_release_binding_template
+    .deployment_intent_sha256 = finalAuthority.deployment_intent_sha256;
   finalAuthority.execution_policy.rollback_anchor_target.writer_release_commitment =
     `0x${cvmLaunchIntentCoreDigest(launch)}`;
+  finalAuthority.royalty_release_authority.anchor_writer_release_commitment =
+    finalAuthority.execution_policy.rollback_anchor_target
+      .writer_release_commitment;
+  finalAuthority.royalty_release_authority.release_policy_commitment =
+    royaltyReleasePolicyCommitment({
+      chainId: finalAuthority.royalty_release_authority.chain_id,
+      distributorAddress:
+        finalAuthority.royalty_release_authority.distributor_address,
+      authorityNonce: finalAuthority.royalty_release_authority.authority_nonce,
+      settlementVerifier:
+        finalAuthority.royalty_release_authority.settlement_verifier,
+      qvlVerifier: finalAuthority.royalty_release_authority.qvl_verifier,
+      executionPolicyAnchor:
+        finalAuthority.royalty_release_authority.execution_policy_anchor,
+      anchorWriterReleaseCommitment:
+        finalAuthority.royalty_release_authority
+          .anchor_writer_release_commitment,
+    });
+  finalAuthority.royalty_release_active_state
+    .anchor_writer_release_commitment =
+      finalAuthority.royalty_release_authority
+        .anchor_writer_release_commitment;
+  finalAuthority.royalty_release_active_state.release_policy_commitment =
+    finalAuthority.royalty_release_authority.release_policy_commitment;
+  finalAuthority.royalty_release_active_state
+    .computed_release_policy_commitment =
+      finalAuthority.royalty_release_authority.release_policy_commitment;
+  finalAuthority.royalty_release_active_state_sha256 =
+    royaltyReleaseStateSha256(
+      finalAuthority.royalty_release_active_state,
+      {
+        authority: finalAuthority.royalty_release_authority,
+        phase: "phase_two_active",
+      },
+    );
+  finalAuthority.royalty_settlement_release_binding_template
+    .anchor_writer_release_commitment =
+      finalAuthority.royalty_release_authority
+        .anchor_writer_release_commitment;
+  finalAuthority.royalty_settlement_release_binding_template
+    .release_policy_commitment =
+      finalAuthority.royalty_release_authority.release_policy_commitment;
   finalAuthority.contracts.compute_credit_vault.developer =
     deploymentIntent.staticContractInputs.computeCreditVault.developer;
   finalAuthority.contracts.compute_credit_vault.developer_fee_bps =

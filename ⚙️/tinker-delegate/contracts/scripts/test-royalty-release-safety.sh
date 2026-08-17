@@ -12,6 +12,10 @@ MANIFEST_FILTER="$SCRIPT_DIR/update-royalty-release-manifest.jq"
 GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 INITIALIZER="$SCRIPT_DIR/initialize-release-ceremony-ledger.sh"
 LEDGER_CLI="$ROOT_DIR/scripts/release-ceremony-ledger-cli.mjs"
+FINALIZED_HISTORY_COLLECTOR="$ROOT_DIR/scripts/royalty-release-finalized-history-evidence.mjs"
+FINALIZED_HISTORY_COLLECTOR_TEST="$ROOT_DIR/scripts/royalty-release-finalized-history-evidence.test.mjs"
+H_CLI="$ROOT_DIR/scripts/royalty-release-history-receipt.mjs"
+H_CLI_TEST="$ROOT_DIR/scripts/royalty-release-history-receipt.test.mjs"
 RUNBOOK="$SCRIPT_DIR/../../docs/DEPLOYMENT-RUNBOOK.md"
 
 for path in \
@@ -24,6 +28,10 @@ for path in \
   "$GUARD" \
   "$INITIALIZER" \
   "$LEDGER_CLI" \
+  "$FINALIZED_HISTORY_COLLECTOR" \
+  "$FINALIZED_HISTORY_COLLECTOR_TEST" \
+  "$H_CLI" \
+  "$H_CLI_TEST" \
   "$RUNBOOK"; do
   if [ ! -f "$path" ]; then
     echo "Missing Royalty release safety input: $path" >&2
@@ -34,7 +42,82 @@ done
 bash -n "$HELPER"
 bash -n "$GUARD"
 bash -n "$INITIALIZER"
+node --check "$FINALIZED_HISTORY_COLLECTOR"
+node --check "$H_CLI"
 node --test "$LEDGER_BINDING_TEST"
+
+for required in \
+  'replayReleaseCeremonyLedgerRevisionChain' \
+  'replay.finalized !== true || replay.ledger_mode !== "0444"' \
+  'BASE_SEPOLIA_RPC_URL' \
+  'BASE_SEPOLIA_SECONDARY_RPC_URL' \
+  'ROYALTY_HISTORY_CONFIGURATION_GETTERS' \
+  'latest_state_recheck_sha256' \
+  'dnai.base-sepolia-royalty-finalized-history-evidence.v1' \
+  'observed_dual_archive_rpc_finalized_history_not_signed_live_authority'; do
+  if ! grep -Fq -- "$required" "$FINALIZED_HISTORY_COLLECTOR"; then
+    echo "Royalty finalized-history collector is missing safety binding: $required" >&2
+    exit 1
+  fi
+done
+
+for required in \
+  'canonicalRoyaltyReleaseHistoryReceiptText' \
+  'projectRoyaltyReleaseHistoryReceipt' \
+  'verifyRoyaltyFinalizedHistoryEvidenceAgainstFrozenLedger' \
+  '"--repository-root", "--source-manifest", "--ledger", "--evidence-root"' \
+  'production evidence did not project canonical Royalty H v2' \
+  'fs.constants.O_NOFOLLOW' \
+  'fs.linkSync(staging, filePath)' \
+  'canonical_h_structure_digest_and_replayed_frozen_ledger_lineage_verified_not_fresh_rpc_or_signed_live_authority' \
+  'finalized_history_evidence_sha256' \
+  'raw_finalized_history_evidence_sha256' \
+  'canonical_royalty_release_history_receipt_v2_written_create_only' \
+  'canonical_royalty_release_history_receipt_v2_verified'; do
+  if ! grep -Fq -- "$required" "$H_CLI"; then
+    echo "Royalty H materializer is missing safety binding: $required" >&2
+    exit 1
+  fi
+done
+
+if grep -Eq -- '--(rpc-url|primary-rpc|secondary-rpc)([[:space:]]|$)' \
+  "$FINALIZED_HISTORY_COLLECTOR"; then
+  echo "Royalty finalized-history RPC credentials must come only from the fixed environment variables." >&2
+  exit 1
+fi
+if grep -Eqi -- '--private-key|--account|cast[[:space:]]+wallet|forge[[:space:]]+script|FINAL_RELEASE_AUTHORITY_CORE_PATH|final-release-authority-v4' \
+  "$FINALIZED_HISTORY_COLLECTOR" "$H_CLI"; then
+  echo "Royalty H collection/materialization must not depend on a wallet, Forge broadcast, or post-ceremony final-v4 authority." >&2
+  exit 1
+fi
+
+for required in \
+  '"initialize", "replay", "commit", "finalize", "recover"' \
+  'finalizeReleaseCeremonyLedger' \
+  'recoverPendingReleaseCeremonyLedgerOperation' \
+  '--lock-recovery-receipt' \
+  '--onchain-signer-nonce-finalized-state-reconciliation-sha256'; do
+  if ! grep -Fq -- "$required" "$LEDGER_CLI"; then
+    echo "Release ceremony ledger CLI is missing finalization/recovery binding: $required" >&2
+    exit 1
+  fi
+done
+
+for required in \
+  'royalty-release-finalized-history-evidence.mjs" collect' \
+  'royalty-release-history-receipt.mjs" create' \
+  'royalty-release-history-receipt.mjs" verify' \
+  'release-ceremony-ledger-cli.mjs" finalize' \
+  'royalty-release-phase-plan.mjs"' \
+  '  reconcile \' \
+  'H is produced before, and is an input to, the new final-authority v4' \
+  'must never authorize the transactions whose history' \
+  'it records.'; do
+  if ! grep -Fq -- "$required" "$RUNBOOK"; then
+    echo "Royalty runbook is missing post-ceremony H boundary: $required" >&2
+    exit 1
+  fi
+done
 
 for required in \
   'fs.realpathSync.native(filePath)' \

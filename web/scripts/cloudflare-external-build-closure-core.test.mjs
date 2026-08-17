@@ -1947,11 +1947,11 @@ test("real checked-in external bytes match the final release projection KAT", as
   assert.equal(closure.files.length, 67);
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:8600a270a0e9d607702df40ad2924449efae05ec2957fb33a7c01952eaea0ff6",
+    "sha256:f93801e84c9f0be119a80ef1269b38b5897cc0e1ee7afafbc4926d89a3187c0b",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:4f9c6205c265773bb1ed923efeb11e7439ee6ab1f94519b95176a85a781e286f",
+    "sha256:5900256a93f17b05aa86e6ae824bd4e575771b6fe51330a538fc024a16ca6aa2",
   );
   assert.deepEqual(closureTest.MODULE_ENTRYPOINT_PATHS, [
     "scripts/canonical-authority-graph.mjs",

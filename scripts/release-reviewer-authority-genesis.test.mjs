@@ -150,3 +150,31 @@ test("guardian identities are two-of-two and separated from reviewers and suppli
     /distinct from supplied deployment-role/,
   );
 });
+
+test("reviewer identities are separated from supplied deployment roles", () => {
+  const addressOverlap = genesis();
+  addressOverlap.reviewer_controllers[0].preauthorized_addresses[0] =
+    addressOf(DEPLOYMENT_ACCOUNT);
+  addressOverlap.reviewer_controllers[0].preauthorized_addresses.sort();
+  addressOverlap.reviewer_controller_set_sha256 = reviewerControllerSetSha256(
+    addressOverlap.reviewer_controllers,
+  );
+  assert.throws(
+    () => normalizeReleaseReviewerAuthorityGenesis(addressOverlap, {
+      deploymentRoleAddresses: [addressOf(DEPLOYMENT_ACCOUNT)],
+      deploymentRoleControllerIds: ["deployment-operator"],
+    }),
+    /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
+  );
+
+  const controllerOverlap = genesis();
+  assert.throws(
+    () => normalizeReleaseReviewerAuthorityGenesis(controllerOverlap, {
+      deploymentRoleAddresses: [addressOf(DEPLOYMENT_ACCOUNT)],
+      deploymentRoleControllerIds: [
+        controllerOverlap.reviewer_controllers[0].controller_id,
+      ],
+    }),
+    /reviewer keys and controllers must be distinct from supplied deployment-role identities/,
+  );
+});

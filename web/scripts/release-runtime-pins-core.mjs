@@ -31,8 +31,8 @@ export const PINNED_NODE_HOMEBREW_DYLIBS = Object.freeze([
   ["/opt/homebrew/Cellar/libnghttp3/1.12.0/lib/libnghttp3.9.4.0.dylib", 0o444, 199_376, "7207ada46a256dfabd3693837044bb06e9dbe82425183b037e69919e4ac10c85"],
   ["/opt/homebrew/Cellar/libngtcp2/1.16.0/lib/libngtcp2.16.dylib", 0o444, 344_704, "9ef6db487c21e94f32b9832e7bb8b30450aee2ff2968a07c8ed1cfcda6cc17df"],
   ["/opt/homebrew/Cellar/libuv/1.51.0/lib/libuv.1.0.0.dylib", 0o444, 206_000, "b8ce5e8e33c51db3a2d5ec5e21624b0116dde85b72bef5ce6a49279062b181b6"],
-  ["/opt/homebrew/Cellar/openssl@3/3.6.2/lib/libcrypto.3.dylib", 0o444, 4_845_712, "ef2239cec921003b54b61968f00489271e2a2805d7d1b4e69d632423f38efe1e"],
-  ["/opt/homebrew/Cellar/openssl@3/3.6.2/lib/libssl.3.dylib", 0o444, 884_560, "26ecfd43c742914a142c8b414b1f308cefe0531fcc6e38b6d45021649850e758"],
+  ["/opt/homebrew/Cellar/openssl@3/3.6.3/lib/libcrypto.3.dylib", 0o444, 4_856_256, "a12805a18cd5e4f733fa8727b91afa08b587f9da5a760517cd79cb508a3a3f71"],
+  ["/opt/homebrew/Cellar/openssl@3/3.6.3/lib/libssl.3.dylib", 0o444, 872_080, "ffd8ac6981000def0928367924b6cb1e7a98712efbc06e2a2f3f750138bd89ca"],
   ["/opt/homebrew/Cellar/simdjson/3.13.0/lib/libsimdjson.26.0.0.dylib", 0o444, 112_448, "ae963b3fb0b996afdfb1f6c22ef16b32ab26613151e32eda2554189403758538"],
   ["/opt/homebrew/Cellar/sqlite/3.53.1/lib/libsqlite3.3.53.1.dylib", 0o444, 1_270_336, "e25fd720937eaeba7bc831164fb1a6d0b03430bec9524b153906189afcc09e1e"],
   ["/opt/homebrew/Cellar/uvwasi/0.0.23/lib/libuvwasi.dylib", 0o444, 83_232, "c922288c5179279316b32b2c83d5c50d7b87216b442473ada8c99ef4a58ba312"],
@@ -45,7 +45,7 @@ export const PINNED_NODE_HOMEBREW_DYLIBS = Object.freeze([
   sha256,
 })));
 export const PINNED_NODE_DYLIB_CLOSURE_SHA256 =
-  "89b882767a822b96a856e3205d4bcfc316c44766373299b3c92b3ee00890f4ef";
+  "9d7a826fa8ec4a1f1a2d3d4f3b0f02e36312440234cd4ce45f9581a6771721c7";
 
 export const PINNED_NPM_RUNTIME = Object.freeze({
   version: "11.6.0",
