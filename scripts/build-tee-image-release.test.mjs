@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,30 @@ const SOURCE_REPOSITORY = "therealwiki/dnai-wikigen";
 const SOURCE_REF = "refs/heads/main";
 const SIGNER_WORKFLOW = `${SOURCE_REPOSITORY}/.github/workflows/build-tee-images.yml`;
 const GENERATED_AT = "2026-07-15T12:00:00.000Z";
+
+test("workflow uploads the canonical SBOM filename under the existing outer artifact name", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/build-tee-images.yml", import.meta.url), "utf8");
+  const step = (name) => {
+    const matches = workflow.split(/^      - name: /m).filter((block) => block.startsWith(`${name}\n`));
+    assert.equal(matches.length, 1, `expected exactly one ${name} step`);
+    return matches[0];
+  };
+  const generate = step("Generate SPDX SBOM");
+  const upload = step("Upload canonical SPDX SBOM");
+  const download = step("Download exact SPDX SBOMs");
+  const attest = step("Generate GitHub SBOM attestation");
+  assert.match(generate, /^          output-file: \$\{\{ matrix\.name \}\}\.spdx\.json$/m);
+  assert.match(generate, /^          upload-artifact: false$/m);
+  assert.match(upload, /^        uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02(?: #.*)?$/m);
+  assert.match(upload, /^          name: \$\{\{ matrix\.name \}\}-sbom\.spdx\.json$/m);
+  assert.match(upload, /^          path: \$\{\{ matrix\.name \}\}\.spdx\.json$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.match(upload, /^          retention-days: 90$/m);
+  assert.match(download, /^          pattern: "\*-sbom\.spdx\.json"$/m);
+  assert.match(download, /^          merge-multiple: true$/m);
+  assert.match(attest, /^          sbom-path: \$\{\{ matrix\.name \}\}\.spdx\.json$/m);
+  assert.ok(workflow.indexOf("name: Generate SPDX SBOM") < workflow.indexOf("name: Upload canonical SPDX SBOM"));
+});
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "dnai-tee-image-release-"));
@@ -199,6 +223,14 @@ test("release aggregation verifies the exact five downloaded SPDX artifacts", as
   };
   const name = IMAGE_NAMES[0];
   const sbomPath = path.join(sboms, `${name}.spdx.json`);
+
+  // Anchore's automatic uploader used this ZIP member name even though the
+  // descriptor and attestation referenced the unchanged canonical file.
+  const legacyArchivePath = path.join(sboms, `${name}-sbom.spdx.json`);
+  await rename(sbomPath, legacyArchivePath);
+  await assert.rejects(createReleaseManifest(input), /exactly the five canonical regular SPDX JSON files/);
+  await rename(legacyArchivePath, sbomPath);
+  await assert.doesNotReject(createReleaseManifest(input));
 
   await writeFile(sbomPath, JSON.stringify({
     spdxVersion: "SPDX-2.3",
