@@ -1,4 +1,4 @@
-"""Evaluator agents — stub for testing + real SFT evaluator using Tinker SDK.
+"""Evaluator agents — local stub plus research-only SFT evaluator code.
 
 The evaluator is the buyer's agent (A_B from the NDAI paper). It receives
 the seller's artifact and an IsolatedTinkerSession, then:
@@ -7,18 +7,30 @@ the seller's artifact and an IsolatedTinkerSession, then:
 3. Benchmarks the fine-tuned model against the base model
 4. Returns raw metrics (the control plane bounds the output)
 
-The control plane calls bound_output() on the raw metrics before they
-leave the TEE — the evaluator never decides what leaves the boundary.
+The control plane calls bound_output() on raw metrics before returning a
+result. The current SFT implementation nevertheless sends artifact-derived
+tokens to an external provider, so the runtime resolver never selects it.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from tinker_delegate.config import Settings
     from tinker_delegate.session import IsolatedTinkerSession
+
+
+EvaluatorFn = Callable[..., Awaitable[dict]]
+
+
+class EvaluatorUnavailable(RuntimeError):
+    """Raised when no evaluator is valid for the current custody boundary."""
+
+
+_EVALUATOR_UNAVAILABLE = "deal evaluator is unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +328,55 @@ async def sft_evaluate(
             f"LoRA fine-tune on {base_model}. No training loss recorded."
         ),
     }
+
+
+def resolve_deal_evaluator(
+    settings: Settings,
+    *,
+    evaluator_policy_commitment: str = "",
+    dstack_enabled: bool | None = None,
+    simulator_endpoint: str | None = None,
+) -> EvaluatorFn:
+    """Resolve the configured evaluator without weakening its trust label.
+
+    ``stub`` is useful for deterministic local integration tests, but accepting
+    it in dstack would let a deployment attach genuine TDX evidence to a
+    synthetic result. ``sft`` is retained as research/test code only: it sends
+    artifact-derived tokens to a non-attested external provider and therefore
+    cannot preserve the TEE boundary in any runtime mode. Unknown values are
+    already rejected by ``Settings``; the final branch remains defensive for
+    callers constructing settings-like test objects. Unavailable modes share a
+    fixed error so the resolver does not expose custody details.
+    """
+
+    if dstack_enabled is None:
+        from tinker_delegate.dstack_utils import is_dstack_enabled
+
+        dstack_enabled = is_dstack_enabled()
+    mode = str(settings.evaluator_mode).strip().lower()
+
+    if mode == "disabled":
+        raise EvaluatorUnavailable(_EVALUATOR_UNAVAILABLE)
+    if mode == "stub":
+        if dstack_enabled:
+            raise EvaluatorUnavailable(_EVALUATOR_UNAVAILABLE)
+        return stub_evaluate
+    if mode == "deterministic":
+        try:
+            from tinker_delegate.diligence_evaluator_registry import (
+                load_diligence_evaluator_registry,
+            )
+
+            registry = load_diligence_evaluator_registry(
+                settings.diligence_evaluator_release_manifest_path,
+                expected_manifest_sha256=(
+                    settings.diligence_evaluator_release_manifest_sha256
+                ),
+                expected_policy_set_root=settings.diligence_evaluator_policy_set_root,
+            )
+            return registry.resolve(evaluator_policy_commitment)
+        except (OSError, TypeError, ValueError) as exc:
+            raise EvaluatorUnavailable(_EVALUATOR_UNAVAILABLE) from exc
+    if mode == "sft":
+        raise EvaluatorUnavailable(_EVALUATOR_UNAVAILABLE)
+    raise EvaluatorUnavailable(_EVALUATOR_UNAVAILABLE)

@@ -15,7 +15,8 @@ from tinker_delegate.evaluator_sandbox import (  # noqa: E402
     EvaluatorSandboxOutcome,
     EvaluatorSandboxPolicy,
     SandboxedEvaluatorRunner,
-    _rlimit_preexec,
+    _RLIMIT_BOOTSTRAP,
+    _rlimit_environment,
     _rlimit_specs,
 )
 from tinker_delegate.fake_tinker_backend import FakeTinkerServiceClient  # noqa: E402
@@ -186,14 +187,14 @@ class EvaluatorSandboxResourceLimitTest(unittest.TestCase):
         specs = dict(_rlimit_specs(EvaluatorSandboxPolicy(max_address_space_bytes=2**30)))
         self.assertEqual(specs[resource.RLIMIT_AS], (2**30, 2**30))
 
-    def test_preexec_actually_applies_limits_in_a_child(self):
+    def test_child_bootstrap_actually_applies_limits(self):
         # Prove the limits take effect in a real child on this host, not just in
-        # the intended-spec table: spawn a subprocess under the same preexec_fn
-        # and have it report its own soft limits.
+        # the intended-spec table: run the exact child-owned bootstrap and have
+        # the process report its own soft limits.
         import resource
 
         policy = EvaluatorSandboxPolicy(cpu_seconds=5, max_file_bytes=4096, max_open_files=48)
-        probe = (
+        probe = _RLIMIT_BOOTSTRAP + (
             "import json, resource;"
             "print(json.dumps([resource.getrlimit(resource.RLIMIT_CPU)[0],"
             "resource.getrlimit(resource.RLIMIT_FSIZE)[0],"
@@ -203,7 +204,11 @@ class EvaluatorSandboxResourceLimitTest(unittest.TestCase):
             [sys.executable, "-S", "-c", probe],
             capture_output=True,
             text=True,
-            preexec_fn=_rlimit_preexec(policy),
+            env={
+                "PYTHONHASHSEED": "0",
+                "PYTHONIOENCODING": "utf-8",
+                **_rlimit_environment(policy),
+            },
             timeout=5,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -212,7 +217,7 @@ class EvaluatorSandboxResourceLimitTest(unittest.TestCase):
         self.assertEqual(fsize, 4096)
         self.assertEqual(nofile, 48)
 
-    def test_preexec_never_raises_an_existing_hard_cap(self):
+    def test_child_bootstrap_never_raises_an_existing_hard_cap(self):
         # If the policy nominally allows more open files than the host's hard
         # cap, the applied soft limit must stay within the hard cap.
         import resource
@@ -221,7 +226,7 @@ class EvaluatorSandboxResourceLimitTest(unittest.TestCase):
         if hard == resource.RLIM_INFINITY:
             self.skipTest("host has no finite NOFILE hard cap to test against")
         policy = EvaluatorSandboxPolicy(max_open_files=hard + 10_000)
-        probe = (
+        probe = _RLIMIT_BOOTSTRAP + (
             "import json, resource;"
             "print(json.dumps(list(resource.getrlimit(resource.RLIMIT_NOFILE))))"
         )
@@ -229,7 +234,11 @@ class EvaluatorSandboxResourceLimitTest(unittest.TestCase):
             [sys.executable, "-S", "-c", probe],
             capture_output=True,
             text=True,
-            preexec_fn=_rlimit_preexec(policy),
+            env={
+                "PYTHONHASHSEED": "0",
+                "PYTHONIOENCODING": "utf-8",
+                **_rlimit_environment(policy),
+            },
             timeout=5,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)

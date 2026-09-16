@@ -1,0 +1,54 @@
+{
+  "action_scope": [
+    "phala.nextAppIds.predict_exact_seven",
+    "phala.provisionCvm.prepare_exact_seven_supporting_then_main",
+    "phala.commitCvmProvision.bootstrap_exact_seven_supporting_then_main"
+  ],
+  "authorization_id": null,
+  "batch_id": null,
+  "bootstrap_public_environment_authority_sha256": null,
+  "chain_id": 84532,
+  "cvm_launch_intent_sha256": null,
+  "cvm_launch_review_receipt_sha256": null,
+  "deployment_intent_sha256": null,
+  "expires_at": null,
+  "forbidden_scope": [
+    "post_measurement_secret_activation",
+    "governance_release_ceremony",
+    "live_traffic",
+    "cloudflare_deploy"
+  ],
+  "fresh_contract_deployment_receipt_sha256": null,
+  "image_release_sigstore_verification_receipt_sha256": null,
+  "issued_at": null,
+  "production_target_authority_sha256": null,
+  "qvl_measurement_policy_set_sha256": null,
+  "release_sha": null,
+  "reviewer_root_hash": null,
+  "reviewer_set_sha256": null,
+  "reviewers": [
+    {
+      "address": null,
+      "controller_id": null
+    },
+    {
+      "address": null,
+      "controller_id": null
+    }
+  ],
+  "schema": "dnai.phala-nonlive-bootstrap-authorization.v3",
+  "sdk_wire_transform_staging_receipt_sha256": null,
+  "signature_scheme": "eip191_personal_sign_secp256k1_low_s_65_byte",
+  "signature_verifier": {
+    "build_profile": "maxperf",
+    "commit_sha": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2",
+    "executable_sha256": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d",
+    "executable_user_relative_path": ".foundry/bin/cast",
+    "tool": "cast wallet verify",
+    "version": "1.5.1-stable"
+  },
+  "signatures": [],
+  "signed_payload_sha256": null,
+  "status": "non_live_bootstrap_authorized",
+  "truth_status": "two_transitively_allowlisted_eip191_signatures_authorize_one_non_live_seven_cvm_bootstrap_batch_not_late_secrets_governance_live_traffic_or_cloudflare"
+}

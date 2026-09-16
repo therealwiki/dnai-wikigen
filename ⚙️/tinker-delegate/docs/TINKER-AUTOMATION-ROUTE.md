@@ -1,11 +1,13 @@
 # Tinker Automation Route
 
-Status: real local policy, partial deployment validation.
+Status: source/local policy is real; deployment observations are historical
+prior-operator evidence. The fresh project-owned release is undeployed.
 
 This document records the acceptable automation route for the TEE-owned Tinker
 account. It is a project control, not a legal conclusion or vendor approval.
-Production use still requires the deployed CVM probe, quote verification, and
-the compliance approvals tracked in `TODO.md`.
+Production use still requires a fresh project-owned CVM probe, independent
+challenge-v2 / verdict-v4 quote verification under the exact release lineage,
+and the compliance approvals tracked in `TODO.md`.
 
 ## Decision
 
@@ -43,11 +45,12 @@ and switch to an official/support-approved route or a manual funding route.
 
 ## Current Evidence
 
-- Local Neko/CDP automation works against the live Tinker auth flow as of
-  2026-07-08: email OTP arrives through the oracle, onboarding completes, and
-  API-key provisioning captures a one-time `tml-...` key.
-- Local billing automation reaches the Stripe Elements form and a Stripe test
-  card returns the bounded `card_declined` outcome.
+- Historical prior-operator/local evidence from 2026-07-08 reached the external
+  Tinker auth flow: email OTP arrived through the oracle, onboarding completed,
+  and API-key provisioning captured a one-time `tml-...` key. This does not
+  establish current account custody or fresh-release activation.
+- Historical local billing automation reached the Stripe Elements form and a
+  Stripe test card returned the bounded `card_declined` outcome.
 - Replayable mock-page tests cover auth, OTP entry, onboarding, API-key
   creation, billing, Stripe iframe selection, and add-balance controls.
 - Static tests reject common stealth, CAPTCHA-solving, rotating-proxy, and
@@ -57,7 +60,8 @@ and switch to an official/support-approved route or a manual funding route.
 ## Still Not Solved
 
 - The packaged Phala CVM browser posture has not been freshly validated.
-- The live deployed endpoint has not yet exercised encrypted card update or
-  add-balance after quote verification.
+- No fresh project-owned endpoint is deployed. The older prior-operator
+  endpoint did not establish a current encrypted card-update/add-balance path
+  under the fresh release lineage and independent quote-verification gates.
 - Production or repeated card funding is not approved by this document; see
   `STRIPE-PCI-FUNDING-SCOPE.md`.

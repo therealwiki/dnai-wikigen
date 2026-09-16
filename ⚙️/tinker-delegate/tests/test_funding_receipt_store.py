@@ -1,3 +1,5 @@
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +61,43 @@ class FundingReceiptStoreTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "raw_secret_egress=false"):
                 store.append(receipt)
+
+    def test_rejects_private_sentence_as_bounded_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = FundingReceiptStore(
+                str(Path(tmpdir) / "funding_receipts.enc"), key_hex="66" * 32
+            )
+            receipt = _receipt()
+            receipt["bounded_message"] = (
+                "Your card 4242424242424242 failed at https://stripe.example/private"
+            )
+
+            with self.assertRaisesRegex(ValueError, "must equal its outcome code"):
+                store.append(receipt)
+
+    def test_rejects_hash_that_does_not_match_bounded_projection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = FundingReceiptStore(
+                str(Path(tmpdir) / "funding_receipts.enc"), key_hex="77" * 32
+            )
+            receipt = _receipt()
+            receipt["amount_band"] = "5_25_usd"
+
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                store.append(receipt)
+
+    def test_load_fails_closed_on_encrypted_legacy_private_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "funding_receipts.enc"
+            store = FundingReceiptStore(str(path), key_hex="88" * 32)
+            receipt = _receipt()
+            receipt["bounded_message"] = "secret page sentence from a browser"
+            plaintext = json.dumps({"funding_receipts": [receipt]}).encode()
+            nonce = os.urandom(12)
+            path.write_bytes(nonce + store._aesgcm.encrypt(nonce, plaintext, None))
+
+            with self.assertRaisesRegex(ValueError, "must equal its outcome code"):
+                store.load()
 
 
 if __name__ == "__main__":

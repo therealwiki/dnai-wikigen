@@ -1,13 +1,17 @@
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tinker_delegate.compose_hash import (
     ComposeHashError,
     ComposeHashResult,
     ImageDigest,
+    _COMPOSE_CONFIG_TIMEOUT_SECONDS,
     _extract_digest_images,
     _parse_env_keys,
+    _run_compose_config,
     dump_app_compose,
     phala_compose_hash,
     verify_compose_hash,
@@ -15,6 +19,27 @@ from tinker_delegate.compose_hash import (
 
 
 class ComposeHashTest(unittest.TestCase):
+    def test_compose_config_subprocess_is_time_bounded_and_fails_closed(self):
+        compose = Path("/tmp/compose.yaml")
+        timeout = subprocess.TimeoutExpired(
+            cmd=["docker", "compose"],
+            timeout=_COMPOSE_CONFIG_TIMEOUT_SECONDS,
+        )
+
+        with patch(
+            "tinker_delegate.compose_hash.subprocess.check_output",
+            side_effect=timeout,
+        ) as check_output, self.assertRaisesRegex(
+            ComposeHashError,
+            "docker compose config timed out",
+        ):
+            _run_compose_config(compose, [], as_json=True)
+
+        self.assertEqual(
+            check_output.call_args.kwargs["timeout"],
+            _COMPOSE_CONFIG_TIMEOUT_SECONDS,
+        )
+
     def test_phala_hash_uses_sorted_preprocessed_manifest(self):
         app_compose = {
             "runner": "docker-compose",

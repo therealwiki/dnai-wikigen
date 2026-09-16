@@ -1,0 +1,161 @@
+{
+  "schema": "dnai.execution-policy-commitment-vectors.v1",
+  "vectors": [
+    {
+      "name": "pass-defaults-unicode",
+      "surface": "arena_execution",
+      "resource_id": "submission-unicode-7",
+      "bundle": {
+        "request": {
+          "request_id": "req-🧬-7",
+          "requester_ref": "agent://éclair",
+          "purpose": "rank-candidates",
+          "pipeline": "bounded-rerank-v1",
+          "data_classes": ["zeta", "βeta", "🧬-summary"],
+          "output_schema": "score-band-v1"
+        },
+        "policy": {
+          "policy_id": "policy-unicode",
+          "corpus_ref": "corpus://β-atlas",
+          "allowed_purposes": ["rank-candidates"],
+          "denied_purposes": [],
+          "allowed_pipelines": ["bounded-rerank-v1"],
+          "allowed_output_schemas": ["score-band-v1"],
+          "allowed_operations": ["score"],
+          "known_data_classes": ["🧬-summary", "zeta", "βeta"],
+          "restricted_categories": [],
+          "hold_categories": [],
+          "ambiguous_categories": [],
+          "hold_routes": {}
+        }
+      },
+      "expected": {
+        "canonicalization_version": "policy-kernel-canonicalization/v2",
+        "request_hash": "90b06a695661153a77061c442b7abd0f78f972961f00b831cb0076620da842ff",
+        "policy_hash": "26025a05fd95f63df0188e30aedeb64ac8b2b049b6fde56b76c85bb9812d5e93",
+        "resource_id_hash": "b5c2193d081b3252bf46e17960d02270bc55121f0407658ecb6b0f973cfa4d80",
+        "purpose_hash": "54cfedd7492b83f2b5372ea676a6050e86fa3f199906e52aa5d8e9ee87a9e3a9",
+        "pipeline_hash": "f87f3948b773cc4fafc2a9f8cb5a721a78cffdc6144a1efa9eb7d942ff0c259c",
+        "output_schema_hash": "760a3ef4aca52530db7a5a7e7fb565b982fc30e8794d85b9afe42244adca72db",
+        "corpus_ref_hash": "4d91945e85c0fc689031a2eae1296935dbae49d3e3808f750196ca6691903071",
+        "local_evaluation": {
+          "decision": "pass",
+          "stage": 4,
+          "reason_code": "policy_passed",
+          "routed_role": "",
+          "outcomes": [
+            {"stage": 1, "decision": "pass", "reason_code": "purpose_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 2, "decision": "pass", "reason_code": "pipeline_output_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 3, "decision": "pass", "reason_code": "categories_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 4, "decision": "pass", "reason_code": "policy_passed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []}
+          ]
+        }
+      }
+    },
+    {
+      "name": "hold-explicit-route",
+      "surface": "deal_evaluation",
+      "resource_id": "deal-policy-9",
+      "bundle": {
+        "request": {
+          "request_id": "req-hold-9",
+          "requester_ref": "agent://reviewer",
+          "purpose": "rank-candidates",
+          "pipeline": "bounded-rerank-v1",
+          "data_classes": ["bio-ambiguous", "assay-summary"],
+          "output_schema": "score-band-v1",
+          "operations": ["score", "compare"],
+          "risk_tags": ["novel-biology", "manual-review"]
+        },
+        "policy": {
+          "policy_id": "policy-hold",
+          "version": "policy-kernel/v1",
+          "corpus_ref": "corpus://holdout",
+          "allowed_purposes": ["rank-candidates"],
+          "denied_purposes": ["publish-raw"],
+          "allowed_pipelines": ["bounded-rerank-v1"],
+          "allowed_output_schemas": ["score-band-v1"],
+          "allowed_operations": ["compare", "score"],
+          "known_data_classes": ["bio-ambiguous", "assay-summary"],
+          "restricted_categories": [],
+          "hold_categories": [],
+          "ambiguous_categories": ["bio-ambiguous"],
+          "hold_routes": {"bio-ambiguous": "ethics-legal-reviewer"}
+        }
+      },
+      "expected": {
+        "canonicalization_version": "policy-kernel-canonicalization/v2",
+        "request_hash": "f0ecf88661f6e0a4d6857af7031d9b13a60a2cddc81ef3a77dadad57dd4b0a7c",
+        "policy_hash": "231f78aef8b91966d06146d011c7cbbb3f06650a9b12c16b0e3f88d81eb0b9de",
+        "resource_id_hash": "dee634e03116d6e4a9fc3202b14c062a78b8632708f4cba2782d36461cedf23c",
+        "purpose_hash": "54cfedd7492b83f2b5372ea676a6050e86fa3f199906e52aa5d8e9ee87a9e3a9",
+        "pipeline_hash": "f87f3948b773cc4fafc2a9f8cb5a721a78cffdc6144a1efa9eb7d942ff0c259c",
+        "output_schema_hash": "760a3ef4aca52530db7a5a7e7fb565b982fc30e8794d85b9afe42244adca72db",
+        "corpus_ref_hash": "a94416fc64eb17ae93fca3e383cc06beb317ef4a52b28fb13d123c2bb438a4b0",
+        "local_evaluation": {
+          "decision": "hold",
+          "stage": 3,
+          "reason_code": "review_required",
+          "routed_role": "ethics-legal-reviewer",
+          "outcomes": [
+            {"stage": 1, "decision": "pass", "reason_code": "purpose_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 2, "decision": "pass", "reason_code": "pipeline_output_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 3, "decision": "hold", "reason_code": "review_required", "routed_role": "ethics-legal-reviewer", "matched_category_count": 1, "matched_category_hashes": ["5d1545db5d9a8f610b9be52a9ccee04c476ee764f15f09fed0f0584d83406266"]}
+          ]
+        }
+      }
+    },
+    {
+      "name": "deny-operation-order-sensitive",
+      "surface": "compute_dispatch",
+      "resource_id": "compute-job-11",
+      "bundle": {
+        "request": {
+          "request_id": "req-deny-11",
+          "requester_ref": "agent://compute",
+          "purpose": "rank-candidates",
+          "pipeline": "bounded-rerank-v1",
+          "data_classes": ["assay-summary"],
+          "output_schema": "score-band-v1",
+          "operations": ["score", "export"],
+          "risk_tags": []
+        },
+        "policy": {
+          "policy_id": "policy-deny",
+          "version": "policy-kernel/v1",
+          "corpus_ref": "corpus://compute",
+          "allowed_purposes": ["rank-candidates"],
+          "denied_purposes": [],
+          "allowed_pipelines": ["bounded-rerank-v1"],
+          "allowed_output_schemas": ["score-band-v1"],
+          "allowed_operations": ["score"],
+          "known_data_classes": ["assay-summary"],
+          "restricted_categories": [],
+          "hold_categories": [],
+          "ambiguous_categories": [],
+          "hold_routes": {}
+        }
+      },
+      "expected": {
+        "canonicalization_version": "policy-kernel-canonicalization/v2",
+        "request_hash": "5b1e31ed03eccd135c2df18e7ae71d62fc2192768e9acfef5ffd365aab071553",
+        "policy_hash": "fb286207f33ed37e709fde691ca2365cc9776e041ee28d6629826ab8a3737ca2",
+        "resource_id_hash": "5fd7c3aacee796e2a96a184364af590c648932202a9daca222360dfed02d2d09",
+        "purpose_hash": "54cfedd7492b83f2b5372ea676a6050e86fa3f199906e52aa5d8e9ee87a9e3a9",
+        "pipeline_hash": "f87f3948b773cc4fafc2a9f8cb5a721a78cffdc6144a1efa9eb7d942ff0c259c",
+        "output_schema_hash": "760a3ef4aca52530db7a5a7e7fb565b982fc30e8794d85b9afe42244adca72db",
+        "corpus_ref_hash": "b4a60e8fbcac148a314a1a6da1cdcb3f9515dce6e0d09325fb66e069bdf8f596",
+        "local_evaluation": {
+          "decision": "deny",
+          "stage": 2,
+          "reason_code": "unsupported_operation",
+          "routed_role": "",
+          "outcomes": [
+            {"stage": 1, "decision": "pass", "reason_code": "purpose_allowed", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []},
+            {"stage": 2, "decision": "deny", "reason_code": "unsupported_operation", "routed_role": "", "matched_category_count": 0, "matched_category_hashes": []}
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -164,6 +164,7 @@ class ControlPlaneSourceGateTest(unittest.TestCase):
         cp._source_registry = registry
         cp._source_ref = source_ref
         cp._source_scope = scope
+        cp._enable_tinker_session = True
         # Stub session/service-client creation so we only test the gate.
         cp._create_service_client = lambda: object()
         return cp
@@ -181,14 +182,14 @@ class ControlPlaneSourceGateTest(unittest.TestCase):
         cp = self._make_cp(None)
         # No gate configured -> deal-funded proceeds (session created).
         with unittest.mock.patch("tinker_delegate.control_plane.IsolatedTinkerSession", lambda *a, **k: object()):
-            ctx = cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15)
+            ctx = cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15, "0x" + "ab" * 32)
         self.assertIsNotNone(ctx)
 
     def test_active_grant_allows_use(self):
         reg = SourceControllerRegistry((self._active_grant(),))
         cp = self._make_cp(reg)
         with unittest.mock.patch("tinker_delegate.control_plane.IsolatedTinkerSession", lambda *a, **k: object()):
-            ctx = cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15)
+            ctx = cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15, "0x" + "ab" * 32)
         self.assertIsNotNone(ctx)
 
     def test_out_of_scope_grant_denies_use(self):
@@ -197,7 +198,7 @@ class ControlPlaneSourceGateTest(unittest.TestCase):
         reg = SourceControllerRegistry((self._active_grant(scope=("read",)),))
         cp = self._make_cp(reg)
         with self.assertRaises(SourceAccessDenied):
-            cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15)
+            cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15, "0x" + "ab" * 32)
         self.assertEqual(cp._deals, {})  # no session created
 
     def test_revoked_grant_denies_use(self):
@@ -213,7 +214,7 @@ class ControlPlaneSourceGateTest(unittest.TestCase):
         )
         cp = self._make_cp(SourceControllerRegistry((revoked,)))
         with self.assertRaises(SourceAccessDenied):
-            cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15)
+            cp.on_deal_funded("deal-1", "b", "s", 10**18, 10**15, "0x" + "ab" * 32)
 
 
 if __name__ == "__main__":

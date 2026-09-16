@@ -50,6 +50,7 @@ class FundingCommandPlanTest(unittest.TestCase):
 
             self.assertFalse(plan["ready"])
             self.assertEqual(plan["reasons"], ["missing_tinker_encumbrance_contract"])
+            self.assertEqual(plan["encumbrance_deployment_status"], "fresh_contract_suite_required")
             self.assertEqual(plan["delegate_api_url"], "https://delegate.example")
             self.assertIn("--require-encumbrance", plan["packet_argv"])
             self.assertIn("<missing-encumbrance-contract>", plan["packet_argv"])
@@ -57,7 +58,11 @@ class FundingCommandPlanTest(unittest.TestCase):
             self.assertIn("encumbrance_deploy_broadcast_shell", plan)
             self.assertIn("BROADCAST=false", plan["encumbrance_deploy_dry_run_shell"])
             self.assertIn("BROADCAST=true", plan["encumbrance_deploy_broadcast_shell"])
-            self.assertIn("deploy-tinker-encumbrance-base-sepolia.sh", plan["encumbrance_deploy_broadcast_shell"])
+            self.assertIn("deploy-base-sepolia.sh", plan["encumbrance_deploy_broadcast_shell"])
+            self.assertNotIn("deploy-tinker-encumbrance-base-sepolia.sh", plan["encumbrance_deploy_broadcast_shell"])
+            self.assertIn("new canonical seven-contract fresh release", plan["encumbrance_deploy_note"])
+            self.assertIn("do not repair or overwrite one contract", plan["encumbrance_deploy_note"])
+            self.assertIn("--account dev", plan["encumbrance_deploy_note"])
             rendered = json.dumps(plan)
             self.assertNotIn("Card number", rendered)
             self.assertNotIn("Bearer ", rendered)
@@ -80,6 +85,11 @@ class FundingCommandPlanTest(unittest.TestCase):
             self.assertTrue(plan["ready"])
             self.assertEqual(plan["reasons"], [])
             self.assertEqual(plan["encumbrance_contract_address"], ENCUMBRANCE_ADDRESS.lower())
+            self.assertEqual(plan["encumbrance_deployment_status"], "existing_contract_recorded")
+            self.assertEqual(plan["encumbrance_deploy_dry_run_argv"], [])
+            self.assertEqual(plan["encumbrance_deploy_broadcast_argv"], [])
+            self.assertEqual(plan["encumbrance_deploy_dry_run_shell"], "")
+            self.assertEqual(plan["encumbrance_deploy_broadcast_shell"], "")
             self.assertIn("--fetch-attestation", plan["packet_argv"])
             self.assertIn("--run-card-attempt", plan["packet_argv"])
             self.assertIn("--prompt-card", plan["packet_argv"])
@@ -90,7 +100,7 @@ class FundingCommandPlanTest(unittest.TestCase):
             self.assertIn(ENCUMBRANCE_ADDRESS, plan["packet_shell"])
             self.assertIn('test -n "${TINKER_RUNTIME_AUTH_TOKEN:-}"', plan["packet_shell"])
             self.assertIn('test -n "${BASE_SEPOLIA_RPC_URL:-}"', plan["packet_shell"])
-            self.assertIn("Foundry --account", plan["encumbrance_deploy_note"])
+            self.assertIn("Foundry --account dev", plan["encumbrance_deploy_note"])
             self.assertNotIn("--private-key", json.dumps(plan))
 
     def test_prefers_funding_validation_attested_hash_over_general_phala_hash(self):
@@ -149,6 +159,7 @@ class FundingCommandPlanTest(unittest.TestCase):
             plan = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertFalse(plan["ready"])
             self.assertEqual(plan["reasons"], ["missing_tinker_encumbrance_contract"])
+            self.assertEqual(plan["encumbrance_deployment_status"], "fresh_contract_suite_required")
 
 
 if __name__ == "__main__":

@@ -214,7 +214,7 @@ class FundingPolicyTest(unittest.IsolatedAsyncioTestCase):
                 result = await handle_card_update(payload, settings)
 
             self.assertFalse(result.success)
-            self.assertIn("missing_contract", result.error)
+            self.assertEqual(result.error, "policy_denied")
             self.assertEqual(result.attempt_record["outcome"], "policy_denied")
             self.assertTrue(result.attempt_record["card_payload_destroyed"])
             self.assertEqual(payload.card_number, "")
@@ -242,7 +242,7 @@ class FundingPolicyTest(unittest.IsolatedAsyncioTestCase):
                 result = await handle_encrypted_card_update(payload, settings)
 
             self.assertFalse(result.success)
-            self.assertIn("missing_contract", result.error)
+            self.assertEqual(result.error, "policy_denied")
             self.assertEqual(result.attempt_record["outcome"], "policy_denied")
             self.assertTrue(result.attempt_record["card_payload_destroyed"])
             add_payment.assert_not_called()
@@ -262,7 +262,7 @@ class FundingPolicyTest(unittest.IsolatedAsyncioTestCase):
                 result = await handle_add_balance(BalancePayload(amount_dollars=10.0), settings)
 
             self.assertFalse(result.success)
-            self.assertIn("missing_contract", result.error)
+            self.assertEqual(result.error, "policy_denied")
             self.assertEqual(result.attempt_record["surface"], "add_balance")
             self.assertEqual(result.attempt_record["outcome"], "policy_denied")
             add_balance.assert_not_called()
@@ -290,9 +290,12 @@ class FundingPolicyApiTest(unittest.TestCase):
     def test_funding_preflight_endpoint_returns_bounded_checks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             api.settings = Settings(
+                runtime_auth_required=True,
+                runtime_auth_token="operator-secret",
                 funding_mode="operator_capped_validation",
                 funding_receipt_store_path=str(Path(tmpdir) / "funding_receipts.enc"),
                 funding_receipt_store_key="77" * 32,
+                funding_preflight_allowed_hosts="delegate.example",
             )
             client = TestClient(api.app)
 
@@ -300,9 +303,10 @@ class FundingPolicyApiTest(unittest.TestCase):
                 "/billing/funding-preflight",
                 params={
                     "amount_dollars": 10.0,
-                    "api_url": "http://localhost:8080",
+                    "api_url": "https://delegate.example",
                     "allow_local_attestation": True,
                 },
+                headers={"Authorization": "Bearer operator-secret"},
             )
 
         self.assertEqual(response.status_code, 200)

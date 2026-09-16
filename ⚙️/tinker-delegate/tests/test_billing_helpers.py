@@ -137,7 +137,7 @@ class BillingHelpersTest(unittest.TestCase):
 
         playwright.assert_not_called()
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Funding amount must be finite and positive")
+        self.assertEqual(result["error"], "policy_denied")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "policy_denied")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "not_started")
@@ -149,7 +149,7 @@ class BillingHelpersTest(unittest.TestCase):
 
         playwright.assert_not_called()
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Funding amount must be finite and positive")
+        self.assertEqual(result["error"], "policy_denied")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "policy_denied")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "not_started")
@@ -161,7 +161,7 @@ class BillingHelpersTest(unittest.TestCase):
 
         playwright.assert_not_called()
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Funding amount is below Tinker minimum $10")
+        self.assertEqual(result["error"], "policy_denied")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "policy_denied")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "not_started")
@@ -173,7 +173,7 @@ class BillingHelpersTest(unittest.TestCase):
 
         playwright.assert_not_called()
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Funding amount must be a whole-dollar amount")
+        self.assertEqual(result["error"], "policy_denied")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "policy_denied")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "not_started")
@@ -185,7 +185,7 @@ class BillingHelpersTest(unittest.TestCase):
 
         playwright.assert_not_called()
         self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "Funding amount exceeds approved cap")
+        self.assertEqual(result["error"], "policy_denied")
         self.assertEqual(result["attempt_record"]["surface"], "add_balance")
         self.assertEqual(result["attempt_record"]["outcome"], "policy_denied")
         self.assertEqual(result["attempt_record"]["furthest_stage"], "not_started")

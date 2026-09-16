@@ -84,7 +84,9 @@ class HoldoutSplitPolicy:
 class HoldoutPublicManifest:
     split_commitment: str
     policy: dict[str, Any]
-    partition_counts: dict[str, int]
+    # Compatibility name retained for environment metadata consumers. Values
+    # are fixed disclosure bands, never exact private cardinalities.
+    partition_counts: dict[str, str]
     reward_query_count: int
     unique_reward_candidates: int
     max_reward_queries_for_single_candidate: int
@@ -96,6 +98,7 @@ class HoldoutPublicManifest:
             "split_commitment": self.split_commitment,
             "policy": _stable_public(self.policy),
             "partition_counts": _stable_public(self.partition_counts),
+            "partition_count_disclosure": "banded_v1",
             "reward_query_count": self.reward_query_count,
             "unique_reward_candidates": self.unique_reward_candidates,
             "max_reward_queries_for_single_candidate": self.max_reward_queries_for_single_candidate,
@@ -135,7 +138,7 @@ class HiddenHoldoutSet:
 
     @property
     def split_commitment(self) -> str:
-        split = {
+        partitions = {
             partition.value: [
                 {
                     "record_hash": record.record_hash,
@@ -149,7 +152,13 @@ class HiddenHoldoutSet:
             ]
             for partition, records in self._partitions.items()
         }
-        return _sha256_json(split)
+        # Bind the exact private assignment and the explicitly declared public
+        # policy in one commitment. Policy values are safe to disclose because
+        # they are selected before evaluation, not inferred from private rows.
+        return _sha256_json({
+            "policy": self.policy.to_public_dict(),
+            "partitions": partitions,
+        })
 
     @property
     def reward_query_count(self) -> int:
@@ -197,7 +206,10 @@ class HiddenHoldoutSet:
         return HoldoutPublicManifest(
             split_commitment=self.split_commitment,
             policy=self.policy.to_public_dict(),
-            partition_counts=self.partition_counts,
+            partition_counts={
+                partition: _private_partition_count_band(count)
+                for partition, count in self.partition_counts.items()
+            },
             reward_query_count=self.reward_query_count,
             unique_reward_candidates=self.unique_reward_candidates,
             max_reward_queries_for_single_candidate=self.max_reward_queries_for_single_candidate,
@@ -286,6 +298,22 @@ def _sha256_hex(value: bytes) -> str:
 
 def _sha256_json(value: Any) -> str:
     return _sha256_hex(json.dumps(_stable_public(value), sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _private_partition_count_band(count: int) -> str:
+    """Coarse public band for a TEE-internal partition cardinality."""
+
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("partition count must be a non-negative int")
+    if count == 0:
+        return "none"
+    if count <= 8:
+        return "small_1_to_8"
+    if count <= 64:
+        return "medium_9_to_64"
+    if count <= 512:
+        return "large_65_to_512"
+    return "very_large_gt_512"
 
 
 def _stable_public(value: Any) -> Any:

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -227,7 +226,6 @@ class SandboxedEvaluatorRunner:
             sort_keys=True,
             separators=(",", ":"),
         )
-        preexec = _rlimit_preexec(self.policy)
         try:
             with tempfile.TemporaryDirectory(prefix="dnai-evaluator-") as scratch_dir:
                 proc = subprocess.run(
@@ -238,10 +236,10 @@ class SandboxedEvaluatorRunner:
                     env={
                         "PYTHONHASHSEED": str(self.policy.deterministic_seed),
                         "PYTHONIOENCODING": "utf-8",
+                        **_rlimit_environment(self.policy),
                     },
                     capture_output=True,
                     timeout=self.policy.timeout_seconds,
-                    preexec_fn=preexec,
                 )
         except subprocess.TimeoutExpired:
             return EvaluatorSandboxResult(
@@ -421,7 +419,11 @@ def _rlimit_specs(policy: EvaluatorSandboxPolicy) -> list[tuple[int, tuple[int, 
 
 
 def _apply_rlimits(policy: EvaluatorSandboxPolicy) -> None:
-    """Set the policy's resource limits on the current process (child, post-fork).
+    """Set the policy's resource limits on the current process.
+
+    This remains useful for direct same-process probes. Production subprocesses
+    use the equivalent child-owned bootstrap below so no Python callback runs
+    in the unsafe post-fork/pre-exec window.
 
     Best-effort: a limit the host refuses (e.g. raising a hard cap) is skipped
     rather than aborting the whole child, because the restricted-builtins
@@ -442,12 +444,27 @@ def _apply_rlimits(policy: EvaluatorSandboxPolicy) -> None:
             continue
 
 
-def _rlimit_preexec(policy: EvaluatorSandboxPolicy):
-    """Return a ``preexec_fn`` that applies rlimits, or ``None`` on non-POSIX."""
+def _rlimit_environment(policy: EvaluatorSandboxPolicy) -> dict[str, str]:
+    """Serialize validated limits for the child-owned bootstrap.
 
-    if _resource is None or os.name != "posix":
-        return None
-    return lambda: _apply_rlimits(policy)
+    Python documents ``preexec_fn`` as unsafe in the presence of threads. On
+    macOS it can deadlock between ``fork`` and ``exec`` even when the callback
+    only calls ``setrlimit``. Applying the same limits as the first child code
+    preserves the security boundary without invoking Python in that unsafe
+    post-fork window.
+    """
+
+    return {
+        "DNAI_RLIMIT_CPU": str(policy.cpu_seconds),
+        "DNAI_RLIMIT_FSIZE": str(policy.max_file_bytes),
+        "DNAI_RLIMIT_NOFILE": str(policy.max_open_files),
+        "DNAI_RLIMIT_CORE": "0" if policy.disable_core_dumps else "",
+        "DNAI_RLIMIT_AS": (
+            str(policy.max_address_space_bytes)
+            if policy.max_address_space_bytes > 0
+            else ""
+        ),
+    }
 
 
 def _safe_label(value: Any) -> str:
@@ -465,7 +482,43 @@ def _safe_text(value: Any) -> str:
     return safe or "sandboxed evaluator capability plan"
 
 
-_EVALUATOR_WRAPPER = r"""
+_RLIMIT_BOOTSTRAP = r"""
+import os as _sandbox_os
+try:
+    import resource as _sandbox_resource
+except Exception:
+    _sandbox_resource = None
+
+if _sandbox_resource is not None:
+    for _resource_name, _environment_name in (
+        ("RLIMIT_CPU", "DNAI_RLIMIT_CPU"),
+        ("RLIMIT_FSIZE", "DNAI_RLIMIT_FSIZE"),
+        ("RLIMIT_NOFILE", "DNAI_RLIMIT_NOFILE"),
+        ("RLIMIT_CORE", "DNAI_RLIMIT_CORE"),
+        ("RLIMIT_AS", "DNAI_RLIMIT_AS"),
+    ):
+        _raw_limit = _sandbox_os.environ.get(_environment_name, "")
+        _resource_id = getattr(_sandbox_resource, _resource_name, None)
+        if not _raw_limit or _resource_id is None:
+            continue
+        try:
+            _requested_limit = int(_raw_limit)
+            _current_soft, _current_hard = _sandbox_resource.getrlimit(_resource_id)
+            _new_hard = (
+                _requested_limit
+                if _current_hard == _sandbox_resource.RLIM_INFINITY
+                else min(_requested_limit, _current_hard)
+            )
+            _sandbox_resource.setrlimit(
+                _resource_id,
+                (min(_requested_limit, _new_hard), _new_hard),
+            )
+        except (TypeError, ValueError, OSError):
+            pass
+"""
+
+
+_EVALUATOR_WRAPPER = _RLIMIT_BOOTSTRAP + r"""
 import json
 import math
 import random

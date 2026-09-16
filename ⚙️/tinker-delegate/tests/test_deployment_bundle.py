@@ -1,13 +1,17 @@
 from pathlib import Path
 import subprocess
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from tinker_delegate.compose_hash import ImageDigest
 from tinker_delegate.cvm_attestation import CvmAttestationBundle
 from tinker_delegate.deployment_bundle import (
+    DEFAULT_REPO,
+    DEFAULT_SIGNER_WORKFLOW,
     DeploymentBundleError,
     DeploymentBundlePolicy,
+    DeploymentVerificationBundle,
     GithubImageAttestation,
     GithubImagePolicy,
     PROVENANCE_PREDICATE,
@@ -18,8 +22,8 @@ from tinker_delegate.deployment_bundle import (
 )
 
 
-IMAGE = "ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:" + "a" * 64
-ORACLE_IMAGE = "ghcr.io/g-structure/dnai-wikigen/tee-email-oracle@sha256:" + "b" * 64
+IMAGE = "ghcr.io/therealwiki/dnai-wikigen/tinker-delegate@sha256:" + "a" * 64
+ORACLE_IMAGE = "ghcr.io/therealwiki/dnai-wikigen/tee-email-oracle@sha256:" + "b" * 64
 SOURCE_DIGEST = "c" * 40
 
 
@@ -46,6 +50,34 @@ def _cvm_bundle() -> CvmAttestationBundle:
 
 
 class DeploymentBundleTest(unittest.TestCase):
+    def test_default_provenance_policy_uses_this_repository(self):
+        self.assertEqual(DEFAULT_REPO, "therealwiki/dnai-wikigen")
+        self.assertEqual(
+            DEFAULT_SIGNER_WORKFLOW,
+            "therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml",
+        )
+
+    def test_service_claim_cannot_promote_bundle_to_verified_tdx(self):
+        cvm = replace(
+            _cvm_bundle(),
+            quote_verification="service-claimed-verified",
+        )
+        public = DeploymentVerificationBundle(
+            schema="dnai.deployment.evidence.v2",
+            api_url="https://tee.example",
+            context="artifact",
+            images=(),
+            cvm=cvm,
+        ).to_public_dict()
+
+        self.assertEqual(public["status"], "evidence_checked_tdx_unverified")
+        self.assertFalse(public["claims"]["intel_tdx_quote_verified"])
+        self.assertFalse(public["claims"]["production_authorization_allowed"])
+        self.assertEqual(
+            public["checks"]["intel_tdx_quote"],
+            "not_verified_no_independent_qvl_verdict",
+        )
+
     def test_verify_github_image_requires_digest_pinned_refs(self):
         with self.assertRaisesRegex(DeploymentBundleError, "digest-pinned"):
             image_digest("ghcr.io/example/image:latest")
@@ -129,9 +161,24 @@ class DeploymentBundleTest(unittest.TestCase):
         )
         self.assertEqual(cvm_policy.allowed_envs, ("TINKER_DELEGATE_IMAGE", "TINKER_ORACLE_IMAGE"))
         public = bundle.to_public_dict()
-        self.assertEqual(public["schema"], "dnai.deployment.verification.v1")
-        self.assertEqual(public["status"], "verified")
-        self.assertEqual(public["checks"]["github_provenance_attestations"], "verified")
+        self.assertEqual(public["schema"], "dnai.deployment.evidence.v2")
+        self.assertEqual(public["status"], "evidence_checked_tdx_unverified")
+        self.assertEqual(
+            public["checks"]["github_provenance_attestations"],
+            "verified_by_github_cli",
+        )
+        self.assertEqual(
+            public["checks"]["cvm_attestation_envelope"],
+            "matched_claimed_identity_not_cryptographically_verified",
+        )
+        self.assertEqual(
+            public["checks"]["intel_tdx_quote"],
+            "not_verified_no_independent_qvl_verdict",
+        )
+        self.assertFalse(public["claims"]["intel_tdx_quote_verified"])
+        self.assertFalse(public["claims"]["independent_attestation_verdict_present"])
+        self.assertFalse(public["claims"]["production_authorization_allowed"])
+        self.assertNotIn("live_cvm_attestation", public["checks"])
         self.assertFalse(public["checks"]["raw_secret_egress"])
         self.assertNotIn("app_compose", public["cvm"])
         self.assertNotIn("quote", public["cvm"])

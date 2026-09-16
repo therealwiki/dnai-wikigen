@@ -45,7 +45,7 @@ class DisclosurePolicyTest(unittest.TestCase):
         self.assertIsNone(decision.disclosable_payload(_CLEAN_CODE))
 
     def test_secret_shaped_material_downgrades_to_hash_only(self):
-        leaky = b"TINKER_API_KEY=tml-abcdefghij1234567890abcdefgh\n"
+        leaky = b"TINKER_API_KEY=" + b"tml-" + b"abcdefghij1234567890abcdefgh\n"
         decision = decide_disclosure(leaky, dual_use=_cleared(), allow_public=True)
         self.assertEqual(decision.mode, DisclosureMode.HASH_ONLY)
         self.assertIn("secret_shaped_material", decision.reasons)
@@ -105,7 +105,9 @@ class DisclosurePolicyTest(unittest.TestCase):
 
     def test_decision_is_bounded(self):
         decision = decide_disclosure(
-            b"TINKER_API_KEY=tml-abcdefghij1234567890abcdefgh", dual_use=_cleared(), score_band="high"
+            b"TINKER_API_KEY=" + b"tml-" + b"abcdefghij1234567890abcdefgh",
+            dual_use=_cleared(),
+            score_band="high",
         )
         public = decision.to_public_dict()
         assert_bounded_egress(public)

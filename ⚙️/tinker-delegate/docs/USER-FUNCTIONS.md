@@ -3,8 +3,19 @@
 What a user (data owner, requester/clinician, sponsor, or their agent) can do across
 the wikigen / NDAI Attested Diligence Room stack — and how real each function is today.
 
+> **Fresh-release boundary (2026-07-21).** The current seven-contract,
+> seven-CVM release is source/test-real and has not been deployed. Historical
+> Base Sepolia, Phala, Tinker, or dstack observations below came from an older
+> prior-operator or external deployment. They are useful provenance, but they
+> do not prove current project custody, current release lineage, or fresh live
+> activation.
+
 **Status legend**
-- ✅ **Real** — working code, deployed and/or unit-tested.
+- ✅ **Source-real** — working code with local tests or rehearsal; deployment is
+  claimed only when a row separately identifies the historical deployment and
+  its provenance.
+- 🟣 **Historical live evidence** — observed against a prior-operator or
+  external deployment; not evidence for the fresh release.
 - 🟡 **Modeled** — illustrative/synthetic in the frontend, or a backend stub; the shape exists, the enforcement doesn't.
 - 🔴 **Needs work** — roadmap; not built.
 
@@ -21,7 +32,7 @@ the wikigen / NDAI Attested Diligence Room stack — and how real each function 
 |---|---|---|---|
 | Attested identity | Present a verified principal + role; unattested → denied at stage 1 | 🟡 modeled | `IdentityRef` in gate; real IdP 🔴 |
 | Elevated step-up (opt-in biometric/facial) | Raise assurance for restricted corpora; proportionate, privacy-law-bound, never default-on | 🔴 needs work | prose only; consent-encoding + verifier unbuilt |
-| Measured-code boot auth | Only attested TEE code may boot the oracle / request OTPs | 🟡 modeled | `EmailOracleAuth.sol` deployed, but `allowAnyDevice=true`, not frozen |
+| Measured-code boot auth | Only attested TEE code may boot the oracle / request OTPs | 🟡 source partial | Fresh `EmailOracleAuth.sol` source/tests and release gates exist, but the fresh contract is undeployed; an older prior-operator instance used `allowAnyDevice=true` and was not frozen |
 
 ## 2. Data Privacy & Custody
 
@@ -49,7 +60,7 @@ the wikigen / NDAI Attested Diligence Room stack — and how real each function 
 
 | Function | What the user does | Status | Where |
 |---|---|---|---|
-| Open a deal (reserve price + budget cap) | Seller sets floor; buyer caps spend | ✅ real | `DiligenceRoom.createDeal` / `fundDeal` (Base Sepolia, tested) |
+| Open a deal (reserve price + budget cap) | Seller sets floor; buyer caps spend | ✅ source-real | Fresh `DiligenceRoom.createDeal` / `fundDeal` contract and Foundry tests; no fresh Base Sepolia deployment |
 | Buyer-agent bids inside the TEE | Agent inspects sealed artifact, emits an offer **within cap** + bounded findings | 🟡 modeled | `submitResult` (bounded) ✅; evaluator is stub/SFT 🟡 |
 | Accept / reject / expire | Settle or walk away; time-boxed | ✅ real | `acceptDeal` / `rejectDeal` / `expireDeal` |
 | Pull-payment settlement + fee | Funds flow on accept; safe withdraw pattern | ✅ real | `withdraw` / `pendingWithdrawals` |
@@ -73,9 +84,9 @@ the wikigen / NDAI Attested Diligence Room stack — and how real each function 
 | Function | What the user does | Status | Where |
 |---|---|---|---|
 | Attestation on every run | Signed record for cleared **and** stopped runs; raw never stored | 🟡 modeled | frontend signature illustrative |
-| Verify a live TEE | Fetch a real Intel TDX quote (source hash → measurement) with no token | ✅ real | Live TEE section → dstack-webhost verifier |
-| On-chain result hash | `resultHash` emitted per evaluation | ✅ real | `EvaluationSubmitted` event |
-| Real quote verification (DCAP/PCCS) | Accept results from the *measurement*, not a trusted address | 🔴 needs work | `submitResult` trusts bare `teeIdentity` |
+| Verify a live TEE | Fetch and independently check an Intel TDX quote (source hash → measurement) | 🟣 historical live evidence | Earlier external dstack-webhost verification only; no fresh project-owned seven-CVM activation evidence |
+| On-chain result hash | `resultHash` emitted per evaluation | ✅ source-real | `EvaluationSubmitted` event and contract tests; fresh suite undeployed |
+| Real quote verification (DCAP/PCCS) | Accept results from the *measurement*, not a trusted address | 🟡 source partial | Independent challenge-v2 / verdict-v4 QVL source and tests exist; the five fresh QVL roots remain undeployed and unverified live |
 | Transparency log of all runs | Append-only, publicly verifiable history incl. denials | 🔴 needs work | not built |
 
 ## 7. Consent, Revocation & Lifecycle
@@ -100,8 +111,22 @@ the wikigen / NDAI Attested Diligence Room stack — and how real each function 
 
 ## The honest gap summary
 
-**Real and load-bearing today:** the on-chain economics (reserve/cap/escrow/settlement, 39 tests), the pure four-stage gate + tests, bounded-output enforcement, sealed-secret storage (2 paths), the isolated agent session, and live TEE *verification* against dstack-webhost.
+**Source-real and load-bearing in local verification:** the on-chain economics
+(reserve/cap/escrow/settlement), pure four-stage gate, bounded-output
+enforcement, sealed-secret storage paths, isolated agent session, and
+independent challenge-v2 / verdict-v4 QVL implementation. This does not mean
+the fresh contracts or CVMs are deployed.
+
+**Historical live evidence only:** earlier Base Sepolia, Phala, Tinker, and
+dstack-webhost observations were produced by a prior operator or external
+deployment. They do not establish current custody or fresh release health.
 
 **Modeled but not enforced:** every access-control verdict (illustrative scaffolding), corpus policies, N-party sessions, the skills catalog, royalty metering, staged rental, consent/revocation.
 
-**The critical path to "real":** (1) real TDX quote verification, (2) per-corpus sealing + attested ingress, (3) egress/DLP so locality has teeth, (4) the ConSECA screening kernel + a human-review queue (fail-closed until both exist), (5) on-chain royalty settlement, (6) a discovery/matchmaking layer, (7) interop adapters. These are the private-infra roadmap items surfaced in the app.
+**The critical path to a fresh live release:** (1) deploy and independently
+activate the five QVL roots plus the two workload CVMs with real DCAP evidence,
+(2) deploy the fresh seven-contract suite, (3) complete per-corpus sealing and
+attested ingress, (4) enforce egress/DLP so locality has teeth, (5) finish the
+ConSECA screening and human-review path, (6) prove royalty settlement, and (7)
+add discovery and interoperability adapters. These are the private-infra
+roadmap items surfaced in the app.

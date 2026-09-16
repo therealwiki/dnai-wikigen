@@ -32,6 +32,7 @@ class FundingCommandPlan:
     app_id: str
     os_image_hash: str
     encumbrance_contract_address: str
+    encumbrance_deployment_status: str
     encumbrance_rpc_env: str
     runtime_auth_env: str
     output_dir: str
@@ -60,6 +61,7 @@ class FundingCommandPlan:
             "app_id": self.app_id,
             "os_image_hash": self.os_image_hash,
             "encumbrance_contract_address": self.encumbrance_contract_address,
+            "encumbrance_deployment_status": self.encumbrance_deployment_status,
             "encumbrance_rpc_env": self.encumbrance_rpc_env,
             "runtime_auth_env": self.runtime_auth_env,
             "output_dir": self.output_dir,
@@ -79,8 +81,11 @@ class FundingCommandPlan:
             "encumbrance_deploy_dry_run_shell": self.encumbrance_deploy_dry_run_shell,
             "encumbrance_deploy_broadcast_shell": self.encumbrance_deploy_broadcast_shell,
             "encumbrance_deploy_note": (
-                "Run the dry-run first, then run the broadcast command from an interactive terminal. "
-                "The helper uses Foundry --account via the encrypted keystore and must not be given a raw private key."
+                "A missing TinkerAccountEncumbrance requires a new canonical seven-contract fresh release; "
+                "these templates do not repair or overwrite one contract in a partial deployment ledger. "
+                "Run the explicit BROADCAST=false full-suite dry-run first, then invoke BROADCAST=true only "
+                "after reviewing the complete release. The canonical helper uses Foundry --account dev through "
+                "the encrypted keystore and must never be given a raw private key."
             ),
             "packet_shell": self.packet_shell,
             "raw_secret_egress": False,
@@ -113,6 +118,10 @@ def build_funding_command_plan(
     app_id = _str(phala.get("appId"))
     os_image_hash = _str(phala.get("osImageHash"))
     encumbrance_address = _str(encumbrance.get("address"))
+    fresh_contract_suite_required = not encumbrance_address
+    encumbrance_deployment_status = (
+        "fresh_contract_suite_required" if fresh_contract_suite_required else "existing_contract_recorded"
+    )
 
     reasons: list[str] = []
     warnings: list[str] = []
@@ -186,17 +195,13 @@ def build_funding_command_plan(
         / "tinker-delegate"
         / "contracts"
         / "scripts"
-        / "deploy-tinker-encumbrance-base-sepolia.sh"
+        / "deploy-base-sepolia.sh"
     )
     encumbrance_deploy_dry_run_argv = (
-        "env",
-        "BROADCAST=false",
-        deploy_helper,
+        ("env", "BROADCAST=false", deploy_helper) if fresh_contract_suite_required else ()
     )
     encumbrance_deploy_broadcast_argv = (
-        "env",
-        "BROADCAST=true",
-        deploy_helper,
+        ("env", "BROADCAST=true", deploy_helper) if fresh_contract_suite_required else ()
     )
     packet_argv: tuple[str, ...] = (
         "uv",
@@ -240,6 +245,7 @@ def build_funding_command_plan(
         app_id=app_id,
         os_image_hash=os_image_hash,
         encumbrance_contract_address=encumbrance_address,
+        encumbrance_deployment_status=encumbrance_deployment_status,
         encumbrance_rpc_env=encumbrance_rpc_env,
         runtime_auth_env=runtime_auth_env,
         output_dir=output_dir,

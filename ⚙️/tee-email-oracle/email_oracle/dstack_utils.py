@@ -16,6 +16,12 @@ def _client() -> DstackClient:
     return DstackClient()
 
 
+def is_dstack_simulator() -> bool:
+    """Return whether dstack calls are routed to modeled simulator evidence."""
+
+    return bool(os.environ.get("DSTACK_SIMULATOR_ENDPOINT", "").strip())
+
+
 def _normalize_report_data(report_data: str | bytes) -> bytes:
     raw = report_data.encode() if isinstance(report_data, str) else report_data
     if len(raw) <= 64:

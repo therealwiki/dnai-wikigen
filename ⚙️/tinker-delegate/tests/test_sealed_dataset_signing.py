@@ -110,7 +110,8 @@ class OwnerSignatureTest(unittest.TestCase):
             signed, _ = sign_manifest(manifest, self.owner_key)
             receipt = publish_dataset(blob, signed, backend)
             self.assertTrue(receipt["ok"])
-            self.assertEqual(receipt["storage_ref"], ref)
+            self.assertNotIn("storage_ref", receipt)
+            self.assertTrue(receipt["storage_ref_hash"].startswith("sealed_storage_ref_"))
             _stored_blob, stored_manifest = backend.fetch(ref)
             self.assertTrue(
                 verify_manifest(stored_manifest, expected_signer=self.owner.address)["ok"]

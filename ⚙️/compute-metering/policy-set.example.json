@@ -1,0 +1,83 @@
+{
+  "schema": "dnai.compute-metering-policy-set.v1",
+  "chain_id": 84532,
+  "rpc_origin": "https://sepolia.base.org",
+  "vault_address": "0x1111111111111111111111111111111111111111",
+  "vault_runtime_code_hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "owner": "0x2222222222222222222222222222222222222222",
+  "developer": "0x3333333333333333333333333333333333333333",
+  "paused": false,
+  "developer_fee_bps": 500,
+  "developer_fee_frozen": true,
+  "rate_policy_additions_frozen": true,
+  "asset_additions_frozen": true,
+  "compose_policy_frozen": true,
+  "tee_identity_additions_frozen": true,
+  "metering_binding_frozen": true,
+  "allowed_asset_count": 1,
+  "active_rate_policy_count": 2,
+  "approved_compose_count": 1,
+  "approved_tee_identity_count": 1,
+  "pending_asset_count": 0,
+  "pending_rate_policy_count": 0,
+  "pending_compose_count": 0,
+  "pending_tee_identity_count": 0,
+  "pending_developer_fee_activates_at": 0,
+  "pending_metering_verifier": "0x0000000000000000000000000000000000000000",
+  "metering_qvl_verifier": "0x6666666666666666666666666666666666666666",
+  "pending_metering_qvl_verifier": "0x0000000000000000000000000000000000000000",
+  "pending_metering_policy_set_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "pending_metering_binding_activates_at": 0,
+  "tee_identity": "0x5555555555555555555555555555555555555555",
+  "compose_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "asset_policies": [
+    {
+      "asset": "0x0000000000000000000000000000000000000000",
+      "provider": "0x4444444444444444444444444444444444444444",
+      "rate_policy_commitment": "0x5c07ab30eb9f247815baaf109dc29cf4f1f466030127828e361a6dbfe8233e32",
+      "rates": [
+        {
+          "model": "tinker-model-v1",
+          "recipe": "inference.v1",
+          "prefill_units_per_million": "25000000000000",
+          "sample_units_per_million": "100000000000000",
+          "training_units_per_million": "500000000000000"
+        }
+      ],
+      "limits": {
+        "max_prefill_tokens": "10000000",
+        "max_sample_tokens": "2000000",
+        "max_training_tokens": "100000000",
+        "max_total_debit": "100000000000000000"
+      }
+    },
+    {
+      "asset": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "provider": "0x4444444444444444444444444444444444444444",
+      "rate_policy_commitment": "0x3cc437c4f1688951671cee55e4c87a76c889d707ea32024c620054c122bbd63b",
+      "rates": [
+        {
+          "model": "tinker-model-v1",
+          "recipe": "inference.v1",
+          "prefill_units_per_million": "250",
+          "sample_units_per_million": "1000",
+          "training_units_per_million": "5000"
+        }
+      ],
+      "limits": {
+        "max_prefill_tokens": "10000000",
+        "max_sample_tokens": "2000000",
+        "max_training_tokens": "100000000",
+        "max_total_debit": "1000000"
+      }
+    }
+  ],
+  "min_confirmations": 3,
+  "max_pinned_block_age_seconds": 300,
+  "max_usage_age_seconds": 3600,
+  "max_future_skew_seconds": 30,
+  "receipt_ttl_seconds": 300,
+  "min_submission_window_seconds": 30,
+  "valid_from": 1700000000,
+  "valid_until": 1900000000
+}

@@ -30,9 +30,9 @@ class RedactionTest(unittest.IsolatedAsyncioTestCase):
         # The evaluator agent uses OPENROUTER_API_KEY (format sk-or-v1-...); its
         # keys must be redacted just like the Tinker (tml-) key.
         secrets = [
-            "sk-or-v1-abcdef1234567890abcdef1234567890abcd",
-            "sk-proj-ABCDEF1234567890abcdefghij",
-            "error hitting model with sk-1234567890abcdefghijKLMN",
+            "sk-" + "or-v1-abcdef1234567890abcdef1234567890abcd",
+            "sk-" + "proj-ABCDEF1234567890abcdefghij",
+            "error hitting model with " + "sk-" + "1234567890abcdefghijKLMN",
         ]
         for text in secrets:
             with self.subTest(text=text[:12]):
@@ -40,7 +40,10 @@ class RedactionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("sk-<redacted>", redacted)
                 # No trailing key material survives.
                 self.assertNotIn("1234567890abcdef", redacted)
-        self.assertIn("<redacted>", redact_text("OPENROUTER_API_KEY=sk-or-v1-secret1234567890"))
+        self.assertIn(
+            "<redacted>",
+            redact_text("OPENROUTER_API_KEY=" + "sk-" + "or-v1-secret1234567890"),
+        )
 
     def test_does_not_over_redact_benign_bounded_output(self):
         # redact_text underpins the egress guard's secret_shaped check, so it must

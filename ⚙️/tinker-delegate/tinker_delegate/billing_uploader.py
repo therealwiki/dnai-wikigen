@@ -1,4 +1,9 @@
-"""Client-side attestation-gated encrypted billing update helper."""
+"""Client-side attestation-gated encrypted billing update helper.
+
+The shared envelope checker is not an Intel DCAP/QVL implementation. Because
+the service never self-asserts verification, deployed-TDX updates remain blocked
+until a separately authenticated independent verifier verdict is integrated.
+"""
 
 from __future__ import annotations
 
@@ -47,7 +52,7 @@ def verify_billing_attestation(
     attestation: dict[str, Any],
     policy: BillingCardUploadPolicy,
 ) -> str:
-    """Verify the billing attestation envelope before using its encryption key."""
+    """Check the billing envelope before using a separately verified key."""
     result = verify_attestation_envelope(
         attestation,
         AttestationPolicy(

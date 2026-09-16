@@ -1,0 +1,28 @@
+{
+  "acceptances": [],
+  "all_active_reviewers_required": true,
+  "chain_id": 84532,
+  "declaration": "every_guardian_selected_active_reviewer_accepts_this_exact_genesis_and_full_guardian_signed_current_status_instance",
+  "minimum_active_reviewers": 2,
+  "release_sha": null,
+  "reviewer_authority_current_status": null,
+  "reviewer_authority_current_status_sha256": null,
+  "reviewer_authority_genesis_sha256": null,
+  "reviewer_authority_genesis_truth_status": "release_scoped_finite_reviewer_keys_and_two_guardians_precommitted_guardians_are_status_root_nonoverlapping_statuses_expire_within_fifteen_minutes",
+  "reviewer_count": null,
+  "reviewer_root_hash": null,
+  "reviewer_set_sha256": null,
+  "schema": "dnai.release-reviewer-authority-genesis-acceptance.v2",
+  "signature_scheme": "eip191_personal_sign_secp256k1_low_s_65_byte",
+  "signature_verifier": {
+    "build_profile": "maxperf",
+    "commit_sha": "b0a9dd9ceda36f63e2326ce530c10e6916f4b8a2",
+    "executable_sha256": "f7373e6e34939415fe048560ecf275463ea891fec5a124a38958983f3955542d",
+    "executable_user_relative_path": ".foundry/bin/cast",
+    "tool": "cast wallet verify",
+    "version": "1.5.1-stable"
+  },
+  "signing_payload_sha256": null,
+  "status_epoch": null,
+  "truth_status": "all_current_active_reviewers_accepted_the_exact_guardian_signed_status_guardians_remain_the_only_status_root_and_status_is_nonoverlapping_and_expires_within_fifteen_minutes"
+}

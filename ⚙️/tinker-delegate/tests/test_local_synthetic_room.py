@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 import sys
 import types
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -14,7 +16,7 @@ sys.modules.setdefault(
 )
 
 from tinker_delegate import api  # noqa: E402
-from tinker_delegate.artifacts import artifact_keccak256, encrypt_artifact_payload  # noqa: E402
+from tinker_delegate.artifacts import artifact_commitment, encrypt_artifact_payload  # noqa: E402
 from tinker_delegate.control_plane import ControlPlane, DealState, ScoreBand  # noqa: E402
 from tinker_delegate.fake_tinker_backend import FakeTinkerServiceClient  # noqa: E402
 from tinker_delegate.local_synthetic_room import (  # noqa: E402
@@ -22,6 +24,11 @@ from tinker_delegate.local_synthetic_room import (  # noqa: E402
     synthetic_room_evaluator,
 )
 from tinker_delegate.run_metadata_store import RunMetadataStore  # noqa: E402
+from tinker_delegate.config import Settings  # noqa: E402
+
+
+ROOM = "0x3333333333333333333333333333333333333333"
+EVALUATOR_POLICY = "0x" + "44" * 32
 
 
 class InMemoryRunMetadataStore:
@@ -35,10 +42,18 @@ class InMemoryRunMetadataStore:
 
 
 class LocalSyntheticRoomTest(unittest.TestCase):
+    def setUp(self):
+        self.original_settings = api.settings
+        api.settings = Settings(diligence_room_address=ROOM)
+
+    def tearDown(self):
+        api.settings = self.original_settings
+
     def test_encrypted_artifact_fake_tinker_evaluation_and_cleanup_are_bounded(self):
         private_artifact = b"private synthetic artifact: do not leak this payload"
-        artifact_hash = artifact_keccak256(private_artifact)
-        deal_id = "deal-local-synthetic"
+        commitment_secret = bytes(range(32))
+        artifact_hash = artifact_commitment(private_artifact, commitment_secret)
+        deal_id = "101"
         budget_cap = 10**18
         reserve_price = 10**17
         metadata_store = InMemoryRunMetadataStore()
@@ -55,6 +70,8 @@ class LocalSyntheticRoomTest(unittest.TestCase):
             seller="0x000000000000000000000000000000000000005e",
             budget_cap=budget_cap,
             reserve_price=reserve_price,
+            committed_artifact_hash=artifact_hash,
+            evaluator_policy_commitment=EVALUATOR_POLICY,
         )
 
         encrypted = encrypt_artifact_payload(
@@ -62,19 +79,41 @@ class LocalSyntheticRoomTest(unittest.TestCase):
             api.get_tee_keypair().public_key_bytes.hex(),
             deal_id=deal_id,
             artifact_hash=artifact_hash,
+            commitment_secret=commitment_secret,
+            chain_id=84532,
+            diligence_room_address=ROOM,
+            evaluator_policy_commitment=EVALUATOR_POLICY,
         )
         client = TestClient(api.app)
-        with patch("tinker_delegate.api._get_control_plane", return_value=cp):
-            response = client.post(f"/deal/{deal_id}/artifact/encrypted", json=encrypted)
+        with (
+            patch("tinker_delegate.api._get_control_plane", return_value=cp),
+            patch(
+                "tinker_delegate.api._require_wallet_auth",
+                return_value=SimpleNamespace(address="0x000000000000000000000000000000000000005e"),
+            ),
+        ):
+            response = client.post(
+                f"/deal/{deal_id}/artifact/encrypted",
+                json=encrypted,
+                headers={"Authorization": "Bearer synthetic-seller-token"},
+            )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["size"], len(private_artifact))
+        receipt = response.json()
+        self.assertEqual(
+            receipt["ciphertext_sha256"],
+            "sha256:" + hashlib.sha256(bytes.fromhex(encrypted["ciphertext"])).hexdigest(),
+        )
+        self.assertEqual(receipt["padding_profile"], "fixed_1m_v3")
+        self.assertFalse(receipt["exact_plaintext_size_egress"])
+        self.assertNotIn("size", receipt)
         ctx = cp._deals[deal_id]
         self.assertEqual(ctx.artifact_hash, artifact_hash)
         stored_artifact = ctx.artifact
         self.assertEqual(bytes(stored_artifact), private_artifact)
 
-        result = asyncio.run(cp.evaluate(deal_id, synthetic_room_evaluator))
+        with patch.object(cp, "_get_tdx_quote", return_value=b"modeled-test-attestation"):
+            result = asyncio.run(cp.evaluate(deal_id, synthetic_room_evaluator))
 
         self.assertEqual(result.score_band, ScoreBand.MEDIUM)
         self.assertEqual(result.recommendation, "accept")
@@ -143,15 +182,15 @@ class LocalSyntheticRoomTest(unittest.TestCase):
             self.assertNotIn(forbidden, rendered_metadata)
 
 
-    def test_over_budget_compute_cost_fails_closed_to_reject(self):
+    def test_over_budget_private_meter_emits_no_public_result(self):
         # A deal whose metered developer charge (compute + fee) cannot fit under
         # the budget after the seller offer must be refused in the TEE — the
-        # cost reconciler flips the recommendation to reject and records the
-        # bounded settlement-unsafe verdict, instead of pushing a charge that
-        # would revert on chain.
+        # cost reconciler aborts before a public result or quote can be emitted,
+        # instead of exposing the exact meter or pushing an unsafe settlement.
         private_artifact = b"private synthetic artifact for the over-budget path"
-        artifact_hash = artifact_keccak256(private_artifact)
-        deal_id = "deal-over-budget"
+        commitment_secret = bytes(reversed(range(32)))
+        artifact_hash = artifact_commitment(private_artifact, commitment_secret)
+        deal_id = "102"
         budget_cap = 1_000  # far below the metered compute cost (~1e10 wei)
         reserve_price = 1
         metadata_store = InMemoryRunMetadataStore()
@@ -168,6 +207,8 @@ class LocalSyntheticRoomTest(unittest.TestCase):
             seller="0x000000000000000000000000000000000000005e",
             budget_cap=budget_cap,
             reserve_price=reserve_price,
+            committed_artifact_hash=artifact_hash,
+            evaluator_policy_commitment=EVALUATOR_POLICY,
         )
 
         encrypted = encrypt_artifact_payload(
@@ -175,24 +216,36 @@ class LocalSyntheticRoomTest(unittest.TestCase):
             api.get_tee_keypair().public_key_bytes.hex(),
             deal_id=deal_id,
             artifact_hash=artifact_hash,
+            commitment_secret=commitment_secret,
+            chain_id=84532,
+            diligence_room_address=ROOM,
+            evaluator_policy_commitment=EVALUATOR_POLICY,
         )
         client = TestClient(api.app)
-        with patch("tinker_delegate.api._get_control_plane", return_value=cp):
-            response = client.post(f"/deal/{deal_id}/artifact/encrypted", json=encrypted)
+        with (
+            patch("tinker_delegate.api._get_control_plane", return_value=cp),
+            patch(
+                "tinker_delegate.api._require_wallet_auth",
+                return_value=SimpleNamespace(address="0x000000000000000000000000000000000000005e"),
+            ),
+        ):
+            response = client.post(
+                f"/deal/{deal_id}/artifact/encrypted",
+                json=encrypted,
+                headers={"Authorization": "Bearer synthetic-seller-token"},
+            )
         self.assertEqual(response.status_code, 200)
 
-        result = asyncio.run(cp.evaluate(deal_id, synthetic_room_evaluator))
+        with (
+            patch.object(cp, "_get_tdx_quote", return_value=b"modeled-test-attestation"),
+            self.assertRaisesRegex(RuntimeError, "private metered evaluation cost"),
+        ):
+            asyncio.run(cp.evaluate(deal_id, synthetic_room_evaluator))
 
-        # Band still reflects the quality signal, but settlement is refused.
-        self.assertEqual(result.score_band, ScoreBand.MEDIUM)
-        self.assertFalse(result.settlement_safe)
-        self.assertEqual(result.reconciliation_status, "over_budget")
-        self.assertEqual(result.recommendation, "reject")
-
-        completed = [r for r in metadata_store.records if r["event"] == "evaluation_completed"]
-        self.assertEqual(len(completed), 1)
-        self.assertFalse(completed[0]["settlement_safe"])
-        self.assertEqual(completed[0]["reconciliation_status"], "over_budget")
+        self.assertEqual(cp._deals[deal_id].state, DealState.RESOLVED)
+        self.assertIsNone(cp._deals[deal_id].result)
+        self.assertFalse(any(r["event"] == "evaluation_completed" for r in metadata_store.records))
+        self.assertEqual(metadata_store.records[-1]["event"], "evaluation_failed")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-PLAN_VERSION = "tinker_smoke_command_plan/v1"
+PLAN_VERSION = "tinker_smoke_command_plan/v2"
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST_PATH = DEFAULT_REPO_ROOT / "deployments" / "base-sepolia.json"
 DEFAULT_COMPOSE_PATH = "docker-compose.tinker-funding-validation.phala.yaml"
@@ -32,6 +32,8 @@ class TinkerSmokeCommandPlan:
     delegate_api_url: str
     current_compose_hash: str
     current_compose_approved: bool | None
+    release_policy_frozen: bool | None
+    emergency_halted: bool | None
     app_id: str
     os_image_hash: str
     encumbrance_contract_address: str
@@ -45,13 +47,13 @@ class TinkerSmokeCommandPlan:
     output_path_template: str
     redeploy_argv: tuple[str, ...]
     verify_compose_argv: tuple[str, ...]
-    approve_compose_argv: tuple[str, ...]
+    release_ceremony_argv: tuple[str, ...]
     encumbrance_preflight_argv: tuple[str, ...]
     client_config_install_argv: tuple[str, ...]
     smoke_argv: tuple[str, ...]
     redeploy_shell: str
     verify_compose_shell: str
-    approve_compose_shell: str
+    release_ceremony_shell: str
     encumbrance_preflight_shell: str
     client_config_install_shell: str
     smoke_shell: str
@@ -69,6 +71,8 @@ class TinkerSmokeCommandPlan:
             "delegate_api_url": self.delegate_api_url,
             "current_compose_hash": self.current_compose_hash,
             "current_compose_approved": self.current_compose_approved,
+            "release_policy_frozen": self.release_policy_frozen,
+            "emergency_halted": self.emergency_halted,
             "next_compose_hash_placeholder": NEW_COMPOSE_HASH_PLACEHOLDER,
             "app_id": self.app_id,
             "os_image_hash": self.os_image_hash,
@@ -88,26 +92,31 @@ class TinkerSmokeCommandPlan:
                 f"{self.encumbrance_rpc_env} must be set in the operator shell; value is never printed",
                 "FOUNDRY_KEYSTORE_ACCOUNT must name an encrypted Foundry keystore account; never use a raw private key",
                 f"{self.base_url_env} should be set only if Tinker/provider gives a non-default endpoint",
+                "A compose change requires a fresh halted encumbrance deployment and the exact two-phase Tinker release ceremony",
+                "TINKER_ENCUMBRANCE_RELEASE_PHASE must be 1 for proposal, then 2 only after the two-day timelock",
                 "Live CVM must run source with GET/PUT /tinker/proxy/client-config before install can succeed",
             ],
             "current_live_client_config": self.current_live_client_config,
             "redeploy_argv": list(self.redeploy_argv),
             "verify_compose_argv": list(self.verify_compose_argv),
-            "approve_compose_argv": list(self.approve_compose_argv),
+            "release_ceremony_argv": list(self.release_ceremony_argv),
             "encumbrance_preflight_argv": list(self.encumbrance_preflight_argv),
             "client_config_install_argv": list(self.client_config_install_argv),
             "smoke_argv": list(self.smoke_argv),
             "redeploy_shell": self.redeploy_shell,
             "verify_compose_shell": self.verify_compose_shell,
-            "approve_compose_shell": self.approve_compose_shell,
+            "release_ceremony_shell": self.release_ceremony_shell,
             "encumbrance_preflight_shell": self.encumbrance_preflight_shell,
             "client_config_install_shell": self.client_config_install_shell,
             "smoke_shell": self.smoke_shell,
             "operator_note": (
-                "Approve the currently attested compose hash before a governed smoke. TINKER_PROJECT_ID is optional "
-                "in the official SDK; install it only if Tinker supplies one. Redeploy only when selecting new source, "
-                "then attest and approve the new hash before smoke. "
-                "Do not mark Tinker training real until the bounded receipt proves run/checkpoint/sample/cleanup."
+                "Compose membership is an exact frozen release set and cannot be expanded in place. If a new attested "
+                "compose is selected, deploy a fresh halted encumbrance, run release phase 1, wait the two-day timelock, "
+                "then run phase 2; direct compose approval is intentionally unavailable. TINKER_PROJECT_ID is optional "
+                "in the official SDK; install it only if Tinker supplies one. The legacy single-CVM redeploy command "
+                "is retired; generate and independently review the complete seven-CVM launch artifact set before a "
+                "fresh launch. Do not mark Tinker training real until the bounded receipt proves "
+                "run/checkpoint/sample/cleanup."
             ),
             "raw_secret_egress": False,
         }
@@ -161,6 +170,8 @@ def build_tinker_smoke_command_plan(
         smoke_evidence=smoke_evidence,
         latest_client_config_deploy=latest_client_config_deploy,
     )
+    release_policy_frozen = _optional_bool(encumbrance.get("releasePolicyFrozen"))
+    emergency_halted = _optional_bool(encumbrance.get("emergencyHalted"))
     runtime_env = _dict(latest_client_config_deploy.get("runtimeEnv")) or _dict(
         smoke_evidence.get("runtimeEnv")
     )
@@ -184,10 +195,22 @@ def build_tinker_smoke_command_plan(
         reasons.append("missing_encumbrance_rpc_env")
     if current_compose_approved is False:
         reasons.append("current_compose_not_approved")
+    elif current_compose_approved is None:
+        reasons.append("current_compose_approval_unverified")
+    if release_policy_frozen is False:
+        reasons.append("tinker_release_policy_not_frozen")
+    elif release_policy_frozen is None:
+        reasons.append("tinker_release_policy_unverified")
+    if emergency_halted is True:
+        reasons.append("tinker_emergency_halted")
+    elif emergency_halted is None:
+        reasons.append("tinker_emergency_halt_unverified")
     if base_url_present and not live_contains_base_url:
         reasons.append("live_cvm_missing_tinker_base_url")
     if phala.get("osIsDev") is True:
-        warnings.append("phala_cvm_still_reports_dev_os")
+        reasons.append("phala_cvm_uses_development_os")
+    elif phala.get("osIsDev") is not False:
+        reasons.append("phala_cvm_production_os_posture_unverified")
     if not live_contains_project_id:
         warnings.append("tinker_project_id_not_configured_optional")
     if live_contains_base_url:
@@ -202,23 +225,14 @@ def build_tinker_smoke_command_plan(
         warnings.append("tinker_account_access_unverified")
     _check_spend_cap(reasons, max_usd=max_usd, encumbrance=encumbrance)
 
-    redeploy_argv = (
-        "node",
-        "scripts/redeploy-phala-cvm.mjs",
-        "--app-id",
-        app_id or "<missing-app-id>",
-        "--compose",
-        compose_path,
-        "--runtime-env",
-        runtime_env_path,
-        "--api-env",
-        api_env_path,
-        "--wait-seconds",
-        "480",
-        "--self-compose-hash-env",
-        "TINKER_ENCUMBRANCE_COMPOSE_HASH",
-        "--print-runtime-env-keys",
-    )
+    # The former existing-CVM update helper accepted app-id and env-selection
+    # flags here. That mutation path has been retired: the current helper only
+    # validates a complete, independently reviewed seven-CVM launch artifact set,
+    # and its production commit executor remains sealed until release-ready.
+    # Empty argv is an intentional non-action boundary; do not emit a
+    # plausible-looking command that the current helper rejects.
+    redeploy_argv: tuple[str, ...] = ()
+    warnings.append("legacy_single_cvm_redeploy_retired_reviewed_fresh_batch_required")
     allowed_env_args = (
         "--allowed-env",
         "BASE_SEPOLIA_RPC_URL",
@@ -272,17 +286,23 @@ def build_tinker_smoke_command_plan(
         os_image_hash or "<missing-os-image-hash>",
     )
     governed_compose_hash = _bytes32_arg(current_compose_hash)
-    approve_compose_argv = (
-        "cast",
-        "send",
-        encumbrance_address or "<missing-encumbrance-contract>",
-        "approveComposeHash(bytes32)",
-        governed_compose_hash,
-        "--rpc-url",
-        f"${{{encumbrance_rpc_env}}}",
-        "--account",
-        "${FOUNDRY_KEYSTORE_ACCOUNT}",
+    release_ceremony_argv = (
+        "bash",
+        "contracts/scripts/configure-tinker-release.sh",
     )
+    release_ceremony_env = {
+        encumbrance_rpc_env,
+        "DEPLOYMENT_OPERATOR",
+        "FOUNDRY_KEYSTORE_ACCOUNT",
+        "TINKER_ENCUMBRANCE_ADDRESS",
+        "TINKER_ENCUMBRANCE_RELEASE_ACCOUNT_COMMITMENT",
+        "TINKER_ENCUMBRANCE_RELEASE_COMPOSE_HASH",
+        "TINKER_ENCUMBRANCE_RELEASE_MANAGER",
+        "TINKER_ENCUMBRANCE_RELEASE_MAX_ADD_BALANCE_WEI",
+        "TINKER_ENCUMBRANCE_RELEASE_MAX_SPEND_WEI",
+        "TINKER_ENCUMBRANCE_RELEASE_PHASE",
+        "TINKER_ENCUMBRANCE_RUNTIME_CODE_HASH",
+    }
     encumbrance_preflight_argv = (
         "uv",
         "run",
@@ -357,6 +377,8 @@ def build_tinker_smoke_command_plan(
         delegate_api_url=delegate_api_url,
         current_compose_hash=current_compose_hash,
         current_compose_approved=current_compose_approved,
+        release_policy_frozen=release_policy_frozen,
+        emergency_halted=emergency_halted,
         app_id=app_id,
         os_image_hash=os_image_hash,
         encumbrance_contract_address=encumbrance_address,
@@ -370,7 +392,7 @@ def build_tinker_smoke_command_plan(
         output_path_template=output_path_template,
         redeploy_argv=redeploy_argv,
         verify_compose_argv=verify_compose_argv,
-        approve_compose_argv=approve_compose_argv,
+        release_ceremony_argv=release_ceremony_argv,
         encumbrance_preflight_argv=encumbrance_preflight_argv,
         client_config_install_argv=client_config_install_argv,
         smoke_argv=smoke_argv,
@@ -379,9 +401,9 @@ def build_tinker_smoke_command_plan(
             env_placeholders={project_id_env} if project_id_present else set(),
         ),
         verify_compose_shell=_join_argv(verify_compose_argv, env_placeholders=set()),
-        approve_compose_shell=_shell_command(
-            approve_compose_argv,
-            env_placeholders={encumbrance_rpc_env, "FOUNDRY_KEYSTORE_ACCOUNT"},
+        release_ceremony_shell=_shell_command(
+            release_ceremony_argv,
+            env_placeholders=release_ceremony_env,
         ),
         encumbrance_preflight_shell=_shell_command(
             encumbrance_preflight_argv,
@@ -408,6 +430,10 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def _str(value: Any) -> str:
@@ -452,7 +478,22 @@ def _current_compose_approval(
     latest_client_config_deploy: dict[str, Any],
 ) -> bool | None:
     current = _normalize_hash(current_compose_hash)
+    approved_compose_hashes = encumbrance.get("approvedComposeHashes")
     candidates = (
+        (
+            current_compose_hash,
+            (
+                current
+                in {
+                    _normalize_hash(value)
+                    for value in approved_compose_hashes
+                    if isinstance(value, str)
+                }
+                if isinstance(approved_compose_hashes, list)
+                else None
+            ),
+        ),
+        (encumbrance.get("initialComposeHash"), encumbrance.get("initialComposeHashApproved")),
         (
             latest_client_config_deploy.get("liveComposeHash"),
             latest_client_config_deploy.get("composeApprovedOnChain"),
@@ -519,8 +560,14 @@ def _next_action(*, reasons: list[str], project_id_present: bool, live_contains_
         return "resolve_tinker_account_activation"
     if any(reason in infra_reasons for reason in reasons):
         return "repair_deployment_manifest"
+    if any(reason.endswith("_unverified") for reason in reasons):
+        return "repair_deployment_manifest"
+    if "tinker_release_policy_not_frozen" in reasons:
+        return "propose_exact_release_policy"
+    if "tinker_emergency_halted" in reasons:
+        return "deploy_fresh_encumbrance_release"
     if "current_compose_not_approved" in reasons:
-        return "approve_current_compose"
+        return "deploy_fresh_encumbrance_release"
     if project_id_present and not live_contains_project_id:
         return "seal_client_config"
     if any(reason.startswith("missing_") for reason in reasons):

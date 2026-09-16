@@ -10,6 +10,9 @@ from tinker_delegate.sealed_dataset import (
     decrypt_dataset,
     encrypt_dataset,
     generate_dek,
+    generate_recipient_keypair,
+    public_manifest_projection,
+    seal_dataset,
     unwrap_dek,
     verify_manifest,
     wrap_dek,
@@ -78,13 +81,74 @@ class SealedDatasetTest(unittest.TestCase):
                 chunk_nonces=manifest["chunk"]["chunk_nonces"],
             )
 
-    def test_manifest_is_egress_safe(self):
+    def test_internal_manifest_never_contains_plaintext_or_dek(self):
         plaintext = b"secret expression matrix bytes" * 10
         _, dek, _, _, manifest = self._round(plaintext)
         rendered = json.dumps(manifest)
         self.assertNotIn(dek.hex(), rendered)
         self.assertNotIn(plaintext.decode(errors="ignore")[:10], rendered)
         self.assertFalse(manifest["raw_secret_egress"])
+
+    def test_public_projection_bands_private_shape_and_hashes_storage_ref(self):
+        private_key, public_key = generate_recipient_keypair()
+        del private_key
+        plaintext = b"private-row" * 23
+        storage_ref = "local:///Users/alice/private/sealed/dataset"
+        _blob, internal, receipt = seal_dataset(
+            plaintext,
+            dataset_id="private-dataset",
+            task="denoising",
+            data_sensitivity=DataSensitivity.PRIVATE,
+            recipient_public_keys=[public_key],
+            storage_ref=storage_ref,
+            chunk_size=64,
+        )
+
+        public = public_manifest_projection(internal)
+        self.assertEqual(receipt, {"surface": "seal_dataset", **public})
+        self.assertEqual(public["plaintext_size_band"], "xs_le_4_kib")
+        self.assertEqual(public["chunk_count_band"], "small_1_to_4")
+        self.assertNotIn("plaintext_size", public)
+        self.assertNotIn("chunk_count", public)
+        self.assertNotIn("chunk", public)
+        self.assertNotIn("recipients", public)
+        self.assertNotIn("storage_ref", public)
+        self.assertNotEqual(public["storage_ref_hash"], storage_ref)
+        self.assertNotIn(storage_ref, json.dumps(public))
+        # Exact values remain available to the in-boundary transport path.
+        self.assertEqual(internal["plaintext_size"], len(plaintext))
+        self.assertEqual(internal["chunk"]["chunk_count"], 4)
+        self.assertEqual(internal["storage_ref"], storage_ref)
+
+    def test_distinct_private_inputs_have_same_bounded_public_shape(self):
+        _private_key, public_key = generate_recipient_keypair()
+
+        def project(payload: bytes) -> tuple[dict, dict]:
+            _blob, internal, receipt = seal_dataset(
+                payload,
+                dataset_id="same-declared-dataset",
+                task="denoising",
+                data_sensitivity=DataSensitivity.PRIVATE,
+                recipient_public_keys=[public_key],
+                storage_ref="local:///private/root/same-declared-dataset",
+                chunk_size=64,
+            )
+            bounded = dict(receipt)
+            for field in (
+                "ciphertext_sha256",
+                "manifest_hash",
+            ):
+                bounded[field] = "<opaque-commitment>"
+            return internal, bounded
+
+        first_internal, first_public = project(b"a" * 65)   # exact chunk count 2
+        second_internal, second_public = project(b"b" * 190)  # exact chunk count 3
+        self.assertNotEqual(first_internal["plaintext_size"], second_internal["plaintext_size"])
+        self.assertNotEqual(
+            first_internal["chunk"]["chunk_count"],
+            second_internal["chunk"]["chunk_count"],
+        )
+        self.assertEqual(first_public, second_public)
 
     def test_verify_manifest_happy_and_ciphertext_binding(self):
         plaintext = os.urandom(300)

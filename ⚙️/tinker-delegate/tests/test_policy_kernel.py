@@ -1,9 +1,14 @@
 import json
 import unittest
+from pathlib import Path
+
+from tinker_delegate.execution_policy_store import execution_resource_hash
 
 from tinker_delegate.policy_kernel import (
     AccessRequest,
     CorpusPolicy,
+    MAX_POLICY_KERNEL_PAYLOAD_BYTES,
+    POLICY_CANONICALIZATION_VERSION,
     PolicyKernelError,
     PolicyDecision,
     gate_access_request,
@@ -69,6 +74,48 @@ def _policy(**overrides):
 
 
 class PolicyKernelTest(unittest.TestCase):
+    def test_shared_browser_commitment_vectors_match_exactly(self):
+        path = (
+            Path(__file__).resolve().parents[3]
+            / "web"
+            / "src"
+            / "lib"
+            / "policyCommitmentVectors.json"
+        )
+        document = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            document["schema"],
+            "dnai.execution-policy-commitment-vectors.v1",
+        )
+        for vector in document["vectors"]:
+            result = gate_access_request_payload(
+                vector["bundle"]["request"], vector["bundle"]["policy"]
+            )
+            bounded = result.to_bounded_api_dict()
+            actual = {
+                "canonicalization_version": POLICY_CANONICALIZATION_VERSION,
+                "request_hash": result.request_hash,
+                "policy_hash": result.policy_hash,
+                "resource_id_hash": execution_resource_hash(
+                    vector["surface"], vector["resource_id"]
+                ),
+                "purpose_hash": result.purpose_hash,
+                "pipeline_hash": result.pipeline_hash,
+                "output_schema_hash": result.output_schema_hash,
+                "corpus_ref_hash": bounded["corpus_ref_hash"],
+                "local_evaluation": {
+                    "decision": result.decision.value,
+                    "stage": result.stage,
+                    "reason_code": result.reason_code,
+                    "routed_role": result.routed_role,
+                    "outcomes": [
+                        outcome.to_public_dict()
+                        for outcome in result.outcomes
+                    ],
+                },
+            }
+            self.assertEqual(actual, vector["expected"], vector["name"])
+
     def test_gate_is_pure_and_passes_allowed_request(self):
         request = AccessRequest.from_dict(_request())
         policy = CorpusPolicy.from_dict(_policy())
@@ -85,6 +132,11 @@ class PolicyKernelTest(unittest.TestCase):
         self.assertNotIn("rank-candidates", rendered)
         self.assertNotIn("assay-summary", rendered)
         self.assertIn("purpose_hash", public)
+
+        api_public = first.to_bounded_api_dict()
+        self.assertNotIn("corpus_ref", api_public)
+        self.assertEqual(len(api_public["corpus_ref_hash"]), 64)
+        self.assertFalse(api_public["raw_policy_egress"])
 
     def test_denied_purpose_fails_closed(self):
         result = gate_access_request_payload(
@@ -150,6 +202,27 @@ class PolicyKernelTest(unittest.TestCase):
         rendered = json.dumps(policy_result.to_public_dict(), sort_keys=True)
         self.assertNotIn("allow everything", rendered)
 
+    def test_oversized_and_duplicate_inputs_fail_closed(self):
+        oversized = _request(requester_ref="x" * (MAX_POLICY_KERNEL_PAYLOAD_BYTES + 1))
+        oversized_result = gate_access_request_payload(oversized, _policy())
+        duplicate_result = gate_access_request_payload(
+            _request(data_classes=["assay-summary", "assay-summary"]),
+            _policy(),
+        )
+
+        self.assertEqual(oversized_result.decision, PolicyDecision.DENY)
+        self.assertEqual(oversized_result.reason_code, "malformed_policy_payload")
+        self.assertEqual(duplicate_result.decision, PolicyDecision.DENY)
+        self.assertEqual(duplicate_result.reason_code, "malformed_policy_payload")
+        self.assertNotIn("x" * 128, json.dumps(oversized_result.to_bounded_api_dict()))
+
+    def test_non_mapping_inputs_fail_closed_without_secondary_exception(self):
+        result = gate_access_request_payload([], _policy())  # type: ignore[arg-type]
+
+        self.assertEqual(result.decision, PolicyDecision.DENY)
+        self.assertEqual(result.corpus_ref, "corpus://atlas")
+        self.assertEqual(result.reason_code, "malformed_policy_payload")
+
     def test_unknown_data_class_fails_closed(self):
         result = gate_access_request_payload(
             _request(data_classes=["assay-summary", "unreviewed-private-category"]),
@@ -202,6 +275,47 @@ class PolicyKernelTest(unittest.TestCase):
 
         self.assertEqual(result.decision, PolicyDecision.DENY)
         self.assertEqual(result.reason_code, "unsupported_policy_version")
+
+    def test_explicit_falsy_versions_and_invalid_routes_are_bounded_denies(self):
+        for value in (False, 0, "", None, [], {}):
+            result = gate_access_request_payload(
+                _request(), _policy(version=value)
+            )
+            self.assertEqual(result.decision, PolicyDecision.DENY, repr(value))
+            self.assertEqual(result.reason_code, "malformed_policy_payload")
+
+        for value in ([], {}, None, False, "private-reviewer-not-public"):
+            result = gate_access_request_payload(
+                _request(data_classes=["clinical-summary"]),
+                _policy(hold_routes={"clinical-summary": value}),
+            )
+            self.assertEqual(result.decision, PolicyDecision.DENY, repr(value))
+            self.assertEqual(result.reason_code, "malformed_policy_payload")
+
+    def test_risk_tag_identities_are_bound_with_set_semantics(self):
+        first = gate_access_request_payload(
+            _request(risk_tags=["novel-biology", "manual-review"]),
+            _policy(),
+        )
+        reordered = gate_access_request_payload(
+            _request(risk_tags=["manual-review", "novel-biology"]),
+            _policy(),
+        )
+        changed = gate_access_request_payload(
+            _request(risk_tags=["different-risk", "manual-review"]),
+            _policy(),
+        )
+        self.assertEqual(first.request_hash, reordered.request_hash)
+        self.assertNotEqual(first.request_hash, changed.request_hash)
+
+    def test_astral_unicode_expansion_respects_canonical_payload_limit(self):
+        classes = ["🧬" * 60 + f"-{index}" for index in range(64)]
+        result = gate_access_request_payload(
+            _request(data_classes=[classes[0]]),
+            _policy(known_data_classes=classes),
+        )
+        self.assertEqual(result.decision, PolicyDecision.DENY)
+        self.assertEqual(result.reason_code, "malformed_policy_payload")
         self.assertEqual(result.stage, 0)
 
     def test_policy_result_normalizes_to_coordination_query(self):

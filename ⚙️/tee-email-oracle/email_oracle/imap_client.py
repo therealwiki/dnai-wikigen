@@ -6,11 +6,16 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
+from email.utils import parseaddr
 
 
 from email_oracle.config import Settings
 from email_oracle.cred_store import EmailCredentials
 from email_oracle.redaction import hash_text
+
+
+TINKER_OTP_SENDER = "no-reply@thinkingmachines.ai"
+OTP_EXTRACT_PATTERN = r"\b\d{6}\b"
 
 
 @dataclass
@@ -100,22 +105,20 @@ class IMAPClient:
 
     def search_and_extract(
         self,
-        from_filter: str = "",
+        from_filter: str = TINKER_OTP_SENDER,
         subject_contains: str = "",
         max_age_seconds: int = 300,
-        extract_pattern: str = r"\b\d{6}\b",
     ) -> ExtractedPin | None:
-        """Search inbox for matching emails and extract a pin.
+        """Search the allowlisted OTP mailbox scope and extract six digits.
 
-        Args:
-            from_filter: Filter by sender address (substring match)
-            subject_contains: Filter by subject (substring match)
-            max_age_seconds: Only consider emails newer than this
-            extract_pattern: Regex pattern to extract the pin from body
-
-        Returns:
-            ExtractedPin if found, None otherwise.
+        The API never supplies a regular expression. Keeping the fixed pattern
+        here prevents an authenticated-but-compromised consumer from turning
+        the oracle into a general mailbox-search or regex-execution service.
         """
+        if from_filter.lower() != TINKER_OTP_SENDER:
+            raise ValueError("sender is outside the OTP extraction policy")
+        if subject_contains:
+            raise ValueError("subject filtering is outside the OTP extraction policy")
         conn = self._ensure_connected()
 
         # Build IMAP search criteria
@@ -156,6 +159,12 @@ class IMAPClient:
             sender = self._decode_header(msg.get("From"))
             date_str = msg.get("Date", "")
 
+            # IMAP FROM is only a search hint. Enforce the parsed address again
+            # before inspecting the body so display-name/header substrings cannot
+            # widen the allowlisted sender scope.
+            if parseaddr(sender)[1].strip().lower() != TINKER_OTP_SENDER:
+                continue
+
             # Subject filter
             if subject_contains and subject_contains.lower() not in subject.lower():
                 continue
@@ -164,7 +173,7 @@ class IMAPClient:
             body = self._extract_body(msg)
 
             # Try to extract pin
-            match = re.search(extract_pattern, body)
+            match = re.search(OTP_EXTRACT_PATTERN, body)
             if match:
                 pin = match.group()
                 print(

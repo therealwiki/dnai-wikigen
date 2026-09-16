@@ -37,7 +37,10 @@ class LocalBackendTest(unittest.TestCase):
             self.assertTrue(receipt["ok"])
             self.assertEqual(receipt["backend_scheme"], "local")
             self.assertFalse(receipt["raw_secret_egress"])
-            ref = receipt["storage_ref"]
+            self.assertNotIn("storage_ref", receipt)
+            self.assertTrue(receipt["storage_ref_hash"].startswith("sealed_storage_ref_"))
+            ref = backend.ref_for(manifest["dataset_id"])
+            self.assertNotIn(str(Path(d).resolve()), str(receipt))
             # The stored manifest carries its own storage_ref.
             fetched_blob, fetched_manifest = backend.fetch(ref)
             self.assertEqual(fetched_blob, blob)
@@ -73,8 +76,10 @@ class LocalBackendTest(unittest.TestCase):
 class FetchDecryptTest(unittest.TestCase):
     def _publish(self, d, recipient_pubkeys, plaintext=None):
         plaintext, blob, manifest = _seal(recipient_pubkeys, plaintext=plaintext)
-        receipt = publish_dataset(blob, manifest, LocalStorageBackend(d))
-        return plaintext, receipt["storage_ref"]
+        backend = LocalStorageBackend(d)
+        ref = backend.ref_for(manifest["dataset_id"])
+        publish_dataset(blob, manifest, backend)
+        return plaintext, ref
 
     def test_correct_key_decrypts_and_verifies(self):
         priv, pub = generate_recipient_keypair()
@@ -129,6 +134,30 @@ class FetchDecryptTest(unittest.TestCase):
             blob = json.dumps(receipt)
             self.assertNotIn("MARKER-SECRET-ROWS", blob)
             self.assertNotIn(priv, blob)
+            self.assertNotIn("plaintext_size", receipt)
+            self.assertNotIn("storage_ref", receipt)
+
+    def test_distinct_private_lengths_share_bounded_fetch_shape(self):
+        priv, pub = generate_recipient_keypair()
+
+        def fetch_shape(root, payload):
+            plaintext, blob, manifest = _seal([pub], plaintext=payload)
+            backend = LocalStorageBackend(root)
+            ref = backend.ref_for(manifest["dataset_id"])
+            publish_dataset(blob, manifest, backend)
+            buffer, receipt = fetch_decrypt_dataset(ref, priv, backend=backend)
+            self.assertEqual(bytes(buffer), plaintext)
+            # Opaque commitments may differ without exposing their preimages.
+            bounded = dict(receipt)
+            bounded["storage_ref_hash"] = "<opaque-commitment>"
+            bounded["recipient_key_hash"] = "<opaque-commitment>"
+            return bounded
+
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            first_shape = fetch_shape(first, b"a" * 65)
+            second_shape = fetch_shape(second, b"b" * 3900)
+        self.assertEqual(first_shape, second_shape)
+        self.assertEqual(first_shape["plaintext_size_band"], "xs_le_4_kib")
 
 
 class BackendResolutionTest(unittest.TestCase):
@@ -159,7 +188,9 @@ class BackendResolutionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             priv, pub = generate_recipient_keypair()
             _plaintext, blob, manifest = _seal([pub])
-            ref = publish_dataset(blob, manifest, LocalStorageBackend(d))["storage_ref"]
+            local = LocalStorageBackend(d)
+            ref = local.ref_for(manifest["dataset_id"])
+            publish_dataset(blob, manifest, local)
             backend = backend_for_ref(ref)
             self.assertIsInstance(backend, LocalStorageBackend)
             fetched_blob, _manifest = backend.fetch(ref)

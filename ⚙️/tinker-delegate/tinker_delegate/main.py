@@ -313,19 +313,20 @@ def _validate_prompt_encumbrance_policy(
 
 
 def _wait_for_oracle(settings: Settings) -> None:
-    """Wait until the email oracle reports a healthy inbox."""
+    """Wait for public liveness and authenticated mailbox readiness."""
     oracle = OracleClient(settings)
     deadline = time.time() + settings.bootstrap_oracle_timeout
 
     while time.time() < deadline:
         try:
-            health = oracle.health()
-            if health.get("imap_connected") and health.get("oracle_ready"):
-                print(f"[serve] oracle ready email_hash={health.get('oracle_email_hash', '')}")
-                return
-            print(f"[serve] oracle not ready yet: {health}")
-        except Exception as exc:
-            print(f"[serve] oracle check failed: {redact_text(exc)}")
+            oracle.health()
+            oracle.get_email_status()
+            print("[serve] oracle ready")
+            return
+        except Exception:
+            # Do not reflect an HTTP body that could contain provider or
+            # mailbox state into delegate logs.
+            print("[serve] oracle not ready yet")
 
         time.sleep(settings.bootstrap_oracle_poll_interval)
 
@@ -1354,6 +1355,10 @@ def cli():
     upload_artifact_p.add_argument("deal_id", help="Deal ID to receive the artifact")
     upload_artifact_p.add_argument("artifact_path", help="Path to artifact file")
     upload_artifact_p.add_argument(
+        "commitment_receipt_path",
+        help="Private v2 commitment receipt JSON; never pass its secret on the command line",
+    )
+    upload_artifact_p.add_argument(
         "--compose-hash",
         default="",
         help="Expected dstack compose hash; required unless --allow-local-attestation is set",
@@ -1369,10 +1374,28 @@ def cli():
         action="store_true",
         help="Allow local-mode attestation for development only",
     )
+    upload_artifact_p.add_argument(
+        "--wallet-token-env",
+        default="TINKER_WALLET_AUTH_TOKEN",
+        help="Environment variable containing the deal-scoped seller wallet token",
+    )
+    upload_artifact_p.add_argument(
+        "--diligence-room-address",
+        required=True,
+        help="Exact fresh Base Sepolia DiligenceRoom address bound into envelope v3",
+    )
+    upload_artifact_p.add_argument(
+        "--evaluator-policy-commitment",
+        required=True,
+        help="Exact funded deal evaluator-policy bytes32 bound into envelope v3",
+    )
 
     verify_attestation_p = sub.add_parser(
         "verify-attestation",
-        help="Fetch /attestation and verify public TEE evidence against policy",
+        help=(
+            "Check /attestation envelope consistency against policy; does not "
+            "perform independent Intel DCAP/QVL verification"
+        ),
     )
     verify_attestation_p.add_argument("api_url", help="Tinker delegate API base URL")
     verify_attestation_p.add_argument(
@@ -1401,7 +1424,10 @@ def cli():
 
     verify_cvm_attestation_p = sub.add_parser(
         "verify-cvm-attestation",
-        help="Verify digest-pinned compose input against a live CVM attestation",
+        help=(
+            "Match digest-pinned compose input to a CVM evidence envelope; "
+            "does not produce an Intel TDX verdict"
+        ),
     )
     verify_cvm_attestation_p.add_argument("api_url", help="Tinker delegate API base URL")
     verify_cvm_attestation_p.add_argument("--compose", required=True, help="Docker Compose file")
@@ -1479,7 +1505,10 @@ def cli():
 
     verify_deployment_p = sub.add_parser(
         "verify-deployment-bundle",
-        help="Verify GitHub image attestations plus live Phala CVM attestation",
+        help=(
+            "Verify GitHub image attestations and check Phala CVM envelope "
+            "consistency; TDX remains unverified without independent QVL"
+        ),
     )
     verify_deployment_p.add_argument("api_url", help="Tinker delegate API base URL")
     verify_deployment_p.add_argument("--compose", required=True, help="Docker Compose file")
@@ -1501,12 +1530,12 @@ def cli():
     )
     verify_deployment_p.add_argument(
         "--repo",
-        default="G-structure/dnai-wikigen",
+        default="therealwiki/dnai-wikigen",
         help="GitHub repository that owns the image attestations",
     )
     verify_deployment_p.add_argument(
         "--signer-workflow",
-        default="G-structure/dnai-wikigen/.github/workflows/build-tee-images.yml",
+        default="therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml",
         help="Expected GitHub Actions workflow identity for signed attestations",
     )
     verify_deployment_p.add_argument(
@@ -1829,10 +1858,6 @@ def cli():
     )
     submit_result_p.add_argument("compute_cost_wei", type=int, help="Bounded compute cost in wei")
     submit_result_p.add_argument(
-        "result_hash",
-        help="bytes32 hash of the bounded result payload; the CLI submits an anti-replay commitment",
-    )
-    submit_result_p.add_argument(
         "--authorization-expiry",
         type=int,
         required=True,
@@ -1842,14 +1867,6 @@ def cli():
         "--verifier-signature",
         required=True,
         help="65-byte verifier signature over the DiligenceRoom result authorization digest",
-    )
-    submit_result_p.add_argument(
-        "--reward-transcript-commitment",
-        default="",
-        help=(
-            "Optional bytes32 RLVR reward-transcript commitment to bind into the "
-            "on-chain resultHash (v2 commitment); omit for an unbound v1 submission"
-        ),
     )
     submit_result_p.add_argument("--rpc-url", default="", help="JSON-RPC URL, or TINKER_CHAIN_RPC_URL")
     submit_result_p.add_argument(
@@ -1880,15 +1897,46 @@ def cli():
         help="Bounded score band: negligible, low, medium, high, or exceptional",
     )
     authorize_result_p.add_argument("compute_cost_wei", type=int, help="Bounded compute cost in wei")
-    authorize_result_p.add_argument("result_hash", help="Replay-bound result commitment bytes32")
-    authorize_result_p.add_argument("--chain-id", type=int, required=True, help="Target chain ID")
     authorize_result_p.add_argument("--contract-address", required=True, help="DiligenceRoom address")
-    authorize_result_p.add_argument("--tee-identity", required=True, help="TEE signer address for the deal")
+    authorize_result_p.add_argument(
+        "--rpc-url",
+        default="",
+        help="JSON-RPC URL used to read the immutable deal and fee policy",
+    )
     authorize_result_p.add_argument("--compose-hash", required=True, help="Approved compose hash for this result")
     authorize_result_p.add_argument(
         "--signer-attestation-json",
         required=True,
-        help="Path to bounded signer-attestation JSON, not raw quote material",
+        help=(
+            "Path to service-produced bounded signer-attestation evidence JSON; "
+            "this envelope is not itself an independent TDX verdict"
+        ),
+    )
+    authorize_result_p.add_argument(
+        "--independent-verdict-json",
+        default="",
+        help=(
+            "Path to a fresh signed Intel DCAP/QVL verdict from an independent "
+            "trusted attestation verifier; required except for the explicit "
+            "local-test bypass"
+        ),
+    )
+    authorize_result_p.add_argument(
+        "--allow-unverified-local-attestation",
+        action="store_true",
+        help=(
+            "Allow envelope-only authorization on local chain 1337/31337 for "
+            "simulator tests; never valid for Base Sepolia or production"
+        ),
+    )
+    authorize_result_p.add_argument(
+        "--allow-attestation-verifier-address",
+        action="append",
+        default=[],
+        help=(
+            "Trusted signer address for independent DCAP/QVL verdicts; repeat "
+            "for key rotation"
+        ),
     )
     authorize_result_p.add_argument(
         "--allow-compose-hash",
@@ -1930,11 +1978,116 @@ def cli():
 
     governance_plan_p = sub.add_parser(
         "governance-approval-plan",
-        help="Emit the on-chain approval plan for a verified authorization (developer broadcasts it)",
+        help="Authenticate a signed QVL verdict and emit a review-only approval plan",
     )
     governance_plan_p.add_argument(
-        "authorization_json",
-        help="Path to a bounded authorize-result authorization JSON",
+        "independent_verdict_json",
+        help="Path to the complete signed independent Intel TDX DCAP/QVL verdict JSON",
+    )
+    governance_plan_p.add_argument(
+        "--trusted-attestation-verifier-address",
+        action="append",
+        required=True,
+        help="Externally trusted QVL signer address; repeat for key rotation",
+    )
+    governance_plan_p.add_argument(
+        "--expected-chain-id",
+        type=int,
+        required=True,
+        help="Exact release chain ID",
+    )
+    governance_plan_p.add_argument(
+        "--expected-contract-address",
+        required=True,
+        help="Exact DiligenceRoom address targeted by governance",
+    )
+    governance_plan_p.add_argument(
+        "--expected-tee-identity",
+        required=True,
+        help="Exact dstack-derived CVM signer address",
+    )
+    governance_plan_p.add_argument(
+        "--expected-cvm-domain",
+        required=True,
+        help="Exact target workload domain from the signed release authority",
+    )
+    governance_plan_p.add_argument(
+        "--expected-cvm-id",
+        required=True,
+        help="Exact target workload CVM ID from the signed release authority",
+    )
+    governance_plan_p.add_argument(
+        "--expected-deployment-intent-sha256",
+        required=True,
+        help="Exact signed deployment-intent digest",
+    )
+    governance_plan_p.add_argument(
+        "--expected-release-authority-sha256",
+        required=True,
+        help="Exact signed seven-CVM release-authority digest",
+    )
+    governance_plan_p.add_argument(
+        "--expected-ceremony-nonce",
+        required=True,
+        help="Exact deployment ceremony nonce",
+    )
+    governance_plan_p.add_argument(
+        "--expected-measurement-policy-sha256",
+        required=True,
+        help="Exact linked QVL measurement-policy digest",
+    )
+    governance_plan_p.add_argument(
+        "--expected-compose-hash",
+        required=True,
+        help="Exact release compose hash",
+    )
+    governance_plan_p.add_argument(
+        "--expected-app-id",
+        required=True,
+        help="Exact Phala application ID",
+    )
+    governance_plan_p.add_argument(
+        "--expected-os-image-hash",
+        required=True,
+        help="Exact release OS image hash",
+    )
+    governance_plan_p.add_argument(
+        "--expected-quote-hash",
+        required=True,
+        help="Exact SHA-256 hash of the QVL-verified CVM quote",
+    )
+    governance_plan_p.add_argument(
+        "--expected-attestation-release-policy-hash",
+        required=True,
+        help="Externally pinned QVL release-policy hash for the diligence profile",
+    )
+    governance_plan_p.add_argument(
+        "--expected-attestation-challenge-id",
+        required=True,
+        help="Exact one-time QVL challenge identifier used for this quote",
+    )
+    governance_plan_p.add_argument(
+        "--expected-attestation-challenge-digest",
+        required=True,
+        help="Exact QVL challenge digest bound into quote report_data[32:64]",
+    )
+    governance_plan_p.add_argument(
+        "--expected-attestation-challenge-issued-at",
+        type=int,
+        required=True,
+        help="Exact signed challenge issue time",
+    )
+    governance_plan_p.add_argument(
+        "--expected-attestation-challenge-expires-at",
+        type=int,
+        required=True,
+        help="Exact signed challenge expiry time",
+    )
+    governance_plan_p.add_argument(
+        "--max-verdict-age-seconds",
+        type=int,
+        default=300,
+        help="Maximum signed verdict age/lifetime (default: 300)",
     )
     governance_plan_p.add_argument(
         "--keystore-account",
@@ -3054,6 +3207,9 @@ def cli():
             expected_app_id=args.app_id,
             expected_os_image_hash=args.os_image_hash,
             allow_local=args.allow_local_attestation,
+            chain_id=84532,
+            diligence_room_address=args.diligence_room_address,
+            evaluator_policy_commitment=args.evaluator_policy_commitment,
             auth_token=os.environ.get(args.auth_token_env, ""),
         )
         try:
@@ -3152,7 +3308,9 @@ def cli():
                 args.api_url,
                 args.deal_id,
                 args.artifact_path,
+                args.commitment_receipt_path,
                 policy,
+                wallet_auth_token=os.environ.get(args.wallet_token_env, ""),
             )
         except AttestationVerificationError as exc:
             print(f"[upload-artifact] attestation rejected: {redact_text(exc)}")
@@ -3164,7 +3322,9 @@ def cli():
         print(json.dumps({
             "deal_id": result.deal_id,
             "artifact_hash": result.artifact_hash,
-            "size": result.size,
+            "ciphertext_sha256": result.ciphertext_sha256,
+            "padding_profile": "fixed_1m_v3",
+            "exact_plaintext_size_egress": False,
             "status_code": result.status_code,
             "response": result.response,
         }, indent=2))
@@ -3589,9 +3749,20 @@ def cli():
         source = None
         dispatcher = None
         try:
+            from tinker_delegate.runtime_auth import resolve_runtime_auth_token
+
+            runtime_auth_token = resolve_runtime_auth_token(settings)
+            if not runtime_auth_token:
+                raise ChainWatcherError(
+                    "watch-chain requires configured or dstack-derived runtime auth"
+                )
             source = JsonRpcLogSource(rpc_url, contract_address)
             created_context = cursor_store.load().created_deals if cursor_store is not None else None
-            dispatcher = ChainEventDispatcher(api_url, created_context=created_context)
+            dispatcher = ChainEventDispatcher(
+                api_url,
+                auth_token=runtime_auth_token,
+                created_context=created_context,
+            )
             watcher = ChainWatcher(source, dispatcher)
             for summary in watcher.run(
                 start_block=parse_start_block(from_block),
@@ -3641,6 +3812,12 @@ def cli():
             sys.exit(1)
 
     elif args.command == "authorize-result":
+        from tinker_delegate.chain_submitter import (
+            JsonRpcClient,
+            read_compute_settlement_policy_enabled_from_chain,
+            read_deal_from_chain,
+            read_fee_bps_from_chain,
+        )
         from tinker_delegate.result_verifier import (
             DstackResultVerifierSigner,
             ResultAuthorizationRequest,
@@ -3648,14 +3825,32 @@ def cli():
             ResultVerifierPolicy,
             VerifierSignerUnavailable,
             authorize_result_submission,
+            independent_attestation_verdict_from_public_dict,
             signer_attestation_from_public_dict,
         )
 
+        rpc = None
         try:
+            rpc = JsonRpcClient(args.rpc_url or settings.chain_rpc_url)
+            chain_id = rpc.chain_id()
+            deal = read_deal_from_chain(rpc, args.contract_address, args.deal_id)
+            fee_bps = read_fee_bps_from_chain(rpc, args.contract_address)
+            compute_policy_enabled = read_compute_settlement_policy_enabled_from_chain(
+                rpc,
+                args.contract_address,
+            )
             attestation_payload = json.loads(
                 Path(args.signer_attestation_json).read_text(encoding="utf-8")
             )
             signer_attestation = signer_attestation_from_public_dict(attestation_payload)
+            independent_verdict = None
+            if args.independent_verdict_json:
+                independent_verdict_payload = json.loads(
+                    Path(args.independent_verdict_json).read_text(encoding="utf-8")
+                )
+                independent_verdict = independent_attestation_verdict_from_public_dict(
+                    independent_verdict_payload
+                )
             policy = ResultVerifierPolicy(
                 allowed_compose_hashes=tuple(args.allow_compose_hash),
                 allowed_app_ids=tuple(args.allow_app_id),
@@ -3667,22 +3862,45 @@ def cli():
                     if args.ttl_seconds is not None
                     else settings.chain_result_authorization_ttl_seconds
                 ),
+                trusted_attestation_verifier_addresses=tuple(
+                    args.allow_attestation_verifier_address
+                ),
+                attestation_release_policy_hash=(
+                    settings.chain_attestation_release_policy_hash
+                ),
+                attestation_domain="main_runtime_cvm",
+                attestation_cvm_id=settings.main_runtime_cvm_id,
+                attestation_deployment_intent_sha256=(
+                    settings.release_deployment_intent_sha256
+                ),
+                attestation_release_authority_sha256=(
+                    settings.release_authority_sha256
+                ),
+                attestation_ceremony_nonce=settings.release_ceremony_nonce,
+                attestation_measurement_policy_sha256=(
+                    settings.diligence_qvl_measurement_policy_sha256
+                ),
+                allow_unverified_local_attestation=(
+                    args.allow_unverified_local_attestation
+                ),
             )
             request = ResultAuthorizationRequest(
-                chain_id=args.chain_id,
+                chain_id=chain_id,
                 contract_address=args.contract_address,
                 deal_id=args.deal_id,
-                tee_identity=args.tee_identity,
+                deal=deal,
+                fee_bps=fee_bps,
+                compute_settlement_policy_enabled=compute_policy_enabled,
                 compose_hash=args.compose_hash,
                 score_band=args.score_band,
                 compute_cost_wei=args.compute_cost_wei,
-                result_hash=args.result_hash,
             )
             authorization = authorize_result_submission(
                 request,
                 signer_attestation=signer_attestation,
                 policy=policy,
                 verifier_signer=DstackResultVerifierSigner.from_settings(settings),
+                independent_verdict=independent_verdict,
             )
             _emit_bounded_json(
                 authorization.to_public_dict(),
@@ -3699,17 +3917,66 @@ def cli():
         except Exception as exc:
             print(f"[authorize-result] failed: {redact_text(exc)}")
             sys.exit(1)
+        finally:
+            if rpc is not None:
+                rpc.close()
 
     elif args.command == "governance-approval-plan":
-        from tinker_delegate.governance_plan import build_governance_plan_from_public_dict
-        from tinker_delegate.result_verifier import ResultVerifierError
+        from tinker_delegate.chain_submitter import signer_attestation_report_data
+        from tinker_delegate.governance_plan import build_governance_plan_from_verdict
+        from tinker_delegate.result_verifier import (
+            IndependentAttestationExpectation,
+            ResultVerifierError,
+            independent_attestation_verdict_from_public_dict,
+        )
 
         try:
-            authorization_payload = json.loads(
-                Path(args.authorization_json).read_text(encoding="utf-8")
+            verdict_payload = json.loads(
+                Path(args.independent_verdict_json).read_text(encoding="utf-8")
             )
-            plan = build_governance_plan_from_public_dict(
-                authorization_payload,
+            if not isinstance(verdict_payload, dict):
+                raise ResultVerifierError("independent verdict JSON must be an object")
+            verdict = independent_attestation_verdict_from_public_dict(verdict_payload)
+            report_data = "0x" + signer_attestation_report_data(
+                signer_address=args.expected_tee_identity,
+                chain_id=args.expected_chain_id,
+                contract_address=args.expected_contract_address,
+            ).hex()
+            expectation = IndependentAttestationExpectation(
+                trusted_verifier_addresses=tuple(
+                    args.trusted_attestation_verifier_address
+                ),
+                chain_id=args.expected_chain_id,
+                domain=args.expected_cvm_domain,
+                profile="diligence",
+                cvm_id=args.expected_cvm_id,
+                deployment_intent_sha256=(
+                    args.expected_deployment_intent_sha256
+                ),
+                release_authority_sha256=(
+                    args.expected_release_authority_sha256
+                ),
+                ceremony_nonce=args.expected_ceremony_nonce,
+                measurement_policy_sha256=(
+                    args.expected_measurement_policy_sha256
+                ),
+                release_policy_hash=args.expected_attestation_release_policy_hash,
+                challenge_id=args.expected_attestation_challenge_id,
+                challenge_digest=args.expected_attestation_challenge_digest,
+                challenge_issued_at=args.expected_attestation_challenge_issued_at,
+                challenge_expires_at=args.expected_attestation_challenge_expires_at,
+                quote_hash=args.expected_quote_hash,
+                report_data=report_data,
+                compose_hash=args.expected_compose_hash,
+                app_id=args.expected_app_id,
+                os_image_hash=args.expected_os_image_hash,
+                signer_address=args.expected_tee_identity,
+                contract_address=args.expected_contract_address,
+                max_age_seconds=args.max_verdict_age_seconds,
+            )
+            plan = build_governance_plan_from_verdict(
+                verdict,
+                expectation=expectation,
                 keystore_account=args.keystore_account,
             )
             _emit_bounded_json(plan.to_public_dict(), output_path=args.output)
@@ -3756,11 +4023,9 @@ def cli():
                 deal_id=args.deal_id,
                 score_band=args.score_band,
                 compute_cost_wei=args.compute_cost_wei,
-                result_hash=args.result_hash,
                 authorization_expiry=args.authorization_expiry,
                 verifier_signature=args.verifier_signature,
                 signer_attestation=signer_attestation,
-                reward_transcript_commitment=args.reward_transcript_commitment,
             )
             _emit_bounded_json(receipt.to_public_dict())
         except SignerUnavailable as exc:
@@ -3798,6 +4063,11 @@ def cli():
             host=args.host,
             port=args.port,
             log_level="info",
+            # The wallet challenge limiter owns forwarded-client identity and
+            # accepts it only from explicitly pinned proxy CIDRs. Leaving
+            # Uvicorn's generic proxy-header rewriting enabled would erase the
+            # direct socket peer before that policy can authenticate it.
+            proxy_headers=False,
         )
 
 

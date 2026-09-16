@@ -16,6 +16,23 @@ from typing import Any
 
 
 SUPPORTED_POLICY_VERSION = "policy-kernel/v1"
+# This pins the byte-level hashing contract shared by the CVM and browser.
+# Changing JSON ordering, escaping, default fields, or hash domains requires a
+# new value and a coordinated release; it must never be inferred from an API
+# response controlled by the runtime being approved.
+POLICY_CANONICALIZATION_VERSION = "policy-kernel-canonicalization/v2"
+ZERO_EXECUTION_CONTEXT_HASH = "0" * 64
+PUBLIC_REVIEW_ROLES = frozenset(
+    {
+        "access-review-officer",
+        "expert-in-the-loop",
+        "ethics-legal-reviewer",
+    }
+)
+MAX_POLICY_KERNEL_PAYLOAD_BYTES = 32_768
+MAX_POLICY_STRING_BYTES = 256
+MAX_POLICY_LIST_ITEMS = 64
+MAX_POLICY_MAP_ITEMS = 64
 
 _REQUEST_FIELDS = {
     "request_id",
@@ -102,7 +119,11 @@ class CorpusPolicy:
         _reject_unknown_fields(payload, _POLICY_FIELDS, "corpus policy")
         return cls(
             policy_id=_require_string(payload, "policy_id"),
-            version=str(payload.get("version") or SUPPORTED_POLICY_VERSION),
+            version=(
+                _require_string(payload, "version")
+                if "version" in payload
+                else SUPPORTED_POLICY_VERSION
+            ),
             corpus_ref=_require_string(payload, "corpus_ref"),
             allowed_purposes=_require_string_tuple(payload, "allowed_purposes"),
             denied_purposes=_optional_string_tuple(payload, "denied_purposes", ()),
@@ -166,6 +187,10 @@ class PolicyGateResult:
     routed_role: str = ""
     request_hash: str = ""
     policy_hash: str = ""
+    # Populated by the execution-binding layer after the pure kernel runs.
+    # Zero means that the surface has no additional immutable execution
+    # context beyond its resource identity in this release.
+    execution_context_hash: str = ZERO_EXECUTION_CONTEXT_HASH
     purpose_hash: str = ""
     pipeline_hash: str = ""
     output_schema_hash: str = ""
@@ -181,12 +206,24 @@ class PolicyGateResult:
             "routed_role": self.routed_role,
             "request_hash": self.request_hash,
             "policy_hash": self.policy_hash,
+            "execution_context_hash": self.execution_context_hash,
             "purpose_hash": self.purpose_hash,
             "pipeline_hash": self.pipeline_hash,
             "output_schema_hash": self.output_schema_hash,
             "outcomes": [outcome.to_public_dict() for outcome in self.outcomes],
             "raw_secret_egress": self.raw_secret_egress,
         }
+
+    def to_bounded_api_dict(self) -> dict[str, Any]:
+        """Return the HTTP-safe view without the raw corpus reference."""
+
+        public = self.to_public_dict()
+        public.pop("corpus_ref", None)
+        public["corpus_ref_hash"] = _stable_hash(
+            self.corpus_ref, prefix="corpus_ref"
+        )
+        public["raw_policy_egress"] = False
+        return public
 
     def to_gated_query(self):
         """Convert a policy result into the coordination reducer query shape."""
@@ -267,15 +304,30 @@ def gate_access_request_payload(request_payload: dict[str, Any], policy_payload:
     """Strict dict entrypoint that fails closed on malformed or unknown fields."""
 
     try:
+        _require_bounded_payload(request_payload, "access request")
+        _require_bounded_payload(policy_payload, "corpus policy")
         request = AccessRequest.from_dict(request_payload)
         policy = CorpusPolicy.from_dict(policy_payload)
     except PolicyKernelError as exc:
-        request_hash = _stable_hash(request_payload, prefix="malformed_request")
-        policy_hash = _stable_hash(policy_payload, prefix="malformed_policy")
+        request_hash = _malformed_payload_hash(
+            request_payload, prefix="malformed_request"
+        )
+        policy_hash = _malformed_payload_hash(
+            policy_payload, prefix="malformed_policy"
+        )
         reason = _parse_error_reason(str(exc))
+        candidate_corpus_ref = (
+            policy_payload.get("corpus_ref")
+            if isinstance(policy_payload, dict)
+            else ""
+        )
         return PolicyGateResult(
             decision=PolicyDecision.DENY,
-            corpus_ref=str(policy_payload.get("corpus_ref") or ""),
+            corpus_ref=(
+                candidate_corpus_ref
+                if _is_bounded_string(candidate_corpus_ref)
+                else ""
+            ),
             stage=0,
             reason_code=reason,
             request_hash=request_hash,
@@ -348,6 +400,10 @@ def _bounded_request_shape(request: AccessRequest) -> dict[str, Any]:
         "data_class_hashes": _category_hashes(request.data_classes),
         "output_schema_hash": _stable_hash(request.output_schema, prefix="output_schema"),
         "operation_hashes": [_stable_hash(operation, prefix="operation") for operation in request.operations],
+        "risk_tag_hashes": tuple(
+            _stable_hash(risk_tag, prefix="risk_tag")
+            for risk_tag in sorted(request.risk_tags)
+        ),
         "risk_tag_count": len(request.risk_tags),
     }
 
@@ -398,6 +454,8 @@ def _category_hashes(categories: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], label: str) -> None:
+    if not isinstance(payload, dict):
+        raise PolicyKernelError(f"invalid {label} payload")
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise PolicyKernelError(f"unknown {label} field")
@@ -405,7 +463,7 @@ def _reject_unknown_fields(payload: dict[str, Any], allowed: set[str], label: st
 
 def _require_string(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value:
+    if not _is_bounded_string(value):
         raise PolicyKernelError(f"missing or invalid {key}")
     return value
 
@@ -425,22 +483,79 @@ def _optional_string_tuple(payload: dict[str, Any], key: str, default: tuple[str
 
 
 def _string_tuple(value: Any, key: str) -> tuple[str, ...]:
-    if not isinstance(value, list | tuple) or not value:
+    if (
+        not isinstance(value, list | tuple)
+        or not value
+        or len(value) > MAX_POLICY_LIST_ITEMS
+    ):
         raise PolicyKernelError(f"missing or invalid {key}")
-    if not all(isinstance(item, str) and item for item in value):
+    if not all(
+        _is_bounded_string(item)
+        for item in value
+    ):
         raise PolicyKernelError(f"invalid {key}")
-    return tuple(value)
+    normalized = tuple(value)
+    if len(set(normalized)) != len(normalized):
+        raise PolicyKernelError(f"invalid {key}")
+    return normalized
 
 
 def _optional_string_map(payload: dict[str, Any], key: str) -> dict[str, str] | None:
     if key not in payload:
         return None
     value = payload[key]
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or len(value) > MAX_POLICY_MAP_ITEMS:
         raise PolicyKernelError(f"invalid {key}")
-    if not all(isinstance(k, str) and k and isinstance(v, str) and v for k, v in value.items()):
+    if not all(
+        _is_bounded_string(k)
+        and isinstance(v, str)
+        and v in PUBLIC_REVIEW_ROLES
+        for k, v in value.items()
+    ):
         raise PolicyKernelError(f"invalid {key}")
     return dict(value)
+
+
+def _require_bounded_payload(payload: Any, label: str) -> None:
+    """Reject malformed or oversized policy inputs before detailed parsing."""
+
+    if not isinstance(payload, dict):
+        raise PolicyKernelError(f"invalid {label} payload")
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise PolicyKernelError(f"invalid {label} payload") from exc
+    if len(encoded) > MAX_POLICY_KERNEL_PAYLOAD_BYTES:
+        raise PolicyKernelError(f"oversized {label} payload")
+
+
+def _is_bounded_string(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_POLICY_STRING_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
+def _malformed_payload_hash(payload: Any, *, prefix: str) -> str:
+    """Hash malformed input without reflecting it or requiring it to be JSON."""
+
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError, UnicodeError):
+        encoded = f"non-json:{type(payload).__name__}".encode("ascii", "replace")
+    return hashlib.sha256(prefix.encode("utf-8") + b"\0" + encoded).hexdigest()
 
 
 def _parse_error_reason(message: str) -> str:

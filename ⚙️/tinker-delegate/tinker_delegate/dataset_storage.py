@@ -1,16 +1,19 @@
 """Pluggable storage backends for portable, TEE-sealed datasets.
 
 The sealed-dataset crypto path (`sealed_dataset.py`) produces a ciphertext blob
-plus a bounded manifest; *where* those bytes live is a separate concern. This
-adapter keeps publish/fetch of the opaque blob+manifest strictly outside the
-crypto path so adding a backend never touches encryption.
+plus an exact internal transport manifest; *where* those bytes live is a
+separate concern. This adapter keeps publish/fetch of the opaque blob+manifest
+strictly outside the crypto path so adding a backend never touches encryption.
 
-Trust boundary: backends move only ciphertext and the bounded manifest, which
-already carry no DEK or plaintext. A backend is untrusted transport; integrity
-is re-established after fetch by `sealed_dataset.verify_manifest` (ciphertext
+Trust boundary: backends move only ciphertext and the internal manifest, which
+carry no DEK or plaintext but do contain exact integrity metadata. A backend is
+untrusted transport; integrity is re-established after fetch by
+`sealed_dataset.verify_manifest` (ciphertext
 hash) and, on decrypt, by the per-chunk GCM tags and the plaintext-hash check.
 Backend credentials (HF/S3 tokens) come from the environment only and are never
-placed in a ref, manifest, or receipt.
+placed in a ref, manifest, or receipt. Public receipts never return a raw ref:
+local refs contain absolute paths and remote refs may identify private buckets
+or carry capabilities. They expose only a domain-separated ref commitment.
 
 A storage ref is `"<scheme>://<location>/<dataset_id>"`. The backend stores and
 fetches two objects under that ref: `<ref-without-scheme>.blob` and
@@ -217,14 +220,18 @@ def publish_dataset(
     manifest: dict[str, Any],
     backend: StorageBackend,
 ) -> dict[str, Any]:
-    """Verify manifest binds the blob, publish both, return a bounded receipt.
+    """Verify manifest binds the blob, publish both, return a public receipt.
 
     The stored manifest is stamped with the resolved `storage_ref`. A manifest
     that already carries an owner signature is refused (mutating a signed field
     would break the signature); re-seal or sign after publish instead.
     """
 
-    from tinker_delegate.sealed_dataset import manifest_hash, verify_manifest
+    from tinker_delegate.sealed_dataset import (
+        manifest_hash,
+        storage_ref_commitment,
+        verify_manifest,
+    )
 
     verification = verify_manifest(manifest, blob=blob)
     if not verification["ok"]:
@@ -248,7 +255,8 @@ def publish_dataset(
         "surface": "publish_dataset",
         "ok": True,
         "dataset_id": dataset_id,
-        "storage_ref": ref,
+        "storage_ref_hash": storage_ref_commitment(ref),
+        "storage_ref_returned": False,
         "backend_scheme": backend.scheme,
         "ciphertext_sha256": stamped["ciphertext_sha256"],
         "recipient_count": len(stamped.get("recipients", [])),
@@ -276,8 +284,10 @@ def fetch_decrypt_dataset(
     from tinker_delegate.crypto import TEEKeyPair
     from tinker_delegate.sealed_dataset import (
         SealedDatasetError,
+        bounded_plaintext_size_band,
         decrypt_dataset,
         recipient_key_hash,
+        storage_ref_commitment,
         unwrap_dek,
         verify_manifest,
     )
@@ -289,7 +299,8 @@ def fetch_decrypt_dataset(
     base_receipt = {
         "surface": "fetch_decrypt_dataset",
         "dataset_id": dataset_id,
-        "storage_ref": ref,
+        "storage_ref_hash": storage_ref_commitment(ref),
+        "storage_ref_returned": False,
         "backend_scheme": resolved.scheme,
         "manifest_ok": verification["ok"],
         "manifest_problems": verification["problems"],
@@ -332,5 +343,5 @@ def fetch_decrypt_dataset(
 
     base_receipt["decrypted"] = True
     base_receipt["plaintext_sha256_verified"] = True
-    base_receipt["plaintext_size"] = len(plaintext)
+    base_receipt["plaintext_size_band"] = bounded_plaintext_size_band(len(plaintext))
     return plaintext, base_receipt

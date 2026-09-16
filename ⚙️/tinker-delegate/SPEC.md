@@ -5,6 +5,12 @@
 > **Context**: NDAI / tinker-deligate hackathon
 > **Depends on**: TEE Email Oracle (`⚙️/tee-email-oracle/SPEC.md`)
 
+> **Deployment provenance**: Every concrete Base Sepolia address, transaction,
+> Phala CVM/app ID, balance, and live probe below is retained as historical
+> prior-operator evidence. It is not controlled by the current release
+> operator and does not authorize this working tree. No fresh project-owned
+> seven-contract suite or seven-CVM topology has been deployed for this release.
+
 ## 1. Problem
 
 The NDAI evaluator agent needs to assess the value of private artifacts (datasets, training recipes, reward functions) inside a TEE. Looking at data isn't enough — the most honest evaluation is to **train a model on it and measure the result**. But the trained model is an information-theoretic derivative of the seller's data. If it leaks, the seller loses leverage exactly as if the raw data leaked.
@@ -22,7 +28,7 @@ We need:
 | Decision | Resolution |
 |---|---|
 | **Who pays Tinker compute?** | The buyer. Compute cost is deducted from their escrow alongside the deal payment. |
-| **How is the Tinker account funded?** | Pre-funded by the developers (us) is still the intended production model. `TINKER_FUNDING_MODE=manual_prefund` denies raw-card/add-balance browser automation by default; the encrypted raw-card channel is limited to opt-in `operator_capped_validation` for a one-off capped operator-owned validation path. Runtime bearer auth protects operator-only mutation endpoints when `TINKER_RUNTIME_AUTH_REQUIRED=true`: `/auth/reauth`, `/billing/card/encrypted`, `/billing/add-balance`, `/billing/funding-receipts`, and the explicitly local plaintext card endpoint. `TinkerAccountEncumbrance.sol` adds an on-chain policy/audit surface; the Base Sepolia deployment at `0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e` has `$10` add-balance/spend caps after tx `0x3ab263bb7cb7758787fa1136dd043cca002db9cf511b29ad20ef4d1216199d3f`. The low-value operator-validation lane has proven funding: bounded packet `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, replay verification passed with deployed attestation, and bounded balance read-back now reports `$10.00` without card details. This remains non-production: the live CVM still uses dev/debug posture, production/repeated funding needs official Tinker or Stripe-hosted/tokenized rails plus compliance review, and the latest live client-config compose `0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085` still needs on-chain approval before it can be used for the next compute-smoke lane. |
+| **How is the Tinker account funded?** | Pre-funded by the developers (us) is still the intended production model. `TINKER_FUNDING_MODE=manual_prefund` denies raw-card/add-balance browser automation by default; the encrypted raw-card channel is limited to opt-in `operator_capped_validation` for a one-off capped operator-owned validation path. Runtime bearer auth protects operator-only mutation endpoints when `TINKER_RUNTIME_AUTH_REQUIRED=true`: `/auth/reauth`, `/billing/card/encrypted`, `/billing/add-balance`, `/billing/funding-receipts`, and the explicitly local plaintext card endpoint. `GET /billing/balance` always requires configured runtime auth or a proxy JWT with `billing:balance` and returns only a stable band. `TinkerAccountEncumbrance.sol` adds an on-chain policy/audit surface; the Base Sepolia deployment at `0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e` has `$10` add-balance/spend caps after tx `0x3ab263bb7cb7758787fa1136dd043cca002db9cf511b29ad20ef4d1216199d3f`. The low-value operator-validation lane has proven funding: bounded packet `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, replay verification passed with deployed attestation, and the current public balance read returns `10_100_usd` rather than exact currency. This remains non-production: the live CVM still uses dev/debug posture, production/repeated funding needs official Tinker or Stripe-hosted/tokenized rails plus compliance review, and the latest live client-config compose `0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085` still needs on-chain approval before it can be used for the next compute-smoke lane. |
 | **Fee structure** | 1% surcharge on top of raw Tinker API costs, paid to the developer account. |
 | **Evaluation protocol** | Up to the agent and its owner (the buyer). The agent decides base model, steps, benchmarks autonomously. |
 | **`ttl_seconds` on checkpoints** | Mandatory on every save. Dead man's switch — Tinker auto-deletes even if our cleanup never runs. |
@@ -97,8 +103,9 @@ PHASE 0: EMAIL
 PHASE 1: TINKER SIGNUP  LOCAL VALIDATED — deployed CVM validation pending
   Neko browser → tinker-console.thinkingmachines.ai → auth.thinkingmachines.ai
   → enter cock.email address → Continue → magic-code page (6-digit OTP)
-  → delegate calls authenticated email oracle POST /pin with target service,
-    expected sender, nonce, caller identity, reason, max age, and bounded regex
+  → delegate calls authenticated email oracle POST /pin for the single
+    allowlisted Tinker OTP capability (fixed exact sender + fixed six-digit
+    pattern; no caller-selected subject or regex); raw mail metadata stays sealed
   → enter code into 6x input[inputmode="numeric"] boxes → authenticated
   → complete onboarding form (name + TOS checkbox) → welcome page
   → navigate to /keys → click "New key" → click "Generate key"
@@ -115,10 +122,15 @@ PHASE 1: TINKER SIGNUP  LOCAL VALIDATED — deployed CVM validation pending
   fixed, GitHub-attested oracle image reached IMAP verification. That proof also
   showed public `/health` exposed the generated mailbox address, so source now
   bounds public `/health` and `/attestation` to readiness plus
-  `oracle_email_hash` and moves raw address retrieval to runtime-authenticated
-  `/email`. A second Phala debug proof with the bounded-health image confirmed
-  public `/health` and `/attestation` return `oracle_email=""` with hash-only
-  readiness, while unauthenticated `/email` returns 401.
+  `oracle_email_hash`. A historical intermediate build moved raw address
+  retrieval to runtime-authenticated `/email`; that design is now superseded.
+  `/inbox` is absent, and `/email` returns only readiness, a domain-separated
+  address commitment, its scheme, and `raw_email_egress=false`. Account
+  automation must receive the raw address through an in-CVM sealed/bootstrap
+  path rather than an HTTP response. A second Phala debug proof with the older
+  bounded-health image confirmed public `/health` and `/attestation` returned
+  `oracle_email=""` with hash-only readiness; that proof predates the stronger
+  commitment-only `/email` boundary.
   MAIN-CVM MAILBOX FINDING: a one-shot main Phala CVM deployment using
   `docker-compose.mailbox-genesis.phala.yaml` generated and sealed the mailbox
   while Tinker bootstrap, billing, add-balance, API-key provisioning, and
@@ -307,7 +319,8 @@ PHASE 1: TINKER SIGNUP  LOCAL VALIDATED — deployed CVM validation pending
   Tinker-minimum `$10` flow still needs the on-chain cap raised before preflight
   and top-up can be considered ready.
   The first approved real-card validation did not fund the account: live
-  `/billing/balance` returned `$0.00`; the payment-method receipt reached
+  the historical pre-hardening `/billing/balance` returned `$0.00`; the current
+  route returns only a stable balance band. The payment-method receipt reached
   `payment_submitted` and saw bounded card-management copy; add-balance opened
   the modal but returned bounded `selector_missing` because the amount input was
   not found. Source/tests now repair that classification/selector gap, add
@@ -607,10 +620,15 @@ Orchestrates the deal lifecycle. Watches the on-chain escrow contract, creates/d
 
 ```
 POST /deal/{deal_id}/artifact/encrypted
-  Auth: seller's signature
-  Body: artifact encrypted to the attestation-exposed TEE public key
-  → Decrypts inside TEE, verifies artifactHash, stores artifact in memory
-    (never on disk)
+  Auth: short-lived, deal-scoped artifact:upload token from seller wallet signature
+  Body: constant-size envelope v3 encrypted to the attestation-exposed TEE public key,
+        caller artifact_hash, exact commitment/envelope scheme literals, and
+        padding_profile=fixed_1m_v3
+  → Matches artifact_hash to the immutable DealCreated commitment before
+    decrypting; binds Base Sepolia, the fresh room address, deal ID, artifact
+    commitment, and immutable funded evaluator policy in HKDF/AAD; verifies the
+    private length, secret, and exact bytes inside the fixed frame; and stores
+    only the raw artifact in memory (never on disk)
 
 POST /deal/{deal_id}/artifact
   Auth: seller's signature
@@ -658,7 +676,7 @@ Minimal escrow state machine on Base Sepolia. Enforces the NDAI deal lifecycle o
 pragma solidity ^0.8.24;
 
 contract DiligenceRoom {
-    enum State { Created, Funded, Evaluating, Accepted, Rejected, Expired }
+    enum State { Created, Funded, Evaluated, Accepted, Rejected, Expired }
 
     struct Deal {
         address seller;
@@ -667,15 +685,16 @@ contract DiligenceRoom {
         uint256 budgetCap;
         uint256 expiry;
         State state;
-        bytes32 artifactHash;       // keccak256 of encrypted artifact
-        bytes32 teeIdentity;        // TDX-derived address of the CVM
-        bytes32 resultHash;         // keccak256 of bounded evaluation result
-        uint256 computeCost;        // Tinker compute cost (reported by TEE)
+        bytes32 artifactHash;       // keccak256(v2 domain || 0x00 || secret32 || raw artifact)
+        address teeIdentity;        // dstack-derived address of the CVM
+        uint8 scoreBand;            // bounded public policy output
+        bytes32 resultHash;         // canonical DiligenceRoomPublicResult commitment
+        uint256 computeCost;        // deterministic public tariff, not raw metering
         uint256 fee;                // 1% surcharge on compute cost
     }
 
     address public developer;       // receives compute cost + fee
-    uint256 public constant FEE_BPS = 100; // 1% = 100 basis points
+    uint256 public feeBps;          // governed then frozen for production
 
     mapping(uint256 => Deal) public deals;
     uint256 public nextDealId;
@@ -692,22 +711,29 @@ contract DiligenceRoom {
         uint256 reservePrice,
         uint256 expiry,
         bytes32 artifactHash,
-        bytes32 teeIdentity
+        address teeIdentity
     ) external returns (uint256 dealId);
 
     // Buyer funds the deal — msg.value covers budget_cap + max compute + fee
     function fundDeal(uint256 dealId) external payable;
 
-    // TEE submits bounded result + metered compute cost after verifier auth.
+    // TEE submits only bounded policy fields after verifier authorization.
+    // The contract rejects non-policy compute and derives resultHash itself.
     function submitResult(
         uint256 dealId,
         ScoreBand scoreBand,
         uint256 computeCost,
-        bytes32 resultHash,
         bytes32 composeHash,
         uint256 authorizationExpiry,
         bytes calldata verifierSignature
     ) external;  // callable only by teeIdentity with resultVerifier authorization
+
+    function canonicalResultHash(
+        uint256 dealId,
+        bytes32 composeHash,
+        ScoreBand scoreBand,
+        uint256 computeCost
+    ) external view returns (bytes32);
 
     // Buyer accepts — three-way settlement:
     //   seller gets deal_payment
@@ -1182,7 +1208,7 @@ session.save_for_sampling(name="eval", ttl_seconds=int(ttl))
 
 1. **Tinker console signup flow** — Local Neko/CDP automation works against the live Tinker UI as of 2026-07-08: OTP arrives through the email oracle, onboarding completes, and API-key provisioning captures a one-time `tml-...` key. The deployed one-shot bootstrap profile now uses headed Neko CDP instead of the Playwright sidecar and has been Phala-tested, but production signup is still not complete: the sidecar attempt failed closed with `auth_access_blocked`; the first headed-Neko retry failed closed with generic `bootstrap_error`; the next instrumented headed-Neko retry captured a bounded `tinker_auth` `unknown_failure` receipt at `not_started`; and the latest retry preserves that outcome in top-level `bootstrap_error_kind` without API-key sealing.
 
-2. **Tinker billing settings page** — Browser automation and encrypted card-channel code exist. Local Neko reaches the Stripe Elements payment form, fills the test card, and has returned bounded decline/failure receipts without exposing card details. Add-balance enforces whole-dollar `TINKER_MIN_ADD_BALANCE_USD` / `TINKER_MAX_ADD_BALANCE_USD` policy before browser launch, returning bounded `policy_denied` receipts for non-finite, non-positive, below-minimum, fractional, or over-cap requests. Tinker's current UI minimum is `$10`, so source/config defaults now use `$10` for both min and validation cap. `add-card-encrypted-prompt` and `funding-validation-packet --prompt-card --run-card-attempt` are the intended operator paths for approved real-card validation because they prompt interactively instead of placing card fields in command-line arguments, require deployed attestation expectations unless explicitly run in local-development mode, and can require live `TinkerAccountEncumbrance` approval before prompting. The first approved real-card validation did not top up the account, but the later same-context reauth/add-balance packet did: `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, `check-funding-validation-packet --require-deployed-attestation` passed, and bounded balance read-back returned `$10.00`. The add-balance receipt is intentionally conservative because explicit success copy was not observed, but the bounded balance read is current funding evidence. Card-on-file status and removal paths return only bounded booleans/bands/receipts, never card brand, last4, expiry, address, or page text. `TINKER_FUNDING_MODE=manual_prefund` remains the default production model and denies encrypted card/add-balance automation before decryption or browser launch; `operator_capped_validation` is required for deliberate capped operator validation. Production/repeated funding should use an official Tinker route, Stripe-hosted/tokenized collection, SetupIntent / PaymentMethod reuse with consent, or manual/developer prefunding until compliance review approves otherwise.
+2. **Tinker billing settings page** — Browser automation and encrypted card-channel code exist. Local Neko reaches the Stripe Elements payment form, fills the test card, and has returned bounded decline/failure receipts without exposing card details. Add-balance enforces whole-dollar `TINKER_MIN_ADD_BALANCE_USD` / `TINKER_MAX_ADD_BALANCE_USD` policy before browser launch, returning bounded `policy_denied` receipts for non-finite, non-positive, below-minimum, fractional, or over-cap requests. Tinker's current UI minimum is `$10`, so source/config defaults now use `$10` for both min and validation cap. `add-card-encrypted-prompt` and `funding-validation-packet --prompt-card --run-card-attempt` are the intended operator paths for approved real-card validation because they prompt interactively instead of placing card fields in command-line arguments, require deployed attestation expectations unless explicitly run in local-development mode, and can require live `TinkerAccountEncumbrance` approval before prompting. The first approved real-card validation did not top up the account, but the later same-context reauth/add-balance packet did: `/tmp/dnai-tinker-add-balance-packet-20260709T111135Z` reached `add_balance_submitted` with `raw_secret_egress=false`, `check-funding-validation-packet --require-deployed-attestation` passed, and the current public balance read returns only `10_100_usd`. Public billing errors and persisted messages are exact `AutomationOutcome` codes, evidence hashes bind only the deterministic bounded projection, malformed/legacy receipts fail closed, and storage failures expose only `store_failed`. Card-on-file status and removal paths return only bounded booleans/bands/receipts, never card brand, last4, expiry, address, or page text. `TINKER_FUNDING_MODE=manual_prefund` remains the default production model and denies encrypted card/add-balance automation before decryption or browser launch; `operator_capped_validation` is required for deliberate capped operator validation. Production/repeated funding should use an official Tinker route, Stripe-hosted/tokenized collection, SetupIntent / PaymentMethod reuse with consent, or manual/developer prefunding until compliance review approves otherwise.
 
 3. **TinkerAccountEncumbrance deployment** — The Base Sepolia contract is deployed at `0x9f2616f3f7b0dc363bba19f7d72b9061f791a06e` with owner `0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD`. It enforces compose-hash approval, emergency halt, and `$10` add-balance/spend caps for the operator-validation Tinker account. Earlier approved compute/proxy compose `0xe682ddac9de80188c7e68cab84cffe8f461478d87d506159f10cba3e65a342a7` remains approved from tx `0x3bc992cc2979aa8198923bcaf856d2c82d387646e49e750dada1f5cb203b3d17`. The latest live Phala client-config install compose `0x1d6db25672bba906c7bfad7ffd4f4413dabb1f6f824190ab9e72259677018085` is attested and running but `approvedComposeHashes(...)` currently returns `false`; approve it before using that live compose for the next `SPEND_TINKER_COMPUTE` smoke. The deploy/redeploy helpers and command plans never require raw private-key flags; operator broadcasts use the Foundry keystore account.
 

@@ -119,6 +119,9 @@ def _train_receipt(
     spent_usd: float = 0.0,
     error_kind: str = "",
     bounded_message: str = "",
+    provider_dispatch_attempted: bool = False,
+    provider_dispatch_performed: bool = False,
+    provider_outcome_ambiguous: bool = False,
 ) -> dict[str, Any]:
     return {
         "surface": "tinker_training",
@@ -138,6 +141,9 @@ def _train_receipt(
         "error_kind": error_kind,
         "bounded_message": bounded_message or outcome,
         "issued_at": issued_at,
+        "provider_dispatch_attempted": provider_dispatch_attempted,
+        "provider_dispatch_performed": provider_dispatch_performed,
+        "provider_outcome_ambiguous": provider_outcome_ambiguous,
         "raw_secret_egress": False,
     }
 
@@ -147,6 +153,7 @@ def run_tinker_training(
     request: TinkerTrainingRequest | None = None,
     *,
     service_client_factory=None,
+    strict_at_most_once: bool = False,
 ) -> dict[str, Any]:
     """Run a bounded multi-step LoRA training pass through the sealed account.
 
@@ -206,6 +213,8 @@ def run_tinker_training(
     steps_completed = 0
     checkpoint_saved = False
     furthest_stage = "api_key_loaded"
+    provider_dispatch_attempted = False
+    provider_dispatch_performed = False
 
     try:
         import tinker  # data types (Datum/AdamParams) are local, no network
@@ -223,10 +232,15 @@ def run_tinker_training(
                 connect_timeout, label="service_client_create",
             )
         session = IsolatedTinkerSession(service_client, deal_id)
+        # The durable customer wrapper commits its dispatch claim before
+        # entering this boundary. A timeout or exception after this line cannot
+        # safely prove whether the provider created a paid training resource.
+        provider_dispatch_attempted = True
         _call_with_deadline(
             lambda: session.create_training(base_model=model, rank=rank),
             connect_timeout, label="create_training",
         )
+        provider_dispatch_performed = True
         furthest_stage = "training_created"
 
         tokenizer = session.get_tokenizer()
@@ -246,7 +260,7 @@ def run_tinker_training(
         checkpoint_saved = bool(checkpoint_path)
         furthest_stage = "checkpoint_saved"
 
-        cleanup = session.cleanup()
+        session.cleanup()
         spent = float(session.meter.total_cost_usd)
         return _train_receipt(
             issued_at=issued_at, deal_id=deal_id, model=model, rank=rank, max_usd=max_usd,
@@ -254,6 +268,8 @@ def run_tinker_training(
             outcome="training_completed", furthest_stage="cleanup_completed",
             policy=policy.to_public_dict(), checkpoint_saved=checkpoint_saved,
             spent_usd=spent, bounded_message="training_completed",
+            provider_dispatch_attempted=provider_dispatch_attempted,
+            provider_dispatch_performed=provider_dispatch_performed,
         )
     except Exception as exc:
         spent = float(session.meter.total_cost_usd) if session is not None else 0.0
@@ -262,13 +278,28 @@ def run_tinker_training(
                 session.cleanup()
             except Exception:
                 pass
+        provider_outcome_ambiguous = (
+            strict_at_most_once and provider_dispatch_attempted
+        )
         return _train_receipt(
             issued_at=issued_at, deal_id=deal_id, model=model, rank=rank, max_usd=max_usd,
             steps_requested=steps, steps_completed=steps_completed, success=False,
-            outcome="training_failed", furthest_stage=furthest_stage,
+            outcome=(
+                "provider_outcome_ambiguous"
+                if provider_outcome_ambiguous
+                else "training_failed"
+            ),
+            furthest_stage=furthest_stage,
             policy=policy.to_public_dict(), checkpoint_saved=checkpoint_saved,
             spent_usd=spent, error_kind=exc.__class__.__name__,
-            bounded_message=redact_text(exc.__class__.__name__),
+            bounded_message=(
+                "provider_outcome_ambiguous"
+                if provider_outcome_ambiguous
+                else redact_text(exc.__class__.__name__)
+            ),
+            provider_dispatch_attempted=provider_dispatch_attempted,
+            provider_dispatch_performed=provider_dispatch_performed,
+            provider_outcome_ambiguous=provider_outcome_ambiguous,
         )
 
 

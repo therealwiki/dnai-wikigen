@@ -40,6 +40,7 @@ class EthCallClient(Protocol):
 
 MAX_ADD_BALANCE_SELECTOR = keccak(b"maxAddBalanceWei()")[:4]
 MAX_SPEND_SELECTOR = keccak(b"maxSpendWei()")[:4]
+RELEASE_POLICY_FROZEN_SELECTOR = keccak(b"releasePolicyFrozen()")[:4]
 EMERGENCY_HALTED_SELECTOR = keccak(b"emergencyHalted()")[:4]
 APPROVED_COMPOSE_SELECTOR = keccak(b"approvedComposeHashes(bytes32)")[:4]
 
@@ -54,6 +55,7 @@ class TinkerEncumbrancePolicyResult:
     contract_address: str = ""
     compose_hash: str = ""
     compose_approved: bool = False
+    release_policy_frozen: bool = False
     emergency_halted: bool = False
     amount_wei: int = 0
     max_amount_wei: int = 0
@@ -70,6 +72,7 @@ class TinkerEncumbrancePolicyResult:
             "contract_address": self.contract_address,
             "compose_hash": self.compose_hash,
             "compose_approved": self.compose_approved,
+            "release_policy_frozen": self.release_policy_frozen,
             "emergency_halted": self.emergency_halted,
             "amount_wei": str(self.amount_wei),
             "max_amount_wei": str(self.max_amount_wei),
@@ -96,6 +99,7 @@ class TinkerEncumbranceChecker:
         amount_wei = _normalize_uint256(amount_wei, field="amountWei")
 
         try:
+            release_policy_frozen = self._read_bool(RELEASE_POLICY_FROZEN_SELECTOR)
             emergency_halted = self._read_bool(EMERGENCY_HALTED_SELECTOR)
             compose_approved = self._read_bool(
                 APPROVED_COMPOSE_SELECTOR + bytes.fromhex(compose_hash[2:])
@@ -106,7 +110,10 @@ class TinkerEncumbranceChecker:
 
         allowed = True
         reason = "allowed"
-        if emergency_halted:
+        if not release_policy_frozen:
+            allowed = False
+            reason = "release_policy_not_frozen"
+        elif emergency_halted:
             allowed = False
             reason = "emergency_halted"
         elif not compose_approved:
@@ -125,6 +132,7 @@ class TinkerEncumbranceChecker:
             contract_address=self.contract_address,
             compose_hash=compose_hash,
             compose_approved=compose_approved,
+            release_policy_frozen=release_policy_frozen,
             emergency_halted=emergency_halted,
             amount_wei=amount_wei,
             max_amount_wei=max_amount_wei,

@@ -1,0 +1,13 @@
+{
+  "chain_id": 84532,
+  "minimum_active_reviewers": 2,
+  "release_sha": null,
+  "reviewer_controller_set_sha256": null,
+  "reviewer_controllers": [],
+  "schema": "dnai.release-reviewer-authority-genesis.v2",
+  "status_guardian_hashes": [],
+  "status_guardian_root_hash": null,
+  "status_guardian_set_sha256": null,
+  "status_guardians": [],
+  "truth_status": "release_scoped_finite_reviewer_keys_and_two_guardians_precommitted_guardians_are_status_root_nonoverlapping_statuses_expire_within_fifteen_minutes"
+}

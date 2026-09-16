@@ -21,6 +21,7 @@ from tinker_delegate.automation_receipts import (
     AutomationOutcome,
     AutomationStage,
     AutomationSurface,
+    balance_band as classify_balance_band,
     classify_automation_error,
     make_receipt,
 )
@@ -800,13 +801,14 @@ async def get_account_access_status(settings: Settings | None = None) -> dict:
         furthest_stage = AutomationStage.BILLING_PAGE_LOADED
         auth_blocker = await _ensure_billing_authenticated(page, context, settings)
         if auth_blocker:
+            outcome = classify_automation_error(auth_blocker)
             return {
                 "success": False,
                 "furthest_stage": furthest_stage.value if hasattr(furthest_stage, "value") else str(furthest_stage),
                 "state": "unknown",
                 "actionable_by_automation": False,
                 "operator_action": "resolve_billing_auth",
-                "bounded_message": redact_text(auth_blocker),
+                "bounded_message": outcome.value,
                 "raw_secret_egress": False,
             }
 
@@ -885,7 +887,7 @@ async def configure_auto_reload(
         # Find auto-reload checkbox
         text = await page.evaluate("() => document.body?.innerText || ''")
         if "auto-reload" not in text.lower():
-            return {"success": False, "error": "Auto-reload section not found"}
+            return {"success": False, "error": AutomationOutcome.SELECTOR_MISSING.value}
 
         # Toggle checkbox
         checkbox = page.locator(AUTO_RELOAD_TOGGLE_SELECTORS[0])
@@ -914,7 +916,7 @@ async def configure_auto_reload(
 
 
 async def get_balance(settings: Settings | None = None) -> dict:
-    """Get current balance and usage info."""
+    """Return only a stable balance band; keep the exact value in-boundary."""
     if settings is None:
         settings = Settings()
 
@@ -937,7 +939,12 @@ async def get_balance(settings: Settings | None = None) -> dict:
             return match ? match[1] : null;
         }""")
 
-        return {"balance": f"${balance}" if balance else "unknown"}
+        exact_balance = f"${balance}" if balance else "unknown"
+        return {
+            "success": True,
+            "balance_band": classify_balance_band(exact_balance),
+            "raw_secret_egress": False,
+        }
 
 
 def _payment_method_result(
@@ -952,10 +959,14 @@ def _payment_method_result(
         outcome=outcome,
         furthest_stage=furthest_stage,
         evidence=evidence if success else error,
-        bounded_message="payment_method_added" if success else (error or "payment_method_failed"),
+        bounded_message=outcome.value,
         card_payload_destroyed=True,
     )
-    return {"success": success, "error": error, "attempt_record": receipt.to_public_dict()}
+    return {
+        "success": success,
+        "error": None if success else outcome.value,
+        "attempt_record": receipt.to_public_dict(),
+    }
 
 
 def _add_balance_result(
@@ -971,10 +982,14 @@ def _add_balance_result(
         outcome=outcome,
         furthest_stage=furthest_stage,
         evidence=evidence if success else error,
-        bounded_message="balance_added" if success else (error or "add_balance_failed"),
+        bounded_message=outcome.value,
         amount_dollars=amount_dollars,
     )
-    return {"success": success, "error": error, "attempt_record": receipt.to_public_dict()}
+    return {
+        "success": success,
+        "error": None if success else outcome.value,
+        "attempt_record": receipt.to_public_dict(),
+    }
 
 
 def _payment_method_status_result(
@@ -992,15 +1007,11 @@ def _payment_method_status_result(
         outcome=outcome,
         furthest_stage=furthest_stage,
         evidence=evidence if success else error,
-        bounded_message=(
-            f"payment_method_count:{payment_method_count_band}"
-            if success
-            else (error or "payment_method_status_failed")
-        ),
+        bounded_message=outcome.value,
     )
     return {
         "success": success,
-        "error": error,
+        "error": None if success else outcome.value,
         "card_on_file": card_on_file,
         "payment_method_count_band": payment_method_count_band,
         "attempt_record": receipt.to_public_dict(),
@@ -1019,6 +1030,10 @@ def _payment_method_removal_result(
         outcome=outcome,
         furthest_stage=furthest_stage,
         evidence=evidence if success else error,
-        bounded_message="payment_method_absent" if success else (error or "payment_method_removal_failed"),
+        bounded_message=outcome.value,
     )
-    return {"success": success, "error": error, "attempt_record": receipt.to_public_dict()}
+    return {
+        "success": success,
+        "error": None if success else outcome.value,
+        "attempt_record": receipt.to_public_dict(),
+    }

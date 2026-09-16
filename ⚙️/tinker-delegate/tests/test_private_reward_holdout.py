@@ -41,7 +41,7 @@ class HiddenHoldoutSetTest(unittest.TestCase):
         self.assertEqual(first.partition_counts, second.partition_counts)
         self.assertNotEqual(first.split_commitment, third.split_commitment)
 
-    def test_public_manifest_exposes_counts_and_commitments_not_records(self):
+    def test_public_manifest_exposes_count_bands_and_commitments_not_records(self):
         records = _records(10)
         holdout = HiddenHoldoutSet(records)
         holdout.record_reward_query("candidate-a")
@@ -49,7 +49,8 @@ class HiddenHoldoutSetTest(unittest.TestCase):
         public = holdout.public_manifest().to_public_dict()
 
         self.assertEqual(len(public["split_commitment"]), 64)
-        self.assertEqual(public["partition_counts"]["train"], 6)
+        self.assertEqual(public["partition_counts"]["train"], "small_1_to_8")
+        self.assertEqual(public["partition_count_disclosure"], "banded_v1")
         self.assertEqual(public["reward_query_count"], 1)
         self.assertEqual(public["unique_reward_candidates"], 1)
         self.assertEqual(public["max_reward_queries_for_single_candidate"], 1)
@@ -57,6 +58,23 @@ class HiddenHoldoutSetTest(unittest.TestCase):
         for record_id, payload in records.items():
             self.assertNotIn(record_id, public_text)
             self.assertNotIn(payload.decode("utf-8"), public_text)
+
+    def test_distinct_private_cardinalities_have_same_bounded_public_shape(self):
+        first = HiddenHoldoutSet(_records(10))
+        second = HiddenHoldoutSet(_records(12))
+        self.assertNotEqual(first.partition_counts, second.partition_counts)
+
+        first_public = first.public_manifest().to_public_dict()
+        second_public = second.public_manifest().to_public_dict()
+        # Commitments intentionally bind the distinct private inputs; normalize
+        # opaque commitments when comparing the disclosure shape.
+        first_public["split_commitment"] = "<opaque-commitment>"
+        second_public["split_commitment"] = "<opaque-commitment>"
+        self.assertEqual(first_public, second_public)
+        self.assertEqual(
+            set(first_public["partition_counts"].values()),
+            {"small_1_to_8"},
+        )
 
     def test_reward_query_budget_is_enforced(self):
         policy = HoldoutSplitPolicy(max_reward_queries=2)

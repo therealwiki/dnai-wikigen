@@ -164,7 +164,7 @@ def funding_policy_receipt(
         outcome=AutomationOutcome.POLICY_DENIED,
         furthest_stage=AutomationStage.NOT_STARTED,
         evidence=error,
-        bounded_message=error,
+        bounded_message=AutomationOutcome.POLICY_DENIED.value,
         amount_dollars=amount_dollars,
         card_payload_destroyed=card_payload_destroyed,
     ).to_public_dict()

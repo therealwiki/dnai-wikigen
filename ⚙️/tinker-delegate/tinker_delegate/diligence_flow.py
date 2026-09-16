@@ -39,6 +39,7 @@ from tinker_delegate.rental_stages import (
 from tinker_delegate.royalty_distribution_plan import (
     DistributionRecipient,
     RoyaltyDistributionPlan,
+    SettlementAuthorization,
     build_royalty_distribution_plan,
 )
 from tinker_delegate.disclosure_policy import DisclosureMode, decide_disclosure
@@ -305,17 +306,17 @@ def distribution_plan_from_flow(
     receipt: DiligenceFlowReceipt,
     *,
     contract_address: str,
-    query_ref: str,
     owner_addresses: dict[str, str],
-    token_address: str | None = None,
+    authorization: SettlementAuthorization,
+    settlement_signature: str,
+    qvl_signature: str,
     keystore_account: str = "dev",
 ) -> RoyaltyDistributionPlan:
     """Build the executable on-chain royalty plan from a *settled* flow receipt.
 
-    Fail-closed: a plan is produced only for a PROCEED flow with royalty payouts;
-    a hold/deny receipt or a missing owner address raises. Resolves each payout's
-    `owner_ref` to an Ethereum address, then delegates to the cast-verified,
-    Anvil-proven `build_royalty_distribution_plan`.
+    A local flow receipt is never sufficient settlement authority. A plan is
+    produced only for a PROCEED flow whose resolved payouts exactly match an
+    independently supplied release-CVM/QVL signed, anchor-bound authorization.
     """
     if receipt.flow_decision != FlowDecision.PROCEED:
         raise DiligenceFlowError("distribution plan requires a proceeding flow")
@@ -330,15 +331,14 @@ def distribution_plan_from_flow(
             raise DiligenceFlowError(f"no address mapped for owner ref: {owner_ref}")
         recipients.append(DistributionRecipient(address, int(payout["amount"])))
 
-    kwargs: dict[str, Any] = {
-        "contract_address": contract_address,
-        "query_ref": query_ref,
-        "recipients": recipients,
-        "keystore_account": keystore_account,
-    }
-    if token_address is not None:
-        kwargs["token_address"] = token_address
-    return build_royalty_distribution_plan(**kwargs)
+    return build_royalty_distribution_plan(
+        contract_address=contract_address,
+        authorization=authorization,
+        recipients=recipients,
+        settlement_signature=settlement_signature,
+        qvl_signature=qvl_signature,
+        keystore_account=keystore_account,
+    )
 
 
 def _receipt(

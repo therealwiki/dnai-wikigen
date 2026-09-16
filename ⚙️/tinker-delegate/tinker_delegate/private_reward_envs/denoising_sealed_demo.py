@@ -81,11 +81,14 @@ def run_denoising_sealed_dataset_demo(
 
     with tempfile.TemporaryDirectory() as root:
         backend = LocalStorageBackend(root)
-        publish = publish_dataset(blob, manifest, backend)
+        # Exact refs are operational capabilities and remain in-boundary. The
+        # public publish receipt exposes only a ref commitment.
+        internal_ref = backend.ref_for(manifest["dataset_id"])
+        publish_receipt = publish_dataset(blob, manifest, backend)
         # Reusable in-boundary flow: fetch -> verify -> decrypt -> parse -> zero,
         # fail-closed if the plaintext hash is unverified.
         cells, fetch_receipt = load_sealed_env_dataset(
-            publish["storage_ref"],
+            internal_ref,
             _DEMO_RECIPIENT_PRIVATE_KEY_HEX,
             parse=_parse_cells,
             backend=backend,
@@ -128,7 +131,7 @@ def run_denoising_sealed_dataset_demo(
             "manifest_ok": fetch_receipt.get("manifest_ok"),
             "plaintext_sha256_verified": fetch_receipt.get("plaintext_sha256_verified"),
             "recipient_key_hash": fetch_receipt.get("recipient_key_hash"),
-            "publish_ciphertext_sha256": publish["ciphertext_sha256"],
+            "publish_ciphertext_sha256": publish_receipt["ciphertext_sha256"],
             # The dataset commitment: a third party who holds the published
             # manifest can bind this run to it (verify_reward_dataset_binding).
             "manifest_hash": manifest_hash(manifest),

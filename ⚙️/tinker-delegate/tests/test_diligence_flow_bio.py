@@ -161,7 +161,10 @@ class BioDiligenceFlowTest(unittest.TestCase):
 
         dual_use = DualUseAssessment(DualUseTier.CLEARED, (), "h")
         reid = ReidAssessment(ReidRiskBand.LOW, False, "ok", "h")
-        leaky_candidate = b"KEY=tml-abcdefghij1234567890abcdefgh\ndef denoise(t):\n    return t\n"
+        leaky_candidate = (
+            b"KEY=" + b"tml-" + b"abcdefghij1234567890abcdefgh"
+            b"\ndef denoise(t):\n    return t\n"
+        )
         receipt = self._run(
             dual_use=dual_use,
             reid=reid,

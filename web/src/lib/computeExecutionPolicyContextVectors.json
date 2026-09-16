@@ -1,0 +1,34 @@
+{
+  "schema": "dnai.compute.execution-policy-context-vectors.v1",
+  "vectors": [
+    {
+      "name": "inference_exact_intent_0x_inputs_bare_policy_context",
+      "intent": {
+        "project_reference": "prj_alpha",
+        "job_reference": "job_alpha",
+        "user": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a",
+        "asset": "0x0000000000000000000000000000000000000000",
+        "authorization_nonce": 4,
+        "max_asset_debit": 25,
+        "authorization_expiry": 1800000600,
+        "rate_policy_commitment": "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "compose_hash": "0x7777777777777777777777777777777777777777777777777777777777777777",
+        "operation": "inference",
+        "model": "qwen3_8b",
+        "recipe": "qwen3_8b_bounded",
+        "result_policy": "bounded_summary_receipt",
+        "max_prefill_tokens": 1024,
+        "max_sample_tokens": 128,
+        "max_train_tokens": 0,
+        "workload_id": "wrk_abababababababababababababababab",
+        "workload_schema": "dnai.compute.workload.inference.v1",
+        "manifest_commitment": "0x9191919191919191919191919191919191919191919191919191919191919191",
+        "workload_commitment": "0x9292929292929292929292929292929292929292929292929292929292929292"
+      },
+      "job_id": "0x9ba0ebed66f5b5b8cfbc73d100232c7b92c083d75e19915a7ed458770cf0c925",
+      "intent_commitment": "0xf19fdb60fa16eb27feb20ed6731b058110df2e33f6ecdf0a69b80f11bee21d46",
+      "recipe_policy_commitment": "0x35fb67189c209e95ceff92fbf24fa920a075c73b0335e4e2993c5e000742e161",
+      "execution_context_hash": "94e08f84ba83af909492c0d0a5d50073822cadd84a60b11c8cbd278fa7d367d3"
+    }
+  ]
+}

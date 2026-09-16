@@ -43,6 +43,7 @@ def _attestation(context="oracle-credentials", *, mode="tdx"):
     keypair = TEEKeyPair()
     report_data = attestation_report_data("tee-email-oracle", context, keypair.public_key_bytes)
     return {
+        "service": "tee-email-oracle",
         "mode": mode,
         "tdx_quote": "aa" * 128,
         "app_id": "app-ok",
@@ -57,6 +58,39 @@ def _attestation(context="oracle-credentials", *, mode="tdx"):
 
 
 class CredentialUploaderTest(unittest.TestCase):
+    def test_rejects_attestation_from_another_service(self):
+        attestation = _attestation()
+        attestation["service"] = "hostile-oracle"
+
+        with self.assertRaisesRegex(CredentialUploadError, "service mismatch"):
+            verify_credential_attestation(
+                attestation,
+                CredentialUploadPolicy(expected_compose_hash="c" * 64),
+            )
+
+    def test_rejects_service_evidence_without_independent_verification_verdict(self):
+        attestation = _attestation()
+        attestation["verified"] = False
+
+        with self.assertRaisesRegex(
+            CredentialUploadError,
+            "cryptographic attestation verdict is unavailable",
+        ):
+            verify_credential_attestation(
+                attestation,
+                CredentialUploadPolicy(expected_compose_hash="c" * 64),
+            )
+
+    def test_simulator_evidence_cannot_authorize_production_credential_upload(self):
+        attestation = _attestation(mode="simulator")
+        attestation["verified"] = True
+
+        with self.assertRaisesRegex(CredentialUploadError, "mode must be tdx"):
+            verify_credential_attestation(
+                attestation,
+                CredentialUploadPolicy(expected_compose_hash="c" * 64),
+            )
+
     def test_verify_credential_attestation_accepts_context_bound_tdx_key(self):
         public_key = verify_credential_attestation(
             _attestation(),

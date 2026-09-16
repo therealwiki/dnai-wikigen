@@ -17,6 +17,9 @@ class ComposeHashError(RuntimeError):
     """Raised when compose-hash input cannot be verified."""
 
 
+_COMPOSE_CONFIG_TIMEOUT_SECONDS = 15.0
+
+
 @dataclass(frozen=True)
 class ImageDigest:
     service: str
@@ -96,7 +99,10 @@ def _run_compose_config(compose_path: Path, env_files: list[Path], *, as_json: b
             cwd=str(compose_path.parent),
             stderr=subprocess.STDOUT,
             text=True,
+            timeout=_COMPOSE_CONFIG_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise ComposeHashError("docker compose config timed out") from exc
     except subprocess.CalledProcessError as exc:
         raise ComposeHashError(exc.output.strip() or "docker compose config failed") from exc
 

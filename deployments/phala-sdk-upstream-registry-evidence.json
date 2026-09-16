@@ -1,0 +1,72 @@
+{
+  "observed_at": "2026-09-16T07:15:51Z",
+  "packages": [
+    {
+      "attestation_count": 2,
+      "attestations_url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fcloud@0.2.10",
+      "attestations_verified": true,
+      "byte_length": 185067,
+      "name": "@phala/cloud",
+      "npm_dist_integrity_sha512": "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+      "npm_dist_shasum_sha1": "ed23f01ef54220b996092301283b5a2b7790f4cf",
+      "predicate_types": [
+        "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+        "https://slsa.dev/provenance/v1"
+      ],
+      "registry_signature": {
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+        "sig": "MEYCIQDznAxuCUzID4rj4cc7QMgp3Yh8kIh2st7xjqJjB3FNIAIhAIIw/EUzB4nP0kQajv4DO/+1CBMxKnZayh9zXamEaE1l",
+        "verified": true
+      },
+      "tarball_sha256": "sha256:5e7b91e84bc0aa4a3273c205c96103a7cdbdcb577ce0e0e740e54789e8e4f1b7",
+      "tarball_url": "https://registry.npmjs.org/@phala/cloud/-/cloud-0.2.10.tgz",
+      "version": "0.2.10"
+    },
+    {
+      "attestation_count": 2,
+      "attestations_url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fdstack-sdk@0.5.8",
+      "attestations_verified": true,
+      "byte_length": 22796,
+      "name": "@phala/dstack-sdk",
+      "npm_dist_integrity_sha512": "sha512-VANlyo0Jj6pxmJl3zksHJ4/5y3VflApVmgsfcfmokk3KYKRBkW5oMkexBTR6lZaGVPOqJ48QGOLP/7CF3IEvFg==",
+      "npm_dist_shasum_sha1": "c2c0e73eae59bc1563ca7a66b91f64a620232d58",
+      "predicate_types": [
+        "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+        "https://slsa.dev/provenance/v1"
+      ],
+      "registry_signature": {
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+        "sig": "MEUCIQCBIMS4e6fd2Jq76K5F2HCYdjf+fAcLsH+Zh/vf4/fiyQIgK0iTHv6EYupXfRnL5jcTMcjYJnCGwAuwc6BqZ1K3kdY=",
+        "verified": true
+      },
+      "tarball_sha256": "sha256:a78a0ffcc429c22c939b9c92b05406881c56220927a3462cc70de9d6c1d5d15c",
+      "tarball_url": "https://registry.npmjs.org/@phala/dstack-sdk/-/dstack-sdk-0.5.8.tgz",
+      "version": "0.5.8"
+    }
+  ],
+  "registry": {
+    "origin": "https://registry.npmjs.org",
+    "public_key_endpoint": "https://registry.npmjs.org/-/npm/v1/keys",
+    "request_authentication": "none_public_registry",
+    "signing_key_expires_at": null,
+    "signing_key_id": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+    "signing_key_type": "ecdsa-sha2-nistp256"
+  },
+  "schema": "dnai.phala-sdk-upstream-registry-evidence.v1",
+  "truth_status": "fresh_public_npm_registry_https_bytes_signature_and_attestation_verification_not_future_revocation_or_reproducible_bundle_build_authority",
+  "verification": {
+    "ambient_registry_tokens_used": false,
+    "attestation_verifier": "pacote_verifyAttestations_with_seeded_sigstore_trusted_root_force_cache",
+    "empty_home_and_private_npm_cache": true,
+    "external_network_hosts": [
+      "registry.npmjs.org"
+    ],
+    "npm_cli_version": "11.6.0",
+    "pacote_version": "21.0.0",
+    "registry_signature_message": "${name}@${version}:${dist.integrity}",
+    "registry_signatures_verified_twice": "pacote_and_independent_node_crypto_ecdsa_sha256",
+    "sigstore_js_version": "3.1.0",
+    "sigstore_tuf_seed_version": "@sigstore/tuf@3.1.1",
+    "tarballs_refetched_and_byte_hashed": true
+  }
+}

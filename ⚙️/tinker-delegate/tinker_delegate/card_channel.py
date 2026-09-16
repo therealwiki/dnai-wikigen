@@ -8,7 +8,7 @@ Trust model:
   4. Developer sends encrypted payload to POST /billing/card
   5. TEE decrypts inside enclave, fills Stripe form via browser, submits
   6. TEE zeroes card details from memory — never persisted to disk
-  7. Returns success + TDX quote attesting the billing operation
+  7. Returns success + TDX quote evidence for an independent verifier
 
 What the developer CAN do:
   - Add/update payment method (card details encrypted to TEE)
@@ -21,30 +21,34 @@ What the developer CANNOT do:
   - View training run results (only bounded scores via the deal flow)
   - Extract the email/password (sealed in TEE)
 
-Why this doesn't break the trust model:
+Why this doesn't break the trust model once the client has independently
+verified the quote signature, collateral, and expected measurements:
   - Card details are ephemeral — exist only in TEE memory for ~10 seconds
-  - The developer already trusts the TEE code (verified via attestation)
+  - The developer trusts the measured TEE code only after external verification
   - Stripe tokenizes the card on their servers — TEE doesn't persist it
   - The billing session uses the same Tinker auth session that's already in the TEE
   - No new attack surface: the card goes developer → TEE → Stripe, same as
     developer → browser → Stripe, except the browser is inside the TEE
 
-The key insight: the developer is NOT giving the TEE access to their card.
-They're using the TEE as a secure intermediary to add a card to the Tinker
-account that the TEE controls. The developer trusts the TEE because its code
-is attested. The card is delivered to Stripe, not stored by the TEE.
+The key insight: the developer is NOT giving the host plaintext access to their
+card. They're using a separately verified TEE as a secure intermediary to add a
+card to the Tinker account that the TEE controls. The card is delivered to
+Stripe, not stored by the TEE. Quote retrieval by this service is evidence
+transport, not a verification verdict.
 """
 import asyncio
 import hashlib
 import json
-from typing import Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from tinker_delegate.automation_receipts import (
+    BALANCE_BANDS,
     AutomationOutcome,
     AutomationStage,
     AutomationSurface,
+    canonical_receipt_evidence_hash,
     classify_automation_error,
     make_receipt,
     quote_hash,
@@ -60,8 +64,15 @@ from tinker_delegate.billing import (
 )
 from tinker_delegate.config import Settings
 from tinker_delegate.crypto import TEEKeyPair, EncryptedPayload
-from tinker_delegate.dstack_utils import get_attestation_details, is_dstack_enabled
-from tinker_delegate.funding_receipt_store import build_funding_receipt_store
+from tinker_delegate.dstack_utils import (
+    get_attestation_details,
+    is_dstack_enabled,
+    is_dstack_simulator,
+)
+from tinker_delegate.funding_receipt_store import (
+    build_funding_receipt_store,
+    validate_bounded_funding_receipt,
+)
 from tinker_delegate.funding_policy import (
     FundingPolicyError,
     funding_policy_receipt,
@@ -123,14 +134,82 @@ class BalancePayload(BaseModel):
 
 
 class BillingResponse(BaseModel):
+    """Strict bounded response shared by all public billing operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
     success: bool
-    error: Optional[str] = None
-    balance: Optional[str] = None
+    error: Optional[AutomationOutcome] = None
+    balance_band: Optional[str] = None
     card_on_file: Optional[bool] = None
     payment_method_count_band: Optional[str] = None
     tdx_quote: Optional[str] = None  # hex-encoded TDX quote in production
-    attempt_record: Optional[dict] = None
-    proxy_auth_context: Optional[dict] = None
+    attempt_record: Optional[dict[str, Any]] = None
+    proxy_auth_context: Optional[dict[str, Any]] = None
+    raw_secret_egress: Literal[False] = False
+
+    @field_validator("balance_band")
+    @classmethod
+    def validate_balance_band(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and (value not in BALANCE_BANDS or value == ""):
+            raise ValueError("balance_band must be a stable non-empty band")
+        return value
+
+    @field_validator("attempt_record")
+    @classmethod
+    def validate_attempt_record(
+        cls, value: Optional[dict[str, Any]]
+    ) -> Optional[dict[str, Any]]:
+        if value is None:
+            return None
+        return validate_bounded_funding_receipt(value)
+
+    @model_validator(mode="after")
+    def validate_outcome_consistency(self) -> "BillingResponse":
+        if self.success and self.error is not None:
+            raise ValueError("successful billing responses cannot include an error")
+        if not self.success and self.error is None:
+            raise ValueError("failed billing responses require an AutomationOutcome error")
+        if self.attempt_record is not None:
+            receipt_outcome = AutomationOutcome(self.attempt_record["outcome"])
+            if self.success != (receipt_outcome == AutomationOutcome.SUCCESS):
+                raise ValueError("billing success flag does not match receipt outcome")
+            if not self.success and self.error != receipt_outcome:
+                raise ValueError("billing error must equal the receipt outcome")
+        return self
+
+
+class AttestationResponse(BaseModel):
+    """Bounded public attestation envelope.
+
+    Extra values are intentionally ignored when this model is used as a
+    FastAPI response boundary.  That makes the declared fields an allowlist and
+    prevents lower layers from accidentally serializing raw dstack metadata.
+    Clients independently reject any unexpected fields before trusting an
+    attestation envelope.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: str
+    quote: str = ""
+    encryption_public_key: str
+    report_context: str
+    report_data: str
+    quote_report_data: str = ""
+    app_id: str = ""
+    compose_hash: str = ""
+    os_image_hash: str = ""
+    verified: bool = False
+
+    @field_validator("verified", mode="before")
+    @classmethod
+    def never_self_attest_verification(cls, _value: object) -> bool:
+        """A quote producer cannot independently verify its own TDX evidence."""
+        return False
+
+
+PUBLIC_ATTESTATION_FIELDS = frozenset(AttestationResponse.model_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -169,44 +248,46 @@ def attestation_report_data(context: str, public_key: bytes) -> bytes:
 def get_attestation(context: str = "ingress") -> dict:
     """Get TDX attestation quote + TEE's encryption public key.
 
-    In production (dstack CVM): returns real TDX quote binding the
-    enclave identity + code measurements + encryption public key.
+    In production (dstack CVM): returns a TDX quote and bounded identity fields
+    for an independent verifier to validate. Successful dstack retrieval is not
+    proof that the quote signature, collateral, or measurements are valid.
 
     Locally: returns a stub with the encryption public key (for testing).
     """
     keypair = get_tee_keypair()
     report_data = attestation_report_data(context, keypair.public_key_bytes)
+    public_base = {
+        "quote": "",
+        "encryption_public_key": keypair.public_key_bytes.hex(),
+        "report_context": context,
+        "report_data": report_data.hex(),
+        "quote_report_data": "",
+        "app_id": "",
+        "compose_hash": "",
+        "os_image_hash": "",
+    }
     if is_dstack_enabled():
+        evidence_mode = "simulator" if is_dstack_simulator() else "tdx"
         try:
             details = get_attestation_details(report_data)
             return {
-                "mode": "tdx",
+                "mode": evidence_mode,
+                **public_base,
                 "quote": details["quote"],
-                "encryption_public_key": keypair.public_key_bytes.hex(),
-                "report_context": context,
-                "report_data": report_data.hex(),
                 "quote_report_data": details.get("quote_report_data", ""),
-                "event_log": details.get("event_log", ""),
-                "vm_config": details.get("vm_config", ""),
                 "app_id": details["app_id"],
-                "instance_id": details.get("instance_id", ""),
-                "app_name": details.get("app_name", ""),
-                "device_id": details.get("device_id", ""),
-                "mr_aggregated": details.get("mr_aggregated", ""),
                 "os_image_hash": details.get("os_image_hash", ""),
                 "compose_hash": details["compose_hash"],
-                "tcb_info": details.get("tcb_info", {}),
-                "verified": True,
+                # Evidence production and independent verification are separate
+                # trust domains. This process only retrieves the quote.
+                "verified": False,
             }
-        except Exception as e:
-            return {"mode": "tdx", "error": redact_text(e), "verified": False}
+        except Exception:
+            return {"mode": evidence_mode, **public_base, "verified": False}
     else:
         return {
             "mode": "local",
-            "note": "Running locally without TDX. In production, this returns a real attestation quote.",
-            "encryption_public_key": keypair.public_key_bytes.hex(),
-            "report_context": context,
-            "report_data": report_data.hex(),
+            **public_base,
             "verified": False,
         }
 
@@ -466,15 +547,20 @@ async def handle_add_balance(payload: BalancePayload, settings: Settings) -> Bil
 
 
 async def handle_get_balance(settings: Settings) -> BillingResponse:
-    """Get current balance."""
+    """Get a bounded balance band without returning exact currency."""
     try:
         result = await get_balance(settings)
+        if not result.get("success", False):
+            return BillingResponse(
+                success=False,
+                error=classify_automation_error(result.get("error")),
+            )
         return BillingResponse(
             success=True,
-            balance=result.get("balance"),
+            balance_band=result.get("balance_band", "unknown"),
         )
     except Exception as e:
-        return BillingResponse(success=False, error=_bounded_error_label(e))
+        return BillingResponse(success=False, error=classify_automation_error(redact_text(e)))
 
 
 async def handle_payment_method_status(settings: Settings) -> BillingResponse:
@@ -541,7 +627,8 @@ def _with_quote_hash(attempt_record: Optional[dict], quote: Optional[str]) -> Op
         return None
     bounded = dict(attempt_record)
     bounded["tdx_quote_hash"] = quote_hash(quote)
-    return bounded
+    bounded["evidence_hash"] = canonical_receipt_evidence_hash(bounded)
+    return validate_bounded_funding_receipt(bounded)
 
 
 def _require_tinker_encumbrance_allowed(
@@ -600,17 +687,31 @@ def _billing_response_with_persisted_receipt(
     tdx_quote: Optional[str] = None,
 ) -> BillingResponse:
     try:
-        persisted_record = _persist_attempt_record(settings, attempt_record)
-    except Exception as exc:
+        if attempt_record is not None:
+            validated_record = validate_bounded_funding_receipt(attempt_record)
+            record_success = validated_record["outcome"] == AutomationOutcome.SUCCESS.value
+            if bool(success) != record_success:
+                raise ValueError("billing success flag does not match bounded receipt outcome")
+        else:
+            validated_record = None
+        persisted_record = _persist_attempt_record(settings, validated_record)
+    except Exception:
         return BillingResponse(
             success=False,
-            error=f"funding receipt persistence failed: {redact_text(exc)}",
+            error=AutomationOutcome.STORE_FAILED,
             tdx_quote=tdx_quote,
             attempt_record=None,
         )
+    public_error: Optional[AutomationOutcome]
+    if success:
+        public_error = None
+    elif persisted_record is not None:
+        public_error = AutomationOutcome(persisted_record["outcome"])
+    else:
+        public_error = classify_automation_error(error)
     return BillingResponse(
         success=success,
-        error=error,
+        error=public_error,
         tdx_quote=tdx_quote,
         attempt_record=persisted_record,
     )

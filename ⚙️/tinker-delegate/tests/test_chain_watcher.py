@@ -15,15 +15,20 @@ from tinker_delegate.chain_watcher import (
     ChainCursorStore,
     ChainCursorState,
     ChainWatcher,
+    EVENT_SIGNATURES,
     JsonRpcLogSource,
     decode_diligence_room_log,
     event_topic,
 )
+from tinker_delegate.config import Settings
 
 
 SELLER = "0x1111111111111111111111111111111111111111"
 BUYER = "0x2222222222222222222222222222222222222222"
 TEE = "0x3333333333333333333333333333333333333333"
+TOKEN = "0x5555555555555555555555555555555555555555"
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+EVALUATOR_POLICY_COMMITMENT = "0x" + "66" * 32
 
 
 def _word(value: int) -> str:
@@ -71,7 +76,13 @@ def _log(
     }
 
 
-def _created_log(deal_id: int = 7, *, block: int = 10, index: int = 0) -> dict:
+def _created_log(
+    deal_id: int = 7,
+    *,
+    payment_token: str = ZERO_ADDRESS,
+    block: int = 10,
+    index: int = 0,
+) -> dict:
     return _log(
         "DealCreated",
         deal_id,
@@ -80,6 +91,7 @@ def _created_log(deal_id: int = 7, *, block: int = 10, index: int = 0) -> dict:
             _word(1783502000),
             _word_bytes("0x" + "ab" * 32),
             _word_address(TEE),
+            _word_address(payment_token),
         ],
         indexed_addresses=[SELLER],
         block=block,
@@ -87,11 +99,22 @@ def _created_log(deal_id: int = 7, *, block: int = 10, index: int = 0) -> dict:
     )
 
 
-def _funded_log(deal_id: int = 7, *, block: int = 11, index: int = 0) -> dict:
+def _funded_log(
+    deal_id: int = 7,
+    *,
+    payment_token: str = ZERO_ADDRESS,
+    evaluator_policy_commitment: str = EVALUATOR_POLICY_COMMITMENT,
+    block: int = 11,
+    index: int = 0,
+) -> dict:
     return _log(
         "DealFunded",
         deal_id,
-        [_word(10**18)],
+        [
+            _word(10**18),
+            _word_address(payment_token),
+            _word_bytes(evaluator_policy_commitment),
+        ],
         indexed_addresses=[BUYER],
         block=block,
         index=index,
@@ -99,6 +122,16 @@ def _funded_log(deal_id: int = 7, *, block: int = 11, index: int = 0) -> dict:
 
 
 class ChainWatcherDecodeTest(unittest.TestCase):
+    def test_event_signatures_match_current_contract_abi(self):
+        self.assertEqual(
+            EVENT_SIGNATURES["DealCreated"],
+            "DealCreated(uint256,address,uint256,uint256,bytes32,address,address)",
+        )
+        self.assertEqual(
+            EVENT_SIGNATURES["DealFunded"],
+            "DealFunded(uint256,address,uint256,address,bytes32)",
+        )
+
     def test_decodes_deal_created_static_abi_log(self):
         event = decode_diligence_room_log(_created_log())
 
@@ -109,6 +142,18 @@ class ChainWatcherDecodeTest(unittest.TestCase):
         self.assertEqual(event.fields["reserve_price"], 10**15)
         self.assertEqual(event.fields["artifact_hash"], "0x" + "ab" * 32)
         self.assertEqual(event.fields["tee_identity"], TEE)
+        self.assertEqual(event.fields["payment_token"], ZERO_ADDRESS)
+
+    def test_decodes_erc20_payment_token_from_created_and_funded_logs(self):
+        created = decode_diligence_room_log(_created_log(payment_token=TOKEN))
+        funded = decode_diligence_room_log(_funded_log(payment_token=TOKEN))
+
+        self.assertEqual(created.fields["payment_token"], TOKEN)
+        self.assertEqual(funded.fields["payment_token"], TOKEN)
+        self.assertEqual(
+            funded.fields["evaluator_policy_commitment"],
+            EVALUATOR_POLICY_COMMITMENT,
+        )
 
     def test_decodes_evaluation_and_resolution_events(self):
         evaluation = decode_diligence_room_log(
@@ -159,6 +204,26 @@ class ChainWatcherDecodeTest(unittest.TestCase):
 
 
 class ChainWatcherDispatchTest(unittest.TestCase):
+    def test_dispatcher_sends_runtime_bearer_only_in_header(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        dispatcher = ChainEventDispatcher(
+            "https://tee.example",
+            auth_token="watcher-runtime-secret",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        dispatcher.dispatch([decode_diligence_room_log(_created_log())])
+
+        self.assertEqual(
+            requests[0].headers["authorization"],
+            "Bearer watcher-runtime-secret",
+        )
+        self.assertNotIn(b"watcher-runtime-secret", requests[0].content)
+
     def test_dispatch_posts_chain_audit_then_funded_and_resolved_notifications(self):
         requests = []
 
@@ -199,6 +264,11 @@ class ChainWatcherDispatchTest(unittest.TestCase):
         self.assertEqual(funded["seller"], SELLER)
         self.assertEqual(funded["budget_cap"], 10**18)
         self.assertEqual(funded["reserve_price"], 10**15)
+        self.assertEqual(funded["artifact_hash"], "0x" + "ab" * 32)
+        self.assertEqual(
+            funded["evaluator_policy_commitment"],
+            EVALUATOR_POLICY_COMMITMENT,
+        )
 
     def test_funded_without_created_context_is_audited_but_not_started(self):
         requests = []
@@ -302,6 +372,11 @@ class ChainWatcherDispatchTest(unittest.TestCase):
         funded = api_requests[-1][1]
         self.assertEqual(funded["buyer"], BUYER)
         self.assertEqual(funded["seller"], SELLER)
+        self.assertEqual(funded["artifact_hash"], "0x" + "ab" * 32)
+        self.assertEqual(
+            funded["evaluator_policy_commitment"],
+            EVALUATOR_POLICY_COMMITMENT,
+        )
 
     def test_cursor_does_not_advance_past_confirmation_safe_tip(self):
         api_requests = []
@@ -351,7 +426,14 @@ class ChainWatcherApiTest(unittest.TestCase):
         cp = ControlPlane()
         client = TestClient(api.app)
 
-        with patch("tinker_delegate.api._get_control_plane", return_value=cp):
+        with (
+            patch("tinker_delegate.api._get_control_plane", return_value=cp),
+            patch.object(
+                api,
+                "settings",
+                Settings(runtime_auth_required=True, runtime_auth_token="watcher-secret"),
+            ),
+        ):
             response = client.post(
                 "/deal/chain-event",
                 json={
@@ -362,6 +444,7 @@ class ChainWatcherApiTest(unittest.TestCase):
                     "log_index": 1,
                     "fields": {"seller": SELLER, "reserve_price": 10**15},
                 },
+                headers={"Authorization": "Bearer watcher-secret"},
             )
 
         self.assertEqual(response.status_code, 200)

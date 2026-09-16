@@ -1,0 +1,130 @@
+{
+  "$id": "https://wikigen.me/schemas/release-reviewer-authority-genesis.v2.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable release-scoped finite reviewer key inventory and two-guardian status root. Semantic validation also recomputes all domain-separated digests and enforces global key/controller separation.",
+  "properties": {
+    "chain_id": {
+      "const": 84532
+    },
+    "minimum_active_reviewers": {
+      "const": 2
+    },
+    "release_sha": {
+      "$ref": "#/$defs/release_sha"
+    },
+    "reviewer_controller_set_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "reviewer_controllers": {
+      "items": {
+        "$ref": "#/$defs/reviewer_controller"
+      },
+      "maxItems": 32,
+      "minItems": 2,
+      "type": "array"
+    },
+    "schema": {
+      "const": "dnai.release-reviewer-authority-genesis.v2"
+    },
+    "status_guardian_hashes": {
+      "items": {
+        "$ref": "#/$defs/bare_sha256"
+      },
+      "maxItems": 2,
+      "minItems": 2,
+      "type": "array"
+    },
+    "status_guardian_root_hash": {
+      "$ref": "#/$defs/bare_sha256"
+    },
+    "status_guardian_set_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "status_guardians": {
+      "items": {
+        "$ref": "#/$defs/identity"
+      },
+      "maxItems": 2,
+      "minItems": 2,
+      "type": "array"
+    },
+    "truth_status": {
+      "const": "release_scoped_finite_reviewer_keys_and_two_guardians_precommitted_guardians_are_status_root_nonoverlapping_statuses_expire_within_fifteen_minutes"
+    }
+  },
+  "required": [
+    "chain_id",
+    "minimum_active_reviewers",
+    "release_sha",
+    "reviewer_controller_set_sha256",
+    "reviewer_controllers",
+    "schema",
+    "status_guardian_hashes",
+    "status_guardian_root_hash",
+    "status_guardian_set_sha256",
+    "status_guardians",
+    "truth_status"
+  ],
+  "title": "dnai-wikigen release reviewer authority genesis v2",
+  "type": "object",
+  "$defs": {
+    "address": {
+      "pattern": "^0x(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "bare_sha256": {
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "controller_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{7,63}$",
+      "type": "string"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "controller_id": {
+          "$ref": "#/$defs/controller_id"
+        }
+      },
+      "required": [
+        "address",
+        "controller_id"
+      ],
+      "type": "object"
+    },
+    "release_sha": {
+      "pattern": "^(?!0{40}$)[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "reviewer_controller": {
+      "additionalProperties": false,
+      "properties": {
+        "controller_id": {
+          "$ref": "#/$defs/controller_id"
+        },
+        "preauthorized_addresses": {
+          "items": {
+            "$ref": "#/$defs/address"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "controller_id",
+        "preauthorized_addresses"
+      ],
+      "type": "object"
+    },
+    "sha256": {
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$",
+      "type": "string"
+    }
+  }
+}

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="G-structure/dnai-wikigen"
-WORKFLOW="G-structure/dnai-wikigen/.github/workflows/build-tee-images.yml"
+REPO="therealwiki/dnai-wikigen"
+WORKFLOW="therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml"
 SOURCE_DIGEST=""
 SOURCE_REF=""
 OWNER=""
@@ -18,15 +18,15 @@ allowed into a Phala compose deployment.
 
 Arguments:
   IMAGE_REF                     Fully qualified image ref or digest, for example:
-                                ghcr.io/g-structure/dnai-wikigen/tinker-delegate@sha256:...
+                                ghcr.io/therealwiki/dnai-wikigen/tinker-delegate@sha256:...
 
 Options:
   --source-digest GIT_SHA       Required source commit SHA enforced by gh.
   --source-ref REF              Optional Git ref, for example refs/heads/main.
   --repo OWNER/REPO             GitHub repo that owns the attestation.
-                                Default: G-structure/dnai-wikigen
+                                Default: therealwiki/dnai-wikigen
   --signer-workflow WORKFLOW    Expected signer workflow identity.
-                                Default: G-structure/dnai-wikigen/.github/workflows/build-tee-images.yml
+                                Default: therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml
   --owner OWNER                 Optional owner scope instead of --repo.
 
 Requires:

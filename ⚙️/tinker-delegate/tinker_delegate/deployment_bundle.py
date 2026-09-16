@@ -1,4 +1,10 @@
-"""Deployment verifier tying GitHub image attestations to a live Phala CVM."""
+"""Deployment evidence checker tying GitHub attestations to a CVM envelope.
+
+GitHub provenance and SBOM signatures are verified by ``gh``. The CVM side is
+only a bounded consistency check over service-produced identity/report-data and
+compose evidence; this module does not run Intel DCAP/QVL and must never label
+that evidence as a cryptographically verified TDX deployment.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +22,8 @@ from tinker_delegate.cvm_attestation import (
 )
 
 
-DEFAULT_REPO = "G-structure/dnai-wikigen"
-DEFAULT_SIGNER_WORKFLOW = "G-structure/dnai-wikigen/.github/workflows/build-tee-images.yml"
+DEFAULT_REPO = "therealwiki/dnai-wikigen"
+DEFAULT_SIGNER_WORKFLOW = "therealwiki/dnai-wikigen/.github/workflows/build-tee-images.yml"
 PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1"
 SBOM_PREDICATE = "https://spdx.dev/Document/v2.3"
 
@@ -85,7 +91,7 @@ class DeploymentBundlePolicy:
 
 @dataclass(frozen=True)
 class DeploymentVerificationBundle:
-    """Single bounded certificate tying source attestations to live CVM evidence."""
+    """Bounded evidence report with explicit per-layer trust labels."""
 
     schema: str
     api_url: str
@@ -98,15 +104,23 @@ class DeploymentVerificationBundle:
             "schema": self.schema,
             "api_url": self.api_url,
             "context": self.context,
-            "status": "verified",
+            "status": "evidence_checked_tdx_unverified",
             "images": [image.to_public_dict() for image in self.images],
             "cvm": self.cvm.to_public_dict(),
             "checks": {
-                "github_provenance_attestations": "verified",
-                "github_sbom_attestations": "verified",
-                "digest_pinned_compose": "verified",
-                "live_cvm_attestation": "verified",
+                "github_provenance_attestations": "verified_by_github_cli",
+                "github_sbom_attestations": "verified_by_github_cli",
+                "digest_pinned_compose": "matched_expected_inputs",
+                "cvm_attestation_envelope": (
+                    "matched_claimed_identity_not_cryptographically_verified"
+                ),
+                "intel_tdx_quote": "not_verified_no_independent_qvl_verdict",
                 "raw_secret_egress": False,
+            },
+            "claims": {
+                "intel_tdx_quote_verified": False,
+                "independent_attestation_verdict_present": False,
+                "production_authorization_allowed": False,
             },
         }
 
@@ -179,7 +193,12 @@ def verify_github_image(policy: GithubImagePolicy) -> GithubImageAttestation:
 
 
 def verify_deployment_bundle(policy: DeploymentBundlePolicy) -> DeploymentVerificationBundle:
-    """Verify GitHub image provenance/SBOMs and the live CVM evidence in one pass."""
+    """Verify GitHub artifacts and check CVM envelope/compose consistency.
+
+    A successful return is not an Intel TDX verdict. It remains production
+    ineligible until an authenticated independent DCAP/QVL verifier result is
+    added as a separate trust-domain input.
+    """
     if not policy.images:
         raise DeploymentBundleError("at least one --image is required")
 
@@ -212,7 +231,7 @@ def verify_deployment_bundle(policy: DeploymentBundlePolicy) -> DeploymentVerifi
         raise DeploymentBundleError(str(exc)) from exc
 
     return DeploymentVerificationBundle(
-        schema="dnai.deployment.verification.v1",
+        schema="dnai.deployment.evidence.v2",
         api_url=policy.api_url,
         context=policy.context,
         images=image_attestations,

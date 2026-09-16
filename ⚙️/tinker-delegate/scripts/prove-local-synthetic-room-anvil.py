@@ -38,9 +38,8 @@ sys.modules.setdefault(
 )
 
 from tinker_delegate import api
-from tinker_delegate.artifacts import artifact_keccak256, encrypt_artifact_payload
+from tinker_delegate.artifacts import artifact_commitment, encrypt_artifact_payload
 from tinker_delegate.chain_submitter import (
-    ResultCommitment,
     get_dstack_signer_attestation,
     score_band_to_contract_value,
 )
@@ -60,7 +59,9 @@ SUBMITTER_PROOF_PATH = TINKER_DIR / "scripts" / "prove-chain-submitter-dstack-an
 ANVIL_DEVELOPER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 ANVIL_BUYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 ANVIL_SELLER = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+NATIVE_TOKEN = "0x0000000000000000000000000000000000000000"
 PRIVATE_ARTIFACT = b"private synthetic diligence artifact for local proof only"
+COMMITMENT_SECRET = bytes(range(32))
 
 
 def main() -> int:
@@ -79,8 +80,8 @@ def main() -> int:
         contract_address = proof._deploy_diligence_room(rpc_url, verifier_address)
         start_block = proof._block_number(rpc_url)
         fund_signer_tx = proof._fund_signer(rpc_url, signer_address)
-        artifact_hash = artifact_keccak256(PRIVATE_ARTIFACT)
-        create_tx, deal_expiry = _create_deal(
+        artifact_hash = artifact_commitment(PRIVATE_ARTIFACT, COMMITMENT_SECRET)
+        create_tx, _deal_expiry = _create_deal(
             proof,
             rpc_url=rpc_url,
             contract_address=contract_address,
@@ -89,10 +90,9 @@ def main() -> int:
         )
         fund_deal_tx = _fund_deal(proof, rpc_url=rpc_url, contract_address=contract_address)
 
-        room = _run_local_synthetic_room(artifact_hash)
+        room = _run_local_synthetic_room(artifact_hash, contract_address)
         result = room["result"]
         packet = room["packet"]
-        payload_result_hash = "0x" + str(packet["result_hash"])
         compute_cost_wei = int(result.compute_cost_wei)
         score_band = result.score_band.value
         band_value, _band_label = score_band_to_contract_value(score_band)
@@ -103,10 +103,7 @@ def main() -> int:
             contract_address=contract_address,
             signer_address=signer_address,
             dstack_endpoint=dstack_endpoint,
-            deal_expiry=deal_expiry,
-            payload_result_hash=payload_result_hash,
             score_band=score_band,
-            score_band_value=band_value,
             compute_cost_wei=compute_cost_wei,
         )
         submit_receipt = _submit_result(
@@ -116,7 +113,6 @@ def main() -> int:
             dstack_endpoint=dstack_endpoint,
             score_band=score_band,
             compute_cost_wei=compute_cost_wei,
-            payload_result_hash=payload_result_hash,
             authorization_expiry=int(authorization["authorization_expiry"]),
             verifier_signature=str(authorization["verifier_signature"]),
         )
@@ -145,6 +141,13 @@ def main() -> int:
             raise AssertionError("EvaluationSubmitted event not found")
         if accepted_event is None:
             raise AssertionError("DealAccepted event not found")
+        canonical_hashes = {
+            str(authorization["result_hash"]).lower(),
+            str(submit_receipt["result_hash"]).lower(),
+            str(submitted_event.fields["result_hash"]).lower(),
+        }
+        if len(canonical_hashes) != 1:
+            raise AssertionError("verifier, submitter, and contract canonical hashes diverged")
 
         cleanup_packet = _cleanup_local_room(room)
         settlement = _read_settlement(
@@ -160,6 +163,7 @@ def main() -> int:
                 "real_contract": True,
                 "real_anvil_events": True,
                 "dstack_simulator_signer": True,
+                "evaluation_attestation_mode": "local_simulator_not_intel_verified",
                 "fake_tinker_backend": True,
                 "deployed_phala_evidence": False,
                 "base_sepolia_evidence": False,
@@ -190,7 +194,6 @@ def main() -> int:
                 "score_band": score_band,
                 "score_band_value": band_value,
                 "compute_cost_band": submit_receipt["compute_cost_band"],
-                "payload_result_hash": payload_result_hash,
                 "submitted_result_hash": submit_receipt["result_hash"],
                 "compose_hash": submit_receipt["compose_hash"],
                 "authorization_digest": authorization["authorization_digest"],
@@ -232,7 +235,8 @@ def _load_submitter_proof():
     return module
 
 
-def _run_local_synthetic_room(artifact_hash: str) -> dict[str, Any]:
+def _run_local_synthetic_room(artifact_hash: str, contract_address: str) -> dict[str, Any]:
+    evaluator_policy_commitment = "0x" + "44" * 32
     fake_tinker = FakeTinkerServiceClient(api_key="sealed-fake-local-proof-key")
     cp = ControlPlane(
         "sealed-fake-local-proof-key",
@@ -245,19 +249,44 @@ def _run_local_synthetic_room(artifact_hash: str) -> dict[str, Any]:
         seller=ANVIL_SELLER,
         budget_cap=10**18,
         reserve_price=10**15,
+        committed_artifact_hash=artifact_hash,
+        evaluator_policy_commitment=evaluator_policy_commitment,
     )
     encrypted = encrypt_artifact_payload(
         PRIVATE_ARTIFACT,
         api.get_tee_keypair().public_key_bytes.hex(),
         deal_id="0",
         artifact_hash=artifact_hash,
+        commitment_secret=COMMITMENT_SECRET,
+        chain_id=84532,
+        diligence_room_address=contract_address,
+        evaluator_policy_commitment=evaluator_policy_commitment,
     )
     client = TestClient(api.app)
-    with patch("tinker_delegate.api._get_control_plane", return_value=cp):
-        response = client.post("/deal/0/artifact/encrypted", json=encrypted)
+    with (
+        patch("tinker_delegate.api._get_control_plane", return_value=cp),
+        patch(
+            "tinker_delegate.api._require_wallet_auth",
+            return_value=types.SimpleNamespace(address=ANVIL_SELLER.lower()),
+        ),
+    ):
+        with patch.object(api.settings, "diligence_room_address", contract_address):
+            response = client.post(
+                "/deal/0/artifact/encrypted",
+                json=encrypted,
+                headers={"Authorization": "Bearer explicit-local-proof-token"},
+            )
     if response.status_code != 200:
         raise RuntimeError(f"encrypted artifact ingress failed: {response.status_code}")
-    result = asyncio.run(cp.evaluate("0", synthetic_room_evaluator))
+    # Explicit localhost-only evaluation evidence. This proof validates the
+    # bounded control-plane/chain integration; it does not present simulator
+    # bytes as an Intel-verified TDX quote.
+    with patch.object(
+        cp,
+        "_get_tdx_quote",
+        return_value=b"local-simulator-evaluation-evidence-not-intel-tdx",
+    ):
+        result = asyncio.run(cp.evaluate("0", synthetic_room_evaluator))
     packet = build_synthetic_room_public_packet(
         deal_id="0",
         artifact_hash=artifact_hash,
@@ -299,14 +328,10 @@ def _authorize_result(
     contract_address: str,
     signer_address: str,
     dstack_endpoint: str,
-    deal_expiry: int,
-    payload_result_hash: str,
     score_band: str,
-    score_band_value: int,
     compute_cost_wei: int,
 ) -> dict[str, Any]:
     chain_id = int(proof._run(["cast", "chain-id", "--rpc-url", rpc_url]).strip())
-    nonce = int(proof._run(["cast", "nonce", signer_address, "--rpc-url", rpc_url]).strip())
     env = proof._proof_env(dstack_endpoint)
     old_env = os.environ.copy()
     os.environ.update(env)
@@ -319,17 +344,6 @@ def _authorize_result(
     finally:
         os.environ.clear()
         os.environ.update(old_env)
-    commitment = ResultCommitment(
-        chain_id=chain_id,
-        contract_address=contract_address,
-        deal_id=0,
-        nonce=nonce,
-        compose_hash=attestation.compose_hash,
-        payload_result_hash=payload_result_hash,
-        score_band_value=score_band_value,
-        compute_cost_wei=compute_cost_wei,
-        expiry=deal_expiry,
-    ).digest()
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as attestation_file:
         json.dump(attestation.to_public_dict(), attestation_file)
         attestation_file.flush()
@@ -341,17 +355,15 @@ def _authorize_result(
             "0",
             score_band,
             str(compute_cost_wei),
-            commitment,
-            "--chain-id",
-            str(chain_id),
             "--contract-address",
             contract_address,
-            "--tee-identity",
-            signer_address,
+            "--rpc-url",
+            rpc_url,
             "--compose-hash",
             attestation.compose_hash,
             "--signer-attestation-json",
             attestation_file.name,
+            "--allow-unverified-local-attestation",
             "--allow-compose-hash",
             attestation.compose_hash,
             "--allow-app-id",
@@ -364,8 +376,8 @@ def _authorize_result(
     authorization = json.loads(output)
     if authorization.get("authorized") is not True:
         raise RuntimeError("authorize-result did not authorize submission")
-    if authorization.get("result_hash") != commitment:
-        raise RuntimeError("authorize-result did not authorize the replay-bound commitment")
+    if not authorization.get("result_hash"):
+        raise RuntimeError("authorize-result omitted the canonical public result hash")
     return authorization
 
 
@@ -377,7 +389,6 @@ def _submit_result(
     dstack_endpoint: str,
     score_band: str,
     compute_cost_wei: int,
-    payload_result_hash: str,
     authorization_expiry: int,
     verifier_signature: str,
 ) -> dict[str, Any]:
@@ -389,7 +400,6 @@ def _submit_result(
         "0",
         score_band,
         str(compute_cost_wei),
-        payload_result_hash,
         "--authorization-expiry",
         str(authorization_expiry),
         "--verifier-signature",
@@ -475,7 +485,8 @@ def _read_settlement(proof, *, rpc_url: str, contract_address: str) -> dict[str,
         "cast",
         "call",
         contract_address,
-        "pendingWithdrawals(address)(uint256)",
+        "pendingWithdrawals(address,address)(uint256)",
+        NATIVE_TOKEN,
         ANVIL_DEVELOPER,
         "--rpc-url",
         rpc_url,
@@ -484,7 +495,8 @@ def _read_settlement(proof, *, rpc_url: str, contract_address: str) -> dict[str,
         "cast",
         "call",
         contract_address,
-        "pendingWithdrawals(address)(uint256)",
+        "pendingWithdrawals(address,address)(uint256)",
+        NATIVE_TOKEN,
         ANVIL_SELLER,
         "--rpc-url",
         rpc_url,
@@ -493,7 +505,8 @@ def _read_settlement(proof, *, rpc_url: str, contract_address: str) -> dict[str,
         "cast",
         "call",
         contract_address,
-        "pendingWithdrawals(address)(uint256)",
+        "pendingWithdrawals(address,address)(uint256)",
+        NATIVE_TOKEN,
         ANVIL_BUYER,
         "--rpc-url",
         rpc_url,

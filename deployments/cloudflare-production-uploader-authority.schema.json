@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wikigen.me/schemas/cloudflare-production-uploader-authority.v1.json",
+  "title": "dnai Cloudflare production uploader authority",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "account_id",
+    "branch",
+    "bundle",
+    "credential_scope",
+    "executor_uid",
+    "producer_uid",
+    "project_name",
+    "schema",
+    "truth_status",
+    "uploader_capsule_pin"
+  ],
+  "properties": {
+    "account_id": {
+      "const": "956388df29525b9e06f81581b485a571"
+    },
+    "branch": {
+      "const": "main"
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_manifest_sha256",
+        "dist_manifest_sha256",
+        "upload_control_manifest_sha256"
+      ],
+      "properties": {
+        "bundle_manifest_sha256": {
+          "$ref": "#/$defs/nonzeroSha256"
+        },
+        "dist_manifest_sha256": {
+          "$ref": "#/$defs/nonzeroSha256"
+        },
+        "upload_control_manifest_sha256": {
+          "$ref": "#/$defs/nonzeroSha256"
+        }
+      }
+    },
+    "credential_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_resource_id",
+        "global_api_key_allowed",
+        "oauth_home_allowed",
+        "permission",
+        "review_status",
+        "token_kind"
+      ],
+      "properties": {
+        "account_resource_id": {
+          "const": "956388df29525b9e06f81581b485a571"
+        },
+        "global_api_key_allowed": {
+          "const": false
+        },
+        "oauth_home_allowed": {
+          "const": false
+        },
+        "permission": {
+          "const": "Cloudflare Pages:Edit"
+        },
+        "review_status": {
+          "const": "out_of_band_cloudflare_dashboard_review_required_not_provider_verified_by_this_runner"
+        },
+        "token_kind": {
+          "const": "api_token"
+        }
+      }
+    },
+    "executor_uid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "producer_uid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "project_name": {
+      "const": "wikigenme"
+    },
+    "schema": {
+      "const": "dnai.cloudflare-production-uploader-authority.v1"
+    },
+    "truth_status": {
+      "const": "different_principal_read_only_exact_input_handoff_scoped_token_scope_reviewed_out_of_band_not_provider_verified"
+    },
+    "uploader_capsule_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "entryCount",
+        "manifestByteLength",
+        "manifestSha256",
+        "nodeVersion",
+        "npmVersion",
+        "osPlatform",
+        "osRelease",
+        "schema",
+        "totalBytes",
+        "wranglerVersion"
+      ],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entryCount": {
+          "type": "integer",
+          "minimum": 4
+        },
+        "manifestByteLength": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifestSha256": {
+          "$ref": "#/$defs/nonzeroSha256"
+        },
+        "nodeVersion": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+"
+        },
+        "npmVersion": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+"
+        },
+        "osPlatform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "osRelease": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema": {
+          "const": "dnai.cloudflare-uploader-capsule.v1"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "minimum": 3
+        },
+        "wranglerVersion": {
+          "const": "4.131.0"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonzeroSha256": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    }
+  }
+}

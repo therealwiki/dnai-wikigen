@@ -1,31 +1,37 @@
 name: Build TEE Images
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
-      - "codex/**"
-      - "tinker-*"
-    paths:
-      - ".github/workflows/build-tee-images.yml"
-      - "⚙️/tinker-delegate/**"
-      - "⚙️/tee-email-oracle/**"
 
 permissions:
   contents: read
-  packages: write
-  attestations: write
-  id-token: write
-  artifact-metadata: write
 
 env:
   REGISTRY: ghcr.io
+  # Fixed release epoch used by BuildKit, Python wheel tooling, layer tarballs,
+  # and the OCI created label. It is intentionally source-controlled.
+  SOURCE_DATE_EPOCH: "1735689600"
+  SOURCE_DATE_RFC3339: "2025-01-01T00:00:00Z"
 
 jobs:
+  source-gate:
+    name: Verify exact release source
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
     name: Build ${{ matrix.name }}
+    needs: source-gate
     runs-on: ubuntu-latest
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -43,10 +49,18 @@ jobs:
             context: ./⚙️/tee-email-oracle/neko-chrome
             dockerfile: ./⚙️/tee-email-oracle/neko-chrome/Dockerfile
             image_suffix: neko-chrome
+          - name: attestation-qvl
+            context: ./⚙️/attestation-qvl
+            dockerfile: ./⚙️/attestation-qvl/Dockerfile
+            image_suffix: attestation-qvl
+          - name: compute-metering
+            context: ./⚙️/compute-metering
+            dockerfile: ./⚙️/compute-metering/Dockerfile
+            image_suffix: compute-metering
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Resolve lowercase image namespace
         id: image
@@ -54,13 +68,17 @@ jobs:
         run: |
           set -euo pipefail
           repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "repository=${repository}" >>"$GITHUB_OUTPUT"
           echo "name=${REGISTRY}/${repository}/${{ matrix.image_suffix }}" >>"$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: v0.29.1
+          driver-opts: image=moby/buildkit:v0.25.2@sha256:0f63d66f8d2de0bd16438284831a3e9ee6ca7cd57b6eb3ed6e38a7a456590fa7
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -68,54 +86,106 @@ jobs:
 
       - name: Extract image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
             type=sha,format=long,prefix=sha-
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
           labels: |
+            org.opencontainers.image.created=${{ env.SOURCE_DATE_RFC3339 }}
             org.opencontainers.image.title=dnai-wikigen ${{ matrix.name }}
             org.opencontainers.image.description=Private TEE service image for dnai-wikigen
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
-      - name: Build and push image with SBOM and provenance
+      - name: Build and push reproducible image subject
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: true
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+          outputs: type=image,push=true,rewrite-timestamp=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          provenance: mode=max
-          sbom: true
+          # BuildKit inline attestations include invocation IDs and wall-clock
+          # timestamps in the root index. Keep the image subject reproducible;
+          # the two signed GitHub attestations below bind this exact digest.
+          provenance: false
+          sbom: false
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: ${{ matrix.name }}.spdx.json
           artifact-name: ${{ matrix.name }}-sbom.spdx.json
           upload-artifact: true
+          syft-version: v1.44.0
 
       - name: Generate GitHub provenance attestation
-        uses: actions/attest-build-provenance@v4
+        id: provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # Linked-artifact storage records are organization-only. The source
+          # repository is user-owned, while the signed OCI attestation itself
+          # is supported and remains the release gate.
+          create-storage-record: false
 
       - name: Generate GitHub SBOM attestation
-        uses: actions/attest@v4
+        id: sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           sbom-path: ${{ matrix.name }}.spdx.json
           push-to-registry: true
+          create-storage-record: false
+
+      - name: Write source-bound image descriptor
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ matrix.name }}
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          SOURCE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          SIGNER_WORKFLOW: ${{ steps.image.outputs.repository }}/.github/workflows/build-tee-images.yml
+          PROVENANCE_ID: ${{ steps.provenance.outputs.attestation-id }}
+          PROVENANCE_URL: ${{ steps.provenance.outputs.attestation-url }}
+          SBOM_ID: ${{ steps.sbom.outputs.attestation-id }}
+          SBOM_URL: ${{ steps.sbom.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          node scripts/build-tee-image-release.mjs descriptor \
+            --name "$IMAGE_NAME" \
+            --repository "$IMAGE_REPOSITORY" \
+            --digest "$IMAGE_DIGEST" \
+            --platform linux/amd64 \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --release-sha "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" \
+            --signer-workflow "$SIGNER_WORKFLOW" \
+            --provenance-id "$PROVENANCE_ID" \
+            --provenance-url "$PROVENANCE_URL" \
+            --sbom-id "$SBOM_ID" \
+            --sbom-url "$SBOM_URL" \
+            --sbom-file "${IMAGE_NAME}.spdx.json" \
+            --output "tee-image-build-${IMAGE_NAME}.json"
+
+      - name: Upload image descriptor
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tee-image-build-${{ matrix.name }}
+          path: tee-image-build-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Print bounded image evidence
         shell: bash
@@ -126,8 +196,8 @@ jobs:
             echo
             echo "- image: \`${{ steps.image.outputs.name }}\`"
             echo "- digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- buildkit-sbom: registry-attached"
-            echo "- buildkit-provenance: registry-attached"
+            echo "- buildkit-inline-sbom: disabled-for-reproducible-subject"
+            echo "- buildkit-inline-provenance: disabled-for-reproducible-subject"
             echo "- github-sbom-attestation: registry-attached"
             echo "- github-provenance-attestation: registry-attached"
             echo
@@ -137,3 +207,112 @@ jobs:
             printf '%s\n' '${{ steps.meta.outputs.tags }}'
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Assemble verified TEE image release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+      packages: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download image descriptors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: tee-image-build-*
+          path: tee-image-descriptors
+          merge-multiple: true
+
+      - name: Download exact SPDX SBOMs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: "*-sbom.spdx.json"
+          path: release-sboms
+          merge-multiple: true
+
+      - name: Verify every registry attestation independently
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p verified-images
+          while IFS=$'\t' read -r name image repo workflow source_digest source_ref; do
+            "⚙️/tinker-delegate/scripts/verify-ghcr-image-attestation.sh" \
+              "$image" \
+              --source-digest "$source_digest" \
+              --source-ref "$source_ref" \
+              --repo "$repo" \
+              --signer-workflow "$workflow" \
+              >"verified-images/${name}.json"
+          done < <(node scripts/build-tee-image-release.mjs verification-plan \
+            --descriptors tee-image-descriptors)
+
+      - name: Assemble canonical five-image release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated_at="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
+          node scripts/build-tee-image-release.mjs aggregate \
+            --descriptors tee-image-descriptors \
+            --verifications verified-images \
+            --sboms release-sboms \
+            --generated-at "$generated_at" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --output dnai-tee-image-release.json
+
+      - name: Attest the canonical release manifest
+        id: release_provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-path: dnai-tee-image-release.json
+
+      - name: Preserve the signed release-manifest bundle
+        shell: bash
+        env:
+          RELEASE_BUNDLE_PATH: ${{ steps.release_provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -f "$RELEASE_BUNDLE_PATH"
+          install -m 0644 -- "$RELEASE_BUNDLE_PATH" dnai-tee-image-release.bundle.json
+
+      - name: Upload verified TEE image release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dnai-tee-image-release-${{ github.sha }}
+          path: |
+            dnai-tee-image-release.json
+            dnai-tee-image-release.bundle.json
+            release-sboms/*.spdx.json
+            verified-images/*.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Print bounded release evidence
+        shell: bash
+        env:
+          RELEASE_ATTESTATION_URL: ${{ steps.release_provenance.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const manifest = require("./dnai-tee-image-release.json");
+            console.log("### Verified TEE image release\n");
+            console.log(`- schema: \`${manifest.schema}\``);
+            console.log(`- release SHA: \`${manifest.release_sha}\``);
+            console.log(`- source ref: \`${manifest.source_ref}\``);
+            console.log(`- platform: \`${manifest.platform}\``);
+            console.log(`- manifest attestation: ${process.env.RELEASE_ATTESTATION_URL}`);
+            console.log("\nImages:\n");
+            for (const image of manifest.images) console.log(`- \`${image.image}\``);
+          ' >>"$GITHUB_STEP_SUMMARY"

@@ -1,13 +1,21 @@
 # TODO: Full Latent Vision Roadmap
 
-Last updated: 2026-07-13
-Branch context: `codex/wikigen-private-reward-pitch`
+Last updated: 2026-07-23
+Branch context: active working tree; deployment items require a clean reviewed release
 
 This is the build backlog for turning `dnai-wikigen` from the current prototype
 into the full latent project: a DevProof-style, attested diligence room where
 private artifacts, credentials, source accounts, Tinker compute, bio-validation,
 private verified rewards, coordination, and settlement all happen through
 bounded, auditable, no-human-key control planes.
+
+Current-release note: the repository has moved beyond the original mockup and
+now contains the complete routed SolidJS product plus a fresh seven-contract
+suite and hardened CVM/runtime release machinery. Open checkboxes below are not
+evidence that those source surfaces are absent; many describe the still-pending
+fresh Base Sepolia/Phala ceremony, independent trust roots, production provider
+accounts, and end-to-end live proof. [STATUS.md](STATUS.md) is authoritative for
+what is source-real, modeled, externally blocked, historical, or deployed.
 
 The north star:
 
@@ -22,28 +30,93 @@ Every credential, policy change, run, denial, and payout has a verification path
 
 The current repo already has meaningful pieces:
 
-- `DiligenceRoom.sol` escrow and settlement tests.
-- `EmailOracleAuth.sol` app-auth contract and tests.
-- `tee-email-oracle` service for a TEE-held email account and OTP path.
-- `tinker-delegate` service scaffold for a TEE-held Tinker account, billing,
-  isolated sessions, evaluator shape, API server, and Phala deployment.
+- A locally rehearsed seven-contract suite: `DiligenceRoom`,
+  `TinkerAccountEncumbrance`, `RoyaltyDistributor`, `ChallengeRegistry`,
+  `ComputeCreditVault`, `EmailOracleAuth`, and `ExecutionPolicyAnchor`.
+- `tee-email-oracle` with fixed OTP capability, dual-RPC finalized authorization,
+  exact release configuration, and a restart-preserved checkpoint.
+- `tinker-delegate` with bounded wallet/proxy domains, Deal/Arena/Compute
+  runtimes, sealed artifact paths, policy anchoring, and an exact two-day frozen
+  Tinker release ceremony.
+- Five purpose-separated signed challenge-v2 / verdict-v4 QVL profiles/CVM
+  definitions plus an independent deterministic Compute meter, for seven
+  production CVMs total. Each single-use DCAP challenge is at most 120 seconds
+  and appraisal must finish strictly before expiry. The reviewed release uses a
+  separate exact 900-second activation-evidence lease, which may outlive the
+  consumed challenge but is not renewed challenge freshness. Post-restart
+  Compute-workload recipient activation is schema v3 with an explicit lease of
+  at most 300 seconds; its stable recipient-release commitment remains v2.
+- A source-real, locally tested resident production activation driver that
+  preserves the branded authority chain in one process from non-live launch
+  through external proof/signature waits, restart, recipient activation, and
+  bounded-output publication. It accepts no serialized capability or signer
+  key, authorizes no automatic retry or live traffic, and has not run against a
+  fresh project-owned production topology.
 - `props-room` and `whatsapp-delegate` as source/controller/data-room stubs.
 - `ARCHITECTURE.md` with the complete current architecture.
-- `gate-health-frontend` on a separate branch with the Vite/React demo UI.
+- A complete twelve-route SolidJS product under `web/`, including the modeled,
+  no-health-data-intake Health Guide, EIP-6963/injected EIP-1193 wallet
+  discovery, conditional WalletConnect, and explicit live/modeled/roadmap
+  states.
 
 The honest current gap:
 
 ```text
-Email encumbrance: real but runtime enforcement is incomplete.
-Tinker encumbrance: contract, runtime preflight, Base Sepolia deployment, live
-Tinker API-key sealing, live reauth, and low-value operator-validation funding
-are real; production/repeated funding remains incomplete.
-TTT/RL bio validation: not built; current evaluator is stub/SFT-oriented.
-Private verified reward/RLVR environments: concept now clarified, not built.
-DNAI settlement: core escrow exists; live attestation, watcher, and full product flow are incomplete.
+Email encumbrance: source enforcement is substantial; fresh Email/KMS restart
+evidence, live bindings, and whole-volume anti-rollback remain open.
+Tinker encumbrance: exact policy and rehearsal exist; no fresh Base Sepolia
+instance/CVM binding or production provider activation exists for this release.
+Bio/private reward: sealed synthetic environments and capability-free safe IR
+exist; general hostile code, clinical/wet-lab claims, and live workers do not.
+Compute: exact-asset vault and off-chain service-credit lanes exist separately;
+the source implements release-gated at-most-once provider execution with a
+fresh authenticated process heartbeat and terminal ambiguous-outcome
+quarantine, while fresh provider/CVM activation remains open.
+DNAI settlement: source and local lifecycle proofs exist; the seven contracts,
+seven CVMs, five QVL roots, and multi-day ceremonies are not deployed.
 ```
 
-## 2026-07-13 Milestone — the hard part is done: TEE-owned Tinker delegate, proven live
+Simulator evidence is now a separate `mode=simulator` class across delegate,
+Arena, and oracle public envelopes. It remains `verified=false`, and production
+verifiers reject it even if an input self-asserts verification. Local modeled
+rehearsals must never be labeled `tdx`.
+
+### 2026-07-13 live-runtime build slice
+
+- [x] Make evaluator activation explicit: disabled by default, local-only stub,
+      and SFT only in a real non-simulator dstack CVM.
+- [x] Add one durable execution-policy store shared by deal evaluation, Arena
+      execution, and Compute dispatch. A pass requires both internal auth and
+      an allowlisted independent Ethereum signature over a deployment-domain-
+      bound hash-only message; the latest hold/deny revokes it.
+- [x] Add a confirmation-safe deal runtime that checks policy, avoids duplicate
+      evaluation, obtains an independently signed QVL verdict, authorizes the
+      bounded result, and submits only with dstack-derived keys.
+- [x] Add the single-process-leased, crash-resumable capability-free Arena
+      worker seam with fresh cross-process stores, external-QVL activation, and
+      a mandatory pre-mutation policy adapter.
+- [x] Rehearse the complete fresh seven-contract suite and representative deal,
+      challenge, Compute, Tinker-release, and policy-anchor lifecycles on stopped
+      ephemeral Anvil without raw key material.
+- [x] Wire the deal runtime and Arena worker executables into a disabled-by-
+      default hardened CVM process overlay, then test startup failure and
+      healthy structural operation. The release renderer now provisions both
+      as profile-gated services, fails closed on missing release/QVL authority,
+      and exercises their structural boundaries in compose-hardening and
+      release-renderer tests. Fresh deployment and post-measurement profile
+      activation remain separate open work below.
+- [ ] Provision an independent QVL operator/signing root, final policy approver
+      wallets, and a deployment-unique approval domain derived from the fresh
+      Base Sepolia suite plus reviewed compose commitment.
+- [ ] Deploy the fresh suite with Foundry keystore account `dev`, verify source,
+      deploy reviewed digest-pinned Phala services, and prove one live bounded
+      deal and one live capability-free Arena submission end to end.
+
+## Historical 2026-07-13 prior-release Tinker milestone
+
+The following is preserved as prior-operator engineering evidence. It does not
+mean the fresh seven-contract/seven-CVM release is deployed, and its completed
+checkboxes do not satisfy current activation tasks.
 
 The load-bearing infrastructure — a TEE-custodied Tinker account whose full
 lifecycle and scoped delegation run through bounded, attested control planes —
@@ -567,16 +640,14 @@ ordinary account provisioning.
             Bounded + persisted; `tests/test_review_queue.py` (+3) prove
             two-of-two release, duplicate-approver rejection, and single-deny
             blocks a 3-of-N ticket.
-      - [x] Surface the review queue over the operator API. Done 2026-07-12:
-            auth-gated `GET /review/queue` (optional `?routed_role=`) returns the
-            bounded queue/pending tickets, and `POST /review/decide` records a
-            reviewer decision at server time and persists it to a configured
-            `review_queue_path` (409 on fail-closed rejection e.g. self-approval /
-            expired / duplicate, 503 if unconfigured). `tests/test_api_review_queue.py`
-            (8) prove auth, bounded GET, role filter, release-persists,
-            submitter-self-approval-409, unconfigured-503, on-demand expiry sweep
-            (`POST /review/expire` transitions stale tickets to EXPIRED and
-            persists, so they can no longer be released), and expire auth/config.
+      - [x] Surface the review queue over the release-gated API. The initial
+            operator API landed 2026-07-12; the current source exposes
+            rate-limited public hash-only `GET /review/queue`, runtime-authenticated
+            internal enqueue/expiry, one-time allowlisted reviewer-wallet
+            challenges, and signed `POST /review/decide` without accepting a
+            caller-supplied reviewer identity. Tests cover bounded pagination,
+            role filters, persistence, self-review, duplicate approval,
+            M-of-N release, conservative expiry, and unavailable authority.
       - [x] Enforce non-self-approval ON-CHAIN for funding operations. Done
             2026-07-12: `TinkerAccountEncumbrance.authorizeOperation` now reverts
             `SelfApprovalNotAllowed` when `requester == msg.sender` — the
@@ -586,8 +657,10 @@ ordinary account provisioning.
             self-authorize funding). `test/TinkerAccountEncumbrance.t.sol`
             +1 (`test_AuthorizerCannotSelfApprove`, owner and manager both
             rejected); full Foundry suite 135 green.
-            Remaining (partial): distinct per-reviewer auth, email-oracle
-            notification, reviewer UI, a scheduled worker to poll `/review/expire`.
+            Remaining activation work: production reviewer roster/key custody,
+            email-oracle notification, a scheduled worker to poll
+            `/review/expire`, and the fresh deployed release. The wallet-specific
+            reviewer authorization path and SolidJS UI are implemented in source.
 - [ ] `P0` Coordination composes policies by intersection, never union.
       - [x] Add a pure coordination reducer that combines per-corpus gate
             results by strict intersection. Done 2026-07-09: any deny denies,
@@ -816,9 +889,11 @@ ordinary account provisioning.
             later `DealFunded` can still notify `/deal/notify-funded`; polling
             advances only after successful dispatch and only over
             confirmation-safe blocks.
-      Production note: deployment wiring, chain-lag alerting, and any stricter
-      deep-reorg rollback policy remain covered by later operations tasks, not
-      this local watcher P0.
+      Production note: deployment wiring, chain-lag alerting, and live
+      reorg/restart evidence remain covered by later operations tasks. The
+      production deal loop now adds canonical block-hash checkpoints,
+      conservative private-state quarantine/full rewind, and adversarial
+      restart coverage on top of this local watcher P0.
 - [ ] `P0` Implement TEE-to-chain transaction signing using a dstack-derived
       Ethereum key or equivalent TEE-held signer.
       Done when `submitResult()` can be broadcast from inside the CVM without raw
@@ -923,12 +998,14 @@ ordinary account provisioning.
             backward compatibility, create-revert-when-unapproved,
             create-success-when-approved, submit-success on identity/compose match,
             submit-revert on mismatch, and revoke-blocks-create.
-      - [x] Drive the on-chain approvals from `result_verifier` attestation checks
-            rather than hand-written developer calls. Done 2026-07-11:
-            `tinker_delegate.governance_plan.build_governance_plan_from_authorization`
-            takes a *verified* `ResultAuthorization` (attestation already passed the
-            verifier policy — allowed compose hash, allowed app ID, matching quote
-            report data, not revoked) and emits a bounded plan of the exact calls
+      - [x] Drive the on-chain approvals from independently authenticated
+            attestation rather than hand-written developer calls. Hardened
+            2026-07-13: `build_governance_plan_from_verdict` requires the complete
+            signed DCAP/QVL verdict plus externally supplied trusted-verifier
+            addresses and exact chain/contract/TEE/compose/app/OS/quote pins. It
+            verifies the canonical report-data binding, digest, low-s signature,
+            signer independence, exact context, and freshness before emitting the
+            bounded calls
             that admit that identity/measurement pair on-chain:
             `approveComposeHash(composeHash)` and
             `approveTeeIdentity(teeIdentity, composeHash)`. It fails closed on an
@@ -936,11 +1013,12 @@ ordinary account provisioning.
             does NOT execute — the plan carries `cast` command templates using
             `--account dev` (keystore, never a raw key) for the developer to
             broadcast. Operator surface: `governance-approval-plan
-            <authorization.json>` reads an `authorize-result` output and prints the
-            bounded plan (`raw_secret_egress=false`, no signatures/digests).
-            `tests/test_governance_plan.py` (8) cover both calls, calldata/selector
-            correctness, keystore-not-raw-key, unauthorized/zero rejection,
-            bounded output, and the CLI path.
+            <independent-verdict.json>` requires every trust root/release pin as a
+            separate CLI argument and prints the bounded plan
+            (`raw_secret_egress=false`, signature omitted). The legacy
+            authorization-summary/boolean path always rejects. Adversarial tests
+            cover forged summaries/signatures, self-declared trust, every context
+            pin, missing policy, and expired/future/stale/overlong verdicts.
       Remaining (operational, not mechanism): (1) enable both gates by default for
       production; (2) redeploy — the current Base Sepolia `DiligenceRoom` predates
       both gates and does not expose them. Redeploy is NOT done autonomously: a
@@ -949,15 +1027,14 @@ ordinary account provisioning.
       keystore password — it requires explicit user confirmation (run
       `/forge-deploy` with `--account dev`). Blocked on that confirmation, not on
       code.
-- [x] `P0` Add anti-replay material to submitted results:
-      `chainId`, contract address, deal ID, nonce, compose hash, result hash,
-      score band, compute cost, and expiry.
-      Done in `tinker_delegate.chain_submitter`: the value submitted to
-      `DiligenceRoom.resultHash` is now an anti-replay commitment over those
-      fields, while the original bounded payload result hash remains separate
-      in the bounded receipt as `payload_result_hash`. The dstack-simulator
-      Anvil proof verifies the `EvaluationSubmitted.result_hash` equals the
-      submission commitment and is not the raw payload hash.
+- [x] `P0` Make submitted results canonical and non-malleable:
+      `DiligenceRoom.submitResult` no longer accepts any caller-provided result
+      hash. The contract derives a domain-separated `DiligenceRoomPublicResult`
+      commitment over chain/contract/deal identity, immutable funded-deal fields,
+      compose hash, bounded score band, and deterministic compute tariff. The
+      verifier and submitter recompute this exact commitment and share a fixed
+      Solidity/Python parity vector. Payload hashes and reward-transcript
+      commitments are absent from the production transaction and receipt path.
 - [x] `P0` Define whether quote verification happens on-chain, in a verifier
       contract, through an attestation registry, or through a verified off-chain
       verifier whose signature the contract accepts.
@@ -1122,54 +1199,45 @@ ordinary account provisioning.
       one conserving `RoyaltyMeter` per owner (single-owner corpora unchanged).
       `tests/test_coordination.py` (+2) prove a co-owned corpus settles into two
       conserving meters (700M/300M of 1e9) and that malformed weights raise.
-      On-chain rail added 2026-07-11: `RoyaltyDistributor.sol` is the on-chain
-      counterpart of `RoyaltyLedger` — `distributeNative` / `distributeERC20` take
-      a query ref plus the conserving per-owner split (from `split_royalty`),
-      credit each co-owner's `pending[token][owner]` claimable balance
-      (conservation enforced: native `msg.value` must equal the sum; ERC20 pulls
-      the sum via `transferFrom`), and `withdraw()` / `withdraw(address)` are the
-      pull payments (CEI, bool-checked transfers). Guards reject length mismatch,
-      empty/zero-owner/zero-amount, value mismatch, and nothing-to-withdraw.
-      `test/RoyaltyDistributor.t.sol` (12) cover native/ERC20 distribute+withdraw
-      lifecycles ending with the contract holding zero, accumulation across
-      distributions, every guard, a native conservation fuzz, and (added
-      2026-07-12) a reentrancy-drain test: a malicious co-owner re-entering
-      `withdraw()` during its native payout gets exactly its single credit and
-      cannot drain other owners (CEI defeats it). Contract-surface audit complete
-      2026-07-12: all five contracts reviewed — DiligenceRoom (settlement
-      conservation/reentrancy/fee-lock), TinkerAccountEncumbrance (fixed an
-      on-chain self-approval gap), EmailOracleAuth (kill-switch/delivery, correct +
-      well-tested), and RoyaltyDistributor (inherent conservation, reentrancy now
-      pinned). Full contract suite: 136 tests. Proven end-to-end on ephemeral Anvil 2026-07-11:
-      `scripts/prove-royalty-distributor-anvil.py` deploys the contract (Anvil
-      unlocked accounts, no raw keys/dstack), distributes a 1 ETH native royalty
-      0.7/0.3 across two co-owners, verifies each `pending` credit and that the
-      contract holds the full total, has both owners withdraw, and asserts the
-      contract drains to exactly zero (strict conservation) — emitting a bounded
-      JSON summary. Guarded test `tests/test_royalty_distributor_proof.py` runs it
-      when `DNAI_RUN_ANVIL_PROOFS=1` (verified passing live this cycle).
-      Deploying it to Base Sepolia and wiring coordination settlement to it remain
-      follow-ups.
+      Advanced 2026-07-24 (superseding the historical direct-distribution-only
+      milestone): `RoyaltyDistributor.sol` v3 now provides deterministic,
+      intent-keyed native/ERC20 prefunding reservations. After the complete fresh
+      owner-grant set fixes the allocation, the sponsor escrows the exact asset
+      and amount under a request that binds the release, room/state, query,
+      grants, allocation, sorted owner/amount hash, settlement ID/nonce,
+      execution commitment, and refund deadline. Worker admission uses the
+      compact reservation getter at one RPC-reported finalized,
+      EIP-1898-pinned block; aggregate balance and allowance are not authority.
+      After bounded Compute, the exact decision is anchored on demand, the main
+      runtime and independent Royalty QVL authorize purpose-separated EIP-712
+      digests, the sponsor wallet broadcasts the generated zero-value
+      `settleReserved` transaction, and the worker reconciles the finalized
+      receipt with the permanent reservation-settlement getter. Reservation
+      consumption, replay markers, and all owner credits are atomic; expired
+      unused reservations are sponsor-refundable; `totalReserved + totalPending`
+      remains solvent per asset. Direct `distributeNative` /
+      `distributeERC20` are retained only for compatibility.
+
+      Current local proof: the full Foundry suite passes 444/444; the focused
+      Royalty run covers 55 unit tests and five invariant properties, including
+      native and ERC20 campaigns at 256 runs/128,000 calls each; the focused
+      Python checks pass 35 tests plus 5 subtests; and the guarded Anvil group
+      passes 3/3. The distribution-plan proof now executes reservation ->
+      zero-value `settleReserved` -> finalized permanent reconciliation ->
+      conserving pull-payment. These are source/local protocol proofs, not a
+      third-party audit, Base Sepolia deployment, Phala/TDX run, independent QVL
+      verdict, or live sponsor payment.
       - [x] Bridge the settled split to the on-chain rail as a bounded plan.
-            Done 2026-07-11: `tinker_delegate.royalty_distribution_plan` turns a
-            settled per-owner split into the exact `RoyaltyDistributor.distributeNative`
-            / `distributeERC20` call — bounded calldata plus a `cast` command
-            template using `--account dev` (keystore, never a raw key). It does not
-            broadcast (operator executes it), mirroring the governance plan. The
-            hand-rolled dynamic-array (`address[]`,`uint256[]`) ABI encoding is
-            verified byte-identical to `cast calldata` for both native and ERC20
-            (`tests/test_royalty_distribution_plan.py`, 8, incl. cast cross-checks
-            and zero-owner/zero-amount/empty/bad-query-ref rejection). Proven to
-            execute end-to-end on Anvil 2026-07-11:
-            `scripts/prove-royalty-distribution-plan-anvil.py` deploys the
-            distributor, builds a native plan with the Python builder, broadcasts
-            the plan's *exact calldata*, and asserts each owner is credited the
-            planned amount, the contract holds the total, and it drains to zero
-            after withdrawal. Guarded test
-            `tests/test_royalty_distribution_plan_proof.py`
-            (`DNAI_RUN_ANVIL_PROOFS=1`, passing live this cycle). Net: the royalty
-            path is now proven from Python split → bounded plan → executed on-chain
-            distribution → conserving pull-payment withdrawal.
+            Advanced 2026-07-24: `tinker_delegate.royalty_distribution_plan`
+            recomputes the owner/amount hash and encodes exact `settleReserved`
+            calldata for an already dual-authorized, prefunded settlement. The
+            strict persisted-plan parser rejects drift before wallet handoff. It
+            emits a `--account dev` keystore `cast` template, never a raw key, and
+            does not invent entitlement, sign, or broadcast. The authoritative
+            source/test sequence is fresh grants -> deterministic reservation ->
+            finalized admission -> bounded Compute -> exact anchor plus main/QVL
+            authorization -> sponsor-wallet settlement -> finalized
+            reconciliation -> conserving owner pull-payment.
 - [x] `P1` Add settlement conservation fuzz tests for multi-owner and ERC20
       paths.
       Done 2026-07-11 in `DiligenceRoom.t.sol` (64 tests total): added 6 fuzz
@@ -1257,16 +1325,18 @@ ordinary account provisioning.
 
 ### EmailOracleAuth Completion
 
-- [x] `P0` Enforce `EmailOracleAuth` at the FastAPI `/pin` and `/inbox`
-      endpoints.
-      Done when unauthenticated callers cannot retrieve OTPs or inbox metadata.
-      - [x] Add runtime bearer guard for `/pin` and `/inbox` so unauthenticated
-            network callers cannot retrieve OTPs or inbox metadata.
+- [x] `P0` Enforce `EmailOracleAuth` at the FastAPI `/pin` endpoint and remove
+      general mailbox egress.
+      Done: `/inbox` is absent, `/email` is commitment-only, and authenticated
+      callers cannot retrieve mailbox identifiers, headers, dates, or raw
+      addresses.
+      - [x] Add runtime bearer guard for `/pin` so unauthenticated network
+            callers cannot retrieve OTPs.
       - [x] Check the caller identity against the on-chain `EmailOracleAuth`
-            consumer registry before releasing OTP or inbox data.
-            Done with `email_oracle.chain_auth` and FastAPI guards for `/pin`
-            and `/inbox`. When `ORACLE_AUTH_REQUIRED=true` or a contract is
-            configured, the service fails closed before IMAP access unless
+            consumer registry before releasing an OTP.
+            Done with `email_oracle.chain_auth` and the FastAPI `/pin` guard.
+            When `ORACLE_AUTH_REQUIRED=true` or a contract is configured, the
+            service fails closed before IMAP access unless
             `isConsumerAuthorized(ORACLE_AUTH_CONSUMER_APP_ID,
             ORACLE_AUTH_CONSUMER_COMPOSE_HASH)` returns true; optional
             `ORACLE_AUTH_EXPECTED_CALLER_IDENTITY` binds `/pin` request metadata.
@@ -1536,10 +1606,10 @@ ordinary account provisioning.
                   Phala debug app `4c92eec94e2d7b6e8c8a7940cb0b6eb4a0e8e1bd`
                   reached IMAP verification and healthy oracle state, and the
                   temporary public-log/dev-OS debug CVM was deleted afterward.
-            - [x] Stop public `/health` and `/attestation` from exposing the raw
-                  generated oracle mailbox when credentials exist; expose
-                  readiness plus `oracle_email_hash` publicly and move raw email
-                  address retrieval to runtime-authenticated `/email`.
+            - [x] Stop every HTTP response from exposing the raw generated
+                  oracle mailbox when credentials exist; expose readiness plus
+                  commitments only, remove `/inbox`, and require an in-CVM
+                  sealed/bootstrap path for the delegate's raw address input.
             - [x] Build/push the bounded-health oracle image and re-run the
                   explicit debug proof to confirm public health/attestation do
                   not expose raw mailbox identifiers after successful genesis.
@@ -2153,7 +2223,7 @@ ordinary account provisioning.
             with both diagnostic endpoints returning 403 disabled.
 - [x] `P0` Narrow Phala redeploy runtime env handling to the minimal key set
       needed by each compose profile.
-      Done 2026-07-08: `scripts/redeploy-phala-cvm.mjs` now defaults to
+      Historical completion 2026-07-08: the retired helper defaulted to
       `--runtime-env-policy compose-refs`, selecting only keys referenced by the
       compose source plus explicitly allowed keys. The legacy broad behavior
       requires `--runtime-env-policy all`. Default output is bounded to
@@ -2161,7 +2231,9 @@ ordinary account provisioning.
       `runtime_env_keys_sha256`; printing key names requires
       `--print-runtime-env-keys`. Node tests cover compose-reference filtering,
       explicit missing-key fail-closed behavior, allow-file additions, and the
-      explicit all-env fallback. The current Phala normal profile was redeployed
+      explicit all-env fallback. The current helper rejects these flags and is
+      validation-only for an exact reviewed seven-CVM batch. At that historical checkpoint, the Phala normal
+      profile was redeployed
       with this policy: live compose hash
       `54ee243db5605588550d670fcc767ba17b49407e76613b633ddc7eee44494eb2`,
       `allowed_env_count=7`, public logs/sysinfo disabled, health OK, and both
@@ -3016,14 +3088,16 @@ ordinary account provisioning.
             reports this live compose is not yet approved on-chain.
       - [x] Bind generated Tinker smoke redeploy commands to the newly
             provisioned Phala compose hash.
-            Done 2026-07-09: `scripts/redeploy-phala-cvm.mjs` accepts
+            Historical 2026-07-09 completion: the retired update helper accepted
             `--self-compose-hash-env TINKER_ENCUMBRANCE_COMPOSE_HASH`, fails
             closed if that env key is not selected, and overwrites the selected
             env value with Phala's provisioned app-compose hash before
-            encrypted env commit. `tinker-smoke-command-plan` now emits that
-            flag and includes the self-bound compose hash plus issue/deployment
-            policy flags in the verifier env allowlist. Focused JS and Python
-            tests cover the helper and plan output.
+            encrypted env commit. At the time, `tinker-smoke-command-plan`
+            emitted that flag and included the self-bound compose hash plus
+            issue/deployment policy flags in the verifier env allowlist. That
+            interface is no longer executable; generated smoke plans
+            intentionally emit no redeploy command until the reviewed
+            fresh-batch executor is ready.
       - [ ] Run `tinker-smoke --api-url ... --max-usd 0.05
             --require-encumbrance` successfully from the deployed CVM and record
             the bounded receipt plus attestation evidence.
@@ -3792,24 +3866,12 @@ reusing existing primitives (`crypto.encrypt_for_tee`,
       accept an optional `reward_transcript_commitment` that is recorded on every
       `DiligenceFlowReceipt` and bound into `flow_hash`, tying the settlement
       outcome to the run's proof-carrying transcript (`tests/test_diligence_flow.py`
-      +1). On-chain binding added 2026-07-12: `chain_submitter.ResultCommitment`
-      now takes an optional `reward_transcript_commitment` folded into the
-      submitted `DiligenceRoom.resultHash` — v2 domain-tagged when present, and
-      byte-identical v1 when absent (existing submissions/Anvil proof unchanged).
-      `submit_result(..., reward_transcript_commitment=...)` threads it through
-      and records it in the bounded receipt, so the settled on-chain record
-      cryptographically commits to the RLVR proof-carrying transcript and any
-      holder of the bounded public fields can recompute the digest
-      (`tests/test_chain_submitter.py` +4: v1 backward-compat, v2 binds/changes,
-      recompute-from-public-fields, submit_result end-to-end). Exposed on the
-      `submit-result` CLI as `--reward-transcript-commitment` and PROVEN on-chain
-      2026-07-12: `scripts/prove-chain-submitter-dstack-anvil.py` (real dstack
-      simulator TEE key + ephemeral Anvil + real authorize-result/submit-result
-      CLIs) now binds a transcript commitment and asserts the emitted
-      `EvaluationSubmitted.result_hash` equals the v2 commitment and differs from
-      the unbound v1 digest — the on-chain settlement record commits to the RLVR
-      transcript. Proof output `ok:true` (result_hash 0x63f8…acaf9a ==
-      submitted_result_hash != unbound v1 0x0213…).
+      +1). Superseded on-chain note (2026-07-13): reward-transcript commitments
+      remain valid private-run/bounded-certificate evidence, but were removed
+      from `submitResult`, its CLI, and the chain receipt. Allowing an evaluator
+      or caller to choose opaque commitment material made escrow `resultHash`
+      non-canonical. The contract now derives the only production result hash
+      from public policy fields, while reward-run verification stays off-chain.
       Reward-loop side integration-tested end to end
       2026-07-12 (`tests/test_reward_loop_pipeline_integration.py`): clear canary
       pre-screen -> `run_private_reward_loop` with a DP budget attached (swappable
@@ -4068,12 +4130,9 @@ reusing existing primitives (`crypto.encrypt_for_tee`,
       recomputes the root from the emitted feedback and verifies an inclusion
       proof for every candidate against it (`tests/test_bio_assay_program_demo.py`,
       8). On-chain binding added 2026-07-12 (see the reproducibility-certificate
-      entry above): `ResultCommitment` optionally folds the
-      `reward_transcript_commitment` into the submitted `resultHash` (v2 tag when
-      present, byte-identical v1 when absent), exposed on the `submit-result` CLI,
-      and PROVEN on-chain 2026-07-12 via `prove-chain-submitter-dstack-anvil.py`
-      (emitted `EvaluationSubmitted.result_hash` equals the v2 commitment and
-      differs from the unbound v1 digest).
+      entry above) was superseded 2026-07-13: transcript commitments remain in
+      the private reward/certificate flow only. They are deliberately absent
+      from the production `submitResult` ABI and canonical escrow result hash.
 
 ### Define The Bio Validation Target
 
@@ -4474,8 +4533,19 @@ gate, bounded result schema, forbidden-output screen) with
             attestation report data.
       - [x] Add a client-side quote verifier/uploader that refuses to encrypt or
             upload until the live TDX quote, compose hash, and report data pass.
-- [x] `P0` Verify `keccak256(rawArtifact) == artifactHash` inside the TEE before
-      a deal can proceed.
+- [x] `P0` Bind ingress and evaluation to the immutable on-chain salted v2
+      artifact commitment before a deal can proceed.
+      - [x] Define `artifactHash` as
+            `keccak256(ASCII("dnai-wikigen/artifact-commitment/v2") || 0x00 || secret32 || rawArtifact)`
+            with an exact 32-byte random secret and no raw-keccak fallback.
+      - [x] Forward `DealCreated.artifactHash` through the watcher into immutable
+            `DealContext`, reject caller-supplied mismatches before decryption,
+            verify after wrapper decode, and re-verify immediately before the
+            evaluator receives bytes.
+      - [x] Require the strict private v2 recovery receipt and versioned encrypted
+            wrapper; reject empty artifacts, raw unwrapped bytes, malformed
+            receipts, wrong secrets, and self-consistent artifact B uploads for a
+            chain commitment to artifact A.
 - [ ] `P0` Add per-corpus/per-deal key derivation:
       no single static artifact key for all rooms.
       - [x] Derive artifact upload AES keys with per-deal/per-artifact HKDF
@@ -4685,28 +4755,62 @@ gate, bounded result schema, forbidden-output screen) with
       all-pass, one-deny, one-hold, restricted-deny, missing consent, revoke
       mid-turn, and delegate-exceeds-scope.
       Done 2026-07-09 in `tests/test_coordination.py`.
-- [ ] `P0` Implement human-review queue:
+- [x] `P0` Implement the source/release-gated Collaboration schema-v2 control
+      plane and browser UI.
+      Persistent authenticated rooms, wallet-owned invitation decisions,
+      membership and owner-role changes, exact-current-query grants,
+      snapshot-consistent pagination, idempotent ambiguity recovery,
+      joint-consent snapshots, and quiescent archive are implemented across
+      the delegate API and SolidJS client. Local HMAC mode is explicitly
+      non-monotonic. Live dstack mode now commits every exact schema-v2 state to
+      a release/project/domain-bound Base Sepolia `ExecutionPolicyAnchor` under
+      the explicit single-RPC reported-finalized model, recovers ambiguous
+      commits through a private pending document, and fails closed on witness
+      outage, regression, or mismatch before auth, reads, or mutations. This is
+      not RPC quorum or a consensus proof.
+      - [x] Implement the separate release-gated Collaboration execution and
+            Royalty continuation. The source derives the deterministic exact
+            funding reservation only after the complete fresh grant set, admits
+            its worker only after RPC-reported finalized EIP-1898 reads of that
+            reservation and the exact Compute job, runs the bounded one-shot
+            Compute path, anchors the exact settlement decision on demand,
+            obtains purpose-separated main/QVL authorizations, emits the exact
+            sponsor-wallet `settleReserved` plan, and reconciles finalized
+            permanent state. Direct distribute calls are compatibility-only.
+      - [ ] Activate and prove that path in the fresh release. Required evidence
+            remains a project-owned Base Sepolia deployment, seven measured Phala
+            CVMs, independent QVL roots/verdicts, real sponsor reservation,
+            provider execution, wallet settlement, finalized reconciliation, and
+            matching Cloudflare candidate. Local HMAC state, test signers, DTOs,
+            heartbeats, and RPC-reported finalized reads are not TDX/QVL or
+            consensus evidence.
+- [x] `P0` Implement the source/release-gated human-review queue:
       ticket creation, role routing, release/deny, reviewer identity, expiry,
       audit trail.
       - [x] Add source-modeled handoff tickets and reviewer decisions.
             The reducer creates hold tickets with role routing, records reviewer
             release/deny identity, and returns to `gating` after release so the
-            turn must be re-gated. Durable queue storage, expiry, email
-            notification, and reviewer UI remain open.
+            turn must be re-gated.
       - [x] Add a bounded source-level review queue with expiry and audit trail.
             Done 2026-07-09: `tinker_delegate.review_queue` can enqueue
             coordination `HandoffTicket`s, persist/load a bounded JSON queue,
             filter pending tickets by reviewer role, record release/deny
             decisions with reviewer hashes, expire stale pending tickets, and
             maintain an append-only bounded audit hash. Tests prove no raw
-            review reason or reviewer identity is emitted. tee-email-oracle
-            notification, reviewer UI, and production reviewer custody remain
-            open.
+            review reason or reviewer identity is emitted.
+      - [x] Expose the current release-bound reviewer API and SolidJS UI.
+            The public strict hash-only queue, internal enqueue/expiry routes,
+            one-time allowlisted reviewer-wallet challenge, signed release/deny
+            decision, private M-of-N resolution, self-review/duplicate-vote
+            rejection, and browser-rechecked Base Sepolia rollback witness are
+            implemented. Fresh production reviewer roster/key custody,
+            tee-email-oracle notification, scheduled expiry, and deployment
+            remain separate open activation work.
 - [x] `P0` Enforce that delegated agents cannot resolve their own holds.
       Done 2026-07-09: reviewer decisions from the turn issuer/requester fail
       closed as `self_approval_denied`; tests prove the agent cannot release
       its own ticket.
-- [ ] `P0` Implement consent grants:
+- [x] `P0` Implement source-level consent grants:
       purpose, pipeline, requester, expiry, revocation, quorum, and owner.
       - [x] Add source-modeled active consent matching for owner, corpus,
             purpose, pipeline, requester, and expiry. Missing consent leaves
@@ -4775,7 +4879,11 @@ gate, bounded result schema, forbidden-output screen) with
 - [x] `P1` Implement royalty metering for multi-owner surfaced turns.
       Done 2026-07-09: all-pass plus active consent produces per-corpus owner
       `RoyaltyMeter` records with amount bands and a joint royalty hash.
-- [ ] `P1` Implement M-of-N and two-person review for high-stakes routes.
+- [x] `P1` Implement source-level M-of-N and two-person review for high-stakes
+      routes. Distinct reviewer approvals accumulate privately to the
+      role-specific threshold, duplicate votes and self-review fail closed, and
+      any deny is terminal. Activating the production reviewer roster and key
+      custody remains open.
 - [ ] `P1` Add separation-of-duties enforcement:
       data owner, session custodian, reviewer, auditor, requester, sponsor.
 - [ ] `P2` Add governance templates:
@@ -4787,31 +4895,47 @@ gate, bounded result schema, forbidden-output screen) with
 
 ## Milestone 7: Frontend, Cloudflare, And User Product
 
-- [ ] `P0` Decide how to merge `gate-health-frontend` into `tinker-deligate`.
-      Recommended: cherry-pick or merge `⚙️/tinker-delegate/web/`, not replace
-      backend/contracts work.
+- [x] `P0` Replace the old mockup with the repository-root `web/` product.
+      The result is SolidJS, not React, and has twelve canonical routes:
+      Overview, Health Guide, Arena, Diligence Rooms, Release Review, Data
+      Vaults, Compute, Delegated Tinker Account, Safeguards, Capabilities,
+      Verify, and Collaborate. Health Guide is modeled, clears on reload, and
+      accepts no health data in this release.
 - [ ] `P0` Wire the frontend to real APIs instead of synthetic data:
       health, attestation, rooms, deals, gate verdicts, funding, evaluator status,
-      and result verification.
-- [ ] `P0` Add wallet connection and role-aware auth:
-      seller/controller, buyer/sponsor, reviewer, auditor, admin.
-- [ ] `P0` Add seller/controller flow:
-      create room, upload encrypted artifact, set reserve, set policy, review
-      quote, open deal.
-- [ ] `P0` Add buyer/sponsor flow:
-      inspect room metadata, verify quote, fund escrow, set budget cap, start
-      evaluation, accept/reject.
-- [ ] `P0` Add reviewer flow:
-      holds queue, policy context, release/deny, reviewer signature, audit record.
-- [ ] `P0` Add result verification page:
-      result hash, score band, quote, compose hash, chain transaction, payout
-      status, cleanup status.
-- [ ] `P0` Deploy the frontend to Cloudflare Pages.
+      and result verification. The client implementations and fail-closed gates
+      exist; this item means activating them only from the fresh live release.
+- [x] `P0` Add wallet connection and scoped service authentication.
+      EIP-6963 and injected EIP-1193 wallets are supported; WalletConnect is
+      conditional on its public project ID. Seller upload, Arena, and Compute
+      use separate Base-Sepolia-bound signature/token domains. Reviewer-wallet
+      effect authorization is implemented behind the release gate; production
+      reviewer roster/custody activation and separate auditor/admin effect
+      authorization remain deployment work.
+- [x] `P0` Add the seller/controller interaction shape: create room, generate a
+      salted recovery receipt, set reserve/policy, and encrypt artifact ingress.
+      Mutation remains locked unless the fresh contract/CVM gates pass.
+- [x] `P0` Add the buyer/sponsor interaction shape: inspect rooms, verify the
+      release, fund with a budget cap, and resolve bounded results. Writes remain
+      locked unless the fresh chain release passes.
+- [x] `P0` Add the source/release-gated reviewer flow:
+      strict hash-only holds queue, release context and rollback witness,
+      wallet-signed release/deny, private M-of-N threshold, self-review
+      rejection, and bounded audit record. Production reviewer custody,
+      notifications, scheduled expiry, and deployment remain open.
+- [x] `P0` Add the Trust Center: all seven contract observations, image/compose/
+      CVM pins, evidence ladder, bounded receipt classifier, and release gates.
+      It never promotes a modeled receipt or producer envelope to Intel TDX.
+- [x] `P0` Deploy the frontend to Cloudflare Pages.
+      The current source candidate is published only to the explicit
+      `modeled-preview` alias. The production branch and custom domains were
+      not changed; live mutation remains gated on a fresh independently
+      verified contract/CVM release manifest.
 - [ ] `P0` Add Cloudflare Worker or API boundary for any server-side frontend
       tasks; no secrets in the static client.
 - [ ] `P1` Add optimistic UI and polling for chain/TEE state transitions.
-- [ ] `P1` Add a demo mode using synthetic data that is clearly labeled and
-      cannot be confused with real private bio data.
+- [x] `P1` Add modeled synthetic data that is clearly labeled and cannot be
+      confused with real private bio data or Intel TDX evidence.
 - [ ] `P1` Add "explain why denied/held" UI that reveals policy reasons but not
       sensitive internals.
       - [x] Bounded data layer done 2026-07-12:
@@ -4840,12 +4964,13 @@ gate, bounded result schema, forbidden-output screen) with
             `tests/test_bio_dual_use.py` +1).
       - [ ] The UI itself (frontend rendering of these explanations) remains
             frontend-gated.
-- [ ] `P1` Add an attestation explorer:
-      image digest, compose hash, app ID, TDX quote, contract policy, endpoint.
+- [x] `P1` Add a bounded verification explorer for image digest, compose hash,
+      app/CVM identity, contract policy, quote hash, and signed QVL verdict.
+      Raw quotes are not rendered as public product content.
 - [ ] `P2` Add guided onboarding:
       create wallet, verify TEE, submit first toy artifact, fund testnet deal.
-- [ ] `P2` Add branded `wikigen.me` product language once the trust path is
-      actually backed by code.
+- [x] `P2` Add branded `wikigen.me` product language while keeping every
+      undeployed capability labeled modeled, roadmap, or fail-closed.
 
 ## Milestone 8: External Alignment And Design Imports
 
@@ -4994,6 +5119,11 @@ vision Wiki is reaching for.
 - [ ] `P1` Add disaster tests:
       CVM restarts during evaluation, chain watcher misses event, Tinker outage,
       browser crash, cleanup failure.
+      - [x] Cover an interrupted evaluation restored from versioned
+            dstack-sealed active state, death after signed-transaction prepare,
+            exact-hash manual hold on restart, lease contention, canonical
+            block-hash reorg quarantine, and a second death between cursor
+            rewind and public-state compensation.
 - [ ] `P2` Add reproducibility test:
       clean checkout -> build images -> same digest/compose hash or explainable
       delta.
@@ -5002,15 +5132,18 @@ vision Wiki is reaching for.
 
 - [ ] `Deploy` Create/fill `.env` locally from `example.env` without committing
       secrets.
-- [x] `Deploy` Verify Foundry keystore account `dev` exists and is funded for
-      Base Sepolia.
-      Done 2026-07-08: `0xEd1Ade0bC26BD63A6e509Da3F5cDf6617369F4dD` has
-      Base Sepolia ETH and can pay deployment gas; raw private key material is
-      not stored in repo or `.env`.
-- [ ] `Deploy` Verify Cloudflare Wrangler login for frontend deployment.
-- [x] `Deploy` Verify Phala CLI login and profile.
-      Done 2026-07-08: `phala status` reports user `g-structure`, workspace
-      `wiki`, profile `wikigen`.
+- [ ] `Deploy` Re-verify and unlock Foundry keystore account `dev` for the fresh
+      Base Sepolia release without exposing its password. The alias and a
+      historically funded address were confirmed, but the current activation
+      run has no usable noninteractive unlock input. The 2026-07-08 balance is
+      historical, not proof of present deployment readiness.
+- [x] `Deploy` Verify Cloudflare Wrangler login for frontend deployment.
+      Reverified 2026-07-13 with Pages write access for account
+      `956388df29525b9e06f81581b485a571`.
+- [ ] `Deploy` Restore and verify Phala CLI authentication for the new operator
+      release. The 2026-07-08 `g-structure` / `wiki` / `wikigen` result is
+      historical. Current checks either report unauthenticated or reject the
+      available API-key response shape, so no fresh CVM may be deployed yet.
 - [x] `Deploy` Verify Docker registry credentials and decide permanent registry.
       - [x] Add GHCR as the CI image publication path for deploy-critical
             TEE images.
@@ -5066,7 +5199,9 @@ vision Wiki is reaching for.
             `tinker-delegate@sha256:17f22d8e87f774717a1989f1501ea659ad13bf409e7d601af6cf7b1c1fdc7381`
             from source
             `eb3bde3b5b156dfdd46f701ab2df8f1f19d94120`.
-- [x] `Deploy` Redeploy Phala CVM with final image digests.
+- [ ] `Deploy` Deploy the fresh seven-CVM topology with final image digests and
+      five independently controlled QVL roots. The following combined-CVM
+      record is historical only and does not satisfy this item.
       Refreshed 2026-07-08: CVM `670b3b21-4338-4d4e-ae72-7c8922579f59` /
       `cvm_1w85mGjo` now
       runs oracle image
@@ -5368,8 +5503,19 @@ vision Wiki is reaching for.
 - [ ] `Deploy` Submit result on-chain.
 - [ ] `Deploy` Accept/reject/expire the deal and withdraw funds.
 - [ ] `Deploy` Confirm cleanup of artifact and checkpoints.
-- [ ] `Deploy` Deploy frontend to Cloudflare Pages.
-- [ ] `Deploy` Smoke-test the public URL from a clean browser.
+- [x] `Deploy` Deploy frontend to Cloudflare Pages.
+      The current twelve-route source candidate is available only on the
+      explicit `modeled-preview` preview branch. The production branch and
+      custom domains remain unchanged.
+- [x] `Deploy` Preserve the prior nine-route clean-browser smoke evidence.
+      Historical check against `https://wikigen.me`: all then-nine routes, wallet
+      dialog/focus behavior, 390x844 responsive navigation, overflow, and
+      browser error logs passed. No injected wallet was present; the UI
+      truthfully rendered WalletConnect as unavailable when no project ID was
+      configured. This does not validate the current twelve-route candidate.
+- [ ] `Deploy` Complete in-app-browser visual QA and a clean-browser smoke test
+      for all twelve current routes on the modeled preview before promoting any
+      production frontend release.
 - [ ] `Deploy` Archive deployment evidence:
       git SHA, image digests, compose hash, quote, tx hashes, screenshots, logs
       with secrets redacted.
@@ -5383,7 +5529,12 @@ vision Wiki is reaching for.
 - [ ] `P0` Show email oracle receives OTPs and the one-off capped Tinker
       funding validation, but do not claim production/repeated Tinker funding
       is solved.
-- [ ] `P0` Show stub evaluator and bounded output only.
+- [x] `P0` Make evaluator activation explicit and prevent synthetic results
+      from masquerading as live TDX-backed evidence. Done 2026-07-13:
+      `disabled` is the process default, `stub` is local-only and rejected in
+      dstack, and `sft` is accepted only in a real non-simulator dstack CVM.
+- [ ] `P0` Show local stub evaluation with an unmistakable modeled label, then
+      separately prove a real SFT evaluation in the replacement CVM.
 - [ ] `P0` Show Base Sepolia fund -> result -> accept/reject/expire.
 
 ### Demo 2: End-To-End Synthetic DNAI
@@ -5496,10 +5647,11 @@ vision Wiki is reaching for.
        `scripts/verify-agent-image.sh` verifies the optional Tinker SDK import
        inside the built delegate image. Fresh Phala CVM validation remains
        separate because no CVMs are currently deployed.
-6. [x] Enforce oracle auth on `/pin` and `/inbox`.
-       Runtime bearer auth and optional on-chain `EmailOracleAuth` consumer
-       registry enforcement are implemented locally. Base Sepolia compose-hash
-       registration remains a separate deployment step.
+6. [x] Enforce oracle auth on scoped `/pin`; remove `/inbox`; make `/email`
+       commitment-only. Runtime bearer auth and optional on-chain
+       `EmailOracleAuth` consumer registry enforcement are implemented locally.
+       Base Sepolia compose-hash registration remains a separate deployment
+       step.
 7. [ ] Add chain watcher + TEE chain signer for `DiligenceRoom`.
        Local watcher, signer/broadcaster plumbing, dstack-simulator
        `submitResult()` broadcast, and a local synthetic-room-to-Anvil
@@ -5527,26 +5679,27 @@ vision Wiki is reaching for.
        deployed Tinker login, API-key sealing, reauth, and one-off capped
        funding through the main CVM. The remaining live Tinker blocker is now
        client configuration for SDK training creation, not browser bootstrap.
-10. [ ] Get an official Tinker service-account/API route, or complete the
-        bounded headed-Neko signup repair without evasion.
+10. [ ] Obtain an official Tinker service-account/provider route that preserves
+        the confidentiality and bounded-egress contract; do not evade provider
+        bot or account controls.
 11. [x] Prove safe Tinker account funding with a low-value test.
        Done 2026-07-09 for the one-off operator-owned capped validation lane:
        the deployed compose was attested and approved on-chain, the funding
        packet emitted only bounded receipts with `raw_secret_egress=false`, and
        a bounded balance read returned `$10.00`.
-12. [ ] Run one real tiny Tinker training session through `IsolatedTinkerSession`.
-       Current blocker: deployed smoke fails with `BadRequestError` at
-       `sdk_error.failure_site=service_client_create` before Tinker training
-       creation; bounded diagnostics classify it as client-configuration work
-       with `project.configured=false` and
-       `client_config.project_id_argument=omitted`. Obtain or configure the
-       correct Tinker project/client/base-url settings, seal them into the live
-       CVM through `tinker-client-config --api-url ... --install`, confirm
-       bounded status reports `project_id_configured=true`, then rerun smoke. A
-       redeploy/compose approval is required only if the live CVM does not yet
-       include the sealed client-config store source.
-13. [ ] Merge the `gate-health-frontend` UI and wire it to real verifier/status
-       APIs.
+12. [ ] Enable real paid provider work only after the adapter exposes stable
+       caller-supplied idempotency for every mutation and exact post-restart
+       recovery/lookup semantics. The reproducibly pinned `tinker==0.22.7` does
+       not satisfy that production contract. Upstream 0.23.0 was isolated-
+       spot-checked after its 2026-07-15 release and still exposes no such key
+       through the public paid-workflow signatures; adopting it would also
+       require a separate locked upgrade review. Compute dispatch stays
+       disabled.
+13. [x] Replace the old frontend mockup with the twelve-route SolidJS product,
+       including the modeled no-health-data-intake Health Guide.
+14. [ ] Generate its live environment only after the fresh seven contracts,
+       seven CVMs, five challenge-bound QVL roots, and every timelocked release
+       state pass the release validator.
 
 ## External Alignment References
 

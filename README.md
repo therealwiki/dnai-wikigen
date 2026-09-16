@@ -1,11 +1,105 @@
 # NDAI x Wikigen.me = DNAI
 
-> An attested diligence room for selling private technical information — where disclosure happens only inside a verifiable TEE and economic controls from the [NDAI paper](https://arxiv.org/abs/2502.07924) are exposed directly in the product.
+> A release-gated diligence room for private technical information — designed so disclosure can occur only inside an independently verified TEE, with economic controls from the [NDAI paper](https://arxiv.org/abs/2502.07924) exposed directly in the product.
 
 Built for the [Shape Rotator Hackathon](https://www.encodeclub.com/programmes/shape-rotator-virtual-hackathon) (March 9–23, 2026) by Wiki Leks.
 
 Current implementation status: see [STATUS.md](STATUS.md)
 for what is built, partial, modeled, planned, deployed, blocked, and validated.
+
+## Current release boundary
+
+The repository has moved beyond the mockup: `web/` is a twelve-route SolidJS
+product with a health-guide demo, Diligence Rooms, a sealed Bio/DNA Arena, a
+release-gated human-review control plane, Data Vaults, a Compute control plane,
+a release-gated delegated Tinker account console, safeguards, capabilities,
+verification, and a release-gated multi-owner collaboration control plane. It
+discovers EIP-6963 and compatible injected wallets (including MetaMask, Rabby,
+and Coinbase Wallet) through EIP-1193; WalletConnect is available only when the
+public connector ID is configured for that deployment. The health guide is an
+explicitly modeled, reload-cleared surface and accepts no health data in this
+release.
+
+The Review API and browser UI are implemented in source: they enforce a strict
+hash-only queue, release-bound reviewer-wallet challenges, private M-of-N
+resolution, fail-closed denial, and a browser-rechecked Base Sepolia rollback
+witness. The Collaboration API and UI likewise implement persistent schema-v2
+rooms, wallet-owned invitations and membership, owner roles, exact-query
+grants, bounded pagination, joint-consent snapshots, and explicit archive.
+Both surfaces remain release-gated. Collaboration now has an explicit evidence
+split: local HMAC current-state mode is tamper-evident but non-monotonic, while
+live dstack mode refuses wallet authentication, reads, and mutations unless
+the exact schema-v2 state matches its release/domain-bound Base Sepolia
+`ExecutionPolicyAnchor` witness under the explicit single-RPC
+reported-finalized model. That is not RPC quorum or a consensus proof. The
+control-plane source exists, but this working tree has not activated a fresh
+production Collaboration authority or current live witness. The separate
+Collaboration execution service is also implemented and tested in source. Its
+release-gated path is deterministic royalty prefunding after the complete fresh
+owner-grant set; worker admission only after one RPC-reported finalized,
+EIP-1898-pinned observation of that exact reservation and the exact Compute
+job; bounded Compute execution; an on-demand exact settlement-decision anchor
+plus purpose-separated main-runtime and independent-QVL authorizations; a
+sponsor-wallet, zero-value `settleReserved` transaction; and finalized
+reconciliation against the reservation's permanent settlement state. The
+sponsor's wallet funds the exact native/ERC-20 reservation before provider
+handoff; an allowance or aggregate contract balance is not execution
+authority. Direct `distributeNative` / `distributeERC20` calls remain
+compatibility paths, not the authoritative Collaboration path.
+
+That sequence is source/test proof, not a deployment claim. Fresh owner and
+reviewer key custody, notifications, operator activation, a new project-owned
+Base Sepolia suite, the seven Phala CVMs and their QVL roots, and the matching
+Cloudflare release remain open. A DTO, local signer, heartbeat, simulated
+receipt, or RPC-reported finalized read is not Intel TDX evidence, independent
+QVL evidence, RPC quorum, or a consensus proof.
+
+The fresh release is still **source and local-verification work, not a live
+Base Sepolia or Phala release**. No new project-owned contract suite or CVM set
+has been deployed for this working tree. The intended release binds:
+
+- seven contracts: `DiligenceRoom`, `TinkerAccountEncumbrance`,
+  `RoyaltyDistributor`, `ChallengeRegistry`, `ComputeCreditVault`,
+  `EmailOracleAuth`, and `ExecutionPolicyAnchor`;
+- seven Phala CVMs: one private main runtime, five independently controlled QVL
+  domains (Diligence, Arena, anchor writer, Compute workload, and Compute metering), and one
+  independent deterministic Compute meter;
+- signed challenge-v2 / verdict-v4 QVL admissions scoped to one release
+  policy/profile, exact CVM identity, deployment intent, release authority,
+  ceremony nonce, and measurement policy. Each signed DCAP challenge is
+  single-use and valid for at most 120 seconds, and appraisal must complete
+  strictly before it expires. The active v4 verdict/domain carries the
+  separately reviewed exact 900-second activation-evidence lease; that lease
+  may outlive the already consumed challenge and does not renew challenge
+  freshness. Post-restart Compute recipient activation is schema v3 with an
+  explicit recipient-evidence lease of at most 300 seconds, while its stable
+  recipient-release commitment remains v2.
+  The Diligence QVL root also serves the separate
+  Email/KMS restart-evidence profile; that profile does not create a sixth QVL
+  root or eighth CVM; and
+- an exact `TinkerAccountEncumbrance` policy that is reviewed for two days,
+  activated once, and permanently frozen before paid operations can run.
+
+The source activation path treats Arena and Compute as one reviewed
+post-measurement main-runtime profile: `arena-runtime,compute-execution`. A
+same-process coordinator retains the non-serializable release authority from
+seven-CVM evidence through signed Stage B, the encrypted environment patch,
+restart, authenticated Phala observation, Arena worker-presence verification,
+and fresh Compute recipient activation. The authenticated Arena heartbeat is
+schema v2 presence evidence bound to the exact release; it is not an Intel TDX
+attestation and every job still needs its independent quote/QVL gate. This
+implemented choreography has not been executed as a fresh Phala deployment and
+does not authorize live traffic by itself.
+
+Funding has two deliberately separate meanings. `ComputeCreditVault` tracks
+non-transferable **exact-asset claims** in the deposited ETH or release-pinned
+ERC-20; it does not mint a token or apply an exchange rate. This exact-asset,
+pay-as-you-go vault is the production funding lane for the first release:
+each job reserves a wallet-authorized maximum, independent metering may debit
+no more than that cap, and the remainder stays withdrawable. Closed-loop
+**service credits** are off-chain, non-transferable, operator-granted test
+units only. Card checkout and purchased service credits are outside v1; this
+repository does not collect card details.
 
 ---
 
@@ -13,9 +107,15 @@ for what is built, partial, modeled, planned, deployed, blocked, and validated.
 
 The **disclosure paradox**: a seller has a valuable idea / dataset / result / SOP, but the buyer needs to see it to value it. Once disclosed, the seller loses leverage. Result? Nobody shares anything.
 
-**NDAI's fix**: put the interaction inside a Trusted Execution Environment. An AI agent inspects the artifact on the buyer's behalf, inside a tamper-proof boundary. The seller's information never leaves the TEE. If a deal is reached, payment flows; if not, the session is destroyed.
+**NDAI's proposed fix**: put the interaction inside a Trusted Execution
+Environment. An AI agent inspects the artifact on the buyer's behalf inside a
+hardware-isolated, attested boundary. The intended policy keeps the artifact
+inside that boundary and permits only bounded output. This is not
+“tamper-proof”: the claim still depends on the measured code, quote and
+collateral verification, platform assumptions, and side-channel threat model.
 
-**This repo** is the implementation — an **Attested Diligence Room** where:
+**This repo** implements the source product and fail-closed release machinery
+for an **Attested Diligence Room**. Its intended live flow is:
 
 1. Seller uploads a private artifact (code audit, research memo, bug report, dataset, SOP) and sets a reserve price
 2. Buyer funds escrow with a budget cap
@@ -35,6 +135,15 @@ dnai-wikigen/
 ├── quickstart.sh            # One-shot dependency bootstrap
 ├── example.env              # Environment template
 ├── .gitignore
+├── web/                     # Twelve-route SolidJS product + release generator
+├── deployments/             # Append-only Base Sepolia deployment ledger
+├── docs/                    # Decisions, runtime specs, and operator contracts
+├── scripts/                 # Activation, image, and release-core verification
+├── ⚙️/                      # Executable services and contracts
+│   ├── tinker-delegate/     # Main runtime, Arena/Compute/Deal workers, Foundry
+│   ├── tee-email-oracle/    # Fixed OTP capability + sealed mailbox state
+│   ├── attestation-qvl/     # Independent challenge-bound Intel DCAP verifier
+│   └── compute-metering/    # Independent deterministic meter
 │
 ├── 📄/                      # Research papers (PDF + markdown)
 │   ├── ndai/                #   NDAI — the core paper (arXiv:2502.07924)
@@ -85,14 +194,16 @@ uv run python -m tinker_delegate.main verify-reward-run --packet /tmp/p.json   #
 uv run python -m tinker_delegate.main explain-decision packet_inconsistent
 
 # Full test suite (Python + Foundry contracts):
-uv run python -m unittest discover -s tests        # ~1197 tests
-(cd contracts && forge test)                       # 136 contract tests
+uv sync --frozen --extra agent --group dev
+uv run --frozen python -m pytest
+(cd contracts && forge test)
 ```
 
-Each demo's output is bounded by construction (`raw_secret_egress: false`), passes
-`verify-reward-run`, and carries a self-explaining decision `explanation`. The
-optimizer method is swappable behind a fixed, verifiable, leakage-bound reward
-interface; sealed private data never leaves the boundary.
+Each local demo's output is bounded by construction (`raw_secret_egress: false`),
+passes `verify-reward-run`, and carries a self-explaining decision
+`explanation`. The optimizer method is swappable behind a fixed,
+leakage-bounded reward interface. That is source-level output-policy evidence,
+not proof that a deployed CVM contained real private data.
 
 ---
 
@@ -121,8 +232,13 @@ Seller                          TEE Boundary                         Buyer
   │                                  │                                 │
   ├─- Receive payment ◄──────────────┤────────► Receive output ────────┤
   │                                  │                                 │
-  │              (or: session expires, artifact destroyed)             │
+  │     (or: access expires; service unlinks ciphertext per policy)     │
 ```
+
+“Unlinks” describes the service-custody boundary: the ciphertext is no longer
+retrievable through the service path after the declared terminal-retention
+action. It is not a claim that underlying physical media was sanitized or
+destroyed.
 
 ### Paper → Product Map
 
@@ -145,10 +261,10 @@ An error slider that simulates buyer-agent error with and without a budget cap �
 | Layer | Choice | Why |
 |---|---|---|
 | **TEE** | [dstack](https://github.com/Dstack-TEE/dstack) on [Phala Cloud](https://docs.phala.com/dstack/overview) | Managed Intel TDX CVMs, attestation, KMS — no self-hosting |
-| **Verification** | Phala attestation + compose-hash verification | Judges can inspect what's actually running |
-| **Contracts** | Base Sepolia via [Foundry](https://book.getfoundry.sh/) | Minimal escrow state machine (Created → Evaluated → Accepted/Rejected/Expired) |
-| **Model** | OpenAI / Anthropic called from inside TEE | Simplest trust model; RedPill TEE gateway as optional upgrade |
-| **Frontend** | TBD | Verification page is part of the product, not back-office |
+| **Verification** | Release-pinned dstack evidence + five independent Intel DCAP QVL roots | Signed challenge-v2 / verdict-v4 admissions require DCAP appraisal to finish strictly inside a single-use ≤120-second challenge; the separately reviewed exact 900-second activation-evidence lease is not renewed challenge freshness, and browser/runtime gates keep producer evidence and modeled receipts distinct |
+| **Contracts** | Seven-contract Base Sepolia suite via [Foundry](https://book.getfoundry.sh/) | Escrow, challenge registry, compute capacity, account encumbrance, oracle auth, royalties, and monotonic policy anchoring |
+| **Model / compute** | Scoped Tinker delegate inside the main CVM | Credentials stay sealed and callers receive bounded capabilities; paid dispatch and Deal evaluation remain disabled until provider idempotency and end-to-end artifact confidentiality are proven |
+| **Frontend** | SolidJS + Vite + viem | Wallet-native product console with fail-closed release bindings and a first-class verification surface |
 
 ---
 
@@ -180,7 +296,12 @@ All stored in `📄/` with PDF originals and markdown conversions:
 
 ---
 
-## 72-Hour Plan
+## Original 72-Hour Hackathon Plan
+
+This table is retained as historical planning context. The current product has
+moved beyond the mockup; use [STATUS.md](STATUS.md) for the evidence-backed
+release boundary and [web/README.md](web/README.md) for the implemented routes,
+wallet support, and deployment gate.
 
 | Hours | Milestone |
 |---|---|
@@ -193,10 +314,10 @@ All stored in `📄/` with PDF originals and markdown conversions:
 
 ## Pitch
 
-> "We turned the NDAI paper into an attested deal room for private technical information, where disclosure happens only inside a verifiable TEE and economic controls from the paper — reserve price, budget cap, and bounded disclosure — are exposed directly in the product."
+> "We turned the NDAI paper into a release-gated deal-room product for private technical information. It is designed to keep disclosure inside an independently verified TEE, while exposing reserve price, budget cap, and bounded disclosure directly in the product. The current public build is the modeled interface; fresh chain and CVM activation remain separate evidence."
 
 **Talking points:**
-- The TEE is not for show — it's the enforcement boundary for a mechanism-design problem from the paper
+- Once independently verified and admitted, the TEE becomes the enforcement boundary for a mechanism-design problem from the paper
 - Reserve threshold and budget cap come directly from the paper's robustness analysis on agent error
 - TEEs are the practical route the paper recommends; dstack/Phala gives judges a verification path they can actually inspect
 - why not FHE/ZK? — because the goal is to ship the market mechanism now, and the paper explicitly positions TEEs as the practical implementation

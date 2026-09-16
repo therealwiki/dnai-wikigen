@@ -29,7 +29,7 @@ from tinker_delegate.automation_receipts import (
     make_receipt,
 )
 from tinker_delegate.config import Settings
-from tinker_delegate.oracle_client import OracleClient
+from tinker_delegate.oracle_client import ORACLE_CALLER_IDENTITY, OracleClient
 from tinker_delegate.redaction import redact_text
 
 
@@ -150,18 +150,14 @@ async def wait_for_otp(oracle: OracleClient, settings: Settings) -> str:
 
     while time.time() - start < settings.otp_poll_timeout:
         result = oracle.get_pin(
-            subject_contains="",
             max_age_seconds=settings.otp_max_age,
-            extract_pattern=r"\b\d{6}\b",
-            caller_identity="tinker-delegate.signup",
+            caller_identity=ORACLE_CALLER_IDENTITY,
             reason="tinker-passwordless-auth",
             delete_after=True,
         )
         if result and result.get("pin"):
             pin = result["pin"]
-            sender = str(result.get("sender", ""))
-            sender_hash = _hash_text(sender) if sender else ""
-            print(f"[otp] got code sender_hash={sender_hash}")
+            print("[otp] got scoped code")
             return pin
 
         elapsed = int(time.time() - start)

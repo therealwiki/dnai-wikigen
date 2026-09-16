@@ -1,4 +1,11 @@
-"""Client-side checks for tinker-delegate attestation envelopes."""
+"""Client-side consistency checks for tinker-delegate attestation envelopes.
+
+These checks do not implement Intel DCAP/QVL signature, collateral, TCB, or
+measurement verification. They therefore cannot turn service-produced evidence
+into a cryptographic TDX verdict. Production callers must use an independent
+verifier before releasing secrets; the service-local ``verified`` field remains
+false until that verifier is integrated as a separate trust domain.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +16,7 @@ from urllib.parse import urlencode, urljoin
 
 import httpx
 
-from tinker_delegate.card_channel import attestation_report_data
+from tinker_delegate.card_channel import PUBLIC_ATTESTATION_FIELDS, attestation_report_data
 from tinker_delegate.tdx_quote import TdxQuoteError, parse_tdx_quote
 
 
@@ -31,7 +38,7 @@ class AttestationPolicy:
 
 @dataclass(frozen=True)
 class AttestationVerificationResult:
-    """Bounded attestation facts accepted by the verifier."""
+    """Bounded envelope facts accepted by the consistency checker."""
 
     mode: str
     report_context: str
@@ -76,9 +83,9 @@ def verify_attestation_envelope(
     now: float | None = None,
     enforce_quote_binding: bool = False,
 ) -> AttestationVerificationResult:
-    """Verify the attestation fields exposed by `/attestation`.
+    """Check the bounded fields exposed by `/attestation` for consistency.
 
-    This verifies dstack mode, quote presence, expected compose/app/image
+    This checks dstack mode, quote presence, claimed compose/app/image
     identity, operation context, public-key shape, report-data key binding,
     exposed quote report-data binding, and optional client fetch freshness.
 
@@ -87,9 +94,16 @@ def verify_attestation_envelope(
     quote bytes* must match the claimed `report_data` — closing the gap where a
     submitter could pair a real quote with an independently-claimed report_data.
     This is a fail-closed structural check only; the Intel signature/cert chain
-    trust root stays delegated to the QVL / dstack SDK. Default false preserves
+    trust root must be supplied by a QVL / DCAP verifier. Default false preserves
     behaviour for simulator/opaque quotes that are not real TDX v4 quotes.
     """
+    unexpected_fields = set(attestation).difference(PUBLIC_ATTESTATION_FIELDS)
+    if unexpected_fields:
+        rendered = ", ".join(sorted(str(field) for field in unexpected_fields))
+        raise AttestationVerificationError(
+            f"attestation contains forbidden or unexpected fields: {rendered}"
+        )
+
     checked_at = time.time() if now is None else now
     evidence_time = checked_at if fetched_at is None else fetched_at
     if policy.max_age_seconds >= 0 and checked_at - evidence_time > policy.max_age_seconds:
@@ -102,8 +116,10 @@ def verify_attestation_envelope(
         if not policy.allow_local:
             raise AttestationVerificationError("local attestation is not allowed")
     elif mode == "tdx":
-        if attestation.get("verified") is False:
-            raise AttestationVerificationError("attestation endpoint reported verification failure")
+        if attestation.get("verified") is not True:
+            raise AttestationVerificationError(
+                "independent cryptographic attestation verdict is unavailable"
+            )
         quote_bytes = _hex_bytes(attestation.get("quote"), "quote")
         quote_size = len(quote_bytes)
         if not policy.expected_compose_hash:
@@ -177,7 +193,7 @@ def fetch_and_verify_attestation(
     *,
     client: httpx.Client | None = None,
 ) -> AttestationVerificationResult:
-    """Fetch `/attestation` live and verify its bounded public evidence."""
+    """Fetch `/attestation` and check its bounded public envelope only."""
     owns_client = client is None
     http = client or httpx.Client(timeout=30.0)
     fetched_at = time.time()

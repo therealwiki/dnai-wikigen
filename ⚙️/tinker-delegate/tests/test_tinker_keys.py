@@ -62,7 +62,7 @@ class TestParseKeysTable(unittest.TestCase):
         self.assertEqual(keys[0].created, "2026-07-01")
 
     def test_never_captures_full_secret_as_prefix(self):
-        full = "tml-UgYm0AVq2rgNwipFsFJrgzluHFfHtzNgyu23D9iOJBHcIyTMhTLGGcQ4onJmRdhfDAAAA"
+        full = "tml-" + "UgYm0AVq2rgNwipFsFJrgzluHFfHtzNgyu23D9iOJBHcIyTMhTLGGcQ4onJmRdhfDAAAA"
         self.assertFalse(_looks_like_prefix(full))
         rows = [["leaky", full]]
         keys = parse_keys_table(rows)

@@ -16,8 +16,9 @@ when the candidate's holdout and reward statistics differ by more than a
 noisy threshold — the sign of overfitting — and only then is DP budget spent. The
 DP noise gates *which partition's band to release* and perturbs the released value
 BEFORE it is quantized to a coarse band, so **no un-noised real ever egresses**:
-the public surface is a bounded band index plus counts, exactly like the rest of
-the substrate. When the budget is exhausted the gate fails closed (no band).
+the public surface is a bounded band index plus minimal budget status. Exact
+holdout-access accounting and the secret-dependent branch decision remain
+TEE-internal. When the budget is exhausted the gate fails closed (no band).
 
 The gate composes with the shared `DpAccountant` (basic composition), so a
 Thresholdout run's privacy ledger is the same `(ε, δ)` accounting the rest of the
@@ -87,9 +88,11 @@ class ThresholdoutRelease:
     """Bounded result of one Thresholdout query.
 
     ``released_step_index`` over ``step_denominator`` is the coarse released band
-    (``-1`` when the budget is exhausted and nothing is released). ``used_holdout``
-    is whether this query consulted the fresh holdout (and thus spent DP budget).
-    All fields are ints / bools, so the record passes ``assert_bounded_egress``.
+    (``-1`` when the budget is exhausted and nothing is released). The dataclass
+    retains exact ``used_holdout`` / ``holdout_access_count`` for internal
+    accounting. ``to_public_dict`` deliberately omits both: revealing that branch
+    per query lets an adaptive caller learn whether its private-holdout gap crossed
+    the noisy threshold.
     """
 
     query_index: int
@@ -102,11 +105,9 @@ class ThresholdoutRelease:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "query_index": self.query_index,
-            "used_holdout": self.used_holdout,
             "released_step_index": self.released_step_index,
             "step_denominator": self.step_denominator,
-            "holdout_access_count": self.holdout_access_count,
-            "budget_exhausted": self.budget_exhausted,
+            "budget_status": "exhausted" if self.budget_exhausted else "available",
             "has_release": self.released_step_index >= 0,
         }
 
@@ -201,11 +202,10 @@ class ThresholdoutGate:
         )
 
     def public_manifest(self) -> dict[str, Any]:
-        """Bounded public accounting; DP ledger via the accountant's own surface."""
+        """Bounded public status; exact access accounting remains internal."""
         return {
             "variant": "thresholdout",
             "policy": self.policy.to_public_dict(),
             "query_count": self._query_count,
-            "holdout_access_count": self._holdout_access_count,
-            "budget_exhausted": self._accountant.exhausted,
+            "budget_status": "exhausted" if self._accountant.exhausted else "available",
         }
