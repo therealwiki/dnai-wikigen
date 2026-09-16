@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import {
   Activity,
   ArrowDownLeft,
@@ -52,6 +52,7 @@ import {
   cancelComputeJob,
   canCancelComputeJob,
   COMPUTE_PUBLIC_CREDENTIAL_SCOPES,
+  ComputeHttpError,
   computeLedgerAdjacency,
   createProject,
   decryptCredentialCapsule,
@@ -101,6 +102,144 @@ import type { ComputeRouteTab } from "../routes";
 
 type ConsoleTab = ComputeRouteTab;
 type AuthState = "locked" | "authorizing" | "ready" | "error";
+
+export async function authorizeComputeSessionForCurrentWallet(
+  source: Pick<typeof wallet, "account" | "isCorrectChain" | "authorizationVersion" | "switchToBase" | "authorizeComputeConsole">,
+  attemptIsCurrent: () => boolean,
+) {
+  const expectedAddress = source.account()?.toLowerCase();
+  const assertContext = () => {
+    if (!attemptIsCurrent() || !expectedAddress || !source.isCorrectChain()
+      || source.account()?.toLowerCase() !== expectedAddress) {
+      throw new Error("Wallet session changed while opening the Compute Console; authorize it again");
+    }
+  };
+  if (!attemptIsCurrent() || !expectedAddress) {
+    throw new Error("Wallet session changed while opening the Compute Console; authorize it again");
+  }
+  // The supported chain switch changes authorizationVersion; bind only after it completes.
+  if (!source.isCorrectChain()) await source.switchToBase();
+  assertContext();
+  const walletVersion = source.authorizationVersion();
+  const token = await source.authorizeComputeConsole();
+  assertContext();
+  if (source.authorizationVersion() !== walletVersion || token.address.toLowerCase() !== expectedAddress) {
+    throw new Error("Wallet session changed while opening the Compute Console; authorize it again");
+  }
+  return { token, walletVersion };
+}
+
+export function computeRequestMayReport(
+  cause: unknown,
+  contextIsCurrent: () => boolean,
+  onSessionRejected: () => void,
+): boolean {
+  if (!contextIsCurrent()) return false;
+  if (cause instanceof ComputeHttpError && cause.status === 401) {
+    onSessionRejected();
+    return false;
+  }
+  return true;
+}
+
+export function handleComputeChildSessionRejection(
+  requestToken: string,
+  sessionIsCurrent: (token: string) => boolean,
+  onSessionRejected: () => void,
+): void {
+  if (requestToken && sessionIsCurrent(requestToken)) onSessionRejected();
+}
+
+/** In-memory deadline authority; the synchronous check also covers suspended tabs. */
+export function createComputeSessionLifetime(onExpire: () => void) {
+  let session: { token: string; expiresAt: number } | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  function clear(): void {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    session = undefined;
+  }
+  function current(token: string): boolean {
+    if (!session || !token || token !== session.token) return false;
+    if (Date.now() >= session.expiresAt * 1_000) {
+      clear();
+      onExpire();
+      return false;
+    }
+    return true;
+  }
+  return {
+    clear,
+    current,
+    install(token: string, expiresAt: number): void {
+      clear();
+      if (!token || !Number.isSafeInteger(expiresAt) || expiresAt * 1_000 <= Date.now()) {
+        throw new Error("The Compute wallet session has expired or has an invalid expiry. Authorize again.");
+      }
+      const installed = { token, expiresAt };
+      session = installed;
+      const checkDeadline = () => {
+        if (session !== installed || !current(token)) return;
+        timer = setTimeout(checkDeadline, Math.min(expiresAt * 1_000 - Date.now(), 2_147_483_647));
+      };
+      checkDeadline();
+    },
+  };
+}
+
+interface ComputeCredentialDialogState {
+  open: boolean;
+  pending: boolean;
+  token: string;
+}
+
+/** One-time delivery cannot be dismissed while pending or replayed into another scope. */
+export function createComputeCredentialDialog(publish: (state: ComputeCredentialDialogState) => void) {
+  let state: ComputeCredentialDialogState = { open: false, pending: false, token: "" };
+  let active: { id: symbol; contextIsCurrent: () => boolean } | undefined;
+  function update(next: ComputeCredentialDialogState): void {
+    state = next;
+    publish(next);
+  }
+  function invalidate(): void {
+    active = undefined;
+    update({ open: false, pending: false, token: "" });
+  }
+  function current(id: symbol): boolean {
+    return active?.id === id && active.contextIsCurrent();
+  }
+  return {
+    invalidate,
+    current,
+    open(): boolean {
+      if (state.pending || state.token) return false;
+      update({ open: true, pending: false, token: "" });
+      return true;
+    },
+    close(): boolean {
+      if (state.pending) return false;
+      invalidate();
+      return true;
+    },
+    begin(contextIsCurrent: () => boolean): symbol | undefined {
+      if (!state.open || state.pending || state.token || !contextIsCurrent()) return;
+      active = { id: Symbol("credential-delivery"), contextIsCurrent };
+      update({ open: true, pending: true, token: "" });
+      return active.id;
+    },
+    deliver(id: symbol, token: string): boolean {
+      if (!current(id)) return false;
+      active = undefined;
+      update({ open: true, pending: false, token });
+      return true;
+    },
+    finish(id: symbol): void {
+      if (active?.id !== id) return;
+      active = undefined;
+      update({ ...state, pending: false });
+    },
+  };
+}
 
 const CONSOLE_TABS = [
   { key: "overview", label: "Overview", icon: BarChart3 },
@@ -203,9 +342,13 @@ export function Compute(props: {
   const [cancelingJobId, setCancelingJobId] = createSignal("");
   const [error, setError] = createSignal("");
   const [notice, setNotice] = createSignal("");
+  const [expiryRecovery, setExpiryRecovery] = createSignal<{
+    address: string; walletVersion: number | undefined; projectId: string; message: string;
+  }>();
 
   const [fundOpen, setFundOpen] = createSignal(false);
   const [keyOpen, setKeyOpen] = createSignal(false);
+  const [credentialPending, setCredentialPending] = createSignal(false);
   const [jobOpen, setJobOpen] = createSignal(false);
   const [projectOpen, setProjectOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -229,6 +372,37 @@ export function Compute(props: {
   const deviceKeys = new Map<string, DeviceKeyMaterial>();
   const cancellationKeys = new Map<string, string>();
   const projectCreationAttempt = new UnresolvedIdempotencyAttempt();
+  let disposed = false;
+  let authorizationAttempt = 0;
+  let projectLoadVersion = 0;
+  let projectScopeVersion = 0;
+  const credentialDialog = createComputeCredentialDialog((state) => {
+    setKeyOpen(state.open);
+    setCredentialPending(state.pending);
+    setOneTimeToken(state.token);
+    setRevealToken(Boolean(state.token));
+  });
+  const sessionLifetime = createComputeSessionLifetime(() => recoverConsoleSession("expired"));
+  function recoverConsoleSession(reason: "expired" | "rejected"): void {
+    const originalProject = projectId();
+    const workloadReference = computeWorkloadHandoffId(sealedWorkload());
+    const jobReference = vaultAuthorizationReceipt()?.jobReference || vaultInspectReference() || cancelingJobId();
+    const previous = expiryRecovery();
+    const recovery = {
+      address: authorizedAddress().toLowerCase(),
+      walletVersion: authorizedWalletVersion(),
+      projectId: originalProject,
+      message: `The wallet-scoped Compute session ${reason === "expired" ? "expired" : "was rejected by the service"}. Authorize again to continue.`
+        + (originalProject ? ` Reopen the original project ${originalProject} to review its current state.` : "")
+        + (credentialPending() || oneTimeToken() ? " Any one-time credential view was cleared. Issuance may have reached the server; review Credentials and revoke any unreceived credential before issuing another." : "")
+        + " An in-flight workload upload/deletion, authorization, or job mutation may already have committed even without a returned receipt. Inspect the original project's workload and authorization/job state before retrying. Local handoffs were cleared; nothing will be resealed, authorized, or submitted automatically."
+        + (workloadReference ? ` Known workload: ${workloadReference}.` : "")
+        + (jobReference ? ` Known authorization/job: ${jobReference}.` : ""),
+    };
+    lockConsole();
+    // A retry can be rejected before projects reload; keep its original reconciliation context.
+    setExpiryRecovery(!originalProject && previous ? previous : recovery);
+  }
   const liveReady = createMemo(() => authState() === "ready" && Boolean(project()));
   const providerPresentation = createMemo(() => computeProviderPresentation(
     deployment.computeConsoleEnabled,
@@ -265,12 +439,24 @@ export function Compute(props: {
 
   onMount(() => {
     if (!deployment.delegateUrl) return;
-    void fetchFundingCapabilities().then(setFunding).catch(() => undefined);
+    void fetchFundingCapabilities().then((value) => { if (!disposed) setFunding(value); }).catch(() => undefined);
+  });
+
+  onCleanup(() => {
+    disposed = true;
+    lockConsole();
+    setExpiryRecovery(undefined);
   });
 
   createEffect(() => {
     const current = wallet.account()?.toLowerCase() ?? "";
     const authorized = authorizedAddress();
+    const recovery = expiryRecovery();
+    if (recovery && (
+      current !== recovery.address
+      || !wallet.isCorrectChain()
+      || recovery.walletVersion !== wallet.authorizationVersion()
+    )) setExpiryRecovery(undefined);
     if (
       authorized
       && (
@@ -282,6 +468,11 @@ export function Compute(props: {
   });
 
   function lockConsole(): void {
+    authorizationAttempt += 1;
+    projectLoadVersion += 1;
+    projectScopeVersion += 1;
+    sessionLifetime.clear();
+    credentialDialog.invalidate();
     setAuthState("locked");
     setSessionToken("");
     setAuthorizedAddress("");
@@ -299,12 +490,12 @@ export function Compute(props: {
     setSealedWorkload(undefined);
     setBusy("");
     setCancelingJobId("");
-    setOneTimeToken("");
     setFundOpen(false);
-    setKeyOpen(false);
     setJobOpen(false);
     setProjectOpen(false);
     setSettingsOpen(false);
+    setNotice("");
+    setError("");
     deviceKeys.clear();
     cancellationKeys.clear();
   }
@@ -312,7 +503,8 @@ export function Compute(props: {
   function computeSessionIsCurrent(token: string): boolean {
     const authorized = authorizedAddress();
     return Boolean(
-      token
+      !disposed
+      && sessionLifetime.current(token)
       && token === sessionToken()
       && authorized
       && wallet.account()?.toLowerCase() === authorized.toLowerCase()
@@ -327,11 +519,34 @@ export function Compute(props: {
     }
   }
 
+  function reportableComputeError(cause: unknown, token: string): boolean {
+    return computeRequestMayReport(cause, () => computeSessionIsCurrent(token), () => recoverConsoleSession("rejected"));
+  }
+
+  function rejectChildSession(requestToken: string): void {
+    handleComputeChildSessionRejection(requestToken, computeSessionIsCurrent, () => recoverConsoleSession("rejected"));
+  }
+
   async function loadProject(nextProjectId: string, token = sessionToken()): Promise<void> {
-    if (!token || !nextProjectId) return;
-    setVaultInspectReference("");
-    setVaultAuthorizationReceipt(undefined);
-    setSealedWorkload(undefined);
+    if (!nextProjectId || !computeSessionIsCurrent(token)) return;
+    const request = ++projectLoadVersion;
+    if (nextProjectId !== projectId()) {
+      projectScopeVersion += 1;
+      credentialDialog.invalidate();
+      deviceKeys.clear();
+      setProjectId(nextProjectId);
+      setProject(undefined);
+      setBalance(undefined);
+      setLedger(undefined);
+      setCredentials([]);
+      setDevices([]);
+      setJobs([]);
+      setVaultInspectReference("");
+      setVaultAuthorizationReceipt(undefined);
+      setSealedWorkload(undefined);
+      if (expiryRecovery()?.projectId !== nextProjectId) setExpiryRecovery(undefined);
+    }
+    const requestIsCurrent = () => request === projectLoadVersion && computeSessionIsCurrent(token);
     setBusy("refresh");
     setError("");
     try {
@@ -343,8 +558,7 @@ export function Compute(props: {
         listDevices(token, nextProjectId),
         listJobs(token, nextProjectId),
       ]);
-      if (!computeSessionIsCurrent(token)) return;
-      setProjectId(nextProjectId);
+      if (!requestIsCurrent()) return;
       setProject(nextProject);
       setBalance(nextBalance);
       setLedger(nextLedger);
@@ -352,36 +566,40 @@ export function Compute(props: {
       setDevices(nextDevices);
       setJobs(nextJobs);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not refresh this Compute project");
+      if (requestIsCurrent() && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Could not refresh this Compute project");
     } finally {
-      setBusy("");
+      if (requestIsCurrent()) setBusy("");
     }
   }
 
   async function unlockConsole(): Promise<void> {
+    const attempt = ++authorizationAttempt;
     setError("");
     setNotice("");
     setAuthState("authorizing");
     try {
-      const token = await wallet.authorizeComputeConsole();
-      const walletVersion = wallet.authorizationVersion();
+      const { token, walletVersion } = await authorizeComputeSessionForCurrentWallet(
+        wallet, () => !disposed && attempt === authorizationAttempt,
+      );
+      if (disposed || attempt !== authorizationAttempt) return;
+      if (wallet.authorizationVersion() !== walletVersion || !wallet.isCorrectChain()
+        || wallet.account()?.toLowerCase() !== token.address.toLowerCase()) {
+        throw new Error("Wallet session changed while opening the Compute Console; authorize it again");
+      }
+      sessionLifetime.install(token.access_token, token.expires_at);
       setAuthorizedWalletVersion(walletVersion);
       setSessionToken(token.access_token);
       setAuthorizedAddress(token.address);
       const nextProjects = await listProjects(token.access_token);
-      if (
-        wallet.authorizationVersion() !== walletVersion
-        || !wallet.isCorrectChain()
-        || wallet.account()?.toLowerCase() !== token.address.toLowerCase()
-      ) {
-        lockConsole();
-        throw new Error("Wallet session changed while opening the Compute Console; authorize it again");
-      }
+      if (attempt !== authorizationAttempt || !computeSessionIsCurrent(token.access_token)) return;
       setProjects(nextProjects);
       setAuthState("ready");
-      if (nextProjects[0]) await loadProject(nextProjects[0].project_id, token.access_token);
+      const initialProject = nextProjects.find((item) => item.project_id === expiryRecovery()?.projectId) ?? nextProjects[0];
+      if (initialProject) await loadProject(initialProject.project_id, token.access_token);
       else setProjectOpen(true);
     } catch (cause) {
+      if (disposed || attempt !== authorizationAttempt) return;
+      if (sessionToken() && !reportableComputeError(cause, sessionToken())) return;
       lockConsole();
       setAuthState("error");
       setError(cause instanceof Error ? cause.message : "Compute Console authorization failed");
@@ -415,7 +633,7 @@ export function Compute(props: {
 
   async function submitProject(): Promise<void> {
     const token = sessionToken();
-    if (!token) return;
+    if (!computeSessionIsCurrent(token)) return;
     const name = projectName().trim();
     const idempotencyKey = projectCreationAttempt.keyFor(
       "project",
@@ -427,14 +645,15 @@ export function Compute(props: {
     try {
       created = await createProject(token, name, idempotencyKey);
       projectCreationAttempt.resolve(idempotencyKey);
+      assertComputeSession(token);
       setProjectOpen(false);
       setNotice(`Project ${created.name} created with conservative immutable caps.`);
-      assertComputeSession(token);
       const nextProjects = await listProjects(token);
       assertComputeSession(token);
       setProjects(nextProjects);
       await loadProject(created.project_id, token);
     } catch (cause) {
+      if (!reportableComputeError(cause, token)) return;
       const detail = cause instanceof Error
         ? cause.message
         : created
@@ -444,41 +663,51 @@ export function Compute(props: {
         ? `Project ${created.name} was created, but the console could not refresh it: ${detail}`
         : detail);
     } finally {
-      setBusy("");
+      if (computeSessionIsCurrent(token) && busy() === "project") setBusy("");
     }
   }
 
   async function submitCredential(): Promise<void> {
     const selected = project();
     const token = sessionToken();
-    if (!selected || !token) return;
+    if (!selected || !canMutateProject()) return;
+    const scope = projectScopeVersion;
+    const contextIsCurrent = () => computeSessionIsCurrent(token)
+      && scope === projectScopeVersion && selected.project_id === projectId();
+    const attempt = credentialDialog.begin(contextIsCurrent);
+    if (!attempt) return;
+    const draft = {
+      name: keyName().trim(),
+      kind: deviceKind(),
+      scopes: [...selectedScopes()],
+      expiresInSeconds: Math.max(1, Math.min(7, Number(keyExpiry()))) * 86_400,
+      dailyCreditCap: Number(dailyCap()),
+    };
     setBusy("credential");
     setError("");
-    setOneTimeToken("");
     try {
       const key = await generateDeviceKey();
-      assertComputeSession(token);
-      const device = await registerDevice(token, selected.project_id, keyName().trim(), deviceKind(), key.publicKeyHex);
-      assertComputeSession(token);
+      if (!credentialDialog.current(attempt)) return;
+      const device = await registerDevice(token, selected.project_id, draft.name, draft.kind, key.publicKeyHex);
+      if (!credentialDialog.current(attempt)) return;
       deviceKeys.set(device.device_id, key);
       const delivery = await issueCredential(token, selected.project_id, {
         deviceId: device.device_id,
-        name: keyName().trim(),
-        scopes: selectedScopes(),
-        expiresInSeconds: Math.max(1, Math.min(7, Number(keyExpiry()))) * 86_400,
-        dailyCreditCap: Number(dailyCap()),
+        name: draft.name,
+        scopes: draft.scopes,
+        expiresInSeconds: draft.expiresInSeconds,
+        dailyCreditCap: draft.dailyCreditCap,
       });
-      assertComputeSession(token);
+      if (!credentialDialog.current(attempt)) return;
       const plaintext = await decryptCredentialCapsule(delivery, key);
-      assertComputeSession(token);
-      setOneTimeToken(plaintext);
-      setRevealToken(true);
+      if (!credentialDialog.deliver(attempt, plaintext)) return;
       setNotice("Credential issued and decrypted only in this tab. Copy it once; Wikigen does not retain the plaintext token.");
       await loadProject(selected.project_id, token);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Credential issuance failed");
+      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Credential issuance failed");
     } finally {
-      setBusy("");
+      credentialDialog.finish(attempt);
+      if (contextIsCurrent() && busy() === "credential") setBusy("");
     }
   }
 
@@ -494,22 +723,27 @@ export function Compute(props: {
       setError("This tab does not hold that device key. Issue a new device credential instead of exporting or recovering private key material.");
       return;
     }
-    setBusy(`rotate:${credential.credential_id}`);
+    const scope = projectScopeVersion;
+    const contextIsCurrent = () => computeSessionIsCurrent(token)
+      && scope === projectScopeVersion && credential.project_id === projectId();
+    if (!contextIsCurrent() || !credentialDialog.open()) return;
+    const attempt = credentialDialog.begin(contextIsCurrent);
+    if (!attempt) return;
+    const action = `rotate:${credential.credential_id}`;
+    setBusy(action);
     setError("");
     try {
       const delivery = await rotateCredential(token, credential.project_id, credential.credential_id, 7 * 86_400);
-      assertComputeSession(token);
+      if (!credentialDialog.current(attempt)) return;
       const plaintext = await decryptCredentialCapsule(delivery, key);
-      assertComputeSession(token);
-      setOneTimeToken(plaintext);
-      setRevealToken(true);
-      setKeyOpen(true);
+      if (!credentialDialog.deliver(attempt, plaintext)) return;
       setNotice("Prior credential generation revoked; the rotated token is shown once.");
       await loadProject(credential.project_id, token);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Credential rotation failed");
+      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Credential rotation failed");
     } finally {
-      setBusy("");
+      credentialDialog.finish(attempt);
+      if (contextIsCurrent() && busy() === action) setBusy("");
     }
   }
 
@@ -520,7 +754,7 @@ export function Compute(props: {
       return;
     }
     const token = sessionToken();
-    if (!token) return;
+    if (!computeSessionIsCurrent(token)) return;
     setBusy(`revoke:${credential.credential_id}`);
     setError("");
     try {
@@ -529,15 +763,15 @@ export function Compute(props: {
       setNotice(`${credential.name} was revoked.`);
       await loadProject(credential.project_id, token);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Credential revocation failed");
+      if (reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Credential revocation failed");
     } finally {
-      setBusy("");
+      if (computeSessionIsCurrent(token) && busy() === `revoke:${credential.credential_id}`) setBusy("");
     }
   }
 
   async function revokeOneDevice(device: ComputeDevice): Promise<void> {
     const token = sessionToken();
-    if (!token) return;
+    if (!computeSessionIsCurrent(token)) return;
     setBusy(`device:${device.device_id}`);
     setError("");
     try {
@@ -547,16 +781,16 @@ export function Compute(props: {
       setNotice(`${device.label} and all credentials delivered to it were revoked.`);
       await loadProject(device.project_id, token);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Device revocation failed");
+      if (reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Device revocation failed");
     } finally {
-      setBusy("");
+      if (computeSessionIsCurrent(token) && busy() === `device:${device.device_id}`) setBusy("");
     }
   }
 
   async function submitMember(): Promise<void> {
     const selected = project();
     const token = sessionToken();
-    if (!selected || !token) return;
+    if (!selected || !computeSessionIsCurrent(token)) return;
     setBusy("member");
     setError("");
     try {
@@ -566,16 +800,16 @@ export function Compute(props: {
       setMemberAddress("");
       setNotice("Project member updated.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Member update failed");
+      if (reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Member update failed");
     } finally {
-      setBusy("");
+      if (computeSessionIsCurrent(token) && busy() === "member") setBusy("");
     }
   }
 
   async function removeMember(address: string): Promise<void> {
     const selected = project();
     const token = sessionToken();
-    if (!selected || !token) return;
+    if (!selected || !computeSessionIsCurrent(token)) return;
     setBusy(`member:${address}`);
     setError("");
     try {
@@ -584,9 +818,9 @@ export function Compute(props: {
       setProject(updated);
       setNotice("Project member removed.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Member removal failed");
+      if (reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Member removal failed");
     } finally {
-      setBusy("");
+      if (computeSessionIsCurrent(token) && busy() === `member:${address}`) setBusy("");
     }
   }
 
@@ -618,7 +852,8 @@ export function Compute(props: {
 
   async function cancelOneJob(job: ComputeJob): Promise<void> {
     const token = sessionToken();
-    if (!token || busy() || !cancellationAvailable(job)) {
+    if (!computeSessionIsCurrent(token)) return;
+    if (busy() || !cancellationAvailable(job)) {
       setError("This job is no longer eligible for wallet cancellation. Refresh the project before trying again.");
       return;
     }
@@ -647,6 +882,7 @@ export function Compute(props: {
       }
       receipt = candidate;
     } catch (cause) {
+      if (!reportableComputeError(cause, token)) return;
       cancellationError = cause instanceof Error ? cause.message : "Job cancellation failed";
     }
 
@@ -654,6 +890,7 @@ export function Compute(props: {
       try {
         reloaded = await reloadCancellationState(job.project_id, token);
       } catch (cause) {
+        if (!reportableComputeError(cause, token)) return;
         reloadError = cause instanceof Error ? cause.message : "project reload failed";
       }
     }
@@ -675,40 +912,50 @@ export function Compute(props: {
         setError(`${cancellationError || "The cancellation receipt was unavailable"}. ${reloadMessage}`);
       }
     }
-    if (cancelingJobId() === job.job_id) setCancelingJobId("");
-    if (busy() === `cancel:${job.job_id}`) setBusy("");
+    if (computeSessionIsCurrent(token)) {
+      if (cancelingJobId() === job.job_id) setCancelingJobId("");
+      if (busy() === `cancel:${job.job_id}`) setBusy("");
+    }
   }
 
   function closeKeyDialog(): void {
-    setOneTimeToken("");
-    setRevealToken(false);
-    setKeyOpen(false);
+    credentialDialog.close();
   }
 
   function openNewKeyDialog(): void {
-    setOneTimeToken("");
-    setRevealToken(false);
+    if (!liveReady() || !credentialDialog.open()) return;
     setSelectedScopes(["jobs:read"]);
-    setKeyOpen(true);
   }
 
   async function copyOneTimeToken(): Promise<void> {
-    if (!oneTimeToken()) return;
+    const token = sessionToken();
+    const plaintext = oneTimeToken();
+    const scope = projectScopeVersion;
+    const contextIsCurrent = () => computeSessionIsCurrent(token)
+      && scope === projectScopeVersion && keyOpen() && oneTimeToken() === plaintext;
+    if (!plaintext || !contextIsCurrent()) return;
     try {
-      await navigator.clipboard.writeText(oneTimeToken());
+      await navigator.clipboard.writeText(plaintext);
+      if (!contextIsCurrent()) return;
       setNotice("Credential copied to the system clipboard. Store it securely, then clear the clipboard; closing this dialog only clears Wikigen's in-tab view.");
     } catch {
-      setError("Clipboard access was denied. Select the one-time token manually.");
+      if (contextIsCurrent()) setError("Clipboard access was denied. Select the one-time token manually.");
     }
   }
 
   async function copyCredentialQuickstart(): Promise<void> {
-    if (!credentialQuickstart()) return;
+    const token = sessionToken();
+    const quickstart = credentialQuickstart();
+    const scope = projectScopeVersion;
+    const contextIsCurrent = () => computeSessionIsCurrent(token)
+      && scope === projectScopeVersion && keyOpen();
+    if (!quickstart || !contextIsCurrent()) return;
     try {
-      await navigator.clipboard.writeText(credentialQuickstart());
+      await navigator.clipboard.writeText(quickstart);
+      if (!contextIsCurrent()) return;
       setNotice("Secret-free jobs:read quickstart copied. Paste the one-time credential into WIKIGEN_TOKEN only in your secure shell session.");
     } catch {
-      setError("Clipboard access was denied. Select the quickstart manually.");
+      if (contextIsCurrent()) setError("Clipboard access was denied. Select the quickstart manually.");
     }
   }
 
@@ -769,7 +1016,7 @@ export function Compute(props: {
           <p>Own a wallet-scoped project, issue encrypted developer credentials, fund the production lane with exact ETH or the pinned ERC20, and keep noncash test grants separate without exposing upstream provider keys.</p>
         </div>
         <div class="head-actions">
-          <button class="secondary-button large" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject()}><KeyRound size={17} /> New credential</button>
+          <button class="secondary-button large" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject() || Boolean(busy()) || keyOpen()}><KeyRound size={17} /> New credential</button>
           <button class="primary-button large" type="button" onClick={() => setFundOpen(true)}><Plus size={17} /> Funding status</button>
         </div>
       </header>
@@ -788,7 +1035,7 @@ export function Compute(props: {
         </Show>
         <div class="session-actions">
           <Show when={liveReady()} fallback={
-            <Show when={authState() === "ready"} fallback={<button class="primary-button" type="button" onClick={() => void unlockConsole()} disabled={authState() === "authorizing" || !wallet.account() || !deployment.computeConsoleEnabled}>{authState() === "authorizing" ? <LoaderCircle class="spin" size={15} /> : <Fingerprint size={15} />}{wallet.account() ? deployment.computeConsoleEnabled ? "Authorize Compute Console" : "Fresh CVM required" : "Connect wallet first"}</button>}>
+            <Show when={authState() === "ready"} fallback={<button class="primary-button" type="button" onClick={() => void unlockConsole()} disabled={authState() === "authorizing" || !wallet.account() || !deployment.computeConsoleEnabled}>{authState() === "authorizing" ? <LoaderCircle class="spin" size={15} /> : <Fingerprint size={15} />}{wallet.account() ? deployment.computeConsoleEnabled ? expiryRecovery() ? "Reauthorize Compute Console" : "Authorize Compute Console" : "Fresh CVM required" : "Connect wallet first"}</button>}>
               <Show when={projects().length === 0} fallback={<button class="primary-button" type="button" onClick={() => void loadProject(projectId() || projects()[0]?.project_id || "")} disabled={Boolean(busy())}><RefreshCw class={busy() === "refresh" ? "spin" : ""} size={15} /> Retry project load</button>}>
                 <button class="primary-button" type="button" onClick={() => setProjectOpen(true)} disabled={Boolean(busy())}><Plus size={15} /> Create first project</button>
               </Show>
@@ -804,6 +1051,7 @@ export function Compute(props: {
 
       <Show when={notice()}><div class="inline-notice success" role="status"><Check size={15} /><span>{notice()}</span><button type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}>×</button></div></Show>
       <Show when={error()}><div class="inline-notice error" role="alert"><TriangleAlert size={15} /><span>{error()}</span><button type="button" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div></Show>
+      <Show when={expiryRecovery()}><div class="inline-notice" role="alert"><Clock3 size={15} /><span>{expiryRecovery()?.message}</span><button type="button" aria-label="Dismiss session recovery notice" onClick={() => setExpiryRecovery(undefined)}>×</button></div></Show>
       <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {cancelingJobId() ? "Canceling the queued job and reloading its credit ledger." : ""}
       </p>
@@ -859,6 +1107,7 @@ export function Compute(props: {
           config={computeWorkloadDeployment}
           credentialWalletAdoptionEnabled={funding()?.dispatch_intents.credential_workload_wallet_adoption === true}
           activeHandoff={sealedWorkload()}
+          onSessionRejected={rejectChildSession}
           onWorkloadReady={(handoff) => {
             setSealedWorkload(handoff);
             setVaultAuthorizationReceipt(undefined);
@@ -926,6 +1175,7 @@ export function Compute(props: {
           liveReady={liveReady()}
           authorizationReceipt={vaultAuthorizationReceipt()}
           workloadBinding={sealedWorkload()?.authorization}
+          onSessionRejected={rejectChildSession}
           onDiscardAuthorizationReceipt={() => setVaultAuthorizationReceipt(undefined)}
           onOpenVault={(jobReference) => {
             setVaultInspectReference(jobReference ?? "");
@@ -950,10 +1200,10 @@ export function Compute(props: {
 
       <Show when={fundOpen()}><div class="dialog-backdrop" onClick={() => setFundOpen(false)}><section ref={(element) => { fundDialogRef = element; }} class="fund-dialog" role="dialog" aria-modal="true" aria-labelledby="fund-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close funding dialog" data-autofocus onClick={() => setFundOpen(false)}>×</button><div class="dialog-mark"><BadgeDollarSign size={22} /></div><p class="overline">Choose the correct funding surface</p><h2 id="fund-title">{fundMethod() === "card" ? "Hosted checkout is outside v1" : "Use the exact-asset vault"}</h2><p>{fundMethod() === "card" ? "No card form is embedded here. The first production release uses wallet-funded exact assets; any future provider must own card collection and deliver a verified signed webhook." : "In a verified release, ETH and the pinned ERC20 move directly from your wallet into a Base Sepolia project ledger. They remain that exact asset, are capped per job, and never become test credits."}</p><div class="method-tabs" role="group" aria-label="Funding method"><button type="button" aria-pressed={fundMethod() === "card"} class={fundMethod() === "card" ? "active" : ""} onClick={() => setFundMethod("card")}><CreditCard size={15} /> Card</button><button type="button" aria-pressed={fundMethod() === "usdc"} class={fundMethod() === "usdc" ? "active" : ""} onClick={() => setFundMethod("usdc")}><CircleDollarSign size={15} /> {computeVaultDeployment.token?.symbol ?? "ERC20"}</button><button type="button" aria-pressed={fundMethod() === "eth"} class={fundMethod() === "eth" ? "active" : ""} onClick={() => setFundMethod("eth")}><Zap size={15} /> ETH</button></div><div class="credit-quote"><div><span>Status</span><strong>{fundMethod() === "card" ? "Roadmap · disabled" : computeVaultDeployment.fundingConfigured ? "Release configured · verify gates" : "Release not configured"}</strong></div><div><span>Mutation route</span><strong>{fundMethod() === "card" ? "No card payload accepted" : "Connected wallet → pinned vault"}</strong></div><div><span>Reason</span><strong>{fundMethod() === "card" ? funding()?.card.reason.replaceAll("_", " ") ?? "hosted checkout adapter not connected" : "same-asset reserve, bounded debit, and remainder release"}</strong></div></div><Show when={fundMethod() === "card"} fallback={<button class="primary-button large full" type="button" onClick={() => { setFundOpen(false); chooseTab("funding"); }}><ShieldCheck size={17} /> Open vault release checks</button>}><div class="non-action-state roadmap"><LockKeyhole size={17} /> No card collection in this app</div></Show><p class="modeled-note"><Sparkles size={13} /> Onchain actions appear only after the browser re-reads the pinned runtime and policy roots from one Base Sepolia block. Hosted checkout remains a separate roadmap integration.</p></section></div></Show>
 
-      <Show when={keyOpen()}><div class="dialog-backdrop" onClick={closeKeyDialog}><section ref={(element) => { credentialDialogRef = element; }} class="credential-dialog" role="dialog" aria-modal="true" aria-labelledby="key-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog}>×</button><div class="dialog-mark"><KeyRound size={22} /></div><p class="overline">Scoped proxy access</p><h2 id="key-title">{oneTimeToken() ? "Copy your credential once" : "Create Wikigen credential"}</h2>
-        <Show when={!oneTimeToken()} fallback={<><p>This scoped delegate credential was decrypted inside this tab. It is not an upstream Tinker key and will be erased from the interface when this dialog closes.</p><div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time credential" : "Reveal one-time credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" onClick={() => void copyOneTimeToken()} aria-label="Copy credential"><Copy size={15} /></button></div><Show when={credentialQuickstart()}><div class="credential-quickstart"><div><span><Braces size={14} /><strong>Try one bounded read</strong></span><button type="button" onClick={() => void copyCredentialQuickstart()}><Copy size={13} /> Copy quickstart</button></div><pre><code>{credentialQuickstart()}</code></pre><p>The placeholder keeps your credential out of copied source. This request can only list bounded job metadata; it cannot create, dispatch, or charge work.</p></div></Show><button class="primary-button large full" type="button" onClick={closeKeyDialog}><Check size={17} /> I stored it safely; clear this view</button><p class="modeled-note"><ShieldCheck size={13} /> Plaintext is held only in component memory and is never written to local storage.</p></>}>
+      <Show when={keyOpen()}><div class="dialog-backdrop" onClick={closeKeyDialog}><section ref={(element) => { credentialDialogRef = element; }} class="credential-dialog" role="dialog" aria-modal="true" aria-labelledby="key-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog} disabled={credentialPending()}>×</button><div class="dialog-mark"><KeyRound size={22} /></div><p class="overline">Scoped proxy access</p><h2 id="key-title">{oneTimeToken() ? "Copy your credential once" : "Create Wikigen credential"}</h2><Show when={credentialPending()}><p class="modeled-note" role="status"><LoaderCircle class="spin" size={15} /> Credential delivery is in progress. This dialog stays open until the one-time token arrives. Changing wallet or project discards delivery; review and revoke any unreceived credential afterward.</p></Show>
+        <Show when={!oneTimeToken()} fallback={<><p>This scoped delegate credential was decrypted inside this tab. It is not an upstream Tinker key and will be erased from the interface when this dialog closes.</p><div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time credential" : "Reveal one-time credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" onClick={() => void copyOneTimeToken()} aria-label="Copy credential"><Copy size={15} /></button></div><Show when={credentialQuickstart()}><div class="credential-quickstart"><div><span><Braces size={14} /><strong>Try one bounded read</strong></span><button type="button" onClick={() => void copyCredentialQuickstart()}><Copy size={13} /> Copy quickstart</button></div><pre><code>{credentialQuickstart()}</code></pre><p>The placeholder keeps your credential out of copied source. This request can only list bounded job metadata; it cannot create, dispatch, or charge work.</p></div></Show><button class="primary-button large full" type="button" onClick={closeKeyDialog} disabled={credentialPending()}><Check size={17} /> I stored it safely; clear this view</button><p class="modeled-note"><ShieldCheck size={13} /> Plaintext is held only in component memory and is never written to local storage.</p></>}>
           <div class="credential-callout scope-default-callout"><ShieldCheck size={18} /><div><strong>Least privilege by default</strong><span>Only <code>jobs:read</code> starts selected. Every <code>:create</code> or <code>:delete</code> scope below is a mutation and must be opted into explicitly; <code>jobs:create</code> can reserve bounded service credits, but it does not authorize the separate exact-asset dispatch plane.</span></div></div>
-          <p>The upstream API key remains sealed. A newly generated browser X25519 key receives only a short-lived Compute capability. Arena submission and receipt scopes remain in their purpose-separated authentication domains.</p><div class="form-grid two"><label><span>Credential + device name</span><input maxlength="64" value={keyName()} onInput={(event) => setKeyName(event.currentTarget.value)} /></label><label><span>Device kind</span><select value={deviceKind()} onChange={(event) => setDeviceKind(event.currentTarget.value as DeviceKind)}><option value="developer_device">Developer device</option><option value="ci_service">CI service</option><option value="autonomous_agent">Autonomous agent</option></select></label></div><div class="form-grid two"><label><span>Expires after</span><div class="input-with-suffix"><input value={keyExpiry()} min="1" max="7" type="number" onInput={(event) => setKeyExpiry(event.currentTarget.value)} /><span>DAYS</span></div></label><label><span>Daily spend limit</span><div class="input-with-suffix"><input value={dailyCap()} min="1" max="1000000" type="number" onInput={(event) => setDailyCap(event.currentTarget.value)} /><span>CREDITS</span></div></label></div><fieldset class="scope-picker"><legend>Allowed Compute scopes</legend>{COMPUTE_PUBLIC_CREDENTIAL_SCOPES.map((scope) => <label><input type="checkbox" checked={selectedScopes().includes(scope)} onChange={(event) => setSelectedScopes((current) => event.currentTarget.checked ? [...new Set([...current, scope])] : current.filter((item) => item !== scope))} /> <span><Braces size={14} />{scope}</span></label>)}</fieldset><button class="primary-button large full" type="button" onClick={() => void submitCredential()} disabled={!liveReady() || !keyName().trim() || selectedScopes().length === 0 || Number(dailyCap()) < 1 || Boolean(busy())}>{busy() === "credential" ? <LoaderCircle class="spin" size={17} /> : <Fingerprint size={17} />} Register device key and issue</button><p class="modeled-note"><TriangleAlert size={13} /> Encryption binds one-time delivery to this device key; it is not hardware attestation or per-request proof-of-possession.</p>
+          <p>The upstream API key remains sealed. A newly generated browser X25519 key receives only a short-lived Compute capability. Arena submission and receipt scopes remain in their purpose-separated authentication domains.</p><div class="form-grid two"><label><span>Credential + device name</span><input maxlength="64" disabled={credentialPending()} value={keyName()} onInput={(event) => setKeyName(event.currentTarget.value)} /></label><label><span>Device kind</span><select disabled={credentialPending()} value={deviceKind()} onChange={(event) => setDeviceKind(event.currentTarget.value as DeviceKind)}><option value="developer_device">Developer device</option><option value="ci_service">CI service</option><option value="autonomous_agent">Autonomous agent</option></select></label></div><div class="form-grid two"><label><span>Expires after</span><div class="input-with-suffix"><input disabled={credentialPending()} value={keyExpiry()} min="1" max="7" type="number" onInput={(event) => setKeyExpiry(event.currentTarget.value)} /><span>DAYS</span></div></label><label><span>Daily spend limit</span><div class="input-with-suffix"><input disabled={credentialPending()} value={dailyCap()} min="1" max="1000000" type="number" onInput={(event) => setDailyCap(event.currentTarget.value)} /><span>CREDITS</span></div></label></div><fieldset class="scope-picker" disabled={credentialPending()}><legend>Allowed Compute scopes</legend>{COMPUTE_PUBLIC_CREDENTIAL_SCOPES.map((scope) => <label><input type="checkbox" checked={selectedScopes().includes(scope)} onChange={(event) => setSelectedScopes((current) => event.currentTarget.checked ? [...new Set([...current, scope])] : current.filter((item) => item !== scope))} /> <span><Braces size={14} />{scope}</span></label>)}</fieldset><button class="primary-button large full" type="button" onClick={() => void submitCredential()} disabled={!liveReady() || !keyName().trim() || selectedScopes().length === 0 || Number(dailyCap()) < 1 || Boolean(busy()) || credentialPending()}>{credentialPending() ? <LoaderCircle class="spin" size={17} /> : <Fingerprint size={17} />} Register device key and issue</button><p class="modeled-note"><TriangleAlert size={13} /> Encryption binds one-time delivery to this device key; it is not hardware attestation or per-request proof-of-possession.</p>
         </Show></section></div></Show>
 
       <Show when={jobOpen()}><div class="dialog-backdrop" onClick={() => setJobOpen(false)}><section ref={(element) => { jobDialogRef = element; }} class="job-dialog" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close job dialog" data-autofocus onClick={() => setJobOpen(false)}>×</button><div class="dialog-mark"><CloudCog size={22} /></div><p class="overline">Reservation safety gate</p><h2 id="job-title">Reservation creation is release-held</h2><p>The authenticated service can atomically reserve noncash test credits and return an inert <code>queued / not_dispatched</code> job. This browser does not expose that mutation until the release publishes a reservation-specific capability, a versioned receipt bound to the ledger reversal path, and a status lookup that can reconcile a committed POST whose response was lost. A broad Compute Console flag is not sufficient authority.</p><div class="job-estimate"><Gauge size={17} /><div><span>Browser reservation</span><strong>Release held</strong></div><div><span>Exact-asset dispatch</span><strong>Separate capability gate</strong></div></div><div class="non-action-state roadmap"><LockKeyhole size={17} /> No browser reservation mutation in this release</div><p class="modeled-note"><Sparkles size={13} /> Existing queued jobs can still be wallet-canceled by a current owner, admin, or developer; every attempt reloads jobs, balance, and the hash-chained ledger.</p></section></div></Show>

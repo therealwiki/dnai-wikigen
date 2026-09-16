@@ -17,6 +17,7 @@ import {
 } from "lucide-solid";
 import { zeroAddress } from "viem";
 import {
+  ComputeHttpError,
   cancelComputeDispatchIntent,
   canCancelComputeDispatchIntent,
   canReplayComputeDispatchCancellationAttempt,
@@ -333,6 +334,17 @@ function statusSourceLabel(source: StatusSource): string {
   return "Authenticated journal read";
 }
 
+export function notifyComputeDispatchSessionRejection(
+  cause: unknown,
+  token: string,
+  contextIsCurrent: () => boolean,
+  onSessionRejected?: (requestToken: string) => void,
+): void {
+  if (cause instanceof ComputeHttpError && cause.status === 401 && token && contextIsCurrent()) {
+    onSessionRejected?.(token);
+  }
+}
+
 export function ComputeDispatchPanel(props: {
   token: string;
   project?: ComputeProject;
@@ -341,6 +353,7 @@ export function ComputeDispatchPanel(props: {
   authorizationReceipt?: ComputeAuthorizationHandoff;
   workloadBinding?: VaultWorkloadAuthorizationBinding;
   onDiscardAuthorizationReceipt?: () => void;
+  onSessionRejected?: (requestToken: string) => void;
   onOpenVault: (jobReference?: string) => void;
 }) {
   let initialAuthorization: ComputeAuthorizationHandoff | undefined;
@@ -731,6 +744,7 @@ export function ComputeDispatchPanel(props: {
       setStatusSource("lookup");
       restoreCancellationAttempt(record);
     } catch (cause) {
+      notifyComputeDispatchSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!lookupContextStable()) return;
       setStatus(undefined);
       setStatusSource("");
@@ -863,6 +877,7 @@ export function ComputeDispatchPanel(props: {
         ? `Journal record and workload claim confirmed after revalidating vault block ${refreshed.pinnedBlockNumber}. Source ${result.intent.workload_authority.source_kind} remains immutable; the funding authority is the wallet job, the device cannot spend, and provider start is not implied.`
         : `The exact journal record and workload claim were returned after revalidating vault block ${refreshed.pinnedBlockNumber}; no duplicate intent or claim was created.`);
     } catch (cause) {
+      notifyComputeDispatchSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!operationContextStable() || !walletContextStable()) return;
       setCreateError(requestFailure(cause, true));
     } finally {
@@ -1006,13 +1021,15 @@ export function ComputeDispatchPanel(props: {
         if (!lifecycleContextStable()) return;
         setStatus(refreshed);
         setStatusSource("lookup");
-      } catch {
+      } catch (cause) {
+        notifyComputeDispatchSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
         if (!lifecycleContextStable()) return;
         setLifecycleNotice(
           "The exact cancellation receipt is confirmed, but the follow-up status read failed. No later execution state is inferred; retry the bounded status read when ready.",
         );
       }
     } catch (cause) {
+      notifyComputeDispatchSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!lifecycleContextStable()) return;
       const message = cause instanceof Error ? cause.message : "";
       setLifecycleError(
@@ -1077,6 +1094,7 @@ export function ComputeDispatchPanel(props: {
         "Settled evidence loaded. The browser rederived the private-result commitment envelope, the vault usage commitment, and both v2 EIP-712 digests before recovering the three EOA signatures.",
       );
     } catch (cause) {
+      notifyComputeDispatchSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!lifecycleContextStable()) return;
       setLifecycleError(requestFailure(cause, false));
     } finally {

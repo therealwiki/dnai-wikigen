@@ -19,9 +19,14 @@ import {
 } from "lucide-solid";
 import type { ComputeProject } from "../lib/compute";
 import { newIdempotencyKey } from "../lib/compute";
+import {
+  assertPinnedComputeProviderResultPolicy,
+  isPinnedComputeProviderResultPolicy,
+} from "../lib/computeProviderPolicy";
 import type { VaultWorkloadAuthorizationBinding } from "../lib/computeVault";
 import {
   COMPUTE_WORKLOAD_PAYLOAD_CLASS_BYTES,
+  ComputeWorkloadHttpError,
   eraseUnconsumedComputeWorkload,
   fetchAuthenticatedComputeWorkloadContract,
   fetchComputeWorkloadMetadata,
@@ -45,6 +50,17 @@ type WorkloadMode = "inference" | "training";
 type RecipientState = "modeled" | "locked" | "checking" | "ready" | "blocked";
 type UploadState = "idle" | "verifying" | "encrypting" | "uploading" | "success" | "error";
 type CustodyBusyState = "" | "lookup" | "adopt" | "erase";
+
+export function notifyComputeWorkloadSessionRejection(
+  cause: unknown,
+  token: string,
+  contextIsCurrent: () => boolean,
+  onSessionRejected?: (requestToken: string) => void,
+): void {
+  if (cause instanceof ComputeWorkloadHttpError && cause.status === 401 && token && contextIsCurrent()) {
+    onSessionRejected?.(token);
+  }
+}
 
 export function computeWorkloadModeDefaults(mode: WorkloadMode): {
   maxPrefillTokens: string;
@@ -287,6 +303,7 @@ export function ComputeWorkloadPanel(props: {
   onWorkloadReady: (handoff: SealedComputeWorkloadHandoff) => void;
   onClearWorkload: () => void;
   onContinueToAuthorization: () => void;
+  onSessionRejected?: (requestToken: string) => void;
 }) {
   const initialCaps = computeWorkloadModeDefaults("inference");
   const [mode, setMode] = createSignal<WorkloadMode>("inference");
@@ -358,6 +375,7 @@ export function ComputeWorkloadPanel(props: {
   ));
   const canSubmit = createMemo(() => Boolean(
     canVerifyRecipient()
+      && isPinnedComputeProviderResultPolicy(resultPolicy())
       && recipientState() === "ready"
       && recipient()
       && draftResult().draft
@@ -367,6 +385,9 @@ export function ComputeWorkloadPanel(props: {
       && !["verifying", "encrypting", "uploading"].includes(uploadState()),
   ));
   const receipt = createMemo(() => props.activeHandoff?.receipt ?? localReceipt());
+  const handoffProviderReady = createMemo(() => isPinnedComputeProviderResultPolicy(
+    props.activeHandoff?.authorization.resultPolicy ?? resultPolicy(),
+  ));
   const canInspectCustody = createMemo(() => Boolean(
     props.liveReady
       && props.token
@@ -731,6 +752,7 @@ export function ComputeWorkloadPanel(props: {
           ? "Live metadata confirms an eligible credential-uploaded envelope under this project and current recipient release. A project owner, admin, or developer wallet may select it for exact-asset authorization; the device cannot spend."
           : "Live metadata confirms an unclaimed wallet-uploaded envelope under this project and current recipient release. Wallet-source transfer is not supported; only its uploader wallet can dispatch it.");
     } catch (cause) {
+      notifyComputeWorkloadSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!custodyOperationContextMatches(operation)) return;
       setCustodyError(
         cause instanceof Error
@@ -827,6 +849,8 @@ export function ComputeWorkloadPanel(props: {
         "Credential-uploaded ciphertext selected. The device remains the immutable source identity and has no spending authority; this wallet must now authorize the exact-asset job.",
       );
     } catch (cause) {
+      // The envelope's source is a credential, but this inspection uses the captured wallet token.
+      notifyComputeWorkloadSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!custodyOperationContextMatches(operation)) return;
       setCustodyError(
         cause instanceof Error
@@ -926,6 +950,7 @@ export function ComputeWorkloadPanel(props: {
           : "The deletion response was uncertain; a same-authority recovery read found no retrievable unconsumed sealed ciphertext.",
       );
     } catch (cause) {
+      notifyComputeWorkloadSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!custodyOperationContextMatches(operation)) return;
       setCustodyMetadata(undefined);
       setCustodyReleaseVerified(false);
@@ -942,6 +967,10 @@ export function ComputeWorkloadPanel(props: {
 
   async function sealAndUpload(retryPrepared = false): Promise<void> {
     if (sealOperationInFlight()) return;
+    if (!isPinnedComputeProviderResultPolicy(resultPolicy())) {
+      setUploadError("This Tinker provider release supports bounded-summary receipts only; no workload was sealed or uploaded.");
+      return;
+    }
     if (retryPrepared ? !pendingPrepared() : !canSubmit()) return;
     const project = props.project;
     const token = props.token;
@@ -958,6 +987,7 @@ export function ComputeWorkloadPanel(props: {
     setSealOperationInFlight(true);
     setUploadError("");
     try {
+      assertPinnedComputeProviderResultPolicy(selectedResultPolicy);
       let prepared = retryPrepared ? pendingPrepared() : undefined;
       if (!prepared) {
         setUploadState("verifying");
@@ -967,6 +997,7 @@ export function ComputeWorkloadPanel(props: {
         if (!operationContextMatches(operationContext, expectedRecipientRevision, startingDraftRevision)) {
           throw new Error("Wallet or project changed before encryption; no upload was sent");
         }
+        assertPinnedComputeProviderResultPolicy(selectedResultPolicy);
         setUploadState("encrypting");
         prepared = await prepareComputeWorkloadUpload({
           contract: verifiedRecipient,
@@ -1014,6 +1045,7 @@ export function ComputeWorkloadPanel(props: {
       // Let the parent accept the exact immutable handoff before advancing the
       // local draft generation. If that callback rejects, the same prepared
       // ciphertext remains available for an exact idempotent recovery.
+      assertPinnedComputeProviderResultPolicy(handoff.authorization.resultPolicy);
       props.onWorkloadReady(handoff);
       setLocalReceipt(result.receipt);
       setPendingPrepared(undefined);
@@ -1027,12 +1059,21 @@ export function ComputeWorkloadPanel(props: {
       setSftFileName("");
       if (fileInput) fileInput.value = "";
     } catch (cause) {
+      notifyComputeWorkloadSessionRejection(cause, token, () => props.token === token, props.onSessionRejected);
       if (!operationContextMatches(operationContext, expectedRecipientRevision, startingDraftRevision)) return;
       setUploadState("error");
       setUploadError(cause instanceof Error ? cause.message : "Sealed Compute workload upload failed");
     } finally {
       if (operationRevision === sealOperationRevision) setSealOperationInFlight(false);
     }
+  }
+
+  function continueToAuthorization(): void {
+    if (!handoffProviderReady()) {
+      setUploadError("This workload requests a result policy the pinned Tinker provider cannot execute. Clear the local binding and choose a supported policy before authorizing funds.");
+      return;
+    }
+    props.onContinueToAuthorization();
   }
 
   const actionLabel = createMemo(() => {
@@ -1126,7 +1167,8 @@ export function ComputeWorkloadPanel(props: {
                 <label><span>Sample tokens</span><input type="number" min="1" max="4096" step="1" value={maxSampleTokens()} disabled={draftMutationLocked()} onInput={(event) => { if (invalidatePrivateDraft() === undefined) return; setMaxSampleTokens(event.currentTarget.value); }} /></label>
               </Show>
             </div>
-            <label class="workload-result-policy"><span>Bounded result policy</span><select value={resultPolicy()} disabled={draftMutationLocked()} onChange={(event) => { if (invalidatePrivateDraft() === undefined) return; setResultPolicy(event.currentTarget.value as "bounded_summary_receipt" | "score_band_hash"); }}><option value="bounded_summary_receipt">Bounded summary receipt</option><option value="score_band_hash">Score-band hash only</option></select></label>
+            <label class="workload-result-policy"><span>Bounded result policy</span><select value={resultPolicy()} disabled={draftMutationLocked()} aria-describedby="compute-result-policy-support" onChange={(event) => { if (!isPinnedComputeProviderResultPolicy(event.currentTarget.value)) { event.currentTarget.value = resultPolicy(); return; } if (invalidatePrivateDraft() === undefined) return; setResultPolicy(event.currentTarget.value); }}><option value="bounded_summary_receipt">Bounded summary receipt</option><option value="score_band_hash" disabled>Score-band hash only · unavailable for this provider</option></select></label>
+            <p id="compute-result-policy-support" class="workload-class-explainer">This Tinker provider release supports bounded-summary receipts only. Score-band-only output is not enabled for these inference and training recipes.</p>
           </section>
         </aside>
       </div>
@@ -1140,6 +1182,7 @@ export function ComputeWorkloadPanel(props: {
         <Show when={recipientError()}><div class="vault-message error" role="alert"><CircleAlert size={15} /><span>{recipientError()}</span></div></Show>
         <Show when={draftResult().error && (prompt() || sftJsonl())}><div class="vault-message error" role="alert"><CircleAlert size={15} /><span>{draftResult().error}</span></div></Show>
         <Show when={uploadError()}><div class="vault-message error" role="alert"><CircleAlert size={15} /><span>{uploadError()}</span></div></Show>
+        <Show when={props.activeHandoff && !handoffProviderReady()}><div class="vault-message error" role="alert"><CircleAlert size={15} /><span>This workload's result policy is unsupported by the pinned Tinker provider. Clear the local binding and select a supported policy; wallet authorization is unavailable.</span></div></Show>
         <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{actionLabel()}</p>
 
         <Show when={pendingPrepared() && uploadState() === "error"}>
@@ -1163,7 +1206,7 @@ export function ComputeWorkloadPanel(props: {
               </div>
               <div class="workload-receipt-actions">
                 <div><Fingerprint size={14} /><span>The source remains <code>credential</code>. Project membership authorizes this handoff; it does not turn the device into a spender. The next step uses the existing Base Sepolia ComputeCreditVault flow.</span></div>
-                <div class="workload-retry-actions"><button class="ghost-button" type="button" disabled={Boolean(custodyBusy())} onClick={clearLocalWorkloadBinding}>Clear selection</button><button class="primary-button" type="button" onClick={props.onContinueToAuthorization}>Continue to wallet authorization <ArrowRight size={15} /></button></div>
+                <div class="workload-retry-actions"><button class="ghost-button" type="button" disabled={Boolean(custodyBusy())} onClick={clearLocalWorkloadBinding}>Clear selection</button><button class="primary-button" type="button" disabled={!handoffProviderReady()} onClick={continueToAuthorization}>Continue to wallet authorization <ArrowRight size={15} /></button></div>
               </div>
             </article>}
           </Show>
@@ -1180,7 +1223,7 @@ export function ComputeWorkloadPanel(props: {
               <div><Fingerprint size={14} /><span>The next wallet signature binds this workload, manifest, and canonical dispatch intent before reserving any exact asset. Clearing this tab does not delete the server-side ciphertext.</span></div>
               <div class="workload-retry-actions">
                 <button class="ghost-button" type="button" disabled={Boolean(custodyBusy())} onClick={clearLocalWorkloadBinding}>Clear local binding only</button>
-                <button class="primary-button" type="button" onClick={props.onContinueToAuthorization}>Continue to asset authorization <ArrowRight size={15} /></button>
+                <button class="primary-button" type="button" disabled={!handoffProviderReady()} onClick={continueToAuthorization}>Continue to asset authorization <ArrowRight size={15} /></button>
               </div>
             </div>
           </article>}

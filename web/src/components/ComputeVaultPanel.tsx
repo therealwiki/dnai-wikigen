@@ -51,6 +51,10 @@ import {
   type ComputeAuthorizationHandoff,
 } from "../lib/computeAuthorizationHandoff";
 import { wallet } from "../lib/wallet";
+import {
+  assertPinnedComputeProviderResultPolicy,
+  isPinnedComputeProviderResultPolicy,
+} from "../lib/computeProviderPolicy";
 
 const JOB_STATES = ["Not found", "Authorized", "Started", "Settled", "Cancelled", "Expired"] as const;
 
@@ -199,6 +203,9 @@ export function ComputeVaultPanel(props: {
   const authorizationReady = createMemo(() => assetKind() === "native"
     ? state()?.readiness.nativeAuthorizationReady === true
     : state()?.readiness.tokenAuthorizationReady === true);
+  const workloadProviderReady = createMemo(() => isPinnedComputeProviderResultPolicy(
+    props.workloadAuthorization?.resultPolicy,
+  ));
   const projectReady = createMemo(() => Boolean(account() && projectReference() && safetyState()?.projectId));
   const capacityRecipient = createMemo(() => fundingBeneficiary().trim() || account() || "");
   const capacityRecipientValid = createMemo(() => (
@@ -634,6 +641,7 @@ export function ComputeVaultPanel(props: {
       if (!workload) {
         throw new Error("Prepare and seal the exact workload before authorizing its vault cap");
       }
+      assertPinnedComputeProviderResultPolicy(workload.resultPolicy);
       const cap = parseExactAssetAmount(rawCap, decimals);
       const hours = Number(rawLifetimeHours);
       const lifetimeSeconds = Math.round(hours * 3_600);
@@ -888,6 +896,9 @@ export function ComputeVaultPanel(props: {
       </Show>
 
       <Show when={error()}><div class="vault-message error" role="alert"><CircleAlert size={15} /><span>{error()}</span></div></Show>
+      <Show when={props.workloadAuthorization && !workloadProviderReady()}>
+        <p class="vault-message error" role="alert"><CircleAlert size={13} /> The pinned Tinker provider cannot execute this result policy. No funds can be authorized for it here. Select a workload using bounded-summary receipts.</p>
+      </Show>
       <Show when={notice()}><div class="vault-message success" role="status"><Check size={15} /><span>{notice()}</span><Show when={transactionHash()}>{(hash) => <a href={explorerTx(hash())} target="_blank" rel="noreferrer">View transaction <ExternalLink size={12} /></a>}</Show></div></Show>
 
       <Show when={!account()}>
@@ -973,7 +984,7 @@ export function ComputeVaultPanel(props: {
             <label><span>Job reference</span><input maxlength="128" autocomplete="off" placeholder="challenge-run-001" value={jobReference()} onInput={(event) => setJobReference(event.currentTarget.value)} /></label>
             <label><span>Hard maximum debit</span><div class="input-with-suffix"><input inputmode="decimal" autocomplete="off" placeholder="0.005" value={jobCap()} onInput={(event) => setJobCap(event.currentTarget.value)} /><span>{releaseSymbol()}</span></div></label>
             <label><span>Authorization lifetime</span><div class="input-with-suffix"><input type="number" min="0.25" max="168" step="0.25" value={lifetimeHours()} onInput={(event) => setLifetimeHours(event.currentTarget.value)} /><span>HOURS</span></div></label>
-            <button class="primary-button" type="button" onClick={() => void submitAuthorization()} disabled={!authorizationReady() || !props.workloadAuthorization || !jobReference().trim() || !jobCap().trim() || Boolean(busy())}>{busy() === "authorize" ? <LoaderCircle class="spin" size={15} /> : <Fingerprint size={15} />} Sign workload & reserve</button>
+            <button class="primary-button" type="button" onClick={() => void submitAuthorization()} disabled={!authorizationReady() || !workloadProviderReady() || !props.workloadAuthorization || !jobReference().trim() || !jobCap().trim() || Boolean(busy())}>{busy() === "authorize" ? <LoaderCircle class="spin" size={15} /> : <Fingerprint size={15} />} Sign workload & reserve</button>
           </div>
           <Show when={!props.workloadAuthorization}>
             <p class="vault-lifecycle-note"><LockKeyhole size={13} /> Prepare and seal the exact workload first. The wallet signature must bind its workload, manifest, and canonical dispatch intent; blank or placeholder commitments are rejected.</p>

@@ -1,7 +1,8 @@
 import { createComponent } from "solid-js";
 import { renderToString } from "solid-js/web";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  ComputeHttpError,
   computeDispatchIntentV3Commitment,
   computeStandaloneAuthorizationContextCommitment,
   type ComputeDispatchCapability,
@@ -28,6 +29,7 @@ import {
   computeDispatchLookupContextIsCurrent,
   computeDispatchOperationFingerprint,
   persistComputeDispatchCancellationAttempt,
+  notifyComputeDispatchSessionRejection,
   restoreComputeDispatchCancellationAttempt,
 } from "./ComputeDispatchPanel";
 
@@ -206,6 +208,33 @@ function renderDispatch(
 }
 
 describe("Compute exact-asset dispatch panel", () => {
+  it("reports only a current authenticated HTTP 401 with the original request token", () => {
+    const rejected = vi.fn();
+    notifyComputeDispatchSessionRejection(new ComputeHttpError(401, "rejected"), "captured-wallet-token", () => true, rejected);
+    expect(rejected).toHaveBeenCalledExactlyOnceWith("captured-wallet-token");
+    rejected.mockClear();
+    for (const cause of [new ComputeHttpError(403, "role denied"), new ComputeHttpError(503, "unavailable"), new Error("network 401")]) {
+      notifyComputeDispatchSessionRejection(cause, "captured-wallet-token", () => true, rejected);
+    }
+    notifyComputeDispatchSessionRejection(new ComputeHttpError(401, "rejected"), "stale-token", () => false, rejected);
+    notifyComputeDispatchSessionRejection(new ComputeHttpError(401, "rejected"), "", () => true, rejected);
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it("wires rejection recovery into authenticated lookup, creation, cancellation and receipt reads", () => {
+    expect(dispatchPanelSource.match(/notifyComputeDispatchSessionRejection\(cause, token,/g)).toHaveLength(5);
+    expect(dispatchPanelSource).toContain("onSessionRejected?: (requestToken: string) => void");
+    const errorMessage = dispatchPanelSource.indexOf('const message = cause instanceof Error ? cause.message : "";', dispatchPanelSource.indexOf("async function cancelBeforeProviderStart"));
+    const cancellationCatch = dispatchPanelSource.slice(dispatchPanelSource.lastIndexOf("} catch (cause)", errorMessage), dispatchPanelSource.indexOf("async function loadSignedUsageReceipt"));
+    expect(cancellationCatch).toContain("notifyComputeDispatchSessionRejection");
+    expect(cancellationCatch).not.toContain("clearComputeDispatchCancellationAttempt");
+    expect(cancellationCatch).toContain("exact cancellation replay key remains");
+  });
+
+  it("forwards current-token rejection before any changed draft or lookup reference can suppress it", () => {
+    expect(dispatchPanelSource.match(/catch \(cause\) \{\s*notifyComputeDispatchSessionRejection\(cause, token, \(\) => props.token === token, props.onSessionRejected\);\s*if \(!/g)).toHaveLength(5);
+  });
+
   it("renders a separate accessible fail-closed surface with no private workload fields", () => {
     const html = renderDispatch();
     expect(html).toContain('role="tabpanel"');

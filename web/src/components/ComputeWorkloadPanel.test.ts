@@ -1,8 +1,9 @@
 import { createComponent } from "solid-js";
 import { renderToString } from "solid-js/web";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ComputeProject } from "../lib/compute";
 import type { ComputeWorkloadMetadata } from "../lib/computeWorkload";
+import { ComputeWorkloadHttpError, ComputeWorkloadWireError } from "../lib/computeWorkload";
 import { buildComputeWorkloadDraft } from "../lib/computeWorkloadForm";
 import { parseComputeWorkloadConfig } from "../lib/computeWorkloadConfig";
 import computeConsoleApiDoc from "../../../docs/compute-console-api.md?raw";
@@ -18,6 +19,7 @@ import {
   computeWorkloadOperationContextIsCurrent,
   computeWorkloadPanelContextKey,
   computeWorkloadRemoteEraseIsAllowed,
+  notifyComputeWorkloadSessionRejection,
   type SealedComputeWorkloadHandoff,
 } from "./ComputeWorkloadPanel";
 
@@ -170,6 +172,34 @@ function renderPanel(input: {
 }
 
 describe("Compute sealed workload panel", () => {
+  it("reports authenticated wallet HTTP 401 without treating public trust failures as session rejection", () => {
+    const rejected = vi.fn();
+    notifyComputeWorkloadSessionRejection(new ComputeWorkloadHttpError(401, "rejected"), "captured-wallet-token", () => true, rejected);
+    expect(rejected).toHaveBeenCalledExactlyOnceWith("captured-wallet-token");
+    rejected.mockClear();
+    for (const cause of [new ComputeWorkloadWireError("public QVL HTTP 401"), new ComputeWorkloadHttpError(403, "role denied"), new ComputeWorkloadHttpError(503, "unavailable"), new Error("network 401")]) {
+      notifyComputeWorkloadSessionRejection(cause, "captured-wallet-token", () => true, rejected);
+    }
+    notifyComputeWorkloadSessionRejection(new ComputeWorkloadHttpError(401, "rejected"), "stale-token", () => false, rejected);
+    notifyComputeWorkloadSessionRejection(new ComputeWorkloadHttpError(401, "rejected"), "", () => true, rejected);
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it("routes only authenticated wallet workload operations to parent recovery", () => {
+    expect(panelSource.match(/notifyComputeWorkloadSessionRejection\(cause, token,/g)).toHaveLength(4);
+    const publicRecipientFetch = panelSource.slice(panelSource.indexOf("async function refreshRecipient"), panelSource.indexOf("function recheckRecipient"));
+    expect(publicRecipientFetch).not.toContain("notifyComputeWorkloadSessionRejection");
+    const uploadError = panelSource.indexOf('setUploadError(cause instanceof Error ? cause.message : "Sealed Compute workload upload failed")');
+    const uploadCatch = panelSource.slice(panelSource.lastIndexOf("} catch (cause)", uploadError), panelSource.indexOf("function continueToAuthorization"));
+    expect(uploadCatch).toContain("notifyComputeWorkloadSessionRejection");
+    expect(uploadCatch).not.toContain("setPendingPrepared(undefined)");
+    expect(uploadCatch).not.toContain("sealAndUpload(");
+  });
+
+  it("forwards current-token rejection before a changed custody reference or draft suppresses local results", () => {
+    expect(panelSource.match(/catch \(cause\) \{\s*(?:\/\/[^\n]*\n\s*)?notifyComputeWorkloadSessionRejection\(cause, token, \(\) => props.token === token, props.onSessionRejected\);\s*if \(!/g)).toHaveLength(4);
+  });
+
   it("renders a labeled, fail-closed first-class workload surface", () => {
     const html = renderPanel();
     expect(html).toContain('id="compute-panel-workloads"');
@@ -197,6 +227,35 @@ describe("Compute sealed workload panel", () => {
     expect(html).toContain("Recipient gate blocked");
     expect(html).not.toContain("Live sealed ingress ready");
     expect(html).not.toContain("Seal &amp; upload ciphertext");
+  });
+
+  it("shows score-band output as unavailable for the pinned provider before sealing", () => {
+    const html = renderPanel();
+    expect(html).toMatch(/<option[^>]*value="score_band_hash"[^>]*disabled[^>]*>/);
+    expect(html).toContain("Score-band hash only · unavailable for this provider");
+    expect(html).toContain('aria-describedby="compute-result-policy-support"');
+    expect(html).toContain("Score-band-only output is not enabled for these inference and training recipes.");
+    expect(panelSource).toContain("&& isPinnedComputeProviderResultPolicy(resultPolicy())");
+    const seal = panelSource.slice(panelSource.indexOf("async function sealAndUpload"));
+    expect(seal.indexOf("assertPinnedComputeProviderResultPolicy(selectedResultPolicy)"))
+      .toBeLessThan(seal.indexOf("await refreshRecipient()"));
+    expect(seal.indexOf("assertPinnedComputeProviderResultPolicy(handoff.authorization.resultPolicy)"))
+      .toBeLessThan(seal.indexOf("props.onWorkloadReady(handoff)"));
+  });
+
+  it("blocks an unsupported retained handoff from advancing to wallet authorization", () => {
+    const html = renderPanel({
+      config: parseComputeWorkloadConfig(liveEnv),
+      liveReady: true,
+      activeHandoff: {
+        ...handoff,
+        authorization: { ...handoff.authorization, resultPolicy: "score_band_hash" },
+      },
+    });
+    expect(html).toContain("This workload's result policy is unsupported by the pinned Tinker provider.");
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>Continue to asset authorization/);
+    expect(html).toContain("Clear local binding only");
+    expect(panelSource).toContain("if (!handoffProviderReady())");
   });
 
   it("renders the exact ciphertext receipt and provider stop boundary", () => {
