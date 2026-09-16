@@ -253,19 +253,64 @@ test("group- or other-writable output directories fail closed", (t) => {
 test("replacement target swaps are detected before publication", (t) => {
   const value = fixture();
   t.after(() => fs.rmSync(value.directory, { recursive: true, force: true }));
-  fs.writeFileSync(value.outputPath, '{"status":"old"}\n');
-  const attackerBytes = '{"status":"attacker"}\n';
+  const attackerBytes = '{"status":"old"}\n';
+  fs.writeFileSync(value.outputPath, attackerBytes, { mode: 0o600 });
   assert.throws(() => durablyPublishJson({
     sourcePath: value.sourcePath,
     outputPath: value.outputPath,
     publishMode: "replace",
     fileMode: 0o600,
-    testHookBeforePublish() {
+    testHookBeforePublish({ retainedReplacementTargetStat }) {
       fs.unlinkSync(value.outputPath);
       fs.writeFileSync(value.outputPath, attackerBytes, { mode: 0o600 });
+      assert.equal(retainedReplacementTargetStat().nlink, 0);
     },
   }), /replacement target changed/);
   assert.equal(fs.readFileSync(value.outputPath, "utf8"), attackerBytes);
+});
+
+test("byte-identical temporary-file swaps cannot reach publication", (t) => {
+  const value = fixture();
+  t.after(() => fs.rmSync(value.directory, { recursive: true, force: true }));
+  assert.throws(() => durablyPublishJson({
+    sourcePath: value.sourcePath,
+    outputPath: value.outputPath,
+    publishMode: "create",
+    fileMode: 0o600,
+    testHookBeforePublish({ retainedTemporaryStat }) {
+      const temporaryName = fs.readdirSync(value.directory)
+        .find((name) => name.endsWith(".tmp"));
+      assert.ok(temporaryName);
+      const temporaryPath = path.join(value.directory, temporaryName);
+      const bytes = fs.readFileSync(temporaryPath);
+      fs.unlinkSync(temporaryPath);
+      fs.writeFileSync(temporaryPath, bytes, { mode: 0o600 });
+      assert.equal(retainedTemporaryStat().nlink, 0);
+    },
+  }), /temporary file changed/);
+  assert.equal(fs.existsSync(value.outputPath), false);
+});
+
+test("byte-identical post-publication swaps are indeterminate before commit", (t) => {
+  const value = fixture();
+  t.after(() => fs.rmSync(value.directory, { recursive: true, force: true }));
+  assert.throws(
+    () => durablyPublishJson({
+      sourcePath: value.sourcePath,
+      outputPath: value.outputPath,
+      publishMode: "create",
+      fileMode: 0o600,
+      testHookBeforeDirectoryFsync() {
+        const bytes = fs.readFileSync(value.outputPath);
+        fs.unlinkSync(value.outputPath);
+        fs.writeFileSync(value.outputPath, bytes, { mode: 0o600 });
+      },
+    }),
+    (error) => (
+      error instanceof DurableJsonPublicationIndeterminateError
+      && error.code === "durable_json_publication_indeterminate"
+    ),
+  );
 });
 
 test("durable removal requires the exact reviewed bytes, mode, and inode", (t) => {
@@ -283,12 +328,13 @@ test("durable removal requires the exact reviewed bytes, mode, and inode", (t) =
   assert.throws(() => durablyRemoveJson({
     filePath: value.outputPath,
     expectedSha256: digest,
-    testHookBeforeRemove() {
+    testHookBeforeRemove({ retainedRemovalTargetStat }) {
       fs.unlinkSync(value.outputPath);
-      fs.writeFileSync(value.outputPath, '{"status":"swapped"}\n', { mode: 0o600 });
+      fs.writeFileSync(value.outputPath, '{"status":"pending"}\n', { mode: 0o600 });
+      assert.equal(retainedRemovalTargetStat().nlink, 0);
     },
   }), /replacement target changed/);
-  assert.equal(fs.readFileSync(value.outputPath, "utf8"), '{"status":"swapped"}\n');
+  assert.equal(fs.readFileSync(value.outputPath, "utf8"), '{"status":"pending"}\n');
 
   fs.unlinkSync(value.outputPath);
   fs.writeFileSync(value.outputPath, '{"status":"pending"}\n', { mode: 0o600 });

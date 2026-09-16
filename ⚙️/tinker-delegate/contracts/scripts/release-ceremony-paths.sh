@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
 # Resolve the immutable fresh-deployment receipt and the mutable ceremony
-# ledger only after the caller has sourced .env. No repository ledger is a
-# fallback for a post-authority ceremony.
+# ledger only after the guarded data-only deployment environment is loaded.
+# No repository ledger is a fallback for a post-authority ceremony.
 operator_policy_resolve_release_ceremony_paths() {
+  local fresh_parent_input
+  local fresh_parent
+  local fresh_basename
+  local canonical_fresh_path
+
   if [ -z "${DEPLOYMENT_MANIFEST_PATH:-}" ]; then
     echo "DEPLOYMENT_MANIFEST_PATH must name the explicit immutable 0444 fresh-deployment receipt." >&2
     return 1
@@ -19,6 +24,40 @@ operator_policy_resolve_release_ceremony_paths() {
 
   FRESH_DEPLOYMENT_MANIFEST_PATH="$DEPLOYMENT_MANIFEST_PATH"
   MANIFEST_PATH="$RELEASE_CEREMONY_LEDGER_PATH"
+
+  if [[ "$FRESH_DEPLOYMENT_MANIFEST_PATH" != /* ]] \
+    || [[ "$FRESH_DEPLOYMENT_MANIFEST_PATH" == */ ]]; then
+    echo "DEPLOYMENT_MANIFEST_PATH must be a canonical absolute file path outside the source checkout." >&2
+    return 1
+  fi
+  fresh_parent_input="${FRESH_DEPLOYMENT_MANIFEST_PATH%/*}"
+  [ -n "$fresh_parent_input" ] || fresh_parent_input=/
+  fresh_basename="${FRESH_DEPLOYMENT_MANIFEST_PATH##*/}"
+  case "$fresh_basename" in
+    .|..)
+      echo "DEPLOYMENT_MANIFEST_PATH must be a canonical absolute file path outside the source checkout." >&2
+      return 1
+      ;;
+  esac
+  fresh_parent="$(builtin cd -P -- "$fresh_parent_input" && builtin pwd -P)" || {
+    echo "DEPLOYMENT_MANIFEST_PATH parent could not be resolved canonically." >&2
+    return 1
+  }
+  if [ "$fresh_parent" = / ]; then
+    canonical_fresh_path="/$fresh_basename"
+  else
+    canonical_fresh_path="$fresh_parent/$fresh_basename"
+  fi
+  if [ "$canonical_fresh_path" != "$FRESH_DEPLOYMENT_MANIFEST_PATH" ]; then
+    echo "DEPLOYMENT_MANIFEST_PATH must be canonical and contain no symlinked parent component." >&2
+    return 1
+  fi
+  case "$FRESH_DEPLOYMENT_MANIFEST_PATH" in
+    "$ROOT_DIR"|"$ROOT_DIR"/*)
+      echo "DEPLOYMENT_MANIFEST_PATH must remain outside the source checkout." >&2
+      return 1
+      ;;
+  esac
 
   local historical_path="$ROOT_DIR/deployments/base-sepolia.json"
   if [ "$FRESH_DEPLOYMENT_MANIFEST_PATH" = "$historical_path" ] \

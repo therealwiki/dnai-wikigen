@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_HELPER="$SCRIPT_DIR/deploy-base-sepolia.sh"
+DEPLOYMENT_ENVIRONMENT_HELPER="$SCRIPT_DIR/keystore-deployment-environment.sh"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
 OPERATOR_CONFIGURE_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 TINKER_HELPER="$SCRIPT_DIR/deploy-tinker-encumbrance-base-sepolia.sh"
 FILTER="$SCRIPT_DIR/merge-base-sepolia-suite-manifest.jq"
@@ -11,9 +13,14 @@ STANDALONE_EMAIL_ORACLE="$SCRIPT_DIR/../script/EmailOracleAuth.s.sol"
 STANDALONE_TINKER="$SCRIPT_DIR/../script/TinkerAccountEncumbrance.s.sol"
 FUNDING_COMMAND_PLAN="$SCRIPT_DIR/../../tinker_delegate/funding_command_plan.py"
 
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
+
 bash -n "$DEPLOY_HELPER"
+bash -n "$DEPLOYMENT_ENVIRONMENT_HELPER"
 bash -n "$OPERATOR_CONFIGURE_GUARD"
 bash -n "$TINKER_HELPER"
+assert_keystore_wrapper_environment_safety "$DEPLOY_HELPER" BROADCAST VERIFY
 
 if grep -Eq '0x[0-9a-fA-F]{40}([^0-9a-fA-F]|$)' "$DEPLOY_HELPER" "$TINKER_HELPER"; then
   echo "Deployment helpers must not contain hardcoded Ethereum addresses." >&2
@@ -342,7 +349,7 @@ fi
 
 dry_exit_line="$(grep -n -m1 'if \[ "$BROADCAST" != "true" \]' "$DEPLOY_HELPER" | cut -d: -f1)"
 receipt_collection_line="$(grep -n -m1 '^collect_broadcast_transaction 0 diligenceRoom ' "$DEPLOY_HELPER" | cut -d: -f1)"
-manifest_mutation_line="$(grep -n -m1 '^mkdir -p "$(dirname "$MANIFEST_PATH")"' "$DEPLOY_HELPER" | cut -d: -f1)"
+manifest_mutation_line="$(grep -n -m1 '^tmp_manifest="$(mktemp "$MANIFEST_PARENT/' "$DEPLOY_HELPER" | cut -d: -f1)"
 if [ "$receipt_collection_line" -le "$dry_exit_line" ] \
   || [ "$receipt_collection_line" -ge "$manifest_mutation_line" ]; then
   echo "Confirmed receipts must be collected after the dry-run exit and before any manifest mutation." >&2
@@ -368,8 +375,9 @@ for exact_release_boundary in \
   'rev-parse --abbrev-ref HEAD' \
   'assert_source_checkout_exact "immediate pre-broadcast"' \
   'assert_source_checkout_exact "immediate post-broadcast"' \
-  'fresh-contract-suites/$RELEASE_SHA/base-sepolia.json' \
-  'historical deployments/base-sepolia.json ledger is not a fresh deployment authority' \
+  'DEPLOYMENT_MANIFEST_PATH is required and must name a new external immutable receipt' \
+  'DEPLOYMENT_MANIFEST_PATH must be outside the release source checkout' \
+  'DEPLOYMENT_MANIFEST_PATH parent must be invoking-user-owned and private' \
   'pre_broadcast_checkpoint_recovery_chain_inspection_required' \
   'inspect the signer nonce and Base Sepolia transaction history' \
   'abandoned_after_broadcast_validation_failure' \
@@ -426,8 +434,127 @@ if grep -q 'deploy-tinker-encumbrance-base-sepolia.sh' "$FUNDING_COMMAND_PLAN" \
   exit 1
 fi
 
+for invocation_boundary in \
+  'readonly DNAI_KEYSTORE_CALLER_BROADCAST_PRESENT="${BROADCAST+x}"' \
+  'readonly DNAI_KEYSTORE_CALLER_BROADCAST_VALUE="${BROADCAST-}"' \
+  'readonly DNAI_KEYSTORE_CALLER_VERIFY_PRESENT="${VERIFY+x}"' \
+  'readonly DNAI_KEYSTORE_CALLER_VERIFY_VALUE="${VERIFY-}"' \
+  'BROADCAST="$DNAI_KEYSTORE_CALLER_BROADCAST_VALUE"' \
+  'VERIFY="$DNAI_KEYSTORE_CALLER_VERIFY_VALUE"' \
+  'dnai_validate_deployment_switch BROADCAST "$BROADCAST"' \
+  'dnai_validate_deployment_switch VERIFY "$VERIFY"'; do
+  if ! grep -Fq -- "$invocation_boundary" "$DEPLOYMENT_ENVIRONMENT_HELPER"; then
+    echo "Fresh-suite deployment is missing caller-authoritative invocation boundary: $invocation_boundary" >&2
+    exit 1
+  fi
+done
+
+helper_source_line="$(grep -n -m1 '^\. /dev/fd/9$' "$DEPLOY_HELPER" | cut -d: -f1)"
+dotenv_load_line="$(grep -n -m1 '^dnai_load_keystore_deployment_dotenv "\$ROOT_DIR/\.env"$' "$DEPLOY_HELPER" | cut -d: -f1)"
+environment_finalize_line="$(grep -n -m1 '^dnai_finalize_keystore_deployment_environment BROADCAST VERIFY$' "$DEPLOY_HELPER" | cut -d: -f1)"
+tool_discovery_line="$(grep -n -m1 '^for required in forge cast jq git node; do$' "$DEPLOY_HELPER" | cut -d: -f1)"
+if [ -z "$helper_source_line" ] \
+  || [ -z "$dotenv_load_line" ] \
+  || [ -z "$environment_finalize_line" ] \
+  || [ -z "$tool_discovery_line" ] \
+  || [ "$helper_source_line" -ge "$dotenv_load_line" ] \
+  || [ "$environment_finalize_line" -le "$dotenv_load_line" ] \
+  || [ "$environment_finalize_line" -ge "$tool_discovery_line" ]; then
+  echo "Protected helper loading, dotenv parsing, and switch restoration must precede all Forge/tool actions." >&2
+  exit 1
+fi
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+
+# Independent taxonomy KAT: nine signer-role spellings crossed with every
+# reviewed raw-key/mnemonic material form. The helper also rejects broader
+# case-insensitive *PRIVATE_KEY*/*MNEMONIC* shapes; the two Tinker ingress-key
+# exceptions are exercised by the shared wrapper KAT above and are scrubbed.
+raw_signer_prefixes=("" DEPLOYER FOUNDRY ETH JUDGE KMS ROYALTY DEPLOYMENT BASE_SEPOLIA)
+raw_signer_material_forms=(PRIVATE_KEY PRIVATE_KEY_PATH PRIVATE_KEY_FILE PRIVATE_KEY_HEX MNEMONIC MNEMONIC_PATH MNEMONIC_FILE)
+raw_signer_dotenv="$tmp_dir/raw-signer.env"
+for raw_prefix in "${raw_signer_prefixes[@]}"; do
+  for raw_form in "${raw_signer_material_forms[@]}"; do
+    if [ -n "$raw_prefix" ]; then
+      raw_name="${raw_prefix}_${raw_form}"
+    else
+      raw_name="$raw_form"
+    fi
+    raw_error="$tmp_dir/raw-caller-$raw_name.err"
+    set +e
+    env -i PATH="/usr/bin:/bin" HOME="$tmp_dir" "$raw_name=forbidden-probe-value" \
+      /bin/bash -p -c '. "$1"' _ "$DEPLOYMENT_ENVIRONMENT_HELPER" >/dev/null 2>"$raw_error"
+    raw_status=$?
+    set -e
+    if [ "$raw_status" -eq 0 ] \
+      || ! grep -Fxq "$raw_name is forbidden for Base Sepolia release operations; use only the encrypted Foundry account dev." "$raw_error" \
+      || grep -Fq forbidden-probe-value "$raw_error"; then
+      echo "Caller raw-signer cross-product rejection failed: $raw_name" >&2
+      exit 1
+    fi
+
+    printf '%s=forbidden-probe-value\n' "$raw_name" > "$raw_signer_dotenv"
+    chmod 0600 "$raw_signer_dotenv"
+    raw_error="$tmp_dir/raw-file-$raw_name.err"
+    set +e
+    env -i PATH="/usr/bin:/bin" HOME="$tmp_dir" /bin/bash -p -c '
+      set -euo pipefail
+      . "$1"
+      dnai_load_keystore_deployment_dotenv "$2"
+    ' _ "$DEPLOYMENT_ENVIRONMENT_HELPER" "$raw_signer_dotenv" >/dev/null 2>"$raw_error"
+    raw_status=$?
+    set -e
+    if [ "$raw_status" -eq 0 ] \
+      || ! grep -Fxq "$raw_name is forbidden for Base Sepolia release operations; use only the encrypted Foundry account dev." "$raw_error" \
+      || grep -Fq forbidden-probe-value "$raw_error"; then
+      echo "Dotenv raw-signer cross-product rejection failed: $raw_name" >&2
+      exit 1
+    fi
+  done
+done
+
+run_dotenv_parser_error_kat() {
+  local label="$1"
+  local expected="$2"
+  local fixture="$3"
+  local error_path="$tmp_dir/dotenv-$label.err"
+  local result
+  shift 3
+
+  chmod 0600 "$fixture"
+  set +e
+  env -i PATH="/usr/bin:/bin" HOME="$tmp_dir" "$@" /bin/bash -p -c '
+    set -euo pipefail
+    . "$1"
+    dnai_load_keystore_deployment_dotenv "$2"
+  ' _ "$DEPLOYMENT_ENVIRONMENT_HELPER" "$fixture" >/dev/null 2>"$error_path"
+  result=$?
+  set -e
+  if [ "$result" -eq 0 ] || ! grep -Fxq "$expected" "$error_path"; then
+    echo "Data-only dotenv parser KAT failed: $label" >&2
+    exit 1
+  fi
+}
+
+printf 'BROADCAST=false\0VERIFY=false\n' > "$tmp_dir/dotenv-nul.env"
+run_dotenv_parser_error_kat nul '.env contains a NUL byte and is not a supported data-only dotenv file.' "$tmp_dir/dotenv-nul.env"
+run_dotenv_parser_error_kat nul-poisoned-grep '.env contains a NUL byte and is not a supported data-only dotenv file.' "$tmp_dir/dotenv-nul.env" GREP_OPTIONS=-v
+printf 'BROADCAST=false\r\n' > "$tmp_dir/dotenv-crlf.env"
+run_dotenv_parser_error_kat crlf '.env line 1 contains a carriage return.' "$tmp_dir/dotenv-crlf.env"
+printf 'BROADCAST=false\nBROADCAST=true\n' > "$tmp_dir/dotenv-duplicate.env"
+run_dotenv_parser_error_kat duplicate '.env repeats variable BROADCAST; duplicate records are forbidden.' "$tmp_dir/dotenv-duplicate.env"
+printf 'export BROADCAST=true\n' > "$tmp_dir/dotenv-shell.env"
+run_dotenv_parser_error_kat shell-syntax '.env line 1 has an invalid variable name.' "$tmp_dir/dotenv-shell.env"
+
+printf 'BASE_SEPOLIA_RPC_URL=$(forge --version)\n' > "$tmp_dir/dotenv-literal.env"
+chmod 0600 "$tmp_dir/dotenv-literal.env"
+env -i PATH="/usr/bin:/bin" HOME="$tmp_dir" GREP_OPTIONS=-v /bin/bash -p -c '
+  set -euo pipefail
+  . "$1"
+  dnai_load_keystore_deployment_dotenv "$2"
+  [ "$BASE_SEPOLIA_RPC_URL" = '\''$(forge --version)'\'' ]
+' _ "$DEPLOYMENT_ENVIRONMENT_HELPER" "$tmp_dir/dotenv-literal.env"
 
 cat > "$tmp_dir/input.json" <<'JSON'
 {

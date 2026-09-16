@@ -75,6 +75,7 @@ const MODULE_CLOSURE_PATHS = Object.freeze([
   "scripts/phala-production-posture-core.mjs",
   "scripts/phala-production-posture-receipt.mjs",
   "scripts/phala-production-target-authority.mjs",
+  "scripts/phala-sdk-runtime-capsule.mjs",
   "scripts/phala-seven-cvm-historical-evidence-core.mjs",
   "scripts/phala-seven-cvm-historical-release-verification-authority.mjs",
   "scripts/phala-seven-cvm-historical-runtime-binding-core.mjs",
@@ -142,6 +143,21 @@ const MODULE_PRIVILEGED_NODE_IMPORTERS = Object.freeze({
   ]),
 });
 
+// The reviewed Phala SDK loader imports exactly one data: URL assembled from
+// already-opened, digest-verified capsule bytes. The loader itself and every
+// byte it can read are projected below; all other runtime module requests stay
+// forbidden. This is a narrowly enumerated capsule operation, not a loader or
+// import-hook seam.
+const MODULE_RUNTIME_REQUESTS = Object.freeze({
+  "scripts/phala-sdk-runtime-capsule.mjs": Object.freeze([
+    Object.freeze({
+      kind: "dynamic_import",
+      literal: false,
+      specifier: null,
+    }),
+  ]),
+});
+
 // These are exact upper bounds for static imports in the build-time web
 // modules. Package bytes are independently bound by the installed dependency
 // projection; this list prevents an already-installed transitive dependency
@@ -180,8 +196,10 @@ const WEB_MODULE_PRIVILEGED_NODE_IMPORTERS = Object.freeze({
     "web/scripts/cloudflare-external-build-closure-core.mjs",
     "web/scripts/deploy-cloudflare.mjs",
     "web/scripts/frontend-build-candidate-producer-core.mjs",
+    "web/scripts/portable-ci-test-split.test.mjs",
     "web/scripts/release-env-core.test.mjs",
     "web/scripts/release-runtime-pins-core.mjs",
+    "web/scripts/test-harness/run-portable-web-tests.mjs",
   ]),
   "node:process": Object.freeze([
     "web/scripts/durable-private-file-core.mjs",
@@ -200,6 +218,14 @@ const WEB_MODULE_IMPORT_META_URLS = Object.freeze({
   ]),
   "scripts/phala-seven-cvm-verifier-evidence.mjs": Object.freeze([
     "./phala-seven-cvm-dcap-verify.py",
+  ]),
+  "scripts/phala-sdk-runtime-capsule.mjs": Object.freeze([
+    "../deployments/phala-sdk-runtime-capsule-authority.json",
+    "../deployments/phala-sdk-upstream-registry-evidence.json",
+    "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+    "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+    "./vendor/npm/phala-cloud-0.2.10.tgz",
+    "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
   ]),
   "web/scripts/bootstrap-retirement.test.mjs": Object.freeze([
     "./bootstrap-retirement.test.mjs",
@@ -223,10 +249,15 @@ const WEB_MODULE_IMPORT_META_URLS = Object.freeze({
     "../..",
     "../node_modules/typescript/lib/typescript.js",
   ]),
+  "web/scripts/cloudflare-production-uploader-authority-core.test.mjs": Object.freeze([
+    "../../deployments/cloudflare-production-uploader-authority.schema.json",
+    "../../deployments/cloudflare-production-uploader-authority.template.json",
+  ]),
   "web/scripts/cloudflare-release-artifact-core.test.mjs": Object.freeze([
     "../..",
   ]),
   "web/scripts/deploy-cloudflare-runner.test.mjs": Object.freeze([
+    "..",
     "../node_modules/wrangler/wrangler-dist/cli.js",
     "../package-lock.json",
     "../package.json",
@@ -263,6 +294,12 @@ const WEB_MODULE_IMPORT_META_URLS = Object.freeze({
   ]),
   "web/scripts/security-headers-core.test.mjs": Object.freeze([
     "./security-headers-core.test.mjs",
+  ]),
+  "web/scripts/test-harness/portable-web-test-manifest.mjs": Object.freeze([
+    "../..",
+  ]),
+  "web/scripts/test-harness/portable-web-test-profile.mjs": Object.freeze([
+    "./portable-web-test-profile.mjs",
   ]),
 });
 
@@ -347,7 +384,15 @@ const RESOURCE_DEFINITIONS = Object.freeze([
   Object.freeze({ kind: "verification_input", path: "ARCHITECTURE.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "PROJECT.md", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "README.md", maximumBytes: 4 * 1024 * 1024 }),
+  Object.freeze({ kind: "uploader_authority_schema", path: "deployments/cloudflare-production-uploader-authority.schema.json", maximumBytes: 16 * 1024 }),
+  Object.freeze({ kind: "uploader_authority_template", path: "deployments/cloudflare-production-uploader-authority.template.json", maximumBytes: 16 * 1024 }),
+  Object.freeze({ kind: "sdk_runtime_authority", path: "deployments/phala-sdk-runtime-capsule-authority.json", maximumBytes: 16 * 1024 }),
+  Object.freeze({ kind: "sdk_registry_evidence", path: "deployments/phala-sdk-upstream-registry-evidence.json", maximumBytes: 16 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "docs/compute-console-api.md", maximumBytes: 4 * 1024 * 1024 }),
+  Object.freeze({ kind: "sdk_runtime_capsule", path: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs", maximumBytes: 1024 * 1024 }),
+  Object.freeze({ kind: "legal_notice", path: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt", maximumBytes: 32 * 1024 }),
+  Object.freeze({ kind: "source_tarball", path: "scripts/vendor/npm/phala-cloud-0.2.10.tgz", maximumBytes: 512 * 1024 }),
+  Object.freeze({ kind: "source_tarball", path: "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz", maximumBytes: 512 * 1024 }),
   Object.freeze({ kind: "verification_input", path: "scripts/phala-seven-cvm-dcap-verify.py", maximumBytes: 128 * 1024 }),
   Object.freeze({ kind: "asset_provenance_input", path: "outputs/wikigen-pitch-assets/attested-network.png", maximumBytes: 4 * 1024 * 1024 }),
   Object.freeze({ kind: "asset_provenance_input", path: "outputs/wikigen-pitch-assets/private-reward-oracle.png", maximumBytes: 4 * 1024 * 1024 }),
@@ -355,6 +400,62 @@ const RESOURCE_DEFINITIONS = Object.freeze([
 ]);
 
 const RESOURCE_CONSUMER_BINDINGS = Object.freeze([
+  Object.freeze({
+    consumer: "web/scripts/cloudflare-production-uploader-authority-core.test.mjs",
+    externalPath: "deployments/cloudflare-production-uploader-authority.schema.json",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "../../deployments/cloudflare-production-uploader-authority.schema.json",
+  }),
+  Object.freeze({
+    consumer: "web/scripts/cloudflare-production-uploader-authority-core.test.mjs",
+    externalPath: "deployments/cloudflare-production-uploader-authority.template.json",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "../../deployments/cloudflare-production-uploader-authority.template.json",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "deployments/phala-sdk-runtime-capsule-authority.json",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "../deployments/phala-sdk-runtime-capsule-authority.json",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "deployments/phala-sdk-upstream-registry-evidence.json",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "../deployments/phala-sdk-upstream-registry-evidence.json",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "./vendor/npm/phala-cloud-0.2.10.tgz",
+  }),
+  Object.freeze({
+    consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+    externalPath: "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+    query: "",
+    requestKind: "import_meta_url",
+    specifier: "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+  }),
   Object.freeze({
     consumer: "scripts/phala-seven-cvm-verifier-evidence.mjs",
     externalPath: "scripts/phala-seven-cvm-dcap-verify.py",
@@ -952,6 +1053,14 @@ function safeMode(mode) {
     && (mode & 0o133) === 0;
 }
 
+// Git preserves only the executable bit for ordinary source blobs. Every file
+// in this non-executable closure is committed as 100644, so the release
+// projection requires the corresponding checkout mode exactly instead of
+// serializing a local-only 0444/0600 owner-write variation.
+function exactCommittedSourceMode(mode) {
+  return mode === 0o644;
+}
+
 function entrypointDefinitions() {
   return [
     ...RESOURCE_DEFINITIONS.map(({ kind, path: filePath }) => ({
@@ -1046,7 +1155,7 @@ export function normalizeCloudflareExternalBuildClosure(value) {
       !expected
       || normalized.kind !== expected.kind
       || normalized.path !== expected.path
-      || !safeMode(normalized.mode)
+      || !exactCommittedSourceMode(normalized.mode)
       || !Number.isSafeInteger(normalized.size)
       || normalized.size < 1
       || normalized.size > expected.maximumBytes
@@ -1154,7 +1263,7 @@ async function readStableRepositoryFile(
     || named.isSymbolicLink()
     || named.nlink !== 1n
     || named.uid !== expectedUid
-    || !safeMode(mode)
+    || !exactCommittedSourceMode(mode)
     || named.size < 1n
     || named.size > BigInt(maximumBytes)
   ) {
@@ -1307,6 +1416,7 @@ const output = input.map((entry) => {
     "arch",
     "argv",
     "env",
+    "execArgv",
     "execPath",
     "exit",
     "exitCode",
@@ -1904,7 +2014,7 @@ function parseStaticModuleRequests(modules) {
       }
       return normalized;
     });
-    for (const request of entry.runtime_requests) {
+    const runtimeRequests = entry.runtime_requests.map((request) => {
       const normalized = exactKeys(
         request,
         ["kind", "literal", "specifier"],
@@ -1925,14 +2035,25 @@ function parseStaticModuleRequests(modules) {
       ) {
         throw new Error("Cloudflare runtime module parser returned an invalid request");
       }
-    }
-    if (entry.runtime_requests.length) {
+      return Object.freeze({
+        kind: normalized.kind,
+        literal: normalized.literal,
+        specifier: normalized.specifier,
+      });
+    });
+    const expectedRuntimeRequests = MODULE_RUNTIME_REQUESTS[entry.path] || [];
+    if (JSON.stringify(runtimeRequests) !== JSON.stringify(expectedRuntimeRequests)) {
       throw new Error(
         `Cloudflare external module closure refuses dynamic import or CommonJS require in any consumer: ${entry.path}`,
       );
     }
     moduleRequests.set(entry.path, requests);
     resourceRequests.set(entry.path, resources);
+  }
+  for (const consumer of Object.keys(MODULE_RUNTIME_REQUESTS)) {
+    if (!moduleRequests.has(consumer)) {
+      throw new Error(`Cloudflare reviewed runtime module consumer is missing: ${consumer}`);
+    }
   }
   return Object.freeze({ moduleRequests, resourceRequests });
 }
@@ -3351,6 +3472,7 @@ export const __test = Object.freeze({
   MODULE_ENTRYPOINT_PATHS,
   MODULE_NODE_BUILTIN_IMPORTS,
   MODULE_PRIVILEGED_NODE_IMPORTERS,
+  MODULE_RUNTIME_REQUESTS,
   MODULE_WEB_BACKEDGE_PATHS,
   RECEIPT_DOMAIN,
   readStableRepositoryFile,

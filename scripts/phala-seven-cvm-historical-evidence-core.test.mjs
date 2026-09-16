@@ -130,9 +130,12 @@ test("historical authority remains byte-exact across the reviewed current-host r
     .sort();
 
   assert.deepEqual(changedKeys, [
+    "codesign_executable_sha256",
+    "darwin_release",
     "isolated_runtime_environment_sha256",
     "macos_build",
     "macos_version",
+    "system_python_launcher_sha256",
     "system_version_plist_sha256",
     "verifier_script_sha256",
   ]);

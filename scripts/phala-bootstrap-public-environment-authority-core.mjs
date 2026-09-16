@@ -217,7 +217,8 @@ export function normalizeBootstrapPublicEnvironmentAuthority(value) {
   }
   const reviewedAt = canonicalTimestamp(parsed.reviewed_at, "reviewed_at");
   const validUntil = canonicalTimestamp(parsed.valid_until, "valid_until");
-  if (Date.parse(validUntil) <= Date.parse(reviewedAt)) {
+  if (Date.parse(validUntil) <= Date.parse(reviewedAt)
+    || Date.parse(validUntil) - Date.parse(reviewedAt) > 10 * 60 * 1_000) {
     throw new Error("bootstrap public environment authority validity window is invalid");
   }
   return {

@@ -1,0 +1,35 @@
+{
+  "account_id": "956388df29525b9e06f81581b485a571",
+  "branch": "main",
+  "bundle": {
+    "bundle_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "dist_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "upload_control_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "credential_scope": {
+    "account_resource_id": "956388df29525b9e06f81581b485a571",
+    "global_api_key_allowed": false,
+    "oauth_home_allowed": false,
+    "permission": "Cloudflare Pages:Edit",
+    "review_status": "out_of_band_cloudflare_dashboard_review_required_not_provider_verified_by_this_runner",
+    "token_kind": "api_token"
+  },
+  "executor_uid": 502,
+  "producer_uid": 501,
+  "project_name": "wikigenme",
+  "schema": "dnai.cloudflare-production-uploader-authority.v1",
+  "truth_status": "different_principal_read_only_exact_input_handoff_scoped_token_scope_reviewed_out_of_band_not_provider_verified",
+  "uploader_capsule_pin": {
+    "architecture": "arm64",
+    "entryCount": 0,
+    "manifestByteLength": 0,
+    "manifestSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "nodeVersion": "v24.9.0",
+    "npmVersion": "11.6.0",
+    "osPlatform": "darwin",
+    "osRelease": "replace-with-exact-reviewed-host-release",
+    "schema": "dnai.cloudflare-uploader-capsule.v1",
+    "totalBytes": 0,
+    "wranglerVersion": "4.131.0"
+  }
+}

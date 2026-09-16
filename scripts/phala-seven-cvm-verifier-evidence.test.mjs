@@ -1843,7 +1843,7 @@ test("opened-FD verifier source, native, root runtime, bootstrap, and manifest p
       unsafeAssertPinnedSevenCvmOpenedFdFixtureRuntime({
         testOnlyPaths: runtime.paths,
       }).isolated_runtime_environment_sha256,
-      "sha256:0acd40fb80dd000f367583017643ac07fe31becd2372bc20ceca3e91aa8b8beb",
+      "sha256:82b2dfb14df7fa68c7d09d82d455638004d808d7b5e7fbedbb6dbc5e5f87970e",
     );
   } finally {
     fs.rmSync(runtime.directory, { recursive: true, force: true });

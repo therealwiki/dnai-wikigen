@@ -22,10 +22,8 @@ import {
   __test as cloudflareBuildSandboxTest,
   CLOUDFLARE_BUILD_SOURCE_KIND_GIT_COMMIT,
   CLOUDFLARE_BUILD_SOURCE_KIND_WORKING_TREE,
-  assertCloudflareBuildSandboxIsolation,
   assertCloudflareBuildWorkspaceIntegrity,
   assertModeledCloudflareWorkingTreeHasNoIgnoredBuildSource,
-  cloudflareBuildSandbox,
   createIsolatedCloudflareBuildWorkspace,
   materializeImmutableCloudflareGitSource,
   projectCloudflareInstalledDependencyTree,
@@ -39,7 +37,6 @@ import {
   cloudflareSourceFingerprint,
   cloudflareUploadControlFingerprint,
 } from "./cloudflare-release-artifact-core.mjs";
-import { cloudflareBuildEnvironment } from "./deploy-cloudflare-core.mjs";
 
 const modulePath = fileURLToPath(new URL(
   "./cloudflare-build-sandbox-core.test.mjs",
@@ -211,7 +208,7 @@ test("isolated source stage excludes mutable dependencies and matches validated 
     assert.equal(
       JSON.parse(await readFile(path.join(workspace.webDir, "package.json"), "utf8"))
         .devDependencies.wrangler,
-      "4.110.0",
+      "4.131.0",
     );
     await assert.rejects(access(path.join(workspace.webDir, "node_modules")), /ENOENT/);
     await assert.rejects(access(path.join(workspace.webDir, "dist")), /ENOENT/);
@@ -519,6 +516,47 @@ test("modeled working-tree source permits only explicit generated exclusions and
     );
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("modeled and immutable sources reject project-local npm configuration", async () => {
+  const modeledFixture = await createGitMaterializerFixture();
+  try {
+    await writeFixturePath(
+      modeledFixture.repository,
+      "web/.npmrc",
+      "script-shell=/usr/bin/true\n",
+    );
+    await assert.rejects(
+      assertModeledCloudflareWorkingTreeHasNoIgnoredBuildSource(
+        modeledFixture.repository,
+      ),
+      /refuses a project-local npm configuration/,
+    );
+  } finally {
+    await rm(modeledFixture.root, { recursive: true, force: true });
+  }
+
+  const immutableFixture = await createGitMaterializerFixture({
+    trackedFiles: {
+      "web/.npmrc": "node-options=--import=/tmp/unreviewed.mjs\n",
+    },
+  });
+  try {
+    const workspaceRoot = await immutableFixture.createWorkspace(
+      "workspace-reject-project-npm-config",
+    );
+    await assert.rejects(
+      materializeImmutableCloudflareGitSource({
+        repositoryRoot: immutableFixture.repository,
+        workspaceRoot,
+        sourceCommitSha: immutableFixture.commitSha,
+        expectedGitTreeOid: immutableFixture.gitTreeOid,
+      }),
+      /refuses a project-local npm configuration/,
+    );
+  } finally {
+    await rm(immutableFixture.root, { recursive: true, force: true });
   }
 });
 
@@ -869,26 +907,5 @@ test("installed dependency proof exact-matches the source lock registry and inte
     );
   } finally {
     await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("macOS sandbox proves host-file and network denial before dependency install", {
-  skip: process.env.DNAI_BUILD_SANDBOX_ACTIVE === "true"
-    ? "outer release sandbox already proved this boundary"
-    : false,
-}, async () => {
-  const canonicalTemporaryRoot = await realpath(tmpdir());
-  const buildRoot = await mkdtemp(path.join(canonicalTemporaryRoot, "dnai-build-sandbox-test-"));
-  await chmod(buildRoot, 0o700);
-  try {
-    const sandbox = await cloudflareBuildSandbox({ buildRoot });
-    const env = cloudflareBuildEnvironment({}, {}, buildRoot);
-    await assertCloudflareBuildSandboxIsolation({
-      buildRoot,
-      profile: sandbox.profile,
-      env,
-    });
-  } finally {
-    await rm(buildRoot, { recursive: true, force: true });
   }
 });

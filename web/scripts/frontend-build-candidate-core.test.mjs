@@ -136,7 +136,7 @@ function externalBuildClosure() {
     files: CLOUDFLARE_EXTERNAL_BUILD_FILES.map(({ kind, path }, index) => ({
       kind,
       path,
-      mode: 0o600,
+      mode: 0o644,
       size: index + 1,
       sha256: pin(10 + index),
     })),
@@ -219,7 +219,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   // producer/validator recipe drift.
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:421ea1a794b17587b522106143bfcbd281ea271ffe5b9a80ed76ec97e7db0f52",
+    "sha256:9f6be203dd5de9e47f1d255a33ecb83bcef5319d97dcdf3a4896935a7ba6036b",
   );
 });
 

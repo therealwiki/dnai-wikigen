@@ -296,7 +296,7 @@ exist, build the immutable pre-Phala authority:
 ```bash
 node scripts/cvm-launch-intent.mjs build \
   --topology "$PWD/.release/dnai-cvm-topology.json" \
-  --ledger "$PWD/deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json" \
+  --ledger "$DEPLOYMENT_MANIFEST_PATH" \
   --tinker-account-binding-ceremony-receipt-sha256 \
   "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" \
   --out "$PWD/.release/cvm-launch-intent-core.json" \
@@ -764,10 +764,13 @@ defaults: `TINKER_WALLET_AUTH_RPC_TIMEOUT_SECONDS=3.0`,
 `TINKER_WALLET_AUTH_RPC_MAX_RESPONSE_BYTES=131072`, and
 `TINKER_WALLET_AUTH_MAX_SIGNATURE_BYTES=4096`.
 
-The launch settings also bind the exact reviewed production, non-GPU Phala OS
-catalog entry: selector `dstack-0.5.10`, slug `dstack-0.5.10-4c9bd024`, version
-`0.5.10`, and OS image hash
-`4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc`.
+The launch settings also bind the exact reviewed latest stable production,
+non-development, non-GPU CPU image from the authenticated catalog at
+`https://cloud-api.phala.network/api/v1`: selector `dstack-0.5.9`, slug
+`dstack-0.5.9-bd369a8c`, version `0.5.9`, OS image hash
+`bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033`, and
+catalog-entry digest
+`sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43`.
 The fresh provisioner must re-query the authenticated production catalog, pass
 that exact selector as the SDK `image`, and verify the returned hash with
 `is_dev=false` and `requires_gpu=false` for all seven prepared CVMs before the
@@ -933,6 +936,94 @@ claim address control.
 Review approval may be at most five minutes ahead of check time. Expiry must be
 after approval, no more than seven days later, and still in the future. Renewal
 creates a new envelope and receipt against the same immutable subject digest.
+
+## Cloudflare production uploader boundary
+
+The live Pages release has a separate two-principal filesystem boundary. A
+successful `wrangler login` or saved OAuth session is sufficient for ordinary
+interactive administration, but it is **not** exact production uploader
+authority. The release runner never gives Wrangler the operator's ambient
+`HOME`; both OAuth fallback and the Cloudflare global API-key/email credential
+pair are rejected for this path. The credential must instead be a separately
+reviewed API token limited to the target account resource and the
+`Cloudflare Pages:Edit` permission. The runner checks the credential kind and
+the out-of-band review declaration, but does not claim that the provider has
+cryptographically attested the token's effective scope.
+
+The artifact producer and upload executor must be different non-root OS users.
+An administrator must select a canonical ancestor chain owned only by root or
+the producer and outside every directory the upload executor owns, can write,
+or can rename. The producer creates one release-specific child with exactly
+this layout:
+
+```text
+<authority-root>/
+  authority.json
+  bundle/
+    dist/
+    functions/_middleware.js
+    package.json
+    wrangler.toml
+  uploader/
+    node_modules/
+    package-lock.json
+    package.json
+```
+
+`bundle/` is a frozen copy of the exact Pages input tree. `uploader/` is a
+minimal npm capsule whose root package has exactly one dependency,
+`wrangler@4.131.0`, and whose package metadata pins Node `24.9.0` and npm
+`11.6.0`. It must not contain npm/user configuration, OAuth state, credentials,
+the application source tree, or unrelated packages. Generate and independently
+review its full capsule pin, place that pin and the three bundle audit digests
+in a canonical copy of
+`deployments/cloudflare-production-uploader-authority.template.json`, and name
+the result `authority.json`. The matching JSON Schema is
+`deployments/cloudflare-production-uploader-authority.schema.json`.
+
+Before handoff, the producer makes `authority.json`, the uploader capsule, and
+every directory read-only; capsule files preserve executable bits only where
+required. Bundle-file permission modes remain byte-manifest-adjacent release
+inputs and must exactly match the independently staged bundle. They may retain
+producer-owner write bits, but may never be group- or other-writable; because
+the executor has a distinct UID and no producer group authority, the bundle is
+read-only from the executor's perspective. The producer then becomes
+quiescent. Every node under the authority root, including npm symlinks, must
+have the producer UID. Ordinary files must be single-link. The root and every
+ancestor are checked twice;
+executor-owned, executor-writable, aliased, shared-writable, hard-linked, or
+same-UID handoffs fail before Wrangler is invoked. Running the upload executor
+as root is also rejected because root bypasses the permission separation.
+
+The upload executor receives only these two untracked inputs:
+
+```bash
+export CLOUDFLARE_PRODUCTION_UPLOAD_AUTHORITY_ROOT=/absolute/admin-provisioned/release-root
+export CLOUDFLARE_API_TOKEN   # set without echoing or writing it to the repository
+npm --prefix web run deploy:cloudflare -- <the reviewed live-release evidence arguments>
+```
+
+The runner independently rebuilds the signed frontend candidate, audits its
+staged Pages tree, re-audits the different-principal `bundle/`, and requires
+byte-identical dist, bundle, and upload-control manifests. It projects the
+entire minimal Wrangler capsule twice, compares it to the authority pin, and
+repeats the complete authority projection immediately before spawning the
+pinned Wrangler CLI. Wrangler's `cwd` is the frozen `bundle/`; its module graph
+is the frozen `uploader/`; and its isolated credential `HOME` is a fresh private
+directory containing no saved OAuth session or source workspace.
+
+This removes same-uploader-UID mutation from the accepted live path. The
+remaining explicit operator boundary is the quiescence and custody of the
+different producer principal and the accuracy of the out-of-band token-scope
+review. The runner cannot manufacture either fact on behalf of the operator.
+It also binds Wrangler's exact input tree, not Cloudflare's internal multipart
+request or provider-side Pages Function bundle; those require a separate
+provider receipt before anyone may call them an uploaded-artifact digest.
+
+Modeled previews retain their modeled label and do not satisfy this production
+authority. They also use an isolated Wrangler `HOME` and therefore require an
+explicit API token rather than silently falling back to the user's broad saved
+OAuth session.
 
 ## Authority digest rules
 

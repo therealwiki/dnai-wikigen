@@ -24,11 +24,16 @@ done
 node --check "$LEDGER_CLI"
 
 for helper in "${HELPERS[@]}"; do
-  env_source_line="$(grep -n -m1 '^  \. "\$ROOT_DIR/\.env"$' "$helper" | cut -d: -f1)"
-  resolver_line="$(grep -n -m1 '^operator_policy_resolve_release_ceremony_paths$' "$helper" | cut -d: -f1)"
-  if [ -z "$env_source_line" ] || [ -z "$resolver_line" ] \
-    || [ "$resolver_line" -le "$env_source_line" ]; then
-    echo "$(basename "$helper") must source .env before resolving either ceremony path." >&2
+  helper_source_line="$(grep -n -m1 '^\. /dev/fd/9$' "$helper" | cut -d: -f1 || true)"
+  dotenv_load_line="$(grep -n -m1 '^dnai_load_keystore_deployment_dotenv "\$ROOT_DIR/\.env"$' "$helper" | cut -d: -f1 || true)"
+  finalize_line="$(grep -n -m1 '^dnai_finalize_keystore_deployment_environment ' "$helper" | cut -d: -f1 || true)"
+  resolver_line="$(grep -n -m1 '^operator_policy_resolve_release_ceremony_paths$' "$helper" | cut -d: -f1 || true)"
+  if [ -z "$helper_source_line" ] || [ -z "$dotenv_load_line" ] \
+    || [ -z "$finalize_line" ] || [ -z "$resolver_line" ] \
+    || [ "$dotenv_load_line" -le "$helper_source_line" ] \
+    || [ "$finalize_line" -le "$dotenv_load_line" ] \
+    || [ "$resolver_line" -le "$finalize_line" ]; then
+    echo "$(basename "$helper") must load the guarded data-only environment before resolving either ceremony path." >&2
     exit 1
   fi
   if [ "$(grep -Ec '^operator_policy_resolve_release_ceremony_paths$' "$helper")" -ne 1 ]; then
@@ -42,6 +47,7 @@ for helper in "${HELPERS[@]}"; do
 done
 
 TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dnai-ceremony-path-test.XXXXXX")"
+TEST_TMP_DIR="$(builtin cd -P -- "$TEST_TMP_DIR" && builtin pwd -P)"
 cleanup() {
   rm -rf -- "$TEST_TMP_DIR"
 }
@@ -102,6 +108,16 @@ if DEPLOYMENT_MANIFEST_PATH="$historical_path" \
   bash -c '. "$1"; operator_policy_resolve_release_ceremony_paths' \
     _ "$PATH_RESOLVER" >/dev/null 2>&1; then
   echo "The explicit historical deployments/base-sepolia.json path was accepted." >&2
+  exit 1
+fi
+in_checkout_path="$fake_root/deployments/fresh-receipt.json"
+if DEPLOYMENT_MANIFEST_PATH="$in_checkout_path" \
+  RELEASE_CEREMONY_LEDGER_PATH="$ledger_path" \
+  RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT="$evidence_root" \
+  ROOT_DIR="$fake_root" \
+  bash -c '. "$1"; operator_policy_resolve_release_ceremony_paths' \
+    _ "$PATH_RESOLVER" >/dev/null 2>&1; then
+  echo "An in-checkout immutable deployment manifest path was accepted." >&2
   exit 1
 fi
 if DEPLOYMENT_MANIFEST_PATH="$fresh_path" \

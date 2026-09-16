@@ -38,9 +38,18 @@ import {
   assertCloudflareControlEnvironment,
   cloudflareBuildEnvironment,
   cloudflareReleaseIntent,
-  cloudflareWranglerEnvironment,
+  cloudflareScopedPagesWranglerEnvironment,
   prepareCloudflareDeployment,
 } from "./deploy-cloudflare-core.mjs";
+import {
+  CLOUDFLARE_PRODUCTION_UPLOADER_AUTHORITY_TRUTH_STATUS,
+  CLOUDFLARE_PRODUCTION_UPLOAD_ROOT_ENV,
+  assertCloudflareProductionUploaderAuthority,
+  cloudflareUploaderRuntimeIdentity,
+} from "./cloudflare-production-uploader-authority-core.mjs";
+import {
+  assertPinnedCloudflareUploaderCapsule,
+} from "./cloudflare-uploader-capsule-core.mjs";
 import {
   PINNED_NODE_RUNTIME,
   PINNED_NPM_RUNTIME,
@@ -68,11 +77,11 @@ const RELEASE_GIT_ENV = Object.freeze({
   GIT_LITERAL_PATHSPECS: "1",
 });
 const PINNED_WRANGLER_RUNTIME = Object.freeze({
-  version: "4.110.0",
+  version: "4.131.0",
   packageJsonSha256:
-    "f625bdbdfd80b77c23d0e876ce1e12c3533384de33c131887652f7f1475c9793",
+    "c884db8f690cbfc5a634240885369fa060c4cf799efd64bf9fec5ae1eb4bd196",
   cliSha256:
-    "64e547d8912121a116f8109eacd3c4061e61499de32eb994df5ae62f2eb905dd",
+    "e658e72499255b64650575603087a77a2390471adf63b87adfb61b5517e685a2",
 });
 const INSTALLED_DEPENDENCY_PROOF_FIELDS = Object.freeze([
   "packageCount",
@@ -80,8 +89,17 @@ const INSTALLED_DEPENDENCY_PROOF_FIELDS = Object.freeze([
   "sha256",
   "truth_status",
 ]);
+const CLOUDFLARE_PROJECT_NAME = "wikigenme";
+const MODELED_UPLOAD_TRUTH_STATUS =
+  "modeled_same_principal_input_not_production_exact_upload_authority";
 
-function readPinnedRuntimeFile(filePath, expectedSha256, maximumBytes, label) {
+function readPinnedRuntimeFile(
+  filePath,
+  expectedSha256,
+  maximumBytes,
+  label,
+  expectedOwner = typeof process.geteuid === "function" ? process.geteuid() : 0,
+) {
   if (
     path.resolve(filePath) !== filePath
     || fs.realpathSync.native(filePath) !== filePath
@@ -89,14 +107,11 @@ function readPinnedRuntimeFile(filePath, expectedSha256, maximumBytes, label) {
     throw new Error(`${label} path is aliased or noncanonical`);
   }
   const named = fs.lstatSync(filePath);
-  const expectedUid = typeof process.geteuid === "function"
-    ? process.geteuid()
-    : named.uid;
   if (
     !named.isFile()
     || named.isSymbolicLink()
     || named.nlink !== 1
-    || named.uid !== expectedUid
+    || named.uid !== expectedOwner
     || (named.mode & 0o022) !== 0
     || named.size < 2
     || named.size > maximumBytes
@@ -137,7 +152,10 @@ function readPinnedRuntimeFile(filePath, expectedSha256, maximumBytes, label) {
   }
 }
 
-export function resolvePinnedWranglerCli(directory = webDir) {
+export function resolvePinnedWranglerCli(
+  directory = webDir,
+  expectedOwner = typeof process.geteuid === "function" ? process.geteuid() : 0,
+) {
   const packagePath = path.join(directory, "node_modules", "wrangler", "package.json");
   const cliPath = path.join(
     directory,
@@ -153,6 +171,7 @@ export function resolvePinnedWranglerCli(directory = webDir) {
       PINNED_WRANGLER_RUNTIME.packageJsonSha256,
       128 * 1024,
       "Wrangler package descriptor",
+      expectedOwner,
     ).toString("utf8"));
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Wrangler ")) throw error;
@@ -169,6 +188,7 @@ export function resolvePinnedWranglerCli(directory = webDir) {
     PINNED_WRANGLER_RUNTIME.cliSha256,
     20 * 1024 * 1024,
     "Wrangler CLI",
+    expectedOwner,
   );
   return cliPath;
 }
@@ -322,7 +342,7 @@ function defaultVerify({ env, webDir: isolatedWebDir, sandbox }) {
     sandbox,
     webDir: isolatedWebDir,
     env,
-    script: "check",
+    script: "check:portable",
   });
 }
 
@@ -336,15 +356,154 @@ function defaultWrangler(args, cwd, runtime) {
     || typeof runtime.webDir !== "string"
     || !path.isAbsolute(runtime.webDir)
     || path.resolve(runtime.webDir) !== runtime.webDir
+    || typeof runtime.wranglerHome !== "string"
+    || !path.isAbsolute(runtime.wranglerHome)
+    || path.resolve(runtime.wranglerHome) !== runtime.wranglerHome
+    || typeof runtime.bundleRoot !== "string"
+    || cwd !== runtime.bundleRoot
   ) {
     throw new Error("Wrangler requires a fresh isolated release runtime");
   }
-  const cliPath = resolvePinnedWranglerCli(runtime.webDir);
+  let cliPath;
+  if (runtime.exactProductionInput === true) {
+    if (
+      runtime.truthStatus
+        !== CLOUDFLARE_PRODUCTION_UPLOADER_AUTHORITY_TRUTH_STATUS
+      || !runtime.uploaderCapsulePin
+      || !runtime.uploaderRuntimeIdentity
+      || !Number.isSafeInteger(runtime.producerUid)
+    ) {
+      throw new Error("Wrangler production invocation lacks exact uploader authority");
+    }
+    assertPinnedCloudflareUploaderCapsule({
+      capsuleRoot: runtime.webDir,
+      delegatedReadOnly: true,
+      expectedOwner: runtime.producerUid,
+      runtimeIdentity: runtime.uploaderRuntimeIdentity,
+    }, runtime.uploaderCapsulePin);
+    cliPath = resolvePinnedWranglerCli(runtime.webDir, runtime.producerUid);
+  } else {
+    cliPath = resolvePinnedWranglerCli(runtime.webDir);
+  }
+  const childEnvironment = cloudflareScopedPagesWranglerEnvironment(
+    runtime.controlEnv,
+    runtime.wranglerHome,
+  );
+  if (
+    !runtime.wranglerEnvironment
+    || JSON.stringify(runtime.wranglerEnvironment) !== JSON.stringify(childEnvironment)
+  ) {
+    throw new Error("Wrangler isolated credential environment changed before invocation");
+  }
   execFileSync(process.execPath, ["--no-warnings", cliPath, ...args], {
     cwd,
-    env: cloudflareWranglerEnvironment(process.env),
+    env: childEnvironment,
     stdio: "inherit",
   });
+}
+
+async function defaultAuthorizeUpload({
+  auditBuild,
+  auditStage,
+  controlEnv,
+  env,
+  expectedBundleAudit,
+  expectedDistAudit,
+  policy,
+  privateReleaseAudit,
+  sensitiveEnv,
+  stageDir,
+  uploadWorkspace,
+  uploaderRuntimeIdentity,
+}) {
+  if (policy.mode === "modeled") {
+    return Object.freeze({
+      authorityTreeManifestSha256: null,
+      bundleRoot: stageDir,
+      capsuleManifestSha256: null,
+      exactProductionInput: false,
+      producerUid: typeof process.geteuid === "function" ? process.geteuid() : 0,
+      truthStatus: MODELED_UPLOAD_TRUTH_STATUS,
+      uploaderCapsulePin: null,
+      uploaderCapsuleRoot: uploadWorkspace.webDir,
+      uploaderRuntimeIdentity,
+    });
+  }
+  if (policy.mode !== "live") {
+    throw new Error("Cloudflare upload authorization mode is not explicit");
+  }
+  return assertCloudflareProductionUploaderAuthority({
+    auditBuild,
+    auditStage,
+    authorityRoot: String(
+      controlEnv?.[CLOUDFLARE_PRODUCTION_UPLOAD_ROOT_ENV] ?? "",
+    ),
+    credentialEnv: controlEnv,
+    env,
+    expectedAccountId: policy.accountId,
+    expectedBranch: policy.branch,
+    expectedBundleAudit,
+    expectedDistAudit,
+    expectedProjectName: CLOUDFLARE_PROJECT_NAME,
+    privateReleaseAudit,
+    runtimeIdentity: uploaderRuntimeIdentity,
+    sensitiveEnv,
+  });
+}
+
+function normalizeUploadAuthorization(value, mode) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Cloudflare uploader authorization result is invalid");
+  }
+  for (const key of ["bundleRoot", "uploaderCapsuleRoot"]) {
+    if (
+      typeof value[key] !== "string"
+      || !path.isAbsolute(value[key])
+      || path.resolve(value[key]) !== value[key]
+    ) {
+      throw new Error("Cloudflare uploader authorization path is invalid");
+    }
+  }
+  if (
+    !Number.isSafeInteger(value.producerUid)
+    || value.producerUid < 0
+    || typeof value.truthStatus !== "string"
+    || !value.truthStatus
+    || typeof value.exactProductionInput !== "boolean"
+    || (mode === "live" && (
+      value.exactProductionInput !== true
+      || value.truthStatus
+        !== CLOUDFLARE_PRODUCTION_UPLOADER_AUTHORITY_TRUTH_STATUS
+      || !/^sha256:[0-9a-f]{64}$/.test(
+        String(value.authorityTreeManifestSha256 || ""),
+      )
+      || !/^sha256:[0-9a-f]{64}$/.test(
+        String(value.capsuleManifestSha256 || ""),
+      )
+      || !value.uploaderCapsulePin
+    ))
+    || (mode === "modeled" && value.exactProductionInput !== false)
+  ) {
+    throw new Error("Cloudflare uploader authorization truth boundary is invalid");
+  }
+  return Object.freeze({ ...value });
+}
+
+function sameUploadAuthorization(left, right) {
+  const fields = [
+    "authorityTreeManifestSha256",
+    "bundleRoot",
+    "capsuleManifestSha256",
+    "exactProductionInput",
+    "producerUid",
+    "truthStatus",
+    "uploaderCapsuleRoot",
+  ];
+  return fields.every((field) => left[field] === right[field])
+    && JSON.stringify(left.uploaderCapsulePin)
+      === JSON.stringify(right.uploaderCapsulePin)
+    && JSON.stringify(left.uploaderRuntimeIdentity)
+      === JSON.stringify(right.uploaderRuntimeIdentity);
 }
 
 export const __test = Object.freeze({
@@ -355,8 +514,11 @@ export const __test = Object.freeze({
   RELEASE_GIT_ENV,
   RELEASE_GIT_PATH,
   defaultCreateBuildHome,
+  defaultAuthorizeUpload,
   defaultRemoveBuildHome,
   defaultWrangler,
+  MODELED_UPLOAD_TRUTH_STATUS,
+  normalizeUploadAuthorization,
   assertPinnedReleaseRuntime,
   normalizePinnedReleaseRuntimeProof,
 });
@@ -396,6 +558,8 @@ export async function runCloudflareDeployment({
   createUploadHome = defaultCreateBuildHome,
   removeUploadHome = defaultRemoveBuildHome,
   assertReleaseRuntime = assertPinnedReleaseRuntime,
+  authorizeUpload = defaultAuthorizeUpload,
+  createWranglerEnvironment = cloudflareScopedPagesWranglerEnvironment,
 } = {}) {
   // Pin the interpreter before the first environment projection, AST closure
   // parse, or semantic authority call. A later pin cannot authenticate code
@@ -685,9 +849,9 @@ export async function runCloudflareDeployment({
         );
       }
 
-      // Credentials enter only a third workspace. Neither the check tree nor
-      // the artifact-build tree can become Wrangler's executable dependency
-      // graph, and all three npm-ci projections must be byte-identical.
+      // Credentials enter only an isolated third HOME. A modeled preview uses
+      // a third byte-identical npm projection; a live release instead requires
+      // a minimal, frozen Wrangler capsule owned by a different OS principal.
       const uploadHome = await createUploadHome();
       try {
         if (new Set([verificationHome, buildHome, uploadHome]).size !== 3) {
@@ -695,42 +859,54 @@ export async function runCloudflareDeployment({
             "Cloudflare verification, artifact-build, and Wrangler HOMEs must be distinct",
           );
         }
-        const uploadEnvironment = cloudflareBuildEnvironment({}, buildHostEnv, uploadHome);
-        reverifyReleaseRuntime("before the isolated Wrangler workspace projection");
-        const uploadWorkspace = await createBuildWorkspace({
-          repositoryRoot: rootDir,
-          buildRoot: uploadHome,
-          ...buildSource,
-          expectedSourceSha256: baseline.sourceSha256,
-          expectedUploadControlManifestSha256:
-            baseline.uploadControlManifestSha256,
-          expectedExternalBuildClosure: baseline.externalBuildClosure,
-        });
-        const uploadSandbox = await createBuildSandbox({ buildRoot: uploadHome });
-        await assertBuildSandboxIsolation({
-          buildRoot: uploadHome,
-          profile: uploadSandbox.profile,
-          env: uploadEnvironment,
-        });
-        reverifyReleaseRuntime("before the isolated Wrangler install");
-        await installBuildDependencies({
-          sandbox: uploadSandbox,
-          webDir: uploadWorkspace.webDir,
-          env: uploadEnvironment,
-        });
-        assertSameInstalledDependencyProof(
-          installedDependencyProof,
-          await projectInstalledDependencyTree(uploadWorkspace.webDir),
-          "before Wrangler invocation",
-        );
-        await assertBuildWorkspaceIntegrity({
-          workspace: uploadWorkspace,
-          ...buildSource,
-          expectedSourceSha256: baseline.sourceSha256,
-          expectedUploadControlManifestSha256:
-            baseline.uploadControlManifestSha256,
-          expectedExternalBuildClosure: baseline.externalBuildClosure,
-        });
+        let uploadWorkspace;
+        if (policy.mode === "modeled") {
+          const uploadEnvironment = cloudflareBuildEnvironment(
+            {},
+            buildHostEnv,
+            uploadHome,
+          );
+          reverifyReleaseRuntime("before the isolated Wrangler workspace projection");
+          uploadWorkspace = await createBuildWorkspace({
+            repositoryRoot: rootDir,
+            buildRoot: uploadHome,
+            ...buildSource,
+            expectedSourceSha256: baseline.sourceSha256,
+            expectedUploadControlManifestSha256:
+              baseline.uploadControlManifestSha256,
+            expectedExternalBuildClosure: baseline.externalBuildClosure,
+          });
+          const uploadSandbox = await createBuildSandbox({ buildRoot: uploadHome });
+          await assertBuildSandboxIsolation({
+            buildRoot: uploadHome,
+            profile: uploadSandbox.profile,
+            env: uploadEnvironment,
+          });
+          reverifyReleaseRuntime("before the isolated modeled Wrangler install");
+          await installBuildDependencies({
+            sandbox: uploadSandbox,
+            webDir: uploadWorkspace.webDir,
+            env: uploadEnvironment,
+          });
+          assertSameInstalledDependencyProof(
+            installedDependencyProof,
+            await projectInstalledDependencyTree(uploadWorkspace.webDir),
+            "before Wrangler invocation",
+          );
+          await assertBuildWorkspaceIntegrity({
+            workspace: uploadWorkspace,
+            ...buildSource,
+            expectedSourceSha256: baseline.sourceSha256,
+            expectedUploadControlManifestSha256:
+              baseline.uploadControlManifestSha256,
+            expectedExternalBuildClosure: baseline.externalBuildClosure,
+          });
+        } else {
+          // The live credential HOME remains an empty private runtime home.
+          // Its only executable dependency graph comes from the separately
+          // owned, frozen, minimal Wrangler capsule authorized below.
+          uploadWorkspace = Object.freeze({ webDir: uploadHome });
+        }
         assertCloudflareControlEnvironment(controlEnv);
 
         const beforeUpload = await snapshotDeploymentInputs();
@@ -750,8 +926,32 @@ export async function runCloudflareDeployment({
           );
         }
 
+        const uploaderRuntimeIdentity = cloudflareUploaderRuntimeIdentity({
+          nodeVersion: releaseRuntimeProof.nodeVersion,
+          npmVersion: releaseRuntimeProof.npmVersion,
+          wranglerVersion: PINNED_WRANGLER_RUNTIME.version,
+        });
+        const uploadAuthorizationRequest = Object.freeze({
+          auditBuild,
+          auditStage,
+          controlEnv,
+          env,
+          expectedBundleAudit: stagedBundleAudit,
+          expectedDistAudit: stagedAudit,
+          policy,
+          privateReleaseAudit: baselinePrivateReleaseAudit,
+          sensitiveEnv: auditSensitiveEnv,
+          stageDir,
+          uploadWorkspace,
+          uploaderRuntimeIdentity,
+        });
+        const uploadAuthorization = normalizeUploadAuthorization(
+          await authorizeUpload(uploadAuthorizationRequest),
+          policy.mode,
+        );
+
         const uploadDistAudit = await auditBuild({
-          distDir: path.join(stageDir, "dist"),
+          distDir: path.join(uploadAuthorization.bundleRoot, "dist"),
           env,
           mode: policy.mode,
           releaseSha,
@@ -764,7 +964,7 @@ export async function runCloudflareDeployment({
           );
         }
         const uploadBundleAudit = await auditStage({
-          stageDir,
+          stageDir: uploadAuthorization.bundleRoot,
           distAudit: uploadDistAudit,
           mode: policy.mode,
           sensitiveEnv: auditSensitiveEnv,
@@ -783,9 +983,20 @@ export async function runCloudflareDeployment({
           );
         }
 
+        const finalUploadAuthorization = normalizeUploadAuthorization(
+          await authorizeUpload(uploadAuthorizationRequest),
+          policy.mode,
+        );
+        if (!sameUploadAuthorization(uploadAuthorization, finalUploadAuthorization)) {
+          throw new Error(
+            "Cloudflare uploader authority changed before invocation; upload was not attempted",
+          );
+        }
+
         // This is deliberately adjacent to the credential-bearing subprocess.
         assertCloudflareControlEnvironment(controlEnv);
         reverifyReleaseRuntime("before Wrangler invocation");
+        const wranglerEnvironment = createWranglerEnvironment(controlEnv, uploadHome);
 
         output(`cloudflare_release_mode=${policy.mode}`);
         output(`cloudflare_build_source_kind=${buildSource.sourceKind}`);
@@ -808,9 +1019,31 @@ export async function runCloudflareDeployment({
         output(
           `cloudflare_staged_bundle_manifest_sha256=${stagedBundleAudit.bundleManifestSha256}`,
         );
-        await invokeWrangler(policy.args, stageDir, Object.freeze({
-          webDir: uploadWorkspace.webDir,
-        }));
+        output(`cloudflare_upload_input_truth_status=${uploadAuthorization.truthStatus}`);
+        if (uploadAuthorization.exactProductionInput) {
+          output(
+            `cloudflare_upload_authority_tree_sha256=${uploadAuthorization.authorityTreeManifestSha256}`,
+          );
+          output(
+            `cloudflare_uploader_capsule_manifest_sha256=${uploadAuthorization.capsuleManifestSha256}`,
+          );
+        }
+        await invokeWrangler(
+          policy.args,
+          uploadAuthorization.bundleRoot,
+          Object.freeze({
+            bundleRoot: uploadAuthorization.bundleRoot,
+            controlEnv,
+            exactProductionInput: uploadAuthorization.exactProductionInput,
+            producerUid: uploadAuthorization.producerUid,
+            truthStatus: uploadAuthorization.truthStatus,
+            uploaderCapsulePin: uploadAuthorization.uploaderCapsulePin,
+            uploaderRuntimeIdentity: uploadAuthorization.uploaderRuntimeIdentity,
+            webDir: uploadAuthorization.uploaderCapsuleRoot,
+            wranglerEnvironment,
+            wranglerHome: uploadHome,
+          }),
+        );
         return Object.freeze({
           policy,
           buildSource,
@@ -818,6 +1051,14 @@ export async function runCloudflareDeployment({
           stagedBundleAudit,
           releaseRuntimeProof,
           installedDependencyProof,
+          uploadAuthorization: Object.freeze({
+            authorityTreeManifestSha256:
+              uploadAuthorization.authorityTreeManifestSha256,
+            bundleRoot: uploadAuthorization.bundleRoot,
+            capsuleManifestSha256: uploadAuthorization.capsuleManifestSha256,
+            exactProductionInput: uploadAuthorization.exactProductionInput,
+            truthStatus: uploadAuthorization.truthStatus,
+          }),
         });
       } finally {
         await removeUploadHome(uploadHome);

@@ -9,6 +9,7 @@ import {
   CLOUDFLARE_PRODUCTION_BRANCH,
   cloudflareBuildEnvironment,
   cloudflareDeploymentPolicy,
+  cloudflareScopedPagesWranglerEnvironment,
   cloudflareWranglerEnvironment,
   prepareCloudflareDeployment,
 } from "./deploy-cloudflare-core.mjs";
@@ -362,7 +363,6 @@ test("Wrangler receives only Cloudflare auth and a minimal execution environment
     VITE_RELEASE_SHA: SHA,
   });
   assert.deepEqual(child, {
-    HOME: "/Users/release",
     TMPDIR: "/private/tmp/release",
     LANG: "C.UTF-8",
     CLOUDFLARE_API_TOKEN: "cloudflare-token",
@@ -373,7 +373,49 @@ test("Wrangler receives only Cloudflare auth and a minimal execution environment
     WRANGLER_LOG_SANITIZE: "true",
     WRANGLER_WRITE_LOGS: "false",
   });
+  assert.equal("HOME" in child, false);
   assert.equal(Object.isFrozen(child), true);
+});
+
+test("production Wrangler receives a scoped token through an isolated empty HOME only", () => {
+  const token = "t".repeat(40);
+  const child = cloudflareScopedPagesWranglerEnvironment({
+    HOME: "/Users/operator-with-oauth",
+    TMPDIR: "/private/tmp/operator",
+    CLOUDFLARE_API_TOKEN: token,
+    CLOUDFLARE_PRODUCTION_UPLOAD_AUTHORITY_ROOT: "/immutable/release",
+    GITHUB_TOKEN: "must-not-reach-wrangler",
+    PHALA_CLOUD_API_KEY: "must-not-reach-wrangler",
+  }, "/private/var/empty/dnai-cloudflare-uploader");
+  assert.deepEqual(child, {
+    CLOUDFLARE_API_TOKEN: token,
+    PATH: __test.RELEASE_CHILD_PATH,
+    CLOUDFLARE_ACCOUNT_ID,
+    WRANGLER_SEND_METRICS: "false",
+    WRANGLER_SEND_ERROR_REPORTS: "false",
+    WRANGLER_LOG_SANITIZE: "true",
+    WRANGLER_WRITE_LOGS: "false",
+    HOME: "/private/var/empty/dnai-cloudflare-uploader",
+    TMPDIR: "/private/var/empty/dnai-cloudflare-uploader/tmp",
+    XDG_CACHE_HOME: "/private/var/empty/dnai-cloudflare-uploader/.cache",
+    XDG_CONFIG_HOME: "/private/var/empty/dnai-cloudflare-uploader/.config",
+    XDG_DATA_HOME: "/private/var/empty/dnai-cloudflare-uploader/.local/share",
+    LANG: "C",
+    LC_ALL: "C",
+    TZ: "UTC",
+    CI: "true",
+    NO_COLOR: "1",
+    TERM: "dumb",
+  });
+  assert.equal(child.HOME.includes("operator-with-oauth"), false);
+  assert.equal("CLOUDFLARE_PRODUCTION_UPLOAD_AUTHORITY_ROOT" in child, false);
+  assert.equal("GITHUB_TOKEN" in child, false);
+  assert.equal("PHALA_CLOUD_API_KEY" in child, false);
+  assert.equal(Object.isFrozen(child), true);
+  assert.throws(
+    () => cloudflareScopedPagesWranglerEnvironment({}, "/private/var/empty/uploader"),
+    /scoped CLOUDFLARE_API_TOKEN/,
+  );
 });
 
 test("fresh frontend builds receive only public release values and a minimal host environment", () => {
@@ -408,6 +450,9 @@ test("fresh frontend builds receive only public release values and a minimal hos
     NPM_CONFIG_AUDIT: "false",
     NPM_CONFIG_CACHE: "/private/tmp/dnai-isolated-home/.npm-cache",
     NPM_CONFIG_FUND: "false",
+    NPM_CONFIG_GLOBALCONFIG: "/private/tmp/dnai-isolated-home/.npmrc-global",
+    NPM_CONFIG_NODE_OPTIONS: "",
+    NPM_CONFIG_SCRIPT_SHELL: "/bin/sh",
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
     NPM_CONFIG_USERCONFIG: "/private/tmp/dnai-isolated-home/.npmrc",
   });

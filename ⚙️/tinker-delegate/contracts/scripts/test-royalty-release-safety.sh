@@ -17,6 +17,10 @@ FINALIZED_HISTORY_COLLECTOR_TEST="$ROOT_DIR/scripts/royalty-release-finalized-hi
 H_CLI="$ROOT_DIR/scripts/royalty-release-history-receipt.mjs"
 H_CLI_TEST="$ROOT_DIR/scripts/royalty-release-history-receipt.test.mjs"
 RUNBOOK="$SCRIPT_DIR/../../docs/DEPLOYMENT-RUNBOOK.md"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 for path in \
   "$HELPER" \
@@ -42,6 +46,7 @@ done
 bash -n "$HELPER"
 bash -n "$GUARD"
 bash -n "$INITIALIZER"
+assert_keystore_wrapper_environment_safety "$HELPER" BROADCAST
 node --check "$FINALIZED_HISTORY_COLLECTOR"
 node --check "$H_CLI"
 node --test "$LEDGER_BINDING_TEST"
@@ -145,12 +150,12 @@ if grep -Eq -- '--resume([[:space:]]|$)' "$HELPER" "$RUNBOOK"; then
 fi
 
 for required in \
-  'BROADCAST="${BROADCAST:-false}"' \
+  '. /dev/fd/9' \
+  'dnai_load_keystore_deployment_dotenv "$ROOT_DIR/.env"' \
+  'dnai_finalize_keystore_deployment_environment BROADCAST' \
   'ROYALTY_RELEASE_OPERATION="${ROYALTY_RELEASE_OPERATION:-execute}"' \
   'ROYALTY_RELEASE_GAS_ESTIMATE_MULTIPLIER=130' \
   'ROYALTY_RELEASE_BALANCE_SAFETY_MULTIPLIER=2' \
-  'for raw_key_name in' \
-  'fail "$raw_key_name is forbidden for Royalty release; use only the encrypted Foundry account dev."' \
   '--account dev' \
   'FOUNDRY_KEYSTORE_ACCOUNT' \
   'node "$PHASE_PLAN" verify' \
@@ -208,7 +213,7 @@ for required in \
   fi
 done
 
-env_load_line="$(grep -n -m1 '^if \[ -f "\$ROOT_DIR/\.env" \]; then' "$HELPER" | cut -d: -f1)"
+env_load_line="$(grep -n -m1 '^dnai_load_keystore_deployment_dotenv "\$ROOT_DIR/\.env"$' "$HELPER" | cut -d: -f1)"
 path_resolve_line="$(grep -n -m1 '^operator_policy_resolve_release_ceremony_paths$' "$HELPER" | cut -d: -f1)"
 verify_line="$(grep -n -m1 '^if ! node "\$PHASE_PLAN" verify' "$HELPER" | cut -d: -f1)"
 guard_line="$(grep -n -m1 '^operator_policy_require_fresh_release_ledger$' "$HELPER" | cut -d: -f1)"

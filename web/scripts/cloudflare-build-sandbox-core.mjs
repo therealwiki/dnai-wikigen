@@ -46,6 +46,7 @@ const WEB_TOP_LEVEL_EXCLUSIONS = new Set([
   "node_modules",
 ]);
 const GENERATED_ENV_PATH = /(?:^|\/)\.env(?:\.|$)/;
+const PROJECT_NPM_CONFIG_PATH = /(?:^|\/)\.npmrc$/;
 const MAX_DEPENDENCY_LOCK_BYTES = 4 * 1024 * 1024;
 const SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
 
@@ -621,6 +622,17 @@ export async function assertModeledCloudflareWorkingTreeHasNoIgnoredBuildSource(
   if (canonicalRepository !== repositoryRoot || !path.isAbsolute(repositoryRoot)) {
     throw new Error("modeled Cloudflare source repository root is not canonical");
   }
+  let projectNpmConfig;
+  try {
+    projectNpmConfig = await lstat(path.join(repositoryRoot, "web", ".npmrc"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error("modeled Cloudflare project npm configuration could not be rejected");
+    }
+  }
+  if (projectNpmConfig) {
+    throw new Error("Cloudflare build refuses a project-local npm configuration");
+  }
   let listing;
   try {
     listing = gitBuffer(repositoryRoot, [
@@ -777,6 +789,9 @@ export async function materializeImmutableCloudflareGitSource({
     if (inWeb) {
       webFileCount += 1;
       const webRelative = entry.relative.slice("web/".length);
+      if (PROJECT_NPM_CONFIG_PATH.test(webRelative)) {
+        throw new Error("Cloudflare build refuses a project-local npm configuration");
+      }
       if (
         WEB_TOP_LEVEL_EXCLUSIONS.has(webRelative.split("/", 1)[0])
         || GENERATED_ENV_PATH.test(webRelative)
@@ -918,10 +933,13 @@ export async function createIsolatedCloudflareBuildWorkspace({
         path.join(workspaceRoot, "web"),
         {
           counters,
-          exclude: (relative) => (
-            WEB_TOP_LEVEL_EXCLUSIONS.has(relative.split("/", 1)[0])
-            || GENERATED_ENV_PATH.test(relative)
-          ),
+          exclude: (relative) => {
+            if (PROJECT_NPM_CONFIG_PATH.test(relative)) {
+              throw new Error("Cloudflare build refuses a project-local npm configuration");
+            }
+            return WEB_TOP_LEVEL_EXCLUSIONS.has(relative.split("/", 1)[0])
+              || GENERATED_ENV_PATH.test(relative);
+          },
         },
       );
       sourceProvenance = Object.freeze({
@@ -1120,7 +1138,6 @@ export function installCloudflareBuildDependencies({
 } = {}) {
   const installEnv = {
     ...env,
-    DNAI_BUILD_SANDBOX_ACTIVE: "true",
     NPM_CONFIG_CACHE: sandbox.npmCacheRoot,
     NPM_CONFIG_LOGS_DIR: path.join(env.HOME, "npm-logs"),
   };
@@ -1146,13 +1163,13 @@ export function runCloudflareBuildNpmScript({
   env,
   script,
 } = {}) {
-  if (!new Set(["check", "build"]).has(script)) {
+  if (!new Set(["check:portable", "build"]).has(script)) {
     throw new Error("Cloudflare sandbox refuses an unreviewed npm script");
   }
   return sandboxExec({
     profile: sandbox.profile,
     cwd: webDir,
-    env: { ...env, DNAI_BUILD_SANDBOX_ACTIVE: "true" },
+    env,
     executable: "npm",
     args: ["run", script],
   });
@@ -1161,6 +1178,7 @@ export function runCloudflareBuildNpmScript({
 export const __test = Object.freeze({
   CLOUDFLARE_INSTALLED_DEPENDENCY_TREE_DOMAIN,
   GENERATED_ENV_PATH,
+  PROJECT_NPM_CONFIG_PATH,
   GIT_ENVIRONMENT,
   MAX_DEPENDENCY_LOCK_BYTES,
   WEB_TOP_LEVEL_EXCLUSIONS,

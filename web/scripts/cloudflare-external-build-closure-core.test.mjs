@@ -235,7 +235,24 @@ const MODULE_SOURCES = Object.freeze({
     'import "node:crypto";',
     'import { launch } from "./cvm-launch-intent-core.mjs";',
     'import { publicHttpsUrl } from "./canonical-public-https-url-core.mjs";',
-    "export const targetAuthority = launch && publicHttpsUrl;",
+    'import { PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY } from "./phala-sdk-runtime-capsule.mjs";',
+    "export const targetAuthority = launch && publicHttpsUrl && PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY;",
+    "",
+  ].join("\n"),
+  "scripts/phala-sdk-runtime-capsule.mjs": [
+    'import "node:crypto";',
+    'import "node:fs";',
+    'import "node:path";',
+    'import "node:url";',
+    'new URL("../deployments/phala-sdk-runtime-capsule-authority.json", import.meta.url);',
+    'new URL("../deployments/phala-sdk-upstream-registry-evidence.json", import.meta.url);',
+    'new URL("./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs", import.meta.url);',
+    'new URL("./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt", import.meta.url);',
+    'new URL("./vendor/npm/phala-cloud-0.2.10.tgz", import.meta.url);',
+    'new URL("./vendor/npm/phala-dstack-sdk-0.5.8.tgz", import.meta.url);',
+    'const dataUrl = "data:text/javascript,export default true";',
+    "export const capsuleModule = import(dataUrl);",
+    "export const PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY = true;",
     "",
   ].join("\n"),
   "scripts/phala-seven-cvm-historical-evidence-core.mjs": [
@@ -469,9 +486,15 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     'new URL("./build-security-headers.mjs", import.meta.url);\n',
   "web/scripts/cloudflare-build-sandbox-core.test.mjs":
     'new URL("./cloudflare-build-sandbox-core.test.mjs", import.meta.url);\n',
+  "web/scripts/cloudflare-production-uploader-authority-core.test.mjs": [
+    'new URL("../../deployments/cloudflare-production-uploader-authority.schema.json", import.meta.url);',
+    'new URL("../../deployments/cloudflare-production-uploader-authority.template.json", import.meta.url);',
+    "",
+  ].join("\n"),
   "web/scripts/deploy-cloudflare.mjs":
     'new URL("./deploy-cloudflare.mjs", import.meta.url);\n',
   "web/scripts/deploy-cloudflare-runner.test.mjs": [
+    'new URL("..", import.meta.url);',
     'new URL("../node_modules/wrangler/wrangler-dist/cli.js", import.meta.url);',
     'new URL("../package-lock.json", import.meta.url);',
     'new URL("../package.json", import.meta.url);',
@@ -550,8 +573,19 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
   ].join("\n"),
   "web/scripts/pages-apex-redirect.test.mjs":
     'new URL("./pages-apex-redirect.test.mjs", import.meta.url);\n',
+  "web/scripts/portable-ci-test-split.test.mjs":
+    'import "node:child_process";\n',
   "web/scripts/security-headers-core.test.mjs":
     'new URL("./security-headers-core.test.mjs", import.meta.url);\n',
+  "web/scripts/test-harness/portable-web-test-manifest.mjs":
+    'new URL("../..", import.meta.url);\n',
+  "web/scripts/test-harness/portable-web-test-profile.mjs": [
+    'new URL("./portable-web-test-profile.mjs", import.meta.url);',
+    "process.execArgv;",
+    "",
+  ].join("\n"),
+  "web/scripts/test-harness/run-portable-web-tests.mjs":
+    'import "node:child_process";\n',
 });
 
 const WEB_STATIC_MODULE_SOURCES = Object.freeze({
@@ -738,10 +772,26 @@ const WEB_AUXILIARY_SOURCES = Object.freeze({
 const RESOURCE_BYTES = Object.freeze({
   ".gitignore": "node_modules/\ndist/\n",
   "ARCHITECTURE.md": "# Architecture\nBound fixture.\n",
+  "deployments/cloudflare-production-uploader-authority.schema.json":
+    '{"fixture":"uploader authority schema"}\n',
+  "deployments/cloudflare-production-uploader-authority.template.json":
+    '{"fixture":"uploader authority template"}\n',
+  "deployments/phala-sdk-runtime-capsule-authority.json":
+    '{"fixture":"capsule authority"}\n',
+  "deployments/phala-sdk-upstream-registry-evidence.json":
+    '{"fixture":"registry evidence"}\n',
   "docs/compute-console-api.md": "# Compute Console API\nBound fixture.\n",
   "PROJECT.md": "# Project\nBound fixture.\n",
   "README.md": "# Readme\nBound fixture.\n",
   "scripts/phala-seven-cvm-dcap-verify.py": "# pinned verifier fixture\n",
+  "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs":
+    "export const fixtureCapsule = true;\n",
+  "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt":
+    "Fixture capsule legal notice.\n",
+  "scripts/vendor/npm/phala-cloud-0.2.10.tgz":
+    "fixture cloud source tarball bytes\n",
+  "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz":
+    "fixture dstack source tarball bytes\n",
   "outputs/wikigen-pitch-assets/attested-network.png":
     "fixture attested-network PNG authority bytes\n",
   "outputs/wikigen-pitch-assets/private-reward-oracle.png":
@@ -819,11 +869,11 @@ test("external closure is exact, typed, canonical, and domain separated", async 
     // checked-in source projection KAT at the end of this file.
     assert.equal(
       closure.aggregate_sha256,
-      "sha256:ddb8aae1a0e57dd11d69982018ab5d686aa6f637edee38ab788b8cae42e4ecb8",
+      "sha256:7346251b7d92fe22f93a14272a4edfebfea14df77f2a5a58e8ccc6951d610d5b",
     );
     assert.equal(
       cloudflareExternalBuildClosureSha256(closure),
-      "sha256:93a8c8d346022c897f3293a024347fa7e7831eb7e7a1d0ec7f70b0973e079ad9",
+      "sha256:e6add5fd9e613e9dbd911d51f84e329df1b22b487b8515ee2bc5302c025e6050",
     );
   });
 });
@@ -907,8 +957,12 @@ test("jq, content, mode, and aggregate substitutions cannot preserve authority",
     const baseline = await projectCloudflareExternalBuildClosure(root);
     const target = path.join(root, "README.md");
     await chmod(target, 0o600);
-    const modeChanged = await projectCloudflareExternalBuildClosure(root);
-    assert.notEqual(modeChanged.aggregate_sha256, baseline.aggregate_sha256);
+    await assert.rejects(
+      projectCloudflareExternalBuildClosure(root),
+      /owner-controlled/,
+    );
+    await chmod(target, 0o644);
+    assert.deepEqual(await projectCloudflareExternalBuildClosure(root), baseline);
     await chmod(target, 0o664);
     await assert.rejects(
       projectCloudflareExternalBuildClosure(root),
@@ -1943,15 +1997,15 @@ test("TypeScript parser pin is byte-exact and projected fixtures need no node_mo
 test("real checked-in external bytes match the final release projection KAT", async () => {
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
-  assert.equal(closure.entrypoints.length, 24);
-  assert.equal(closure.files.length, 67);
+  assert.equal(closure.entrypoints.length, 32);
+  assert.equal(closure.files.length, 76);
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:f93801e84c9f0be119a80ef1269b38b5897cc0e1ee7afafbc4926d89a3187c0b",
+    "sha256:17e76f66cddc8fc1627d435c1b992bfc746a0eff605673a0b8de31a20642784d",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:5900256a93f17b05aa86e6ae824bd4e575771b6fe51330a538fc024a16ca6aa2",
+    "sha256:4be516bd702f970308cf758d2f2feb7487f199f6be9821943e72910e1328d163",
   );
   assert.deepEqual(closureTest.MODULE_ENTRYPOINT_PATHS, [
     "scripts/canonical-authority-graph.mjs",
@@ -2002,6 +2056,7 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/phala-production-posture-core.mjs",
     "scripts/phala-production-posture-receipt.mjs",
     "scripts/phala-production-target-authority.mjs",
+    "scripts/phala-sdk-runtime-capsule.mjs",
     "scripts/phala-seven-cvm-historical-evidence-core.mjs",
     "scripts/phala-seven-cvm-historical-release-verification-authority.mjs",
     "scripts/phala-seven-cvm-historical-runtime-binding-core.mjs",
@@ -2059,6 +2114,15 @@ test("real checked-in external bytes match the final release projection KAT", as
       "scripts/release-manifest-sigstore-verifier.mjs",
     ],
   });
+  assert.deepEqual(closureTest.MODULE_RUNTIME_REQUESTS, {
+    "scripts/phala-sdk-runtime-capsule.mjs": [
+      {
+        kind: "dynamic_import",
+        literal: false,
+        specifier: null,
+      },
+    ],
+  });
   assert.deepEqual(closureTest.WEB_MODULE_BARE_PACKAGE_IMPORTS, [
     "@noble/curves/secp256k1",
     "@noble/hashes/sha3",
@@ -2091,8 +2155,10 @@ test("real checked-in external bytes match the final release projection KAT", as
       "web/scripts/cloudflare-external-build-closure-core.mjs",
       "web/scripts/deploy-cloudflare.mjs",
       "web/scripts/frontend-build-candidate-producer-core.mjs",
+      "web/scripts/portable-ci-test-split.test.mjs",
       "web/scripts/release-env-core.test.mjs",
       "web/scripts/release-runtime-pins-core.mjs",
+      "web/scripts/test-harness/run-portable-web-tests.mjs",
     ],
     "node:process": [
       "web/scripts/durable-private-file-core.mjs",
@@ -2143,6 +2209,14 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/phala-seven-cvm-verifier-evidence.mjs": [
       "./phala-seven-cvm-dcap-verify.py",
     ],
+    "scripts/phala-sdk-runtime-capsule.mjs": [
+      "../deployments/phala-sdk-runtime-capsule-authority.json",
+      "../deployments/phala-sdk-upstream-registry-evidence.json",
+      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      "./vendor/npm/phala-cloud-0.2.10.tgz",
+      "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+    ],
     "web/scripts/bootstrap-retirement.test.mjs": [
       "./bootstrap-retirement.test.mjs",
     ],
@@ -2165,8 +2239,13 @@ test("real checked-in external bytes match the final release projection KAT", as
       "../..",
       "../node_modules/typescript/lib/typescript.js",
     ],
+    "web/scripts/cloudflare-production-uploader-authority-core.test.mjs": [
+      "../../deployments/cloudflare-production-uploader-authority.schema.json",
+      "../../deployments/cloudflare-production-uploader-authority.template.json",
+    ],
     "web/scripts/cloudflare-release-artifact-core.test.mjs": ["../.."],
     "web/scripts/deploy-cloudflare-runner.test.mjs": [
+      "..",
       "../node_modules/wrangler/wrangler-dist/cli.js",
       "../package-lock.json",
       "../package.json",
@@ -2204,11 +2283,73 @@ test("real checked-in external bytes match the final release projection KAT", as
     "web/scripts/security-headers-core.test.mjs": [
       "./security-headers-core.test.mjs",
     ],
+    "web/scripts/test-harness/portable-web-test-manifest.mjs": [
+      "../..",
+    ],
+    "web/scripts/test-harness/portable-web-test-profile.mjs": [
+      "./portable-web-test-profile.mjs",
+    ],
   });
   assert.deepEqual(closureTest.WEB_STATIC_MODULE_PATHS, [
     "web/functions/_middleware.js",
   ]);
   assert.deepEqual(closureTest.RESOURCE_CONSUMER_BINDINGS, [
+    {
+      consumer: "web/scripts/cloudflare-production-uploader-authority-core.test.mjs",
+      externalPath: "deployments/cloudflare-production-uploader-authority.schema.json",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "../../deployments/cloudflare-production-uploader-authority.schema.json",
+    },
+    {
+      consumer: "web/scripts/cloudflare-production-uploader-authority-core.test.mjs",
+      externalPath: "deployments/cloudflare-production-uploader-authority.template.json",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "../../deployments/cloudflare-production-uploader-authority.template.json",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "deployments/phala-sdk-runtime-capsule-authority.json",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "../deployments/phala-sdk-runtime-capsule-authority.json",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "deployments/phala-sdk-upstream-registry-evidence.json",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "../deployments/phala-sdk-upstream-registry-evidence.json",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "./vendor/npm/phala-cloud-0.2.10.tgz",
+    },
+    {
+      consumer: "scripts/phala-sdk-runtime-capsule.mjs",
+      externalPath: "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+      query: "",
+      requestKind: "import_meta_url",
+      specifier: "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+    },
     {
       consumer: "scripts/phala-seven-cvm-verifier-evidence.mjs",
       externalPath: "scripts/phala-seven-cvm-dcap-verify.py",
@@ -2266,5 +2407,5 @@ test("real checked-in external bytes match the final release projection KAT", as
       specifier: "../../outputs/wikigen-pitch-assets/private-reward-oracle.png",
     },
   ]);
-  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 9);
+  assert.equal(closureTest.RESOURCE_DEFINITIONS.length, 17);
 });

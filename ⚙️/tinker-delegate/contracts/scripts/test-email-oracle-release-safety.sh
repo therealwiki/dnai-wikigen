@@ -7,6 +7,10 @@ FORGE_SCRIPT="$SCRIPT_DIR/../script/ConfigureEmailOracleRelease.s.sol"
 CONTRACT="$SCRIPT_DIR/../src/EmailOracleAuth.sol"
 POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 MANIFEST_FILTER="$SCRIPT_DIR/update-email-oracle-release-manifest.jq"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 for path in "$HELPER" "$FORGE_SCRIPT" "$CONTRACT" "$MANIFEST_FILTER"; do
   if [ ! -f "$path" ]; then
@@ -17,6 +21,7 @@ done
 
 bash -n "$HELPER"
 bash -n "$POLICY_GUARD"
+assert_keystore_wrapper_environment_safety "$HELPER" BROADCAST
 grep -Fq '. "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"' "$HELPER"
 test "$(grep -Ec '^[[:space:]]*operator_policy_project_and_validate$' "$HELPER")" -eq 1
 policy_line="$(grep -n -m1 '^[[:space:]]*operator_policy_project_and_validate$' "$HELPER" | cut -d: -f1)"

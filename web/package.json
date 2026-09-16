@@ -11,16 +11,21 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run && npm run test:release",
     "test:release": "node --test scripts/*.test.mjs",
+    "test:release:portable": "node scripts/test-harness/run-portable-web-tests.mjs",
+    "test:portable": "vitest run && npm run test:release:portable",
     "release:env": "node scripts/build-release-env.mjs",
-    "check": "npm run typecheck && npm run test && npm run build && npm audit --offline --audit-level=high",
+    "check:portable": "npm run typecheck && npm run test:portable && npm run build",
+    "check": "npm run typecheck && npm run test && npm run build && npm run audit:dependencies",
+    "check:ci": "npm run check:portable && npm run audit:dependencies",
+    "audit:dependencies": "npm ping --registry=https://registry.npmjs.org/ --offline=false --prefer-online --strict-ssl=true && npm audit --registry=https://registry.npmjs.org/ --offline=false --prefer-online --strict-ssl=true --audit-level=moderate",
     "deploy:cloudflare": "node scripts/deploy-cloudflare.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
     "vite": "^8.1.4",
     "vite-plugin-solid": "^2.11.12",
-    "vitest": "^4.1.10",
-    "wrangler": "4.110.0"
+    "vitest": "^4.1.11",
+    "wrangler": "4.131.0"
   },
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
@@ -33,7 +38,6 @@
     "viem": "^2.55.1"
   },
   "overrides": {
-    "axios": "1.18.1",
-    "sharp": "0.35.3"
+    "axios": "1.18.1"
   }
 }

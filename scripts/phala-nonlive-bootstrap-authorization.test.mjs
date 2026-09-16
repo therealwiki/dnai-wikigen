@@ -70,6 +70,7 @@ import {
   PHALA_API_CANDIDATE_VERSIONS,
   PHALA_COMPATIBILITY_RECEIPT_SCHEMA,
   PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
+  PHALA_PROVISION_REQUEST_TARGET_SHA256,
   PHALA_READ_ONLY_COMPATIBILITY_CALLS,
   PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
   canonicalPhalaCompatibilityReceiptText,
@@ -77,8 +78,12 @@ import {
   canonicalPhalaSdkWireTransformStagingReceiptText,
   phalaCompatibilityReceiptDigest,
   phalaProductionTargetAuthorityDigest,
+  phalaProductionTargetReviewInputProjectionDigest,
   phalaSdkWireTransformStagingReceiptDigest,
 } from "./phala-production-target-authority.mjs";
+import {
+  PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
+} from "./phala-sdk-runtime-capsule.mjs";
 import {
   canonicalArtifactSha256,
   canonicalArtifactText,
@@ -185,7 +190,7 @@ function bootstrapAuthority({
       sdkWireTransformStagingReceiptSha256,
     qvl_measurement_policy_set_sha256: sha("d"),
     reviewed_at: "2026-07-21T10:00:00Z",
-    valid_until: "2026-07-21T11:00:00Z",
+    valid_until: "2026-07-21T10:10:00Z",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => ({
       domain,
       descriptor_sha256: sha(String(index + 1)),
@@ -218,20 +223,7 @@ function compatibilityFixture() {
       account_subject_sha256: sha("1"),
       authenticated: true,
     },
-    sdk_identity: {
-      phala_cli_version: "1.1.19",
-      phala_cli_manifest_sha256: sha("2"),
-      phala_cloud_version: "0.2.10",
-      phala_cloud_manifest_sha256: sha("3"),
-      phala_cloud_npm_dist_integrity_sha512:
-        "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
-      phala_cloud_module_sha256: sha("4"),
-      dstack_sdk_version: "0.5.8",
-      dstack_sdk_manifest_sha256: sha("5"),
-      dstack_verify_module_sha256: sha("6"),
-      dstack_compose_hash_module_sha256: sha("7"),
-      dstack_encryption_module_sha256: sha("8"),
-    },
+    sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
     kms: {
       id: "kms-production-1",
       slug: "phala",
@@ -271,7 +263,7 @@ function stagingFixture(compatibilityReceipt) {
   return {
     schema: PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
     truth_status:
-      "authenticated_staging_wire_capture_not_production_cvm_commit_tdx_attestation_or_launch_authority",
+      "authenticated_empty_operator_designated_staging_workspace_wire_capture_not_exclusive_isolation_proof_production_cvm_commit_tdx_attestation_or_launch_authority",
     compatibility_receipt_sha256:
       phalaCompatibilityReceiptDigest(compatibilityReceipt),
     captured_at: "2026-07-21T10:01:00Z",
@@ -285,16 +277,34 @@ function stagingFixture(compatibilityReceipt) {
     sdk_identity: structuredClone(compatibilityReceipt.sdk_identity),
     capture_method:
       "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization",
-    staging_account_isolated: true,
+    target_review_input_sha256: sha("e"),
+    workspace_preflight: {
+      authenticated_committed_cvm_count_before_prepare: 0,
+      page: 1,
+      page_size: 100,
+      pages: 0,
+      items_count: 0,
+      total: 0,
+      response_sha256: sha("e"),
+      operator_asserted_dedicated_workspace: true,
+      exclusive_workspace_control_proven: false,
+    },
     provision_call_count: 7,
     commit_calls: [],
-    cleanup_receipt_sha256: sha("f"),
+    journal_final_sha256: sha("f"),
+    journal_successful_prepare_count: 7,
+    server_cleanup_claimed: false,
+    pending_server_state_status:
+      "seven_prepares_succeeded_uncommitted_operator_reconciliation_required",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => {
       const pre = ((index + 9) % 15 + 1).toString(16);
       const post = (index + 1).toString(16);
       const response = ((index + 7) % 15 + 1).toString(16);
       return {
         domain,
+        http_method: "POST",
+        request_target_sha256: PHALA_PROVISION_REQUEST_TARGET_SHA256,
+        request_semantics_sha256: sha((index + 1).toString(16)),
         pre_transform_request_sha256: sha(pre),
         expected_post_transform_body_sha256: sha(post),
         captured_post_transform_body_sha256: sha(post),
@@ -308,7 +318,7 @@ function stagingFixture(compatibilityReceipt) {
 }
 
 function targetFixture(compatibilityReceipt, stagingReceipt) {
-  return {
+  const target = {
     schema: PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
     truth_status:
       "reviewed_target_authority_not_phala_deployment_attestation_or_execution_receipt",
@@ -318,10 +328,7 @@ function targetFixture(compatibilityReceipt, stagingReceipt) {
     review_evidence_sha256: sha("7"),
     compatibility_receipt_sha256:
       phalaCompatibilityReceiptDigest(compatibilityReceipt),
-    staging_compose_hash_receipt_sha256:
-      phalaSdkWireTransformStagingReceiptDigest(stagingReceipt, {
-        compatibilityReceipt,
-      }),
+    staging_compose_hash_receipt_sha256: sha("b"),
     api: {
       origin: PHALA_CONTROL_PLANE_AUTHORITY.api_origin,
       version: PHALA_CONTROL_PLANE_AUTHORITY.api_version,
@@ -375,6 +382,13 @@ function targetFixture(compatibilityReceipt, stagingReceipt) {
     reviewed_at: "2026-07-21T10:02:00Z",
     expires_at: "2026-07-21T10:10:00Z",
   };
+  stagingReceipt.target_review_input_sha256 =
+    phalaProductionTargetReviewInputProjectionDigest(target);
+  target.staging_compose_hash_receipt_sha256 =
+    phalaSdkWireTransformStagingReceiptDigest(stagingReceipt, {
+      compatibilityReceipt,
+    });
+  return target;
 }
 
 function reviewerFixture() {
@@ -549,7 +563,7 @@ async function signedAuthorization({
   reviewers = reviewerFixture(),
   batchId = BATCH_ID,
   issuedAt = "2026-07-21T10:01:00Z",
-  expiresAt = "2026-07-21T10:11:00Z",
+  expiresAt = "2026-07-21T10:10:00Z",
   signerAccounts = null,
 } = {}) {
   const bootstrapDigest = bootstrapPublicEnvironmentAuthorityDigest(bootstrap);
@@ -626,6 +640,15 @@ function prepareObservations() {
     prepare_response_sha256: sha(String(index + 1)),
   }));
 }
+
+test("bootstrap consumer rejects a canonical validity extension beyond ten minutes", () => {
+  const extended = bootstrapAuthority();
+  extended.valid_until = "2026-07-21T10:10:01Z";
+  assert.throws(
+    () => bootstrapPublicEnvironmentAuthorityDigest(extended),
+    /validity window/,
+  );
+});
 
 test("two transitively pinned signatures authorize one non-live bootstrap batch", async () => {
   const fixture = await signedAuthorization();
@@ -1264,12 +1287,13 @@ test("stable canonical files bind the branded receipt and reject aliases or rewr
   }
   const driftedTarget = { ...structuredClone(target), cvm_launch_intent_sha256: sha("d") };
   const driftedTargetPath = path.join(directory, "target-drifted.json");
+  assert.throws(() => canonicalPhalaProductionTargetAuthorityText(driftedTarget, {
+    compatibilityReceipt: compatibility,
+    sdkWireTransformStagingReceipt: staging,
+  }), /staging-bound review input/);
   fs.writeFileSync(
     driftedTargetPath,
-    canonicalPhalaProductionTargetAuthorityText(driftedTarget, {
-      compatibilityReceipt: compatibility,
-      sdkWireTransformStagingReceipt: staging,
-    }),
+    `${JSON.stringify(driftedTarget, null, 2)}\n`,
     { mode: 0o400 },
   );
   assert.throws(
@@ -1290,7 +1314,7 @@ test("stable canonical files bind the branded receipt and reject aliases or rewr
       expectedStagingReceiptSha256:
         fixture.bootstrap.sdk_wire_transform_staging_receipt_sha256,
     }),
-    /does not equal the signed bootstrap subject/,
+    /staging-bound review input|production target/,
   );
   const mutationCheckpoint = readReverifyAndCheckpointPhalaNonLiveBootstrapAuthorization({
     ...targetAuthorityPaths,

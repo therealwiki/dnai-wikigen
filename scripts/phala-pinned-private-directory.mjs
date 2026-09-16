@@ -252,8 +252,11 @@ if operation == "publish":
     publish_mode = sys.argv[9]
     temporary = name(sys.argv[10])
     fault = sys.argv[11]
+    expected_replace_identity = tuple(sys.argv[12:17])
     if publish_mode not in ("create", "replace"):
         die("fd-relative publish mode is invalid")
+    if any(expected_replace_identity) and (publish_mode != "replace" or not all(expected_replace_identity)):
+        die("fd-relative replacement identity is incomplete or inapplicable")
     if fault not in ("", "partial-write", "complete-write", "file-fsync", "publish", "directory-fsync"):
         die("unknown fd-relative durable-write fault stage")
     data = sys.stdin.buffer.read(maximum + 1)
@@ -264,6 +267,10 @@ if operation == "publish":
         existing, target_before = read_exact(target, mode, maximum, 0)
         if publish_mode == "create":
             die("fd-relative create target already exists")
+        if all(expected_replace_identity):
+            expected_dev, expected_ino, expected_sha, expected_mtime_ns, expected_ctime_ns = expected_replace_identity
+            if (str(target_before.st_dev), str(target_before.st_ino), hashlib.sha256(existing).hexdigest(), str(target_before.st_mtime_ns), str(target_before.st_ctime_ns)) != (expected_dev, expected_ino, expected_sha, expected_mtime_ns, expected_ctime_ns):
+                die("fd-relative replacement target differs from the acquired reservation identity")
     except FileNotFoundError:
         if publish_mode == "replace":
             die("fd-relative replacement target does not exist")
@@ -1429,13 +1436,26 @@ export function publishPhalaPinnedPrivateFile(handle, fileName, bytes, {
   mode = 0o600,
   maximum = MAX_OPERATION_BYTES,
   faultStage = null,
+  expectedExistingIdentity = null,
 } = {}) {
   const input = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
   const temporary = `.${fileName}.${process.pid}.${randomBytes(24).toString("hex")}.tmp`;
+  const expected = expectedExistingIdentity === null
+    ? ["", "", "", "", ""]
+    : (() => {
+      const identity = normalizeExpectedPrivateFileIdentity(expectedExistingIdentity);
+      return [
+        identity.device,
+        identity.inode,
+        identity.sha256.slice("sha256:".length),
+        identity.mtime_ns,
+        identity.ctime_ns,
+      ];
+    })();
   const output = invoke(handle, "publish", fileName, {
     mode,
     maximum,
-    extra: [publishMode, temporary, faultStage ?? ""],
+    extra: [publishMode, temporary, faultStage ?? "", ...expected],
     input,
   });
   return parsePrivateFileIdentity(output, "published fd-relative file");

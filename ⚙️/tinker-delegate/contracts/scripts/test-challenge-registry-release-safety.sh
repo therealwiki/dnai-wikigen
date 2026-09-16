@@ -8,9 +8,14 @@ MANIFEST_FILTER="$SCRIPT_DIR/update-challenge-registry-release-manifest.jq"
 SCRIPT="$SCRIPT_DIR/../script/ConfigureChallengeRegistryRelease.s.sol"
 POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 PROJECTOR="$ROOT_DIR/scripts/challenge-registry-authority-projector.mjs"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 bash -n "$HELPER"
 bash -n "$POLICY_GUARD"
+assert_keystore_wrapper_environment_safety "$HELPER" BROADCAST
 test -s "$MANIFEST_FILTER"
 test -s "$SCRIPT"
 test -s "$PROJECTOR"

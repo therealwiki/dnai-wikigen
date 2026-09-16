@@ -12,6 +12,7 @@ import {
   PHALA_API_CANDIDATE_VERSIONS,
   PHALA_COMPATIBILITY_RECEIPT_SCHEMA,
   PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
+  PHALA_PROVISION_REQUEST_TARGET_SHA256,
   PHALA_READ_ONLY_COMPATIBILITY_CALLS,
   PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
   PHALA_COLLABORATION_LAUNCH_GATE_POLICY,
@@ -26,8 +27,12 @@ import {
   normalizePhalaSdkWireTransformStagingReceipt,
   phalaCompatibilityReceiptDigest,
   phalaProductionTargetAuthorityDigest,
+  phalaProductionTargetReviewInputProjectionDigest,
   phalaSdkWireTransformStagingReceiptDigest,
 } from "./phala-production-target-authority.mjs";
+import {
+  PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
+} from "./phala-sdk-runtime-capsule.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
@@ -53,20 +58,7 @@ function compatibilityFixture() {
       account_subject_sha256: digest("1"),
       authenticated: true,
     },
-    sdk_identity: {
-      phala_cli_version: "1.1.19",
-      phala_cli_manifest_sha256: digest("2"),
-      phala_cloud_version: "0.2.10",
-      phala_cloud_manifest_sha256: digest("3"),
-      phala_cloud_npm_dist_integrity_sha512:
-        "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
-      phala_cloud_module_sha256: digest("4"),
-      dstack_sdk_version: "0.5.8",
-      dstack_sdk_manifest_sha256: digest("5"),
-      dstack_verify_module_sha256: digest("6"),
-      dstack_compose_hash_module_sha256: digest("7"),
-      dstack_encryption_module_sha256: digest("8"),
-    },
+    sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
     kms: {
       id: "kms-production-1",
       slug: "phala",
@@ -102,50 +94,7 @@ function compatibilityFixture() {
   };
 }
 
-function stagingFixture(compatibilityReceipt = compatibilityFixture()) {
-  return {
-    schema: PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
-    truth_status:
-      "authenticated_staging_wire_capture_not_production_cvm_commit_tdx_attestation_or_launch_authority",
-    compatibility_receipt_sha256:
-      phalaCompatibilityReceiptDigest(compatibilityReceipt),
-    captured_at: "2026-07-21T12:01:00Z",
-    expires_at: "2026-07-21T12:20:00Z",
-    api_origin: compatibilityReceipt.api_origin,
-    api_version: compatibilityReceipt.selected_api_version,
-    workspace: {
-      workspace_id: compatibilityReceipt.workspace.workspace_id,
-      account_subject_sha256: compatibilityReceipt.workspace.account_subject_sha256,
-    },
-    sdk_identity: structuredClone(compatibilityReceipt.sdk_identity),
-    capture_method:
-      "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization",
-    staging_account_isolated: true,
-    provision_call_count: 7,
-    commit_calls: [],
-    cleanup_receipt_sha256: digest("f"),
-    domains: CVM_LAUNCH_DOMAINS.map((domain, index) => {
-      const pre = (index + 8).toString(16);
-      const post = (index + 1).toString(16);
-      const response = ((index + 7) % 15 + 1).toString(16);
-      return {
-        domain,
-        pre_transform_request_sha256: digest(pre),
-        expected_post_transform_body_sha256: digest(post),
-        captured_post_transform_body_sha256: digest(post),
-        pre_transform_compose_hash: pre.repeat(64),
-        expected_post_transform_compose_hash: post.repeat(64),
-        prepare_server_compose_hash: post.repeat(64),
-        prepare_response_sha256: digest(response),
-      };
-    }),
-  };
-}
-
-function targetFixture(
-  compatibilityReceipt = compatibilityFixture(),
-  stagingReceipt = stagingFixture(compatibilityReceipt),
-) {
+function targetReviewProjectionFixture(compatibilityReceipt = compatibilityFixture()) {
   const resourceTargets = Object.fromEntries(CVM_LAUNCH_DOMAINS.map((domain) => [
     domain,
     {
@@ -171,19 +120,12 @@ function targetFixture(
     },
   ]));
   return {
-    schema: PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
-    truth_status:
-      "reviewed_target_authority_not_phala_deployment_attestation_or_execution_receipt",
     release_sha: "a".repeat(40),
     cvm_launch_intent_sha256: digest("5"),
     review_envelope_sha256: digest("6"),
     review_evidence_sha256: digest("7"),
     compatibility_receipt_sha256:
       phalaCompatibilityReceiptDigest(compatibilityReceipt),
-    staging_compose_hash_receipt_sha256:
-      phalaSdkWireTransformStagingReceiptDigest(stagingReceipt, {
-        compatibilityReceipt,
-      }),
     api: {
       origin: PHALA_CONTROL_PLANE_AUTHORITY.api_origin,
       version: PHALA_CONTROL_PLANE_AUTHORITY.api_version,
@@ -212,6 +154,84 @@ function targetFixture(
     os_image: { ...PHALA_OS_IMAGE_CATALOG_ENTRY },
     resource_targets: resourceTargets,
     app_compose_profiles: appComposeProfiles,
+  };
+}
+
+function stagingFixture(compatibilityReceipt = compatibilityFixture()) {
+  return {
+    schema: PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
+    truth_status:
+      "authenticated_empty_operator_designated_staging_workspace_wire_capture_not_exclusive_isolation_proof_production_cvm_commit_tdx_attestation_or_launch_authority",
+    compatibility_receipt_sha256:
+      phalaCompatibilityReceiptDigest(compatibilityReceipt),
+    captured_at: "2026-07-21T12:01:00Z",
+    expires_at: "2026-07-21T12:11:00Z",
+    api_origin: compatibilityReceipt.api_origin,
+    api_version: compatibilityReceipt.selected_api_version,
+    workspace: {
+      workspace_id: compatibilityReceipt.workspace.workspace_id,
+      account_subject_sha256: compatibilityReceipt.workspace.account_subject_sha256,
+    },
+    sdk_identity: structuredClone(compatibilityReceipt.sdk_identity),
+    capture_method:
+      "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization",
+    target_review_input_sha256:
+      phalaProductionTargetReviewInputProjectionDigest(
+        targetReviewProjectionFixture(compatibilityReceipt),
+      ),
+    workspace_preflight: {
+      authenticated_committed_cvm_count_before_prepare: 0,
+      page: 1,
+      page_size: 100,
+      pages: 0,
+      items_count: 0,
+      total: 0,
+      response_sha256: digest("e"),
+      operator_asserted_dedicated_workspace: true,
+      exclusive_workspace_control_proven: false,
+    },
+    provision_call_count: 7,
+    commit_calls: [],
+    journal_final_sha256: digest("f"),
+    journal_successful_prepare_count: 7,
+    server_cleanup_claimed: false,
+    pending_server_state_status:
+      "seven_prepares_succeeded_uncommitted_operator_reconciliation_required",
+    domains: CVM_LAUNCH_DOMAINS.map((domain, index) => {
+      const pre = (index + 8).toString(16);
+      const post = (index + 1).toString(16);
+      const response = ((index + 7) % 15 + 1).toString(16);
+      return {
+        domain,
+        http_method: "POST",
+        request_target_sha256: PHALA_PROVISION_REQUEST_TARGET_SHA256,
+        request_semantics_sha256: digest((index + 1).toString(16)),
+        pre_transform_request_sha256: digest(pre),
+        expected_post_transform_body_sha256: digest(post),
+        captured_post_transform_body_sha256: digest(post),
+        pre_transform_compose_hash: pre.repeat(64),
+        expected_post_transform_compose_hash: post.repeat(64),
+        prepare_server_compose_hash: post.repeat(64),
+        prepare_response_sha256: digest(response),
+      };
+    }),
+  };
+}
+
+function targetFixture(
+  compatibilityReceipt = compatibilityFixture(),
+  stagingReceipt = stagingFixture(compatibilityReceipt),
+) {
+  const review = targetReviewProjectionFixture(compatibilityReceipt);
+  return {
+    schema: PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
+    truth_status:
+      "reviewed_target_authority_not_phala_deployment_attestation_or_execution_receipt",
+    ...review,
+    staging_compose_hash_receipt_sha256:
+      phalaSdkWireTransformStagingReceiptDigest(stagingReceipt, {
+        compatibilityReceipt,
+      }),
     reviewed_at: "2026-07-21T12:02:00Z",
     expires_at: "2026-07-21T12:10:00Z",
   };
@@ -252,6 +272,13 @@ test("compatibility receipt requires both probes and one reviewed exact version"
     () => normalizePhalaCompatibilityReceipt(hiddenMutation),
     /read-only call boundary/,
   );
+
+  const extended = structuredClone(receipt);
+  extended.expires_at = "2026-07-21T12:30:01Z";
+  assert.throws(
+    () => normalizePhalaCompatibilityReceipt(extended),
+    /thirty-minute bound/,
+  );
 });
 
 test("target authority timestamps require real calendar seconds and accept a leap-day month boundary", () => {
@@ -269,21 +296,27 @@ test("target authority timestamps require real calendar seconds and accept a lea
 
   const compatibility = compatibilityFixture();
   compatibility.checked_at = "2024-02-29T23:58:00Z";
-  compatibility.expires_at = "2024-03-01T00:30:00Z";
+  compatibility.expires_at = "2024-03-01T00:28:00Z";
   const staging = stagingFixture(compatibility);
   staging.captured_at = "2024-02-29T23:59:00Z";
-  staging.expires_at = "2024-03-01T00:20:00Z";
+  staging.expires_at = "2024-03-01T00:09:00Z";
   const target = targetFixture(compatibility, staging);
   target.kms.valid_from = "2024-02-01T00:00:00Z";
   target.kms.valid_until = "2024-04-01T00:00:00Z";
   target.reviewed_at = "2024-02-29T23:59:30Z";
-  target.expires_at = "2024-03-01T00:09:30Z";
+  target.expires_at = "2024-03-01T00:08:30Z";
+  staging.target_review_input_sha256 =
+    phalaProductionTargetReviewInputProjectionDigest(target);
+  target.staging_compose_hash_receipt_sha256 =
+    phalaSdkWireTransformStagingReceiptDigest(staging, {
+      compatibilityReceipt: compatibility,
+    });
   assert.equal(
     normalizePhalaProductionTargetAuthority(target, {
       compatibilityReceipt: compatibility,
       sdkWireTransformStagingReceipt: staging,
     }).expires_at,
-    "2024-03-01T00:09:30Z",
+    "2024-03-01T00:08:30Z",
   );
   assert.equal(assertPhalaTargetFreshForCheckpoint({
     targetAuthority: target,
@@ -294,7 +327,7 @@ test("target authority timestamps require real calendar seconds and accept a lea
   }).checked_at, "2024-03-01T00:00:00Z");
 });
 
-test("staging receipt binds exact SDK transform capture, server hash, cleanup, and zero commits", () => {
+test("staging receipt binds exact SDK transform capture, durable journal, no cleanup, and zero commits", () => {
   const compatibility = compatibilityFixture();
   const receipt = stagingFixture(compatibility);
   const normalized = normalizePhalaSdkWireTransformStagingReceipt(receipt, {
@@ -306,6 +339,14 @@ test("staging receipt binds exact SDK transform capture, server hash, cleanup, a
       compatibilityReceipt: compatibility,
     }),
     /^sha256:[0-9a-f]{64}$/,
+  );
+  const extended = structuredClone(receipt);
+  extended.expires_at = "2026-07-21T12:11:01Z";
+  assert.throws(
+    () => normalizePhalaSdkWireTransformStagingReceipt(extended, {
+      compatibilityReceipt: compatibility,
+    }),
+    /stale against compatibility/,
   );
   assert.equal(normalized.provision_call_count, 7);
   assert.deepEqual(normalized.commit_calls, []);
@@ -377,6 +418,37 @@ test("target authority binds origin, account, KMS signer, OS, quota, resources, 
       compatibilityReceipt: compatibility,
       sdkWireTransformStagingReceipt: staging,
     }),
+  );
+
+  const beforeSignerValidity = structuredClone(target);
+  beforeSignerValidity.kms.valid_from = "2026-07-21T12:03:00Z";
+  staging.target_review_input_sha256 =
+    phalaProductionTargetReviewInputProjectionDigest(beforeSignerValidity);
+  beforeSignerValidity.staging_compose_hash_receipt_sha256 =
+    phalaSdkWireTransformStagingReceiptDigest(staging, {
+      compatibilityReceipt: compatibility,
+    });
+  assert.throws(
+    () => normalizePhalaProductionTargetAuthority(beforeSignerValidity, {
+      compatibilityReceipt: compatibility,
+      sdkWireTransformStagingReceipt: staging,
+    }),
+    /review interval|KMS signer pin/,
+  );
+});
+
+test("staging target-review binding cannot be replayed onto changed target lineage", () => {
+  const compatibility = compatibilityFixture();
+  const staging = stagingFixture(compatibility);
+  const target = targetFixture(compatibility, staging);
+  const changed = structuredClone(target);
+  changed.review_evidence_sha256 = digest("c");
+  assert.throws(
+    () => normalizePhalaProductionTargetAuthority(changed, {
+      compatibilityReceipt: compatibility,
+      sdkWireTransformStagingReceipt: staging,
+    }),
+    /staging-bound review input/,
   );
 });
 

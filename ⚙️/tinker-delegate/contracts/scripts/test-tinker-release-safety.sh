@@ -8,10 +8,15 @@ LEGACY_APPROVAL_HELPER="$SCRIPT_DIR/../../scripts/approve-compose-hash.sh"
 SCRIPT="$SCRIPT_DIR/../script/ConfigureTinkerRelease.s.sol"
 CONTRACT="$SCRIPT_DIR/../src/TinkerAccountEncumbrance.sol"
 POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 bash -n "$HELPER"
 bash -n "$POLICY_GUARD"
 bash -n "$LEGACY_APPROVAL_HELPER"
+assert_keystore_wrapper_environment_safety "$HELPER" BROADCAST
 
 for guard_boundary in \
   'ceremony-authority-projector.mjs' \

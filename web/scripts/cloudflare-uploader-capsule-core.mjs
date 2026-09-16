@@ -270,13 +270,19 @@ function permissionMode(metadata) {
   return Number(metadata.mode & 0o7777n);
 }
 
-function safeOwnedMode(metadata, owner, { directory = false } = {}) {
+function safeOwnedMode(metadata, owner, {
+  delegatedReadOnly = false,
+  directory = false,
+} = {}) {
   const mode = permissionMode(metadata);
   return metadata.uid === owner
     && (mode & 0o7000) === 0
     && (mode & 0o022) === 0
+    && (!delegatedReadOnly || (mode & 0o222) === 0)
     && (mode & 0o400) !== 0
-    && (!directory || (mode & 0o100) !== 0);
+    && (!delegatedReadOnly || (mode & 0o004) !== 0)
+    && (!directory || (mode & 0o100) !== 0)
+    && (!directory || !delegatedReadOnly || (mode & 0o005) === 0o005);
 }
 
 const STABLE_FIELDS = Object.freeze([
@@ -336,13 +342,14 @@ function assertAncestorChainStable(chain) {
 }
 
 function stableRegularFile(filePath, named, owner, limits, hooks, {
+  delegatedReadOnly = false,
   retainBytes = false,
 } = {}) {
   if (
     !named.isFile()
     || named.isSymbolicLink()
     || named.nlink !== 1n
-    || !safeOwnedMode(named, owner)
+    || !safeOwnedMode(named, owner, { delegatedReadOnly })
     || named.size < 0n
     || named.size > BigInt(limits.maxFileBytes)
   ) {
@@ -1265,6 +1272,7 @@ function validateInstalledDependencyTree({
 
 function projectOnce({
   capsuleRoot,
+  delegatedReadOnly = false,
   expectedOwner,
   limits,
   observedRuntimeIdentity,
@@ -1289,8 +1297,11 @@ function projectOnce({
   if (
     !rootMetadata.isDirectory()
     || rootMetadata.isSymbolicLink()
-    || !safeOwnedMode(rootMetadata, owner, { directory: true })
-    || (rootMode & 0o077) !== 0
+    || !safeOwnedMode(rootMetadata, owner, {
+      delegatedReadOnly,
+      directory: true,
+    })
+    || (!delegatedReadOnly && (rootMode & 0o077) !== 0)
   ) {
     throw new Error("Cloudflare uploader capsule root is not a private operator-owned directory");
   }
@@ -1325,7 +1336,10 @@ function projectOnce({
     }
     const mode = permissionMode(named);
     if (named.isDirectory() && !named.isSymbolicLink()) {
-      if (!safeOwnedMode(named, owner, { directory: true })) {
+      if (!safeOwnedMode(named, owner, {
+        delegatedReadOnly,
+        directory: true,
+      })) {
         throw new Error("Cloudflare uploader capsule contains an unsafe directory");
       }
       const rawNames = fs.readdirSync(absolute, { encoding: "buffer" });
@@ -1382,7 +1396,7 @@ function projectOnce({
         owner,
         normalizedLimits,
         hooks,
-        { retainBytes },
+        { delegatedReadOnly, retainBytes },
       );
       const classification = classifyFile(relative, stable.header, mode);
       if (retainBytes) bytesByPath.set(relative, stable.bytes);
@@ -1583,16 +1597,29 @@ function productionProjectionOptions(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Cloudflare uploader capsule projection options are invalid");
   }
-  const allowed = new Set(["capsuleRoot", "expectedOwner", "limits", "runtimeIdentity"]);
+  const allowed = new Set([
+    "capsuleRoot",
+    "delegatedReadOnly",
+    "expectedOwner",
+    "limits",
+    "runtimeIdentity",
+  ]);
   if (
     !Object.hasOwn(value, "capsuleRoot")
     || !Object.hasOwn(value, "runtimeIdentity")
+    || (
+      Object.hasOwn(value, "delegatedReadOnly")
+      && typeof value.delegatedReadOnly !== "boolean"
+    )
     || Object.keys(value).some((key) => !allowed.has(key))
   ) {
     throw new Error("Cloudflare uploader capsule projection options are not exact");
   }
   return Object.freeze({
     capsuleRoot: value.capsuleRoot,
+    ...(Object.hasOwn(value, "delegatedReadOnly")
+      ? { delegatedReadOnly: value.delegatedReadOnly }
+      : {}),
     ...(Object.hasOwn(value, "expectedOwner") ? { expectedOwner: value.expectedOwner } : {}),
     ...(Object.hasOwn(value, "limits") ? { limits: value.limits } : {}),
     runtimeIdentity: value.runtimeIdentity,

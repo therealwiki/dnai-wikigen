@@ -186,14 +186,80 @@ function assertDirectoryStillBound(directoryPath, directory) {
   }
 }
 
-function assertReplacementTargetUnchanged(outputPath, expectedStat) {
-  const opened = openStableRegular(outputPath, "durable JSON replacement target");
+function retainedStatSnapshot(opened) {
+  const current = fs.fstatSync(opened.fd);
+  return Object.freeze({
+    dev: current.dev,
+    ino: current.ino,
+    mode: current.mode,
+    nlink: current.nlink,
+    size: current.size,
+  });
+}
+
+function assertRetainedRegularPathBinding(filePath, retained, label, errorMessage) {
+  let currentRetained;
+  let opened;
   try {
-    if (!sameInode(opened.stat, expectedStat)) {
-      throw new Error("durable JSON replacement target changed before publication");
+    currentRetained = fs.fstatSync(retained.fd);
+    if (
+      !currentRetained.isFile()
+      || currentRetained.nlink !== 1
+      || !sameInode(retained.stat, currentRetained)
+    ) {
+      throw new Error(errorMessage);
     }
+    opened = openStableRegular(filePath, label);
+    if (!sameInode(currentRetained, opened.stat)) {
+      throw new Error(errorMessage);
+    }
+    return opened.stat;
+  } catch {
+    throw new Error(errorMessage);
   } finally {
-    fs.closeSync(opened.fd);
+    if (opened) fs.closeSync(opened.fd);
+  }
+}
+
+function assertReplacementTargetUnchanged(outputPath, retainedTarget) {
+  assertRetainedRegularPathBinding(
+    outputPath,
+    retainedTarget,
+    "durable JSON replacement target",
+    "durable JSON replacement target changed before publication",
+  );
+}
+
+function assertRetainedTargetWasUnlinked(retainedTarget, errorMessage) {
+  const current = fs.fstatSync(retainedTarget.fd);
+  if (!current.isFile() || current.nlink !== 0 || !sameInode(current, retainedTarget.stat)) {
+    throw new Error(errorMessage);
+  }
+}
+
+function assertPathAbsent(filePath, errorMessage) {
+  try {
+    fs.lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(errorMessage);
+}
+
+function assertPublishedOutputUnchanged(outputPath, retainedOutput, bytes, fileMode) {
+  assertRetainedRegularPathBinding(
+    outputPath,
+    retainedOutput,
+    "durable JSON published output",
+    "durable JSON published output changed before durability commit",
+  );
+  const result = readStableJsonFile(outputPath, "durable JSON published output");
+  if (!sameInode(result.stat, retainedOutput.stat) || !result.bytes.equals(bytes)) {
+    throw new Error("durable JSON published output changed before durability commit");
+  }
+  if ((result.stat.mode & 0o777) !== fileMode) {
+    throw new Error("durable JSON published output mode changed before durability commit");
   }
 }
 
@@ -321,7 +387,7 @@ export function durablyPublishJson({
   const bytes = source.bytes;
   const outputDirectory = path.dirname(outputPath);
   const directory = openTrustedOutputDirectory(outputDirectory);
-  let targetStat = null;
+  let target = null;
   try {
     try {
       const existing = fs.lstatSync(outputPath);
@@ -331,13 +397,8 @@ export function durablyPublishJson({
       if (publishMode === "create") {
         throw new Error("durable JSON create output already exists");
       }
-      const opened = openStableRegular(outputPath, "durable JSON replacement target");
-      try {
-        targetStat = opened.stat;
-      } finally {
-        fs.closeSync(opened.fd);
-      }
-      if (sameInode(source.stat, targetStat)) {
+      target = openStableRegular(outputPath, "durable JSON replacement target");
+      if (sameInode(source.stat, target.stat)) {
         throw new Error("durable JSON source and output must not alias the same inode");
       }
     } catch (error) {
@@ -381,16 +442,29 @@ export function durablyPublishJson({
       fs.fchmodSync(temporaryFd, fileMode);
       failAt(faultStage, "file-fsync");
       fs.fsyncSync(temporaryFd);
-      fs.closeSync(temporaryFd);
-      temporaryFd = undefined;
 
       const written = readStableJsonFile(temporaryPath, "durable JSON temporary file");
       if (!sameInode(written.stat, temporaryStat) || !written.bytes.equals(bytes)) {
         throw new Error("durable JSON temporary bytes differ from the complete source");
       }
       failAt(faultStage, "publish");
-      if (testHookBeforePublish) testHookBeforePublish();
+      if (testHookBeforePublish) {
+        testHookBeforePublish(Object.freeze({
+          retainedReplacementTargetStat: target
+            ? () => retainedStatSnapshot(target)
+            : null,
+          retainedTemporaryStat: () => retainedStatSnapshot({
+            fd: temporaryFd,
+          }),
+        }));
+      }
       assertDirectoryStillBound(outputDirectory, directory);
+      assertRetainedRegularPathBinding(
+        temporaryPath,
+        { fd: temporaryFd, stat: temporaryStat },
+        "durable JSON temporary file",
+        "durable JSON temporary file changed before publication",
+      );
 
       if (publishMode === "create") {
         try {
@@ -406,9 +480,13 @@ export function durablyPublishJson({
         fs.unlinkSync(temporaryPath);
         failAt(faultStage, "after-temp-unlink");
       } else {
-        assertReplacementTargetUnchanged(outputPath, targetStat);
+        assertReplacementTargetUnchanged(outputPath, target);
         fs.renameSync(temporaryPath, outputPath);
         targetMutated = true;
+        assertRetainedTargetWasUnlinked(
+          target,
+          "durable JSON replacement target changed during publication",
+        );
       }
       published = true;
 
@@ -420,7 +498,19 @@ export function durablyPublishJson({
         throw new Error("durable JSON published file mode differs from the requested mode");
       }
       if (testHookBeforeDirectoryFsync) testHookBeforeDirectoryFsync();
+      assertPublishedOutputUnchanged(
+        outputPath,
+        { fd: temporaryFd, stat: temporaryStat },
+        bytes,
+        fileMode,
+      );
       fsyncDirectoryChain(outputDirectory, directory, faultStage);
+      assertPublishedOutputUnchanged(
+        outputPath,
+        { fd: temporaryFd, stat: temporaryStat },
+        bytes,
+        fileMode,
+      );
       return { bytes: bytes.length, outputPath, publishMode };
     } catch (error) {
       if (targetMutated) {
@@ -428,6 +518,7 @@ export function durablyPublishJson({
       }
       throw error;
     } finally {
+      if (!published) safeRemoveOwnedTemporary(temporaryPath, temporaryStat);
       if (temporaryFd !== undefined) {
         try {
           fs.closeSync(temporaryFd);
@@ -435,9 +526,9 @@ export function durablyPublishJson({
           // Preserve the original failure.
         }
       }
-      if (!published) safeRemoveOwnedTemporary(temporaryPath, temporaryStat);
     }
   } finally {
+    if (target) fs.closeSync(target.fd);
     fs.closeSync(directory.fd);
   }
 }
@@ -470,22 +561,47 @@ export function durablyRemoveJson({
 
   const directoryPath = path.dirname(filePath);
   const directory = openTrustedOutputDirectory(directoryPath);
+  let opened;
   try {
-    const opened = readStableJsonFile(filePath, "durable JSON removal target");
-    const digest = `sha256:${createHash("sha256").update(opened.bytes).digest("hex")}`;
+    opened = openStableRegular(filePath, "durable JSON removal target");
+    const inspected = readStableJsonFile(filePath, "durable JSON removal target");
+    if (!sameInode(opened.stat, inspected.stat)) {
+      throw new Error("durable JSON removal target changed during review");
+    }
+    const digest = `sha256:${createHash("sha256").update(inspected.bytes).digest("hex")}`;
     if (digest !== expectedSha256) {
       throw new Error("durable JSON removal target digest does not match the reviewed digest");
     }
-    if ((opened.stat.mode & 0o777) !== expectedMode) {
+    if ((inspected.stat.mode & 0o777) !== expectedMode) {
       throw new Error("durable JSON removal target mode does not match the reviewed mode");
     }
-    if (testHookBeforeRemove) testHookBeforeRemove();
+    if (testHookBeforeRemove) {
+      testHookBeforeRemove(Object.freeze({
+        retainedRemovalTargetStat: () => retainedStatSnapshot(opened),
+      }));
+    }
     assertDirectoryStillBound(directoryPath, directory);
-    assertReplacementTargetUnchanged(filePath, opened.stat);
+    assertReplacementTargetUnchanged(filePath, opened);
+    const reread = readStableJsonFile(filePath, "durable JSON removal target");
+    const rereadDigest = `sha256:${createHash("sha256").update(reread.bytes).digest("hex")}`;
+    if (
+      !sameInode(opened.stat, reread.stat)
+      || rereadDigest !== expectedSha256
+      || (reread.stat.mode & 0o777) !== expectedMode
+    ) {
+      throw new Error("durable JSON removal target changed after review");
+    }
     fs.unlinkSync(filePath);
+    assertRetainedTargetWasUnlinked(
+      opened,
+      "durable JSON removal target changed during unlink",
+    );
+    assertPathAbsent(filePath, "durable JSON removal path reappeared before durability commit");
     fsyncDirectoryChain(directoryPath, directory, faultStage);
-    return { bytes: opened.bytes.length, filePath, removedSha256: digest };
+    assertPathAbsent(filePath, "durable JSON removal path reappeared during durability commit");
+    return { bytes: inspected.bytes.length, filePath, removedSha256: digest };
   } finally {
+    if (opened) fs.closeSync(opened.fd);
     fs.closeSync(directory.fd);
   }
 }

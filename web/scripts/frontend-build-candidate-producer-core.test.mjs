@@ -77,7 +77,7 @@ function externalClosure() {
     files: CLOUDFLARE_EXTERNAL_BUILD_FILES.map(({ kind, path }, index) => ({
       kind,
       path,
-      mode: 0o600,
+      mode: 0o644,
       size: index + 1,
       sha256: pin(`external:${index}`),
     })),

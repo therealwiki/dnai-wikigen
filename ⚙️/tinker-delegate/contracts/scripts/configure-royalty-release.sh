@@ -1,9 +1,48 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
+
+DNAI_RELEASE_STARTUP_FLAGS=$-
+set +x
+case "$DNAI_RELEASE_STARTUP_FLAGS" in
+  *x*) echo "Shell xtrace is forbidden for release wrappers because it can disclose environment values." >&2; exit 1 ;;
+  *p*) ;;
+  *) echo "This release wrapper must be executed directly or with /bin/bash -p; plain bash invocation is unsupported." >&2; exit 1 ;;
+esac
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then echo "Release wrappers may not be sourced; execute this file directly or with /bin/bash -p." >&2; exit 1; fi
+DNAI_RELEASE_STARTUP_HOOK_FOUND=false
+DNAI_RELEASE_EXPORTED_NAMES="$(builtin compgen -e)" || { echo "Exported environment names could not be enumerated safely." >&2; exit 1; }
+while IFS= read -r DNAI_RELEASE_STARTUP_ENV_NAME; do
+  case "$DNAI_RELEASE_STARTUP_ENV_NAME" in BASH_ENV|ENV|SHELLOPTS|BASHOPTS|BASH_XTRACEFD|PS4|CDPATH|GLOBIGNORE|LD_*|DYLD_*|BASH_FUNC_*) DNAI_RELEASE_STARTUP_HOOK_FOUND=true; break ;; esac
+done <<< "$DNAI_RELEASE_EXPORTED_NAMES"
+if [ "$DNAI_RELEASE_STARTUP_HOOK_FOUND" = "true" ]; then echo "Shell startup, imported-function, and native-loader control variables are forbidden for release wrappers." >&2; exit 1; fi
+unset DNAI_RELEASE_EXPORTED_NAMES DNAI_RELEASE_STARTUP_ENV_NAME DNAI_RELEASE_STARTUP_HOOK_FOUND
+unset BASH_ENV ENV BASH_XTRACEFD PS4 CDPATH GLOBIGNORE 2>/dev/null || true
+export -n SHELLOPTS BASHOPTS
 set -euo pipefail
 umask 077
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+case "${BASH_SOURCE[0]}" in */*) DNAI_RELEASE_WRAPPER_DIR="${BASH_SOURCE[0]%/*}" ;; *) DNAI_RELEASE_WRAPPER_DIR=. ;; esac
+ROOT_DIR="$(builtin cd -P -- "$DNAI_RELEASE_WRAPPER_DIR/../../../.." && builtin pwd -P)" || { echo "Could not resolve the canonical repository root with Bash builtins." >&2; exit 1; }
 CONTRACTS_DIR="$ROOT_DIR/⚙️/tinker-delegate/contracts"
+DNAI_KEYSTORE_ENVIRONMENT_HELPER="$CONTRACTS_DIR/scripts/keystore-deployment-environment.sh"
+DNAI_KEYSTORE_HELPER_PARENT="${DNAI_KEYSTORE_ENVIRONMENT_HELPER%/*}"
+DNAI_KEYSTORE_HELPER_CANONICAL_PARENT="$(builtin cd -P -- "$DNAI_KEYSTORE_HELPER_PARENT" && builtin pwd -P)" || { echo "Could not resolve the canonical keystore environment helper directory." >&2; exit 1; }
+DNAI_KEYSTORE_HELPER_CANONICAL_PATH="$DNAI_KEYSTORE_HELPER_CANONICAL_PARENT/${DNAI_KEYSTORE_ENVIRONMENT_HELPER##*/}"
+if [ "$DNAI_KEYSTORE_HELPER_CANONICAL_PATH" != "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" ] || [ ! -f "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" ] || [ -L "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" ] || [ ! -r "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" ]; then echo "The keystore environment helper must be the canonical readable non-symlink regular file." >&2; exit 1; fi
+DNAI_KEYSTORE_HELPER_METADATA="$(/usr/bin/stat -f '%u:%l:%Lp' -- "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" 2>/dev/null || true)"; if [[ ! "$DNAI_KEYSTORE_HELPER_METADATA" =~ ^[0-9]+:[0-9]+:[0-7]+$ ]]; then DNAI_KEYSTORE_HELPER_METADATA="$(/usr/bin/stat -c '%u:%h:%a' -- "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" 2>/dev/null || true)"; fi
+if [[ ! "$DNAI_KEYSTORE_HELPER_METADATA" =~ ^[0-9]+:[0-9]+:[0-7]+$ ]]; then echo "The keystore environment helper metadata could not be verified." >&2; exit 1; fi
+IFS=: read -r DNAI_KEYSTORE_HELPER_OWNER DNAI_KEYSTORE_HELPER_LINKS DNAI_KEYSTORE_HELPER_MODE <<< "$DNAI_KEYSTORE_HELPER_METADATA"
+if [ "$DNAI_KEYSTORE_HELPER_OWNER" != "$EUID" ] || [ "$DNAI_KEYSTORE_HELPER_LINKS" != "1" ] || (( (8#$DNAI_KEYSTORE_HELPER_MODE & 0022) != 0 )); then echo "The keystore environment helper must be owned by the invoking user, have one link, and not be group/world writable." >&2; exit 1; fi
+DNAI_KEYSTORE_HELPER_PARENT_METADATA="$(/usr/bin/stat -f '%u:%Lp' -- "$DNAI_KEYSTORE_HELPER_PARENT" 2>/dev/null || true)"; if [[ ! "$DNAI_KEYSTORE_HELPER_PARENT_METADATA" =~ ^[0-9]+:[0-7]+$ ]]; then DNAI_KEYSTORE_HELPER_PARENT_METADATA="$(/usr/bin/stat -c '%u:%a' -- "$DNAI_KEYSTORE_HELPER_PARENT" 2>/dev/null || true)"; fi
+IFS=: read -r DNAI_KEYSTORE_HELPER_PARENT_OWNER DNAI_KEYSTORE_HELPER_PARENT_MODE <<< "$DNAI_KEYSTORE_HELPER_PARENT_METADATA"
+if [ ! -d "$DNAI_KEYSTORE_HELPER_PARENT" ] || [ -L "$DNAI_KEYSTORE_HELPER_PARENT" ] || [ "$DNAI_KEYSTORE_HELPER_PARENT_OWNER" != "$EUID" ] || [[ ! "$DNAI_KEYSTORE_HELPER_PARENT_MODE" =~ ^[0-7]+$ ]] || (( (8#$DNAI_KEYSTORE_HELPER_PARENT_MODE & 0022) != 0 )); then echo "The keystore helper directory must be canonical, invoking-user-owned, and not group/world writable." >&2; exit 1; fi
+if [ ! -x /usr/bin/perl ]; then echo "The fixed /usr/bin/perl runtime required for helper descriptor identity checks is unavailable." >&2; exit 1; fi
+exec 9< "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" || { echo "The keystore environment helper could not be opened safely." >&2; exit 1; }
+DNAI_KEYSTORE_HELPER_PATH_IDENTITY="$(/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/perl -T -e 'my @s = lstat($ARGV[0]); scalar(@s) or exit 1; print join q{:}, @s[0,1,2,3,4];' "$DNAI_KEYSTORE_ENVIRONMENT_HELPER")" || { exec 9<&-; echo "The helper path identity could not be verified." >&2; exit 1; }
+DNAI_KEYSTORE_HELPER_FD_IDENTITY="$(/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/perl -T -e 'my @s = stat(STDIN); scalar(@s) or exit 1; print join q{:}, @s[0,1,2,3,4];' <&9)" || { exec 9<&-; echo "The helper descriptor identity could not be verified." >&2; exit 1; }
+if [ -L "$DNAI_KEYSTORE_ENVIRONMENT_HELPER" ] || [ "$DNAI_KEYSTORE_HELPER_PATH_IDENTITY" != "$DNAI_KEYSTORE_HELPER_FD_IDENTITY" ]; then exec 9<&-; echo "The keystore environment helper changed between custody validation and open." >&2; exit 1; fi
+# shellcheck disable=SC1091
+. /dev/fd/9
+exec 9<&-
 CHAIN_ID=84532
 ACCOUNT=dev
 ROYALTY_RELEASE_GAS_ESTIMATE_MULTIPLIER=130
@@ -24,12 +63,8 @@ FINALITY_PATH=""
 LEDGER_CANDIDATE_PATH=""
 LOCK_MAY_BE_RELEASED=false
 
-if [ -f "$ROOT_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$ROOT_DIR/.env"
-  set +a
-fi
+dnai_load_keystore_deployment_dotenv "$ROOT_DIR/.env"
+dnai_finalize_keystore_deployment_environment BROADCAST
 
 # Ceremony paths are resolved only after the operator's untracked environment.
 # Repository history is never used as a post-authority ledger fallback.
@@ -68,17 +103,6 @@ fail() {
   echo "$*" >&2
   exit 1
 }
-
-for raw_key_name in \
-  PRIVATE_KEY \
-  DEPLOYER_PRIVATE_KEY \
-  FOUNDRY_PRIVATE_KEY \
-  ETH_PRIVATE_KEY \
-  ROYALTY_PRIVATE_KEY; do
-  if [ -n "${!raw_key_name:-}" ]; then
-    fail "$raw_key_name is forbidden for Royalty release; use only the encrypted Foundry account dev."
-  fi
-done
 
 require_env() {
   local name="$1"
@@ -239,7 +263,6 @@ if [[ ! "$TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256" =~ ^sha256:[0-9a-f]{64
   fail "TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256 must be a nonzero lowercase digest."
 fi
 
-BROADCAST="${BROADCAST:-false}"
 validate_bool BROADCAST "$BROADCAST"
 ROYALTY_RELEASE_OPERATION="${ROYALTY_RELEASE_OPERATION:-execute}"
 case "$ROYALTY_RELEASE_OPERATION" in

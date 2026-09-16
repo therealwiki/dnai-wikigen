@@ -110,7 +110,7 @@ function bootstrapAuthority() {
     sdk_wire_transform_staging_receipt_sha256: sha("9"),
     qvl_measurement_policy_set_sha256: sha("d"),
     reviewed_at: "2026-07-21T10:00:00Z",
-    valid_until: "2026-07-21T11:00:00Z",
+    valid_until: "2026-07-21T10:10:00Z",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => ({
       domain,
       descriptor_sha256: sha(String(index + 1)),

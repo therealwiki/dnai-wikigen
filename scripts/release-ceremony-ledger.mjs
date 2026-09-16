@@ -1275,6 +1275,7 @@ function normalizePathContext(options, { initialization = false } = {}) {
   assertCanonicalExistingDirectory(repositoryRoot, "repository root");
   assertAbsolutePath(sourceManifestPath, "deployment manifest path");
   assertAbsolutePath(ledgerPath, "release ledger path");
+  assertOutsideRepository(sourceManifestPath, repositoryRoot, "deployment manifest");
   assertCanonicalExistingDirectory(
     evidenceRoot,
     "release ledger evidence root",

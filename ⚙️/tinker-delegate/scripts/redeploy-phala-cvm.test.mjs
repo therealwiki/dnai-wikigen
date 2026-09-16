@@ -25,6 +25,7 @@ import {
   PHALA_FRESH_CLI_DEPLOY_FORBIDDEN,
   PHALA_FRESH_CREATE_COMMAND_PLAN_SCHEMA,
   PHALA_FUTURE_SEALED_AUTHORITY_SEQUENCE,
+  PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
   PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES,
   PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
   PHALA_PRODUCTION_EXECUTION_DISABLED_CODE,
@@ -68,6 +69,28 @@ import {
   projectFreshContractDeploymentReceipt,
   rawSha256,
 } from "../../../scripts/cvm-launch-intent-core.mjs";
+import {
+  TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA,
+  TINKER_ACCOUNT_BINDING_TRUTH_STATUS,
+  tinkerAccountBindingCeremonyReceiptSha256,
+} from "../../../scripts/tinker-account-binding-ceremony.mjs";
+import {
+  TINKER_ACCOUNT_BINDING_SCHEMA,
+  TINKER_ACCOUNT_BINDING_TYPEHASH,
+  TINKER_PROVIDER_NAMESPACE,
+} from "../../../scripts/tinker-account-binding-core.mjs";
+import {
+  executionPolicyReviewerHash,
+  executionPolicyReviewerRootHash,
+  PINNED_EIP191_SIGNATURE_SCHEME,
+  reviewerSetSha256,
+} from "../../../scripts/release-authority-signature-verifier-core.mjs";
+import {
+  PHALA_PRODUCTION_BOOTSTRAP_IMPLEMENTED_CONTROL_CODES,
+  PHALA_PRODUCTION_EXECUTION_POLICY,
+  PHALA_PRODUCTION_LIVE_ACTIVATION_BLOCKER_CODES,
+  PHALA_PRODUCTION_POST_MEASUREMENT_BLOCKER_CODES,
+} from "../../../scripts/phala-production-execution-policy.mjs";
 import {
   canonicalArtifactSha256,
   canonicalArtifactText,
@@ -168,8 +191,12 @@ function validDeploymentIntent() {
   intent.release.releaseSha = RELEASE_SHA;
   intent.release.reviewerAuthorityGenesisAcceptanceSha256 =
     `sha256:${"91".repeat(32)}`;
+  intent.release.reviewerAuthorityCurrentStatusEpoch = 1;
+  intent.release.reviewerAuthorityCurrentStatusSha256 =
+    `sha256:${"92".repeat(32)}`;
   intent.deploymentControl.controllerId = "launch-operator-01";
   intent.deploymentControl.operatorAddress = address(1);
+  intent.staticContractInputs.diligenceRoom.governanceController = address(4);
   intent.staticContractInputs.computeCreditVault.developer = address(2);
   intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment = bytes32(3);
   intent.numericPolicy.contract = {
@@ -189,6 +216,69 @@ function validDeploymentIntent() {
     intent.numericPolicy.qvl[name] = validQvlPolicy();
   }
   return intent;
+}
+
+function validTinkerAccountBindingCeremonyReceipt(intent) {
+  const signers = [
+    {
+      address: address(40),
+      controller_id: "binding-reviewer-alpha",
+      signature_sha256: `sha256:${"a1".repeat(32)}`,
+    },
+    {
+      address: address(41),
+      controller_id: "binding-reviewer-bravo",
+      signature_sha256: `sha256:${"b2".repeat(32)}`,
+    },
+  ];
+  const body = {
+    account_commitment:
+      intent.staticContractInputs.tinkerAccountEncumbrance.accountCommitment,
+    attested_provider_binding_required: true,
+    binding_chain_id: intent.network.chainId,
+    binding_commitment_typehash: TINKER_ACCOUNT_BINDING_TYPEHASH,
+    binding_scheme: TINKER_ACCOUNT_BINDING_SCHEMA,
+    ceremony_sha256: `sha256:${"c3".repeat(32)}`,
+    deployment_intent_matched: true,
+    deployment_intent_sha256: canonicalArtifactSha256(intent),
+    environment_commitment_matched: true,
+    historical_replay: false,
+    intent_sha256: `sha256:${"d4".repeat(32)}`,
+    network_request_performed: false,
+    provider_identifier_committed: false,
+    provider_namespace: TINKER_PROVIDER_NAMESPACE,
+    raw_binding_root_egress: false,
+    raw_share_egress: false,
+    remote_state_mutated: false,
+    reviewer_authority_current_status_sha256:
+      intent.release.reviewerAuthorityCurrentStatusSha256,
+    reviewer_authority_genesis_acceptance_sha256:
+      intent.release.reviewerAuthorityGenesisAcceptanceSha256,
+    reviewer_root_hash: executionPolicyReviewerRootHash(
+      signers.map(({ address: reviewerAddress }) => (
+        executionPolicyReviewerHash(reviewerAddress)
+      )).sort(),
+    ),
+    reviewer_set_sha256: reviewerSetSha256(
+      signers.map(({ address: reviewerAddress, controller_id }) => ({
+        address: reviewerAddress,
+        controller_id,
+      })),
+    ),
+    schema: TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SCHEMA,
+    share_or_root_digest_published: false,
+    signature_scheme: PINNED_EIP191_SIGNATURE_SCHEME,
+    signature_verification_subprocess_invoked: true,
+    signers,
+    status: "tinker_account_binding_two_reviewer_ceremony_verified",
+    truth_status: TINKER_ACCOUNT_BINDING_TRUTH_STATUS,
+    verified_signature_count: 2,
+  };
+  return {
+    ...body,
+    tinker_account_binding_ceremony_receipt_sha256:
+      tinkerAccountBindingCeremonyReceiptSha256(body),
+  };
 }
 
 function freshBroadcastEvidence(contracts, operatorAddress) {
@@ -239,6 +329,7 @@ function freshBroadcastEvidence(contracts, operatorAddress) {
 function freshContractLedger(
   deploymentIntentSha256,
   reviewerAuthorityGenesisAcceptanceSha256,
+  tinkerAccountBindingCeremonyReceiptSha256,
 ) {
   const contracts = Object.fromEntries(
     CONTRACT_DEPLOYMENT_RECEIPT_CONTRACTS.map(({ ledger_key: ledgerKey }, index) => [
@@ -295,6 +386,7 @@ function freshContractLedger(
         sourceCommit: RELEASE_SHA,
         deploymentIntentSha256,
         reviewerAuthorityGenesisAcceptanceSha256,
+        tinkerAccountBindingCeremonyReceiptSha256,
         keystoreAccount: "dev",
         runtimeCodeProof: "exact_creation_reexecution_match_all_contracts",
         exactCreationInputProof: FRESH_CONTRACT_CREATION_INPUT_PROOF,
@@ -310,6 +402,7 @@ function freshContractLedger(
       sourceCommit: RELEASE_SHA,
       deploymentIntentSha256,
       reviewerAuthorityGenesisAcceptanceSha256,
+      tinkerAccountBindingCeremonyReceiptSha256,
       broadcastTransactionsSha256: broadcast.sha256,
     }],
   };
@@ -479,6 +572,7 @@ function keyFileText(keys) {
 
 function readinessChainEvidence(contractDeploymentReceipt) {
   return {
+    anchorWriterGasReadiness: null,
     secondaryRpcEndpointSha256: `sha256:${"7".repeat(64)}`,
     rpcOriginSha256: `sha256:${"a".repeat(64)}`,
     secondaryRpcOriginSha256: `sha256:${"b".repeat(64)}`,
@@ -535,8 +629,8 @@ function reviewEnvelope(launchText, reviewEvidenceSha256) {
   envelope.expires_at = timestamp(CHECKED_AT_MS + 10 * 60_000);
   envelope.review_evidence_sha256 = reviewEvidenceSha256;
   envelope.reviewers = [
-    { address: address(40), controllerId: "reviewer-root-01" },
-    { address: address(41), controllerId: "reviewer-root-02" },
+    { address: address(50), controllerId: "reviewer-root-01" },
+    { address: address(51), controllerId: "reviewer-root-02" },
   ];
   return envelope;
 }
@@ -556,16 +650,29 @@ async function createFixture() {
     path.join(directory, "dnai-deployment-intent-core.json"),
     deploymentIntentText,
   );
+  const tinkerAccountBindingCeremonyReceipt =
+    validTinkerAccountBindingCeremonyReceipt(deploymentIntent);
+  const tinkerAccountBindingCeremonyReceiptSha256 =
+    tinkerAccountBindingCeremonyReceipt
+      .tinker_account_binding_ceremony_receipt_sha256;
+  const tinkerAccountBindingCeremonyReceiptPath = await writeFixtureFile(
+    path.join(directory, "tinker-account-binding-ceremony.receipt.json"),
+    canonicalArtifactText(tinkerAccountBindingCeremonyReceipt),
+    0o600,
+  );
   const contractDeploymentReceipt = projectFreshContractDeploymentReceipt(
     freshContractLedger(
       deploymentIntentSha256,
       deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      tinkerAccountBindingCeremonyReceiptSha256,
     ),
     {
       releaseSha: RELEASE_SHA,
       expectedDeploymentIntentSha256: deploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        tinkerAccountBindingCeremonyReceiptSha256,
     },
   );
   const contractDeploymentReceiptText = canonicalArtifactText(contractDeploymentReceipt);
@@ -575,6 +682,8 @@ async function createFixture() {
       expectedDeploymentIntentSha256: deploymentIntentSha256,
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         deploymentIntent.release.reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        tinkerAccountBindingCeremonyReceiptSha256,
     },
   )}`;
   const contractDeploymentReceiptPath = await writeFixtureFile(
@@ -684,6 +793,8 @@ async function createFixture() {
       args: {
         deploymentIntent: deploymentIntentPath,
         contractDeploymentReceipt: contractDeploymentReceiptPath,
+        tinkerAccountBindingCeremonyReceipt:
+          tinkerAccountBindingCeremonyReceiptPath,
         launchIntent: launchPath,
         launchIntentReceipt: launchReceiptPath,
         reviewEnvelope: reviewEnvelopePath,
@@ -701,6 +812,8 @@ async function createFixture() {
     directory,
     deploymentIntent,
     contractDeploymentReceipt,
+    tinkerAccountBindingCeremonyReceipt,
+    tinkerAccountBindingCeremonyReceiptSha256,
     launch,
     launchSha256,
     launchReceipt,
@@ -724,6 +837,8 @@ function argsToArgv(args) {
   return [
     "--deployment-intent", args.deploymentIntent,
     "--contract-deployment-receipt", args.contractDeploymentReceipt,
+    "--tinker-account-binding-ceremony-receipt",
+    args.tinkerAccountBindingCeremonyReceipt,
     "--launch-intent", args.launchIntent,
     "--launch-intent-receipt", args.launchIntentReceipt,
     "--review-envelope", args.reviewEnvelope,
@@ -747,6 +862,7 @@ test("fresh-only CLI arguments require every reviewed input and reject legacy mu
   const values = Object.fromEntries([
     "deploymentIntent",
     "contractDeploymentReceipt",
+    "tinkerAccountBindingCeremonyReceipt",
     "launchIntent",
     "launchIntentReceipt",
     "reviewEnvelope",
@@ -775,6 +891,18 @@ test("fresh-only CLI arguments require every reviewed input and reject legacy mu
     assert.throws(() => parseArgs(argv), /unknown flag|separate --flag value/);
   }
   assert.throws(() => parseArgs(argsToArgv(values).slice(0, -2)), /missing required/);
+  const fullArgv = argsToArgv(values);
+  const ceremonyFlagIndex = fullArgv.indexOf(
+    "--tinker-account-binding-ceremony-receipt",
+  );
+  assert.notEqual(ceremonyFlagIndex, -1);
+  assert.throws(
+    () => parseArgs([
+      ...fullArgv.slice(0, ceremonyFlagIndex),
+      ...fullArgv.slice(ceremonyFlagIndex + 2),
+    ]),
+    /missing required/,
+  );
   assert.throws(
     () => parseArgs([...argsToArgv(values), "--domain", "main_runtime_cvm"]),
     /duplicate flag/,
@@ -1035,6 +1163,17 @@ test("all seven canonical bootstrap bundles validate exact intent, dependency, r
       validated[0].freshContractDeploymentReceiptSha256,
       fixture.launch.contract_deployment_receipt_sha256,
     );
+    assert.equal(
+      validated[0].tinkerAccountBindingCeremonyReceiptSha256,
+      fixture.tinkerAccountBindingCeremonyReceiptSha256,
+    );
+    assert.equal(
+      validated[0].tinkerAccountBindingCeremonyReceiptFileSha256,
+      rawSha256(Buffer.from(
+        canonicalArtifactText(fixture.tinkerAccountBindingCeremonyReceipt),
+        "utf8",
+      )),
+    );
     assert.equal(validated[0].reviewReceipt.subjectKind, "cvm_launch_intent");
     assert.equal(validated[0].readinessEvidence.stage, "cvm_launch");
     assert.equal(
@@ -1047,7 +1186,20 @@ test("all seven canonical bootstrap bundles validate exact intent, dependency, r
       false,
     );
     assert.equal(validated[1].activeEnvironmentKeys.length, 0);
-    assert.equal(validated.at(-1).activeEnvironmentKeys.length, 0);
+    const metering = validated.at(-1);
+    assert.deepEqual(
+      metering.runtimeEntries,
+      fixture.domains.at(-1).runtimeEntries,
+    );
+    assert.deepEqual(
+      metering.activeEnvironmentKeys,
+      [...new Set([
+        ...metering.runtimeEntries.map(({ key }) => key),
+        ...metering.descriptor.public_environment_key_classification
+          .provisioning_result_keys,
+      ])].sort(),
+      "active keys include the derived CVM id while bootstrap input bytes do not",
+    );
     assert.equal(validated[0].activeEnvironmentKeys.length > 0, true);
     for (const entry of validated) {
       assert.equal(
@@ -1079,6 +1231,27 @@ test("validation rejects drift in every authority dependency and strict file bou
     ["contract receipt", async (fixture, args) => {
       await writeFile(args.contractDeploymentReceipt, `${await readFile(args.contractDeploymentReceipt, "utf8")} `);
     }, /deployment receipt dependency/],
+    ["account-binding ceremony receipt", async (fixture, args) => {
+      await writeFile(
+        args.tinkerAccountBindingCeremonyReceipt,
+        `${await readFile(args.tinkerAccountBindingCeremonyReceipt, "utf8")} `,
+      );
+    }, /account-binding ceremony receipt dependency/i],
+    ["account-binding ceremony substitution", async (fixture, args) => {
+      const changed = structuredClone(
+        fixture.tinkerAccountBindingCeremonyReceipt,
+      );
+      changed.account_commitment = bytes32(99);
+      changed.tinker_account_binding_ceremony_receipt_sha256 =
+        tinkerAccountBindingCeremonyReceiptSha256(changed);
+      await writeFile(
+        args.tinkerAccountBindingCeremonyReceipt,
+        canonicalArtifactText(changed),
+      );
+    }, /fresh-contract deployment receipt dependency/],
+    ["account-binding ceremony public mode", async (fixture, args) => {
+      await chmod(args.tinkerAccountBindingCeremonyReceipt, 0o644);
+    }, /account-binding ceremony receipt.*mode 0600/i],
     ["launch receipt", async (fixture, args) => {
       await writeFile(args.launchIntentReceipt, `${await readFile(args.launchIntentReceipt, "utf8")} `);
     }, /exact canonical receipt/],
@@ -1303,7 +1476,7 @@ test("fresh-create plans are non-executable, version-pinned, canonical, and secr
       );
       assert.deepEqual(
         plan.production_execution.blocker_codes,
-        PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
+        PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
       );
       assert.deepEqual(
         plan.production_execution.bootstrap_blocker_codes,
@@ -1339,7 +1512,7 @@ test("fresh-create plans are non-executable, version-pinned, canonical, and secr
       assert.equal(plan.launch_receipt.production_execution_available, false);
       assert.deepEqual(
         plan.launch_receipt.production_execution_blocker_codes,
-        PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
+        PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
       );
       assert.equal(plan.launch_receipt.runtime_value_authority_bound, false);
       assert.equal(
@@ -1444,7 +1617,7 @@ test("phase plans bind reviewed public structure without rendered secret bytes",
       );
       assert.deepEqual(
         plan.execution_blocker_codes,
-        PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
+        PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
       );
       assert.equal(plan.service_start_authorized, false);
       assert.equal(plan.phala_api_called, false);
@@ -1790,12 +1963,35 @@ test("production module exposes no injectable callback or client capability", as
       new RegExp(`${linkedButUnreachableDependency}\\s*\\(`),
     );
   }
-  assert.equal(PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.length, 23);
+  assert.deepEqual(PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES, []);
+  assert.deepEqual(PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES, []);
+  assert.equal(Object.isFrozen(PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES), true);
+  assert.equal(
+    Object.isFrozen(PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES),
+    true,
+  );
   assert.equal(
     new Set(PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES).size,
     PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.length,
   );
-  for (const blocker of [
+  assert.equal(PHALA_PRODUCTION_EXECUTION_POLICY.availability, true);
+  assert.equal(PHALA_PRODUCTION_EXECUTION_POLICY.reason_code, null);
+  assert.deepEqual(PHALA_PRODUCTION_EXECUTION_POLICY.blocker_codes, []);
+  assert.deepEqual(PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES, [
+    "legacy_plan_only_diagnostic_not_an_execution_path",
+    "runtime_value_authority_not_bound",
+    "static_public_environment_authority_projection_required",
+    "deferred_public_environment_final_authority_projection_required",
+  ]);
+  assert.equal(
+    Object.isFrozen(PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES),
+    true,
+  );
+  assert.equal(
+    new Set(PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES).size,
+    PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES.length,
+  );
+  for (const implementedControl of [
     "pinned_phala_api_origin_and_version_adapter_required",
     "reviewed_phala_workspace_account_target_required",
     "phala_sdk_debug_secret_logging_guard_required",
@@ -1805,12 +2001,29 @@ test("production module exposes no injectable callback or client capability", as
     "authenticated_cvm_resource_catalog_and_quota_evidence_required",
     "reviewer_genesis_acceptance_not_cryptographically_verified",
     "reviewer_genesis_not_independently_anchored",
-    "separately_reviewed_live_activation_authority_required",
   ]) {
-    assert.equal(PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.includes(blocker), true);
+    assert.equal(
+      PHALA_PRODUCTION_BOOTSTRAP_IMPLEMENTED_CONTROL_CODES.includes(
+        implementedControl,
+      ),
+      true,
+    );
   }
+  assert.deepEqual(PHALA_PRODUCTION_POST_MEASUREMENT_BLOCKER_CODES, [
+    "deferred_public_environment_final_authority_projection_required",
+    "cryptographically_reviewed_ceremony_authorization_required",
+  ]);
+  assert.deepEqual(PHALA_PRODUCTION_LIVE_ACTIVATION_BLOCKER_CODES, [
+    "separately_reviewed_live_activation_authority_required",
+  ]);
+  assert.equal(
+    PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.includes(
+      "separately_reviewed_live_activation_authority_required",
+    ),
+    false,
+  );
   const expectedError = `${PHALA_PRODUCTION_EXECUTION_DISABLED_CODE}:`
-    + PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.join(",");
+    + PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES.join(",");
   const secret = "SECRET_ECHO_MUST_NEVER_EGRESS";
   const ciphertext = "CIPHERTEXT_ECHO_MUST_NEVER_EGRESS";
   const privatePath = "/private/operator/recovery-journal.jsonl";

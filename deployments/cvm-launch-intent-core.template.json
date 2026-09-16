@@ -248,17 +248,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -666,17 +666,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -839,17 +839,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -1012,17 +1012,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -1185,17 +1185,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -1358,17 +1358,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -1543,17 +1543,17 @@
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
         "phala_cloud_sdk_version": "0.2.10",
-        "phala_os_image": "dstack-0.5.10",
+        "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
-          "name": "dstack-0.5.10",
-          "os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+          "name": "dstack-0.5.9",
+          "os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
           "requires_gpu": false,
-          "slug": "dstack-0.5.10-4c9bd024",
-          "version": "0.5.10"
+          "slug": "dstack-0.5.9-bd369a8c",
+          "version": "0.5.9"
         },
-        "phala_os_image_catalog_entry_sha256": "sha256:5e4e8349e33b69542c966ceadd75a44f0e264a9a491981bd88ca824e8d07b3f2",
-        "phala_os_image_hash": "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+        "phala_os_image_catalog_entry_sha256": "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
+        "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
         "platform": "phala_cloud",
         "post_create_assertions": {
           "listed": false,
@@ -1763,7 +1763,7 @@
     },
     "compose_file_source": "descriptor.app_compose_candidate",
     "env_keys_source": "descriptor.exact_allowed_environment_keys",
-    "image": "dstack-0.5.10",
+    "image": "dstack-0.5.9",
     "key_provider_mode": "kms",
     "kms_id": null,
     "listed": false,

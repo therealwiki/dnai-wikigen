@@ -8,6 +8,10 @@ POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 MANIFEST_FILTER="$SCRIPT_DIR/update-execution-policy-anchor-release-manifest.jq"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 RELEASE_CORE_CLI="$ROOT_DIR/scripts/execution-policy-release-core-cli.mjs"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 TEST_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/execution-policy-anchor-ledger-test.XXXXXX")"
 cleanup() {
@@ -17,6 +21,7 @@ trap cleanup EXIT HUP INT TERM
 
 bash -n "$HELPER"
 bash -n "$POLICY_GUARD"
+assert_keystore_wrapper_environment_safety "$HELPER" BROADCAST
 jq empty <(jq -n '{}')
 test -f "$MANIFEST_FILTER"
 test -f "$RELEASE_CORE_CLI"

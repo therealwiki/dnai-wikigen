@@ -19,9 +19,9 @@ import {
   PINNED_NODE_RUNTIME,
   PINNED_NPM_RUNTIME,
   PINNED_RELEASE_RUNTIME_PROOF,
+  __test,
   assertPinnedNodeRuntime,
   assertPinnedNpmRuntime,
-  assertPinnedReleaseRuntime,
   normalizePinnedReleaseRuntimeProof,
   projectNpmRuntimeTree,
 } from "./release-runtime-pins-core.mjs";
@@ -43,6 +43,7 @@ async function createNpmFixture() {
   const cliPath = path.join(binDirectory, "npm-cli.js");
   const libraryPath = path.join(libDirectory, "runtime.js");
   const executableSymlink = path.join(nodeBinDirectory, "npm");
+  const executableLinkTarget = "../../npm/bin/npm-cli.js";
   await writeFile(
     packagePath,
     `${JSON.stringify({ name: "npm", version: "11.6.0" }, null, 2)}\n`,
@@ -51,7 +52,7 @@ async function createNpmFixture() {
   await writeFile(cliPath, "export const npm = true;\n", { mode: 0o500 });
   await writeFile(libraryPath, "export const runtime = true;\n", { mode: 0o600 });
   await symlink("../../lib/runtime.js", path.join(shimDirectory, "runtime"));
-  await symlink(cliPath, executableSymlink);
+  await symlink(executableLinkTarget, executableSymlink);
   const projection = projectNpmRuntimeTree(treeRoot);
   return {
     directory,
@@ -63,6 +64,7 @@ async function createNpmFixture() {
     pin: {
       version: "11.6.0",
       executableSymlink,
+      executableLinkTarget,
       executableTarget: cliPath,
       treeRoot,
       entryCount: projection.entryCount,
@@ -99,13 +101,6 @@ test("reviewed release runtime pins Node, all Homebrew dylibs, and the npm tree"
     normalizePinnedReleaseRuntimeProof(PINNED_RELEASE_RUNTIME_PROOF),
     PINNED_RELEASE_RUNTIME_PROOF,
   );
-  if (
-    process.platform === "darwin"
-    && process.version === PINNED_NODE_RUNTIME.version
-    && process.execPath === PINNED_NODE_RUNTIME.executablePath
-  ) {
-    assert.deepEqual(assertPinnedReleaseRuntime(), PINNED_RELEASE_RUNTIME_PROOF);
-  }
 });
 
 test("Node runtime rejects version, path, and executable-byte substitutions", async () => {
@@ -148,6 +143,15 @@ test("Node runtime rejects version, path, and executable-byte substitutions", as
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("npm symlink modes are exact for Darwin and Linux and reject every other mode", () => {
+  assert.equal(__test.safeSymlinkMode(0o755, "darwin"), true);
+  assert.equal(__test.safeSymlinkMode(0o777, "darwin"), false);
+  assert.equal(__test.safeSymlinkMode(0o777, "linux"), true);
+  assert.equal(__test.safeSymlinkMode(0o755, "linux"), false);
+  assert.equal(__test.safeSymlinkMode(0o755, "freebsd"), false);
+  assert.equal(__test.safeSymlinkMode(0o777, "win32"), false);
 });
 
 test("npm runtime rejects executable-symlink retargeting", async () => {

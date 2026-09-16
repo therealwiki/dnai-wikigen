@@ -371,7 +371,7 @@ test("launch core has a stable explicit-NUL compact canonical digest", () => {
   assert.equal(cvmLaunchIntentCoreDigest(value), expected);
   assert.equal(
     expected,
-    "e0db0e9215dac92f052aa8468541e7160af0e385e3ba9083d1e1908b4f0d6fda",
+    "cabf8241d094dce74cbae3b23cb7398ef8d3ce877931e3ddd9e416667b47fa00",
   );
   assert.notEqual(
     expected,
@@ -453,10 +453,10 @@ test("launch core freezes seven descriptor policies and contains names but no va
       descriptor.launch_settings.cvm_resource_target,
       PHALA_CVM_RESOURCE_TARGETS[descriptor.trust_domain],
     );
-    assert.equal(descriptor.launch_settings.phala_os_image, "dstack-0.5.10");
+    assert.equal(descriptor.launch_settings.phala_os_image, "dstack-0.5.9");
     assert.equal(
       descriptor.launch_settings.phala_os_image_hash,
-      "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+      "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
     );
     assert.deepEqual(
       descriptor.launch_settings.phala_os_image_catalog_entry,
@@ -1721,6 +1721,10 @@ test("launch intent fail-closes on every mandatory QVL lineage environment key",
 });
 
 test("launch authority commits the exact reviewed Phala production OS catalog entry", () => {
+  assert.equal(
+    PHALA_CONTROL_PLANE_AUTHORITY.api_origin,
+    "https://cloud-api.phala.network/api/v1",
+  );
   const expected = createHash("sha256")
     .update(Buffer.from(CVM_LAUNCH_OS_IMAGE_CATALOG_ENTRY_DOMAIN, "utf8"))
     .update(Buffer.from(JSON.stringify(sortedObject(PHALA_OS_IMAGE_CATALOG_ENTRY)), "utf8"))
@@ -1729,6 +1733,10 @@ test("launch authority commits the exact reviewed Phala production OS catalog en
   assert.equal(
     phalaOsImageCatalogEntryDigest(PHALA_OS_IMAGE_CATALOG_ENTRY),
     `sha256:${expected}`,
+  );
+  assert.equal(
+    phalaOsImageCatalogEntryDigest(PHALA_OS_IMAGE_CATALOG_ENTRY),
+    "sha256:cba71ee307d64f084a9fde341536493acf6e91e274fa3c1c906e4b431a261b43",
   );
   assert.throws(
     () => phalaOsImageCatalogEntryDigest({

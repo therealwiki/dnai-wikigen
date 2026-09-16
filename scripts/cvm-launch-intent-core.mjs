@@ -166,17 +166,19 @@ export const PHALA_CVM_APP_COMPOSE_NAMES = Object.freeze({
   independent_metering_cvm: "dnai-independent-compute-metering",
 });
 
-// Reviewed from the authenticated Phala Cloud production image catalog on
-// 2026-07-21. The timestamp is deliberately not part of launch authority: the
-// fresh provisioning helper must re-query the authenticated catalog and find
-// this exact entry before it prepares or commits any CVM. The selector passed
-// to `provisionCvm` is the catalog `name`, never the slug and never an inferred
-// "latest" or development-image preference.
+// Reviewed from the authenticated Phala Cloud production image catalog at
+// https://cloud-api.phala.network/api/v1 on 2026-09-15. This is the latest
+// stable, non-development, non-GPU CPU image in that catalog. The timestamp is
+// deliberately not part of launch authority: the fresh provisioning helper
+// must re-query the authenticated catalog and find this exact entry before it
+// prepares or commits any CVM. The selector passed to `provisionCvm` is the
+// catalog `name`, never the slug and never an inferred "latest" or
+// development-image preference.
 export const PHALA_OS_IMAGE_CATALOG_ENTRY = Object.freeze({
-  name: "dstack-0.5.10",
-  slug: "dstack-0.5.10-4c9bd024",
-  version: "0.5.10",
-  os_image_hash: "4c9bd0249cf8a1f79f7b558867b0791d628d7a89dcba84a963338fc5539255fc",
+  name: "dstack-0.5.9",
+  slug: "dstack-0.5.9-bd369a8c",
+  version: "0.5.9",
+  os_image_hash: "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
   is_dev: false,
   requires_gpu: false,
 });

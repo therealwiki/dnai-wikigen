@@ -313,7 +313,7 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
   architecture: "arm64",
   system_python_launcher: ROOT_OWNED_PYTHON_EXECUTABLE,
   system_python_launcher_sha256:
-    "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818",
+    "b8763cf250e607a778bb4603cecb5b90338814d0a3dfcba0d57b1de242f610e9",
   system_python_reported_executable: SYSTEM_PYTHON_REPORTED_EXECUTABLE,
   system_python_reported_executable_link:
     SYSTEM_PYTHON_REPORTED_EXECUTABLE_LINK,
@@ -327,15 +327,15 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
   python_flags:
     "isolated_ignore_environment_no_site_no_user_site_no_bytecode_exact_system_path",
   user_writable_import_path: false,
-  darwin_release: "25.5.0",
-  macos_version: "26.5.2",
-  macos_build: "25F84",
+  darwin_release: "25.6.0",
+  macos_version: "26.6.2",
+  macos_build: "25G83",
   system_version_plist: SYSTEM_VERSION_PLIST,
   system_version_plist_sha256:
-    "cbf534776ca9200252e5637787e5d4fc26cf527fb354c19bcbac9688341c7a58",
+    "6151cb883e5b48d43a33d4d41956405a1cd502e0c8622319388d943e2cb804a1",
   codesign_executable: ROOT_OWNED_CODESIGN_EXECUTABLE,
   codesign_executable_sha256:
-    "214d455584d19abc0d74d02b9cbc7d3da6bdcb0596c235e6156dd9ed2f4e1ba7",
+    "844d30a12929b59c9f2215e2a308c3e1db572831a478f35906e452a54025603e",
   dcap_qvl_abi3_path: DCAP_NATIVE_EXTENSION,
   dcap_qvl_abi3_owner_uid: 0,
   dcap_qvl_abi3_mode: "0555",
@@ -345,9 +345,9 @@ export const PINNED_SEVEN_CVM_LOCAL_DCAP_VERIFIER = deepFreezeCanonicalPlainData
   bootstrap_sha256:
     "b6e79f5ca1b214036d7e11e26aac0a249a26faa1ed702ef908ad27d0cdebb968",
   isolated_runtime_environment_sha256:
-    "sha256:0acd40fb80dd000f367583017643ac07fe31becd2372bc20ceca3e91aa8b8beb",
+    "sha256:82b2dfb14df7fa68c7d09d82d455638004d808d7b5e7fbedbb6dbc5e5f87970e",
   verifier_script_sha256:
-    "77f83590ec8812574cf74c96a84e3b28466c54337bdde336b94621e2baef5261",
+    "3fecdd8bdb6b61cb75aaacee4ab961a4aa1f62bb7d71e9df66c002bfefa97ee0",
   dcap_qvl_abi3_sha256:
     "6f86d8b8ed99c74663418d15150906cea4025352c49889e841ac68b387e04e7f",
 });

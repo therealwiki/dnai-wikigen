@@ -68,7 +68,7 @@ import {
   parseArgs as parsePreflightArgs,
   parseSemanticValidationReceipt,
   probeCloudflareAuthentication,
-  releaseScopedLedgerPath,
+  releaseInspectedFileDescriptors,
   resolveEvidencePaths,
   inspectInstalledCliVersion,
   inspectCollaborationLaunchGate,
@@ -3556,34 +3556,12 @@ test("activation preflight rejects duplicate path and mode flags", () => {
   );
 });
 
-test("preflight path resolution uses release-scoped defaults and rejects CLI/env ambiguity", () => {
+test("preflight path resolution requires an external deployment ledger and rejects CLI/env ambiguity", () => {
   const repositoryRoot = "/tmp/dnai-preflight-path-contract";
   const args = parsePreflightArgs(["--stage", "fresh-deployment"]);
   const env = { RELEASE_SHA: SHA };
-  assert.equal(
-    releaseScopedLedgerPath(SHA, SHA, repositoryRoot),
-    path.join(
-      repositoryRoot,
-      "deployments",
-      "fresh-contract-suites",
-      SHA,
-      "base-sepolia.json",
-    ),
-  );
-  assert.equal(releaseScopedLedgerPath(SHA, "f".repeat(40), repositoryRoot), "");
-  assert.equal(releaseScopedLedgerPath("not-a-sha", SHA, repositoryRoot), "");
-
   const defaults = resolveEvidencePaths(args, env, { gitHead: SHA, repositoryRoot });
-  assert.equal(
-    defaults.ledger,
-    path.join(
-      repositoryRoot,
-      "deployments",
-      "fresh-contract-suites",
-      SHA,
-      "base-sepolia.json",
-    ),
-  );
+  assert.equal(defaults.ledger, "");
   assert.equal(
     defaults.deploymentIntent,
     path.join(repositoryRoot, ".release", "dnai-deployment-intent-core.json"),
@@ -3686,6 +3664,15 @@ test("preflight path resolution uses release-scoped defaults and rejects CLI/env
       DEPLOYMENT_INTENT_PATH: "/tmp/different-deployment-intent.json",
     }, { gitHead: SHA, repositoryRoot }),
     /deploymentIntent is ambiguous between the CLI flag and DEPLOYMENT_INTENT_PATH/,
+  );
+  assert.throws(
+    () => resolveEvidencePaths(parsePreflightArgs([
+      "--stage",
+      "fresh-deployment",
+      "--ledger",
+      path.join(repositoryRoot, "deployments", "fresh-contract-suites", SHA, "base-sepolia.json"),
+    ]), env, { gitHead: SHA, repositoryRoot }),
+    /must be explicit release evidence outside the clean source checkout/,
   );
 
   const historical = parsePreflightArgs([
@@ -4140,13 +4127,14 @@ test("Collaboration launch gate is delegate-only, false-defaulted, and projected
 
 test("file inspection hashes one no-follow descriptor and rejects symlinks", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-preflight-"));
+  let inspected;
   try {
     const target = path.join(directory, "evidence.json");
     const link = path.join(directory, "evidence-link.json");
     await writeFile(target, `${JSON.stringify({ schema: "test" }, null, 2)}\n`);
     await chmod(target, 0o600);
     await symlink(target, link);
-    const inspected = await inspectFile(target, { json: true, mode0600: true });
+    inspected = await inspectFile(target, { json: true, mode0600: true });
     assert.equal(inspected.valid, true);
     assert.match(inspected.sha256, /^[0-9a-f]{64}$/);
     assert.equal((await inspectFile(link, { json: true })).valid, false);
@@ -4155,6 +4143,39 @@ test("file inspection hashes one no-follow descriptor and rejects symlinks", asy
     await writeFile(noncanonical, '{"schema":"test"}\n');
     assert.equal((await inspectFile(noncanonical, { json: true })).valid, false);
   } finally {
+    await releaseInspectedFileDescriptors(inspected);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stable-file descriptor leases are explicit, reusable, and idempotently released", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "dnai-preflight-lease-"));
+  const target = path.join(directory, "evidence.json");
+  let inspected;
+  try {
+    await writeFile(target, `${JSON.stringify({ schema: "test" }, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    const options = { json: true, mode0600: true, retainDescriptor: true };
+    inspected = await inspectFile(target, options);
+    assert.equal(await validateStableFileBindings([
+      { path: target, initial: inspected, options },
+    ]), true);
+
+    await releaseInspectedFileDescriptors(inspected);
+    assert.equal(await validateStableFileBindings([
+      { path: target, initial: inspected, options },
+    ]), false);
+    let adversarial = {};
+    inspected.value = adversarial;
+    for (let index = 0; index < 20_000; index += 1) {
+      adversarial.next = {};
+      adversarial = adversarial.next;
+    }
+    await assert.doesNotReject(() => releaseInspectedFileDescriptors(inspected));
+    await releaseInspectedFileDescriptors(inspected);
+  } finally {
+    await releaseInspectedFileDescriptors(inspected);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -4163,6 +4184,9 @@ test("account-binding evidence requires one stable operator-owned 0700 .release 
   const directory = await realpath(await mkdtemp(
     path.join(tmpdir(), "dnai-preflight-binding-evidence-"),
   ));
+  let initialCeremony;
+  let initialReceipt;
+  let replacementCeremony;
   try {
     const releaseDirectory = path.join(directory, ".release");
     await mkdir(releaseDirectory, { mode: 0o700 });
@@ -4183,9 +4207,10 @@ test("account-binding evidence requires one stable operator-owned 0700 .release 
       json: true,
       mode0600: true,
       strictReleaseEvidence: true,
+      retainDescriptor: true,
     };
-    const initialCeremony = await inspectFile(ceremony, options);
-    const initialReceipt = await inspectFile(receipt, options);
+    initialCeremony = await inspectFile(ceremony, options);
+    initialReceipt = await inspectFile(receipt, options);
     assert.equal(initialCeremony.valid, true);
     assert.equal(initialReceipt.valid, true);
     assert.equal(initialCeremony.strictReleaseEvidence, true);
@@ -4213,7 +4238,9 @@ test("account-binding evidence requires one stable operator-owned 0700 .release 
 
     await rm(ceremony);
     await writeFile(ceremony, text, { mode: 0o600 });
-    assert.equal((await inspectFile(ceremony, options)).valid, true);
+    replacementCeremony = await inspectFile(ceremony, options);
+    assert.equal(replacementCeremony.valid, true);
+    assert.notEqual(replacementCeremony.fileIno, initialCeremony.fileIno);
     assert.equal(await validateStableFileBindings([
       { path: ceremony, initial: initialCeremony, options },
     ]), false);
@@ -4221,6 +4248,11 @@ test("account-binding evidence requires one stable operator-owned 0700 .release 
     await chmod(releaseDirectory, 0o755);
     assert.equal((await inspectFile(receipt, options)).valid, false);
   } finally {
+    await releaseInspectedFileDescriptors(
+      initialCeremony,
+      initialReceipt,
+      replacementCeremony,
+    );
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -4336,13 +4368,14 @@ test("semantic release validation uses one exact check-only allowlisted invocati
 
 test("semantic validation fails closed when an input mutates during the validator subprocess", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-preflight-toctou-"));
+  let initial = {};
   try {
     const paths = semanticPaths(directory);
     const names = Object.keys(paths);
     await Promise.all(Object.values(paths).map((filePath) => writeFile(filePath, "{}\n")));
-    const initial = Object.fromEntries(await Promise.all(names.map(async (name) => [
+    initial = Object.fromEntries(await Promise.all(names.map(async (name) => [
       name,
-      await inspectFile(paths[name]),
+      await inspectFile(paths[name], { retainDescriptor: true }),
     ])));
     const bindings = names.map((name) => ({ path: paths[name], initial: initial[name] }));
     assert.equal(await validateStableFileBindings(bindings), true);
@@ -4361,6 +4394,7 @@ test("semantic validation fails closed when an input mutates during the validato
     });
     assert.equal(await validateStableFileBindings(bindings), false);
   } finally {
+    await releaseInspectedFileDescriptors(initial);
     await rm(directory, { recursive: true, force: true });
   }
 });

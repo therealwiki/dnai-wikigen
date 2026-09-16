@@ -1066,6 +1066,34 @@ test("a recovery crash extends the signed stale-owner chain instead of auto-clea
 });
 
 test("source, ledger, evidence, and receipt filesystem boundaries fail closed", (t) => {
+  const inCheckout = fixture(t);
+  const inCheckoutRepository = path.join(inCheckout.base, "source-checkout");
+  mkdirPrivate(inCheckoutRepository);
+  const inCheckoutManifest = path.join(
+    inCheckoutRepository,
+    "deployment-manifest.json",
+  );
+  fs.copyFileSync(inCheckout.sourceManifestPath, inCheckoutManifest);
+  fs.chmodSync(inCheckoutManifest, 0o444);
+  const inCheckoutToken = "b0".repeat(32);
+  const inCheckoutOptions = acquire({
+    ...inCheckout,
+    repositoryRoot: inCheckoutRepository,
+    sourceManifestPath: inCheckoutManifest,
+  }, "ceremony_ledger_initialization", inCheckoutToken);
+  try {
+    assert.throws(
+      () => initializeReleaseCeremonyLedger(inCheckoutOptions),
+      /deployment manifest must remain outside the source checkout/,
+    );
+  } finally {
+    release(
+      inCheckoutOptions,
+      "ceremony_ledger_initialization",
+      inCheckoutToken,
+    );
+  }
+
   const wrongMode = fixture(t);
   fs.chmodSync(wrongMode.sourceManifestPath, 0o644);
   const wrongModeToken = "b1".repeat(32);

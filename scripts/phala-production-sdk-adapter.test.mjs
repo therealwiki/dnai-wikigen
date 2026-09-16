@@ -21,7 +21,9 @@ import {
 } from "./phala-production-executor-core.mjs";
 import {
   PHALA_AUTHENTICATED_SDK_OBSERVATION_SCHEMA,
+  PHALA_SDK_ACTION_REQUEST_POLICY,
   assertAuthenticatedPhalaSdkObservation,
+  assertPinnedSdkActionRequestMatches,
   assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
   assertPinnedPhalaProductionSdkAdapter,
   authenticatedPhalaSdkObservationSha256,
@@ -30,9 +32,11 @@ import {
   phalaAuthenticatedSdkRequestSemanticsSha256,
   phalaAuthenticatedAccountSubjectSha256,
   phalaSdkJsonBodySemanticDigest,
+  phalaSdkActionRequestPolicySha256,
   pinnedPhalaProductionSdkAdapterIdentitySha256,
   projectPinnedPhalaProductionSdkAdapterIdentity,
   projectPinnedProvisionWireBody,
+  projectPinnedSdkActionRequest,
   projectPinnedSdkCompatibilityIdentity,
   readAuthenticatedPhalaSdkObservationResponse,
   resolvePinnedPhalaPackageIdentity,
@@ -41,11 +45,21 @@ import {
   PHALA_API_CANDIDATE_VERSIONS,
   PHALA_COMPATIBILITY_RECEIPT_SCHEMA,
   PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
+  PHALA_PROVISION_REQUEST_TARGET_SHA256,
   PHALA_READ_ONLY_COMPATIBILITY_CALLS,
   PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
   phalaCompatibilityReceiptDigest,
+  phalaProductionTargetReviewInputProjectionDigest,
   phalaSdkWireTransformStagingReceiptDigest,
 } from "./phala-production-target-authority.mjs";
+import {
+  PHALA_REVIEWED_CAPSULE_EXPORTS,
+  PHALA_SDK_ACTION_REQUEST_POLICY_SHA256,
+  assertReviewedCapsuleSourceCapabilityBoundary,
+  importReviewedPhalaSdkRuntimeCapsule,
+  loadReviewedPhalaSdkRuntimeCapsule,
+  verifyReviewedPhalaSdkRuntimeCapsuleMaterial,
+} from "./phala-sdk-runtime-capsule.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
@@ -136,7 +150,7 @@ function authorityFixture() {
   const staging = {
     schema: PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
     truth_status:
-      "authenticated_staging_wire_capture_not_production_cvm_commit_tdx_attestation_or_launch_authority",
+      "authenticated_empty_operator_designated_staging_workspace_wire_capture_not_exclusive_isolation_proof_production_cvm_commit_tdx_attestation_or_launch_authority",
     compatibility_receipt_sha256: phalaCompatibilityReceiptDigest(compatibility),
     captured_at: secondTimestamp(-50),
     expires_at: secondTimestamp(550),
@@ -149,16 +163,34 @@ function authorityFixture() {
     sdk_identity: structuredClone(sdkIdentity),
     capture_method:
       "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization",
-    staging_account_isolated: true,
+    target_review_input_sha256: digest("e"),
+    workspace_preflight: {
+      authenticated_committed_cvm_count_before_prepare: 0,
+      page: 1,
+      page_size: 100,
+      pages: 0,
+      items_count: 0,
+      total: 0,
+      response_sha256: digest("d"),
+      operator_asserted_dedicated_workspace: true,
+      exclusive_workspace_control_proven: false,
+    },
     provision_call_count: 7,
     commit_calls: [],
-    cleanup_receipt_sha256: digest("f"),
+    journal_final_sha256: digest("f"),
+    journal_successful_prepare_count: 7,
+    server_cleanup_claimed: false,
+    pending_server_state_status:
+      "seven_prepares_succeeded_uncommitted_operator_reconciliation_required",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => {
       const pre = (index + 8).toString(16);
       const post = (index + 1).toString(16);
       const response = ((index + 7) % 15 + 1).toString(16);
       return {
         domain,
+        http_method: "POST",
+        request_target_sha256: PHALA_PROVISION_REQUEST_TARGET_SHA256,
+        request_semantics_sha256: digest((index + 1).toString(16)),
         pre_transform_request_sha256: digest(pre),
         expected_post_transform_body_sha256: digest(post),
         captured_post_transform_body_sha256: digest(post),
@@ -178,10 +210,7 @@ function authorityFixture() {
     review_envelope_sha256: digest("6"),
     review_evidence_sha256: digest("7"),
     compatibility_receipt_sha256: phalaCompatibilityReceiptDigest(compatibility),
-    staging_compose_hash_receipt_sha256:
-      phalaSdkWireTransformStagingReceiptDigest(staging, {
-        compatibilityReceipt: compatibility,
-      }),
+    staging_compose_hash_receipt_sha256: digest("b"),
     api: {
       origin: PHALA_CONTROL_PLANE_AUTHORITY.api_origin,
       version: PHALA_CONTROL_PLANE_AUTHORITY.api_version,
@@ -235,6 +264,12 @@ function authorityFixture() {
     reviewed_at: secondTimestamp(-40),
     expires_at: secondTimestamp(500),
   };
+  staging.target_review_input_sha256 =
+    phalaProductionTargetReviewInputProjectionDigest(target);
+  target.staging_compose_hash_receipt_sha256 =
+    phalaSdkWireTransformStagingReceiptDigest(staging, {
+      compatibilityReceipt: compatibility,
+    });
   return { targetAuthority: target, compatibilityReceipt: compatibility,
     sdkWireTransformStagingReceipt: staging };
 }
@@ -242,7 +277,7 @@ function authorityFixture() {
 function installCanonicalCredentialHome(t, { fileMode = 0o600, directoryMode = 0o700 } = {}) {
   const originalHome = process.env.HOME;
   const home = fs.mkdtempSync(path.join(
-    fs.realpathSync(originalHome ?? os.homedir()),
+    fs.realpathSync(os.tmpdir()),
     ".dnai-phala-adapter-",
   ));
   const directory = path.join(home, ".phala-cloud");
@@ -311,6 +346,282 @@ function installFakeHttps(t, handler) {
   };
   t.after(() => { https.request = original; });
 }
+
+function capsuleMaterial() {
+  return {
+    authorityBytes: fs.readFileSync(new URL(
+      "../deployments/phala-sdk-runtime-capsule-authority.json",
+      import.meta.url,
+    )),
+    registryEvidenceBytes: fs.readFileSync(new URL(
+      "../deployments/phala-sdk-upstream-registry-evidence.json",
+      import.meta.url,
+    )),
+    capsuleBytes: fs.readFileSync(new URL(
+      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      import.meta.url,
+    )),
+    legalNoticeBytes: fs.readFileSync(new URL(
+      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      import.meta.url,
+    )),
+    cloudTarballBytes: fs.readFileSync(new URL(
+      "./vendor/npm/phala-cloud-0.2.10.tgz",
+      import.meta.url,
+    )),
+    dstackTarballBytes: fs.readFileSync(new URL(
+      "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+      import.meta.url,
+    )),
+  };
+}
+
+function corrupted(bytes) {
+  const copy = Buffer.from(bytes);
+  copy[Math.floor(copy.length / 2)] ^= 1;
+  return copy;
+}
+
+test("reviewed SDK capsule pins authority, bundle, npm tarballs, capabilities, and exports", async () => {
+  const material = capsuleMaterial();
+  const verified = verifyReviewedPhalaSdkRuntimeCapsuleMaterial(material);
+  assert.match(verified.authority_sha256, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(verified.capsule_sha256, /^sha256:[0-9a-f]{64}$/u);
+  for (const field of Object.keys(material)) {
+    assert.throws(() => verifyReviewedPhalaSdkRuntimeCapsuleMaterial({
+      ...material,
+      [field]: corrupted(material[field]),
+    }), /digest|reviewed (?:static )?pin|source package/u);
+  }
+
+  assert.doesNotThrow(() => assertReviewedCapsuleSourceCapabilityBoundary(
+    material.capsuleBytes,
+  ));
+  const sourcePrefix = Buffer.from(
+    'import {} from "crypto";\nimport {} from "node:crypto";\n',
+    "utf8",
+  );
+  const forbiddenCases = [
+    'fetch("https://example.test")',
+    'globalThis["fetch"]("https://example.test")',
+    'import("node:https")',
+    'require("node:fs")',
+    'process?.env.HOME',
+    '(0, eval)("1")',
+    'Function?.("return 1")',
+    'WebAssembly.compile(new Uint8Array())',
+    'Deno.open("/tmp/x")',
+    'const addon = "escape.node"',
+    'import fs from "node:fs";',
+    'import https from "node:https";',
+    'import net from "node:net";',
+    'import tls from "node:tls";',
+    'import childProcess from "node:child_process";',
+    'import module from "node:module";',
+  ];
+  for (const source of forbiddenCases) {
+    assert.throws(() => assertReviewedCapsuleSourceCapabilityBoundary(
+      Buffer.concat([sourcePrefix, Buffer.from(`${source}\n`, "utf8")]),
+    ), /forbidden direct capability|unreviewed runtime module/u, source);
+  }
+
+  const identity = loadReviewedPhalaSdkRuntimeCapsule();
+  const module = await importReviewedPhalaSdkRuntimeCapsule(identity);
+  assert.deepEqual(Object.keys(module).sort(), [...PHALA_REVIEWED_CAPSULE_EXPORTS]);
+  assert.equal(
+    phalaSdkActionRequestPolicySha256(),
+    PHALA_SDK_ACTION_REQUEST_POLICY_SHA256,
+  );
+  assert.equal(PHALA_SDK_ACTION_REQUEST_POLICY.length, 14);
+});
+
+test("capsule import uses verified captured bytes and ignores fake PATH package graphs", async (t) => {
+  const fakeRoot = fs.mkdtempSync(path.join(
+    fs.realpathSync(os.tmpdir()),
+    "dnai-fake-phala-path-",
+  ));
+  t.after(() => fs.rmSync(fakeRoot, { recursive: true, force: true }));
+  const fakeBin = path.join(fakeRoot, "bin");
+  const fakeCloud = path.join(fakeBin, "node_modules", "@phala", "cloud");
+  const fakeDstack = path.join(fakeBin, "node_modules", "@phala", "dstack-sdk");
+  fs.mkdirSync(path.join(fakeCloud, "dist"), { recursive: true });
+  fs.mkdirSync(path.join(fakeDstack, "dist"), { recursive: true });
+  const marker = path.join(fakeRoot, "executed-marker");
+  fs.writeFileSync(path.join(fakeBin, "phala"),
+    `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 91\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(fakeBin, "package.json"), JSON.stringify({
+    name: "phala", version: "1.1.19", bin: { phala: "phala" },
+  }));
+  fs.writeFileSync(path.join(fakeCloud, "package.json"), JSON.stringify({
+    name: "@phala/cloud", version: "0.2.10",
+  }));
+  fs.writeFileSync(path.join(fakeCloud, "dist", "index.mjs"),
+    `import "fake-transitive";\nawait import("node:fs").then(({writeFileSync}) => writeFileSync(${JSON.stringify(marker)}, "bad"));\n`);
+  fs.writeFileSync(path.join(fakeDstack, "package.json"), JSON.stringify({
+    name: "@phala/dstack-sdk", version: "0.5.8",
+  }));
+  fs.writeFileSync(path.join(fakeDstack, "dist", "index.mjs"), "throw new Error('fake');\n");
+
+  const originalPath = process.env.PATH;
+  const originalOpen = fs.openSync;
+  const originalAccess = fs.accessSync;
+  const touchedFakePaths = [];
+  process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ""}`;
+  fs.openSync = (...args) => {
+    if (String(args[0]).startsWith(fakeRoot)) touchedFakePaths.push(String(args[0]));
+    return originalOpen(...args);
+  };
+  fs.accessSync = (...args) => {
+    if (String(args[0]).startsWith(fakeRoot)) touchedFakePaths.push(String(args[0]));
+    return originalAccess(...args);
+  };
+  try {
+    const adapterIdentity = resolvePinnedPhalaPackageIdentity();
+    assert.equal(
+      projectPinnedSdkCompatibilityIdentity(adapterIdentity)
+        .sdk_runtime_capsule_sha256,
+      verifyReviewedPhalaSdkRuntimeCapsuleMaterial(capsuleMaterial()).capsule_sha256,
+    );
+  } finally {
+    fs.openSync = originalOpen;
+    fs.accessSync = originalAccess;
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  }
+  assert.deepEqual(touchedFakePaths, []);
+  assert.equal(fs.existsSync(marker), false);
+
+  const capsuleIdentity = loadReviewedPhalaSdkRuntimeCapsule();
+  const originalRead = fs.readFileSync;
+  fs.openSync = () => { throw new Error("filesystem reread forbidden after capture"); };
+  fs.readFileSync = () => { throw new Error("filesystem reread forbidden after capture"); };
+  try {
+    const module = await importReviewedPhalaSdkRuntimeCapsule(capsuleIdentity);
+    assert.deepEqual(Object.keys(module).sort(), [...PHALA_REVIEWED_CAPSULE_EXPORTS]);
+  } finally {
+    fs.openSync = originalOpen;
+    fs.readFileSync = originalRead;
+  }
+});
+
+test("every reviewed capsule action emits one exact request and route drift rejects before I/O", async () => {
+  const authorities = authorityFixture();
+  const domain = "diligence_qvl_cvm";
+  const profile = authorities.targetAuthority.app_compose_profiles[domain];
+  const compose = buildExplicitAppCompose({
+    profile,
+    dockerComposeFile:
+      `services:\n  qvl:\n    image: example.invalid/qvl@sha256:${"4".repeat(64)}`,
+    allowedEnvironmentKeys: ["A"],
+  });
+  const appId = "2".repeat(40);
+  const provisionRequest = buildExactProvisionRequest({
+    domain,
+    applicationName: profile.name,
+    resourceTarget: authorities.targetAuthority.resource_targets[domain],
+    appCompose: compose,
+    activeEnvironmentKeys: ["A"],
+    appId,
+    nonce: 42,
+    kmsId: authorities.targetAuthority.kms.id,
+  });
+  const actionArguments = {
+    commitCvmProvision: [{ app_id: appId, compose_hash: "3".repeat(64) }],
+    getAppEnvEncryptPubKey: [{ kms: "phala", app_id: appId }],
+    getCvmAttestation: [{ id: "cvm-main-0001" }],
+    getCvmCreateResources: [],
+    getCvmInfo: [{ id: "cvm-main-0001" }],
+    getCvmList: [{ page: 1, page_size: 100 }],
+    getCurrentUser: [],
+    getKmsInfo: [{ kms_id: "kms-production-1" }],
+    getKmsList: [{ page: 1, page_size: 100, is_onchain: false }],
+    getOsImages: [{ page: 1, page_size: 100, is_dev: false }],
+    nextAppIds: [{ counts: 7 }],
+    provisionCvm: [provisionRequest],
+    restartCvm: [{ id: "cvm-main-0001", force: false }],
+    updateCvmEnvs: [{ id: "cvm-main-0001", encrypted_env: "ab".repeat(96) }],
+  };
+  const capsule = await importReviewedPhalaSdkRuntimeCapsule(
+    loadReviewedPhalaSdkRuntimeCapsule(),
+  );
+  for (const policy of PHALA_SDK_ACTION_REQUEST_POLICY) {
+    const calls = [];
+    const sentinel = new Error(`captured ${policy.action}`);
+    const capture = (method, requestPath, body, options) => {
+      const url = new URL(`https://cloud-api.phala.network/api/v1${requestPath}`);
+      for (const [key, value] of Object.entries(options?.params ?? {})) {
+        url.searchParams.append(key, String(value));
+      }
+      calls.push({
+        action: policy.action,
+        http_method: method,
+        path_and_query: `${url.pathname}${url.search}`,
+        body: body === undefined ? null : JSON.parse(JSON.stringify(body)),
+      });
+      throw sentinel;
+    };
+    const client = {
+      config: { version: PHALA_CONTROL_PLANE_AUTHORITY.api_version },
+      get: (requestPath, options) => capture("GET", requestPath, undefined, options),
+      post: (requestPath, body, options) => capture("POST", requestPath, body, options),
+      patch: (requestPath, body, options) => capture("PATCH", requestPath, body, options),
+    };
+    await assert.rejects(
+      capsule[policy.action](client, ...actionArguments[policy.action]),
+      (error) => error === sentinel,
+    );
+    assert.deepEqual(calls, [projectPinnedSdkActionRequest(
+      policy.action,
+      actionArguments[policy.action],
+    )]);
+  }
+
+  let networkCalls = 0;
+  const exact = projectPinnedSdkActionRequest("getCurrentUser", []);
+  for (const drift of [
+    { httpMethod: "POST", pathAndQuery: exact.path_and_query, body: null },
+    { httpMethod: "GET", pathAndQuery: "/api/v1/cvms", body: null },
+    { httpMethod: "GET", pathAndQuery: `${exact.path_and_query}?extra=1`, body: null },
+    { httpMethod: "GET", pathAndQuery: exact.path_and_query, body: { extra: true } },
+  ]) {
+    assert.throws(() => {
+      assertPinnedSdkActionRequestMatches({
+        action: "getCurrentUser",
+        actionArguments: [],
+        ...drift,
+      });
+      networkCalls += 1;
+    }, /outside its reviewed policy/u);
+  }
+  assert.equal(networkCalls, 0);
+});
+
+test("capsule loader rejects unsafe Node preload and inspector launch flags", () => {
+  const original = [...process.execArgv];
+  try {
+    for (const flag of [
+      "--import=data:text/javascript,throw%20new%20Error('bad')",
+      "--require=/tmp/bad-preload.cjs",
+      "--loader=/tmp/bad-loader.mjs",
+      "--inspect=127.0.0.1:0",
+      "--inspect-brk=127.0.0.1:0",
+      "--inspect-wait=127.0.0.1:0",
+      "--eval=globalThis.compromised=true",
+      "--print=globalThis.compromised=true",
+      "--interactive",
+      "-eglobalThis.compromised=true",
+      "-pglobalThis.compromised=true",
+      "-r/tmp/bad-preload.cjs",
+      "-i",
+    ]) {
+      process.execArgv.splice(0, process.execArgv.length, flag);
+      assert.throws(() => loadReviewedPhalaSdkRuntimeCapsule(),
+        /unsafe preload or inspector flag/u);
+    }
+  } finally {
+    process.execArgv.splice(0, process.execArgv.length, ...original);
+  }
+});
 
 test("adapter uses exact SDK actions over fake HTTPS and brands secret-free observations", async (t) => {
   installCanonicalCredentialHome(t);

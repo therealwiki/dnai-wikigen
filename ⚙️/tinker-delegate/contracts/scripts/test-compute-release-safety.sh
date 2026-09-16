@@ -6,6 +6,10 @@ TARGET="$SCRIPT_DIR/configure-compute-release.sh"
 POLICY_GUARD="$SCRIPT_DIR/operator-policy-configure-guard.sh"
 MANIFEST_FILTER="$SCRIPT_DIR/update-compute-release-manifest.jq"
 USDC_VERIFIER="$SCRIPT_DIR/verify-base-sepolia-usdc-release.sh"
+KEYSTORE_ENVIRONMENT_TEST_LIB="$SCRIPT_DIR/keystore-wrapper-environment-safety-test-lib.sh"
+
+# shellcheck disable=SC1091
+. "$KEYSTORE_ENVIRONMENT_TEST_LIB"
 
 test -f "$TARGET"
 test -f "$MANIFEST_FILTER"
@@ -13,6 +17,7 @@ test -f "$USDC_VERIFIER"
 bash -n "$TARGET"
 bash -n "$POLICY_GUARD"
 bash -n "$USDC_VERIFIER"
+assert_keystore_wrapper_environment_safety "$TARGET" BROADCAST
 grep -Fq '$developerFeeBps <= 100' "$MANIFEST_FILTER"
 grep -Fq '. "$CONTRACTS_DIR/scripts/operator-policy-configure-guard.sh"' "$TARGET"
 test "$(grep -Ec '^[[:space:]]*operator_policy_project_and_validate$' "$TARGET")" -eq 1

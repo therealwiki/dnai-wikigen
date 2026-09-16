@@ -4,28 +4,33 @@ Last updated: 2026-07-22
 
 This file records Base Sepolia and Phala deployment evidence for the tinker
 delegate stack. It is a runbook, not a trust source by itself. The
-machine-readable ledger for a fresh release is immutable and release-scoped:
+machine-readable ledger for a fresh release is immutable, release-scoped, and
+created outside the clean source checkout at the explicit operator path:
 
 ```text
-deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json
+$DEPLOYMENT_MANIFEST_PATH
 ```
 
 `deployments/base-sepolia.json` is historical evidence only. The fresh deploy
-helper rejects that path as either input authority or writable output, refuses
-to replace an existing release-scoped ledger, and contains no fallback operator
-address. Populate only the pre-deployment inputs below in the untracked `.env`
-before even dry-running it:
+helper rejects every in-checkout output path, refuses to replace an existing
+release ledger, and contains no fallback operator address. Create an external
+operator-owned directory with mode `0700`; the final filename must not exist.
+Populate only the pre-deployment inputs below in the mode-`0600`, untracked
+`.env` before even dry-running it:
 
 ```dotenv
 BASE_SEPOLIA_RPC_URL=...
-BASE_SEPOLIA_SECONDARY_RPC_URL=... # HTTPS; normalized host:port must differ from primary
+# HTTPS; normalized host:port must differ from primary.
+BASE_SEPOLIA_SECONDARY_RPC_URL=...
 FOUNDRY_KEYSTORE_ACCOUNT=dev
-RELEASE_SHA=... # exact nonzero lowercase 40-hex reviewed commit
-# Optional absolute override. Empty derives the release-scoped repository path
-# deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json.
-DEPLOYMENT_MANIFEST_PATH=
+# Exact nonzero lowercase 40-hex reviewed commit.
+RELEASE_SHA=...
+# Required canonical absolute path outside the repository. Its existing parent
+# is operator-owned/private; the helper creates the receipt once with mode 0444.
+DEPLOYMENT_MANIFEST_PATH=/absolute/operator-evidence/fresh/base-sepolia.json
 DEPLOYMENT_INTENT_PATH=/absolute/path/deployment-intent-core.json
-DEPLOYMENT_INTENT_SHA256=sha256:... # immutable reviewed pre-deployment intent
+# Immutable reviewed pre-deployment intent.
+DEPLOYMENT_INTENT_SHA256=sha256:...
 # These legacy-named variables carry the exact deployment-intent review
 # envelope; they never identify an operator-policy packet or projection.
 OPERATOR_POLICY_REVIEW_ENVELOPE_PATH=/absolute/path/deployment-intent.review-envelope.json
@@ -35,19 +40,30 @@ RELEASE_REVIEWER_AUTHORITY_GENESIS_ACCEPTANCE_PATH=/absolute/path/reviewer-autho
 RELEASE_REVIEWER_AUTHORITY_CURRENT_STATUS_PATH=/absolute/path/reviewer-current-status.json
 RELEASE_REVIEWER_AUTHORITY_STATUS_HISTORY_PATH=/absolute/path/reviewer-status-history.json
 DEPLOYMENT_OPERATOR=0x...
-DILIGENCE_GOVERNANCE_CONTROLLER=0x... # immutable; nonzero and distinct from operator/developer
+# Immutable; nonzero and distinct from operator/developer.
+DILIGENCE_GOVERNANCE_CONTROLLER=0x...
 COMPUTE_VAULT_DEVELOPER=0x...
-COMPUTE_VAULT_DEVELOPER_FEE_BPS=100 # explicit; deployment cap is 100 bps
-TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT=0x... # derived only by the two-reviewer ceremony below
-TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI=5000000000000000000 # policy units; not ETH
-TINKER_ENCUMBRANCE_MAX_SPEND_WEI=5000000000000000000 # policy units; not ETH
-EMAIL_ORACLE_UPGRADE_DELAY=172800 # explicit; minimum 2 days
+# Explicit; deployment cap is 100 bps.
+COMPUTE_VAULT_DEVELOPER_FEE_BPS=100
+# Derived only by the two-reviewer ceremony below.
+TINKER_ENCUMBRANCE_ACCOUNT_COMMITMENT=0x...
+# Policy units, not ETH.
+TINKER_ENCUMBRANCE_MAX_ADD_BALANCE_WEI=5000000000000000000
+TINKER_ENCUMBRANCE_MAX_SPEND_WEI=5000000000000000000
+# Explicit minimum of two days.
+EMAIL_ORACLE_UPGRADE_DELAY=172800
 BROADCAST=false
 VERIFY=false
 # Safe process/default environment value. The reviewed production renderer
 # replaces this with the release-pinned deterministic, no-network lane.
 TINKER_EVALUATOR_MODE=disabled
 ```
+
+The release wrappers never source `.env` as shell. They accept blank lines,
+whole-line comments, and `NAME=value` records as inert literal data; do not use
+`export`, command substitution, or trailing inline comments. Direct caller
+values for `BROADCAST`, `VERIFY`, and `DEPLOYMENT_MANIFEST_PATH` take precedence
+over file values, including explicit empty values (which fail validation).
 
 `OPERATOR_POLICY_PACKET_PATH`, `OPERATOR_POLICY_PACKET_SHA256`,
 `OPERATOR_POLICY_PROJECTION_PATH`, `FINAL_RELEASE_AUTHORITY_CORE_PATH`, and
@@ -725,14 +741,14 @@ By default the preflight reads the exact producer filenames
 pinned-Sigstore verification receipt, the seven-CVM topology, the seven
 rendered Compose descriptors, and the other stage-specific generated files
 under `.release`. Retired review-envelope files are not preflight authority.
-When `DEPLOYMENT_INTENT_PATH` or `DEPLOYMENT_MANIFEST_PATH` is populated, it is
-an absolute-path environment override of that default. The deploy helper consumes
+When `DEPLOYMENT_INTENT_PATH` is populated, it is an absolute-path environment
+override of that default. `DEPLOYMENT_MANIFEST_PATH` has no default: both the
+deploy helper and activation preflight require an explicit canonical absolute
+path outside the repository. The deploy helper consumes
 `OPERATOR_POLICY_REVIEW_ENVELOPE_PATH` at its separate mutation boundary. A
 different explicit CLI path and environment path is an ambiguity failure; the
-operator must choose one exact input. When neither `--ledger` nor
-`DEPLOYMENT_MANIFEST_PATH` is supplied, the preflight derives
-`deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json` only after
-`RELEASE_SHA` exactly matches Git HEAD. The historical root
+operator must choose one exact input. Missing, relative, in-checkout, or
+ambiguous ledger authority fails closed. The historical root
 `deployments/base-sepolia.json` is rejected even when named explicitly.
 
 Use
@@ -905,8 +921,7 @@ deployment authority; none may be inferred from the v1 credit ledger.
 
 After a successful broadcast, the helper verifies runtime code and the on-chain
 operator and fail-closed zero-authority state before durably creating the new
-immutable release ledger at
-`deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json`. It never
+immutable release ledger at the external `$DEPLOYMENT_MANIFEST_PATH`. It never
 reads, merges, or rewrites the historical `deployments/base-sepolia.json`. For
 every one of the seven contracts, it
 re-executes the exact creation bytecode with the release sender and constructor
@@ -932,7 +947,7 @@ TINKER_BINDING_RECEIPT_SHA256="$(
 
 node "$REPOSITORY_ROOT/scripts/cvm-launch-intent.mjs" build \
   --topology "$REPOSITORY_ROOT/.release/dnai-cvm-topology.json" \
-  --ledger "$REPOSITORY_ROOT/deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json" \
+  --ledger "$DEPLOYMENT_MANIFEST_PATH" \
   --tinker-account-binding-ceremony-receipt-sha256 "$TINKER_BINDING_RECEIPT_SHA256" \
   --out "$REPOSITORY_ROOT/.release/cvm-launch-intent-core.json" \
   --contract-receipt-out "$REPOSITORY_ROOT/.release/fresh-contract-deployment-receipt.json"
@@ -955,6 +970,319 @@ ledger exists. `cvm-launch-intent.receipt.json` is the detached structural
 validation receipt; the `hash` command prints the domain-separated launch-intent
 digest for independent comparison. Do not substitute the historical
 `deployments/base-sepolia.json` ledger.
+
+### Produce the four pre-provision Phala authorities
+
+The launch intent is not sufficient by itself. Before production provision,
+create four fresh release-local artifacts: an authenticated read-only
+compatibility receipt; an authenticated-empty, operator-designated-workspace
+seven-request SDK staging receipt with zero commits; the reviewed production
+target; and the reviewed public bootstrap environment. The staging receipt is
+explicitly not cryptographic proof of workspace exclusivity.
+
+Do not source `.env` or pass/export a token. The producer accepts only the
+canonical current `~/.phala-cloud/credentials.json` profile and rejects
+debug/instrumentation variables, credential and origin overrides, and alternate
+credential directories. A separately invoked `phala status` is only an operator
+check, not evidence, and is deliberately absent from this authority procedure.
+The in-process environment and `process.execArgv` checks necessarily run after
+Node preload hooks. Invoke the producer only through the sanitized outer
+launcher below: it names the reviewed Node executable directly, removes
+preload/debug/credential variables before Node starts, and never discovers a
+Node, Phala executable, SDK, or package graph through caller `PATH`.
+
+```bash
+REPOSITORY_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+PHALA_AUTHORITY_DIR=/absolute/operator-evidence/phala-pre-provision
+install -d -m 0700 "$PHALA_AUTHORITY_DIR"
+unset DEBUG DEBUG_FD NODE_DEBUG NODE_DEBUG_NATIVE NODE_OPTIONS PHALA_DEBUG
+unset PHALA_CLOUD_API_KEY PHALA_CLOUD_API_PREFIX PHALA_CLOUD_DIR
+
+PHALA_COMPATIBILITY_RECEIPT="$PHALA_AUTHORITY_DIR/phala-compatibility-receipt.json"
+PHALA_TARGET_INPUT="$PHALA_AUTHORITY_DIR/phala-production-target.review-input.json"
+PHALA_STAGING_ATTEMPT_DIR="$PHALA_AUTHORITY_DIR/staging-attempt-$RELEASE_SHA"
+install -d -m 0700 "$PHALA_STAGING_ATTEMPT_DIR"
+test -z "$(find "$PHALA_STAGING_ATTEMPT_DIR" -mindepth 1 -maxdepth 1 -print -quit)"
+PHALA_STAGING_RECEIPT="$PHALA_STAGING_ATTEMPT_DIR/phala-sdk-wire-transform-staging-receipt.json"
+PHALA_TARGET_AUTHORITY="$PHALA_AUTHORITY_DIR/phala-production-target-authority.json"
+PHALA_BOOTSTRAP_INPUT="$PHALA_AUTHORITY_DIR/phala-bootstrap-public-environment.review-input.json"
+PHALA_BOOTSTRAP_AUTHORITY="$PHALA_AUTHORITY_DIR/phala-bootstrap-public-environment-authority.json"
+
+PHALA_PRODUCER_NODE=/opt/homebrew/Cellar/node/24.9.0/bin/node
+PHALA_PRODUCER_NODE_SHA256=3e7673f6552cffd3f9eaa3bcb910198a4d0786e99bb861d24eb81cc3fce563e7
+test -x "$PHALA_PRODUCER_NODE" && test ! -L "$PHALA_PRODUCER_NODE"
+test "$(/usr/bin/stat -f '%Lp' "$PHALA_PRODUCER_NODE")" = 555
+test "$(/usr/bin/shasum -a 256 "$PHALA_PRODUCER_NODE" | /usr/bin/cut -d ' ' -f 1)" = \
+  "$PHALA_PRODUCER_NODE_SHA256"
+run_phala_producer() {
+  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C LC_ALL=C TZ=UTC \
+    "$PHALA_PRODUCER_NODE" \
+    "$REPOSITORY_ROOT/scripts/phala-pre-provision-authority-producer.mjs" "$@"
+}
+
+run_phala_producer observe-compatibility --out "$PHALA_COMPATIBILITY_RECEIPT"
+```
+
+That command performs the fixed five read-only calls for both exact candidate
+API versions, selects only the launch-intent version, and binds the reviewed
+single-file SDK capsule, request policy, public-registry evidence, source
+tarballs, and Node hash. It does not load the installed Phala CLI or any ambient
+same-version package. It emits no credential, email, raw account subject, or
+response body. The receipt lasts 30 minutes.
+
+The executable above is mode `0555` but operator-owned, not root-owned. Its
+absolute path, version, length, and SHA-256 are an explicit operational trust
+boundary. The outer `shasum` and the producer's descriptor-stable in-process
+hash detect ordinary drift; neither can prove safety if that user-writable Node
+binary was already malicious when it started. Provision a separately reviewed
+root-owned runtime before claiming a stronger binary-provenance boundary.
+
+This release's static capsule pins are:
+
+```text
+authority  sha256:c6a9e84e62331ed929cae422166980e50c390dcb553c82436b7043c1f3a4ba7c
+capsule    sha256:55249c4d189dea6aad95cdefd3e0310f4dfadbcc1f5d7e11ced1ddda5200d457
+policy     sha256:c2fe6c0baf65972bb1b6326a535123cb187bc36a0680b5183d1568a89879c495
+registry   sha256:847b1831fd971204e45bb2da03b00e3761d78d2495f9ff8ae83365c94a7a10c2
+legal      sha256:e0db15fc6e8e94df1c13d0cc483b57d6ad695c1506797da0d0bc4be4f60d0210
+cloud tgz  sha256:5e7b91e84bc0aa4a3273c205c96103a7cdbdcb577ce0e0e740e54789e8e4f1b7
+dstack tgz sha256:a78a0ffcc429c22c939b9c92b05406881c56220927a3462cc70de9d6c1d5d15c
+```
+
+The capsule authority pins the exact capsule, legal notice, public-registry
+evidence, top-level source tarballs, request policy, and Node runtime. The
+loader module separately pins the authority digest at review time, so the
+authority cannot approve a replacement of itself. The registry snapshot was
+created on `2026-09-16` with an empty HOME/private npm cache and no registry
+token; exact tarball bytes, npm ECDSA signatures, and both npm-publish and SLSA
+provenance attestations were verified. It is evidence about that public
+registry snapshot, not future key revocation, a Phala server statement, or a
+reproducible bundle-build proof.
+
+The capsule itself is an exact reviewed-byte closure. It has only the `crypto`
+and `node:crypto` imports and receives HTTP through the adapter's exact guarded
+client capability. The source scanner is defense in depth; the capsule SHA-256
+is the authority. The checked-in two upstream tarballs, entry, and three I/O
+stubs do **not** comprise all 85 contributing build inputs, and there is no
+supported offline generator for this release. Therefore do not claim that the
+bundle is reproducible from the checked-in sources.
+
+For any SDK/dependency upgrade, keep production fail closed and create a new
+static pin only in a disposable credential-free review workspace. Fetch exact
+tarballs only from `https://registry.npmjs.org` with an empty HOME, private npm
+cache/config, no ambient token, and lifecycle scripts disabled. Independently
+verify the registry metadata integrity, current signing key and ECDSA signature,
+npm publish attestation, and SLSA provenance before building. Build a new
+single ESM capsule with a pinned bundler, retain the complete input metafile,
+and re-review every entry, stub, import, export, and license. Then place the
+candidate files at their versioned paths and run these byte checks:
+
+```bash
+/usr/bin/shasum -a 256 \
+  scripts/vendor/phala-sdk-runtime-capsule-*.mjs \
+  scripts/vendor/phala-sdk-runtime-capsule-*.mjs.LEGAL.txt \
+  scripts/vendor/npm/phala-cloud-*.tgz \
+  scripts/vendor/npm/phala-dstack-sdk-*.tgz \
+  deployments/phala-sdk-upstream-registry-evidence.json
+
+/usr/bin/tar -tzf scripts/vendor/npm/phala-cloud-*.tgz | LC_ALL=C /usr/bin/sort
+/usr/bin/tar -tzf scripts/vendor/npm/phala-dstack-sdk-*.tgz | LC_ALL=C /usr/bin/sort
+
+/opt/homebrew/Cellar/node/24.9.0/bin/node --test \
+  scripts/phala-production-sdk-adapter.test.mjs \
+  scripts/phala-production-target-authority.test.mjs \
+  scripts/phala-pre-provision-authority-producer.test.mjs \
+  scripts/phala-nonlive-bootstrap-authorization.test.mjs
+```
+
+Two reviewers must compare those bytes with the registry evidence, inspect the
+capability and exact-method/route/body KATs, and approve the new non-self-
+referential authority digest. Update the compile-time authority digest in
+`scripts/phala-sdk-runtime-capsule.mjs` last, only after the authority file is
+canonical and frozen. If the new release still lacks a complete input manifest
+and offline generator, retain the same exact-byte/upstream-provenance label and
+the explicit non-reproducibility boundary.
+
+Create the existing CVM-launch review. Its separate evidence file must be
+canonical, secret-free public JSON, and the envelope's
+`review_evidence_sha256` must hash those exact bytes.
+
+```bash
+DEPLOYMENT_INTENT="$REPOSITORY_ROOT/.release/deployment-intent-core.json"
+FRESH_CONTRACT_RECEIPT="$REPOSITORY_ROOT/.release/fresh-contract-deployment-receipt.json"
+TINKER_BINDING_RECEIPT="$REPOSITORY_ROOT/.release/tinker-account-binding-ceremony.receipt.json"
+CVM_LAUNCH_INTENT="$REPOSITORY_ROOT/.release/cvm-launch-intent-core.json"
+CVM_LAUNCH_REVIEW_ENVELOPE="$PHALA_AUTHORITY_DIR/cvm-launch-review-envelope.json"
+CVM_LAUNCH_REVIEW_EVIDENCE="$PHALA_AUTHORITY_DIR/cvm-launch-review-evidence.json"
+CVM_LAUNCH_REVIEW_RECEIPT="$PHALA_AUTHORITY_DIR/cvm-launch-review.receipt.json"
+
+node "$REPOSITORY_ROOT/scripts/operator-policy-packet.mjs" init-review \
+  --subject "$CVM_LAUNCH_INTENT" --deployment-intent "$DEPLOYMENT_INTENT" \
+  --contract-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --tinker-account-binding-ceremony-receipt "$TINKER_BINDING_RECEIPT" \
+  --out "$CVM_LAUNCH_REVIEW_ENVELOPE"
+
+# Complete the draft review and separate public evidence out of band.
+
+node "$REPOSITORY_ROOT/scripts/operator-policy-packet.mjs" check-review \
+  --in "$CVM_LAUNCH_REVIEW_ENVELOPE" --subject "$CVM_LAUNCH_INTENT" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --contract-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --tinker-account-binding-ceremony-receipt "$TINKER_BINDING_RECEIPT" \
+  --receipt-out "$CVM_LAUNCH_REVIEW_RECEIPT"
+```
+
+The KMS signer is an explicit public reviewer choice, never inferred from an
+API response. Materialize its exact public key and validity window with the
+producer; do not hand-author provenance JSON. Every later target step reopens
+and hashes these exact bytes, and the target review time must fall inside this
+window.
+
+```bash
+KMS_SIGNER_K256=0x02...
+KMS_SIGNER_PROVENANCE="$PHALA_AUTHORITY_DIR/kms-signer-provenance.json"
+KMS_SIGNER_VALID_FROM=YYYY-MM-DDTHH:MM:SSZ
+KMS_SIGNER_VALID_UNTIL=YYYY-MM-DDTHH:MM:SSZ
+
+run_phala_producer init-kms-signer-provenance \
+  --env-encrypt-signer-k256 "$KMS_SIGNER_K256" \
+  --valid-from "$KMS_SIGNER_VALID_FROM" \
+  --valid-until "$KMS_SIGNER_VALID_UNTIL" \
+  --out "$KMS_SIGNER_PROVENANCE"
+
+run_phala_producer \
+  init-target-input --compatibility "$PHALA_COMPATIBILITY_RECEIPT" \
+  --cvm-launch-intent "$CVM_LAUNCH_INTENT" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --fresh-contract-deployment-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --tinker-account-binding-ceremony-receipt "$TINKER_BINDING_RECEIPT" \
+  --cvm-launch-review-envelope "$CVM_LAUNCH_REVIEW_ENVELOPE" \
+  --cvm-launch-review-evidence "$CVM_LAUNCH_REVIEW_EVIDENCE" \
+  --kms-signer-provenance "$KMS_SIGNER_PROVENANCE" \
+  --out "$PHALA_TARGET_INPUT"
+```
+
+The staging command below is the one remote mutation in this producer
+workflow. Run it only with a dedicated operator-designated staging workspace
+selected. It authenticates the exact compatibility-bound subject, verifies the
+first complete 100-entry CVM page reports `total=0` and no committed CVMs,
+reserves exactly seven app IDs, and submits exactly seven `provisionCvm`
+prepare requests in canonical domain order. Empty committed state is not proof
+of exclusive account control or absence of concurrent/pending prepares.
+The one-shot session exposes no commit, update, restart, generic request,
+client, transport, or credential accessor.
+
+Before the first remote call it reserves the final output pathname and creates
+a descriptor-relative, create-only, hash-chained journal in the dedicated empty
+attempt directory. It fsyncs records before and after authentication, the CVM
+list, reservation, and every prepare. A partial failure records known successes,
+zero commits, unknown pending server state, and `server_cleanup_claimed=false`.
+The producer never retries, resumes, or claims cleanup. If the reservation or
+any journal file remains, stop and reconcile/clean pending server state under a
+separate reviewed operator procedure; never rerun this batch or delete the
+journal to make the tool proceed.
+
+```bash
+run_phala_producer observe-staging \
+  --compatibility "$PHALA_COMPATIBILITY_RECEIPT" \
+  --target-input "$PHALA_TARGET_INPUT" \
+  --cvm-launch-intent "$CVM_LAUNCH_INTENT" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --fresh-contract-deployment-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --tinker-account-binding-ceremony-receipt "$TINKER_BINDING_RECEIPT" \
+  --cvm-launch-review-envelope "$CVM_LAUNCH_REVIEW_ENVELOPE" \
+  --cvm-launch-review-evidence "$CVM_LAUNCH_REVIEW_EVIDENCE" \
+  --kms-signer-provenance "$KMS_SIGNER_PROVENANCE" \
+  --release-directory "$REPOSITORY_ROOT/.release" \
+  --confirm-dedicated-staging-workspace true \
+  --out "$PHALA_STAGING_RECEIPT"
+
+run_phala_producer finalize-target \
+  --compatibility "$PHALA_COMPATIBILITY_RECEIPT" \
+  --staging "$PHALA_STAGING_RECEIPT" --target-input "$PHALA_TARGET_INPUT" \
+  --cvm-launch-intent "$CVM_LAUNCH_INTENT" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --fresh-contract-deployment-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --tinker-account-binding-ceremony-receipt "$TINKER_BINDING_RECEIPT" \
+  --cvm-launch-review-envelope "$CVM_LAUNCH_REVIEW_ENVELOPE" \
+  --cvm-launch-review-evidence "$CVM_LAUNCH_REVIEW_EVIDENCE" \
+  --kms-signer-provenance "$KMS_SIGNER_PROVENANCE" \
+  --out "$PHALA_TARGET_AUTHORITY"
+```
+
+Both staging and target finalization reopen and revalidate the original launch,
+deployment, fresh-contract, Tinker-binding, review-envelope, review-evidence,
+and signer-provenance paths. Edited review-input JSON or a matching-looking
+digest is not authority. Finalize promptly: staging and target authority cannot
+outlive their ten-minute bound, compatibility receipt, or KMS-signer validity.
+
+Bootstrap initialization is file-bound; naked lineage digest flags are not
+accepted. Existing normalizers validate deployment, fresh-contract, Sigstore,
+CVM-launch, review, and QVL artifacts. No semantic schema currently exists for
+`DEPLOYMENT_TRANSACTION_PLAN`, so its input must be bounded canonical
+secret-free JSON. Its exact-byte digest truthfully means
+“opaque plan bytes only,” not semantic validation, reviewer evidence, approval,
+or transaction authority. The file must explicitly contain
+`"status":"opaque_bytes_hash_only_not_semantically_validated_or_transaction_authority"`;
+any stronger status is rejected.
+
+```bash
+DEPLOYMENT_TRANSACTION_PLAN="$PHALA_AUTHORITY_DIR/deployment-transaction-plan.json"
+IMAGE_SIGSTORE_RECEIPT="$REPOSITORY_ROOT/.release/release-manifest-sigstore-verification-receipt.json"
+QVL_MEASUREMENT_POLICY_SET="$REPOSITORY_ROOT/.release/qvl-measurement-policy-set.json"
+
+run_phala_producer init-bootstrap-input \
+  --compatibility "$PHALA_COMPATIBILITY_RECEIPT" \
+  --staging "$PHALA_STAGING_RECEIPT" --target "$PHALA_TARGET_AUTHORITY" \
+  --release-directory "$REPOSITORY_ROOT/.release" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --deployment-transaction-plan "$DEPLOYMENT_TRANSACTION_PLAN" \
+  --fresh-contract-deployment-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --image-release-sigstore-verification-receipt "$IMAGE_SIGSTORE_RECEIPT" \
+  --cvm-launch-intent "$CVM_LAUNCH_INTENT" \
+  --cvm-launch-review-receipt "$CVM_LAUNCH_REVIEW_RECEIPT" \
+  --qvl-measurement-policy-set "$QVL_MEASUREMENT_POLICY_SET" \
+  --out "$PHALA_BOOTSTRAP_INPUT"
+```
+
+The initialized file enumerates all 41 non-secret public values: 38 for
+`main_runtime_cvm` and three for `independent_metering_cvm`; the five QVL
+domains have none. Reviewers replace every literal `placeholder` while
+preserving the exact key set, domain order, recursively sorted canonical JSON,
+and trailing newline. Extras, missing keys, secret shapes, placeholders,
+malformed addresses/IDs/hashes/epochs/URLs, and wrong wallet/CORS origins fail.
+
+```bash
+# Review and fill only the 41 enumerated values in PHALA_BOOTSTRAP_INPUT.
+run_phala_producer finalize-bootstrap \
+  --compatibility "$PHALA_COMPATIBILITY_RECEIPT" \
+  --staging "$PHALA_STAGING_RECEIPT" --target "$PHALA_TARGET_AUTHORITY" \
+  --bootstrap-input "$PHALA_BOOTSTRAP_INPUT" \
+  --release-directory "$REPOSITORY_ROOT/.release" \
+  --deployment-intent "$DEPLOYMENT_INTENT" \
+  --deployment-transaction-plan "$DEPLOYMENT_TRANSACTION_PLAN" \
+  --fresh-contract-deployment-receipt "$FRESH_CONTRACT_RECEIPT" \
+  --image-release-sigstore-verification-receipt "$IMAGE_SIGSTORE_RECEIPT" \
+  --cvm-launch-intent "$CVM_LAUNCH_INTENT" \
+  --cvm-launch-review-receipt "$CVM_LAUNCH_REVIEW_RECEIPT" \
+  --qvl-measurement-policy-set "$QVL_MEASUREMENT_POLICY_SET" \
+  --lifetime-seconds 600 \
+  --out "$PHALA_BOOTSTRAP_AUTHORITY"
+```
+
+Bootstrap finalization regenerates a pristine input from all eight source paths
+and the release directory. Only the 41 enumerated `domains[].values` may differ;
+all lineage, topology, manifest, target, staging, domain order, descriptor
+digests, and public-value key sets must match the regenerated bytes.
+
+Outputs are canonical mode-`0600` single-link files, published without clobber
+relative to a pinned operator-owned mode-`0700` directory descriptor. The
+staging output is an identity-bound reserved pathname atomically finalized only
+after its terminal journal record; other outputs are create-only. The producer
+rechecks pathname identity around publication and prints only the digest and
+byte count. These are pre-provision authorities, not a launch
+completion, TDX quote, QVL verdict, ceremony/live authority, or Cloudflare
+deployment receipt.
 
 Every production post-deployment helper named below consumes the same immutable
 deployment intent, measured final-release-authority core, and renewable review
@@ -1230,10 +1558,9 @@ guarded helper from the contracts directory:
 ```bash
 install -d -m 700 /absolute/release-evidence/forge-broadcast
 install -d -m 700 /absolute/release-evidence/locks
-install -m 600 \
-  "../../../deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json" \
-  /absolute/release-evidence/base-sepolia.json
 export DEPLOYMENT_MANIFEST_PATH=/absolute/release-evidence/base-sepolia.json
+test -f "$DEPLOYMENT_MANIFEST_PATH" && test ! -L "$DEPLOYMENT_MANIFEST_PATH"
+test "$(stat -f '%Lp' "$DEPLOYMENT_MANIFEST_PATH" 2>/dev/null || stat -c '%a' "$DEPLOYMENT_MANIFEST_PATH")" = 444
 export FOUNDRY_BROADCAST=/absolute/release-evidence/forge-broadcast
 export RELEASE_CEREMONY_LOCK_ROOT=/absolute/release-evidence/locks
 CHALLENGE_REGISTRY_RELEASE_PHASE=1 \
@@ -1241,8 +1568,8 @@ CHALLENGE_REGISTRY_RELEASE_PHASE=1 \
 ```
 
 Replace `/absolute/release-evidence` with one existing canonical, non-symlink
-directory outside the Git checkout. `BROADCAST=true` refuses the repository
-manifest default and refuses Forge's repository-local broadcast directory. The
+directory outside the Git checkout. `BROADCAST=true` refuses every in-checkout
+manifest path and refuses Forge's repository-local broadcast directory. The
 external ledger and external Forge evidence preserve the identical clean
 `RELEASE_SHA` and final-authority subject across the two-day boundary. The
 helper participates in the release-SHA-scoped
@@ -1558,14 +1885,18 @@ BROADCAST=true VERIFY=true ./scripts/deploy-base-sepolia.sh
 ```
 
 The helper deploys the seven reviewed-scope contracts listed above, performs
-on-chain trust-root reads, and creates the immutable release-scoped ledger at
-`deployments/fresh-contract-suites/$RELEASE_SHA/base-sepolia.json`.
+on-chain trust-root reads, and creates the immutable release-scoped ledger once
+at the external `$DEPLOYMENT_MANIFEST_PATH` while the source checkout stays
+byte-for-byte clean.
 `VERIFY=true` requires `ETHERSCAN_API_KEY`. The helper first broadcasts, verifies
 runtime/trust-root state, and records the addresses in the manifest; only then
 does it submit seven explicit `forge verify-contract` requests. This ordering
 ensures an explorer outage cannot leave successfully broadcast contracts absent
-from the deployment ledger. Constructor arguments and transactions remain in
-`broadcast/DeployFreshSuite.s.sol/84532/run-latest.json`.
+from the deployment ledger. Foundry's `run-latest.json` exists only inside the
+isolated temporary release workspace and is removed on exit. Before cleanup,
+the wrapper durably embeds that bounded artifact, its SHA-256, and the canonical
+transaction projection in the mode-`0600` fresh-suite broadcast journal; the
+validated deployment evidence is also bound into the immutable external ledger.
 
 ### Admit the Collaboration royalty release
 

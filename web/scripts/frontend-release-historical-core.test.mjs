@@ -329,7 +329,7 @@ test("historical D replay preserves its v2 closure while current builds use the 
   );
   assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS.length, 19);
   assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_FILES.length, 52);
-  assert.equal(CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.length, 24);
+  assert.equal(CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.length, 32);
   const historicalEntrypointPaths =
     __historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS
       .map(({ path }) => path);
@@ -346,12 +346,20 @@ test("historical D replay preserves its v2 closure while current builds use the 
       (path) => !historicalEntrypointPaths.includes(path),
     ),
     [
+      "deployments/cloudflare-production-uploader-authority.schema.json",
+      "deployments/cloudflare-production-uploader-authority.template.json",
+      "deployments/phala-sdk-runtime-capsule-authority.json",
+      "deployments/phala-sdk-upstream-registry-evidence.json",
       "docs/compute-console-api.md",
       "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
       "scripts/execution-policy-release-core-v3-historical.mjs",
       "scripts/release-authority-current-c-v6-core.mjs",
       "scripts/royalty-release-authority-core.mjs",
       "scripts/royalty-release-history-receipt-core.mjs",
+      "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+      "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+      "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
     ],
   );
   const historicalPaths = __historicalFrontendReleaseCoreTest.EXTERNAL_FILES
@@ -366,6 +374,10 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "scripts/cvm-release-descriptor-set.mjs",
   ]);
   assert.deepEqual(currentOnlyFiles, [
+    "deployments/cloudflare-production-uploader-authority.schema.json",
+    "deployments/cloudflare-production-uploader-authority.template.json",
+    "deployments/phala-sdk-runtime-capsule-authority.json",
+    "deployments/phala-sdk-upstream-registry-evidence.json",
     "docs/compute-console-api.md",
     "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
@@ -375,6 +387,7 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
     "scripts/execution-policy-release-core-v3-historical.mjs",
     "scripts/frontend-build-candidate-receipt-core.mjs",
+    "scripts/phala-sdk-runtime-capsule.mjs",
     "scripts/phala-seven-cvm-release-verification-authority-v4-core.mjs",
     "scripts/release-authority-current-c-v6-core.mjs",
     "scripts/release-authority-stages.mjs",
@@ -383,6 +396,10 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "scripts/royalty-release-authority-core.mjs",
     "scripts/royalty-release-history-receipt-core.mjs",
     "scripts/tinker-account-binding-core.mjs",
+    "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+    "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
+    "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+    "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
   ]);
   assert.equal(
     historicalPaths.includes(

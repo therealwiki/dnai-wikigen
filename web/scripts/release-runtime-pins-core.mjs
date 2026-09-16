@@ -87,6 +87,14 @@ function safeMode(mode, { directory = false } = {}) {
     && (mode & 0o022) === 0;
 }
 
+function safeSymlinkMode(mode, platform = process.platform) {
+  return Number.isSafeInteger(mode)
+    && (
+      (platform === "darwin" && mode === 0o755)
+      || (platform === "linux" && mode === 0o777)
+    );
+}
+
 function expectedOwner(expectedUid) {
   if (!Number.isSafeInteger(expectedUid) || expectedUid < 0) {
     throw new Error("release runtime expected owner is invalid");
@@ -199,9 +207,10 @@ export function projectNpmRuntimeTree(treeRoot, {
     const relative = relativeRuntimePath(treeRoot, absolute);
     const named = fs.lstatSync(absolute, { bigint: true });
     const mode = Number(named.mode & 0o777n);
-    if (named.uid !== expectedOwner(expectedUid) || !safeMode(mode, {
-      directory: named.isDirectory(),
-    })) {
+    const modeIsSafe = named.isSymbolicLink()
+      ? safeSymlinkMode(mode)
+      : safeMode(mode, { directory: named.isDirectory() });
+    if (named.uid !== expectedOwner(expectedUid) || !modeIsSafe) {
       throw new Error("npm runtime tree entry has unsafe owner or mode");
     }
     if (named.isDirectory()) {
@@ -314,6 +323,7 @@ export function assertPinnedNpmRuntime({
   const mode = Number(symlink.mode & 0o777n);
   const executableTarget = fs.readlinkSync(pin.executableSymlink, "utf8");
   const resolvedExecutable = fs.realpathSync.native(pin.executableSymlink);
+  const reviewedLinkTarget = pin.executableLinkTarget ?? pin.executableTarget;
   assertStableMetadata(
     symlink,
     fs.lstatSync(pin.executableSymlink, { bigint: true }),
@@ -323,8 +333,8 @@ export function assertPinnedNpmRuntime({
     !symlink.isSymbolicLink()
     || symlink.nlink !== 1n
     || symlink.uid !== expectedOwner(expectedUid)
-    || !safeMode(mode)
-    || executableTarget !== pin.executableTarget
+    || !safeSymlinkMode(mode)
+    || executableTarget !== reviewedLinkTarget
     || resolvedExecutable !== pin.executableTarget
   ) {
     throw new Error("npm executable symlink does not match the reviewed target");
@@ -518,5 +528,6 @@ export const __test = Object.freeze({
   NODE_DYLIB_DOMAIN,
   NPM_TREE_DOMAIN,
   defaultOtool,
+  safeSymlinkMode,
   stableRegularFile,
 });

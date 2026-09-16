@@ -269,7 +269,7 @@ function defaultVerify({ env, webDir: isolatedWebDir, sandbox }) {
     sandbox,
     webDir: isolatedWebDir,
     env,
-    script: "check",
+    script: "check:portable",
   });
 }
 

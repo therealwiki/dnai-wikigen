@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   accessSync,
   constants,
@@ -152,6 +153,9 @@ const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 20_000;
 const CONTRACT_RECONSTRUCTION_TIMEOUT_MS = 60_000;
 const SEMANTIC_VALIDATION_TIMEOUT_MS = 180_000;
+const INSPECTED_FILE_DESCRIPTOR = Symbol("dnai.inspected-file-descriptor");
+const leasedInspectionSnapshots = new WeakSet();
+const inspectionDescriptorScope = new AsyncLocalStorage();
 export const CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS = 120_000;
 export {
   SEMANTIC_VALIDATION_SCHEMA,
@@ -406,7 +410,7 @@ function usage() {
     "  --topology FILE                  Hash-bound seven-CVM topology descriptor",
     "  --release FILE                   Canonical web release candidate",
     "  --release-core FILE              Canonical final release authority core",
-    "  --ledger FILE                    Canonical fresh-suite deployment ledger",
+    "  --ledger FILE                    Explicit fresh-suite ledger outside the source checkout",
     "  --deployment-intent FILE         Canonical immutable predeployment intent",
     "  --cvm-launch-intent FILE         Canonical post-contract pre-CVM launch intent",
     "  --reviewer-current-status FILE   Latest authenticated reviewer status",
@@ -1203,20 +1207,127 @@ export function inspectedFileSnapshotMatches(initial, current) {
     ].every((field) => initial[field] === current[field]);
 }
 
+async function retainedInspectionDescriptorMatches(snapshot) {
+  const descriptor = snapshot?.[INSPECTED_FILE_DESCRIPTOR];
+  if (!descriptor?.fileHandle || !descriptor?.fileStat) return false;
+  try {
+    const file = await descriptor.fileHandle.stat({ bigint: true });
+    if (file.nlink !== 1n || !sameBigIntStat(file, descriptor.fileStat, [
+      "dev",
+      "ino",
+      "mode",
+      "nlink",
+      "uid",
+      "gid",
+      "size",
+      "mtimeNs",
+      "ctimeNs",
+    ])) {
+      return false;
+    }
+    if (!descriptor.directoryHandle) return descriptor.directoryStat === null;
+    const directory = await descriptor.directoryHandle.stat({ bigint: true });
+    return descriptor.directoryStat !== null
+      && directory.isDirectory()
+      && sameBigIntStat(directory, descriptor.directoryStat, [
+        "dev",
+        "ino",
+        "mode",
+        "uid",
+        "gid",
+        "mtimeNs",
+        "ctimeNs",
+      ]);
+  } catch {
+    return false;
+  }
+}
+
+function inspectionDescriptorsShareIdentity(initial, current) {
+  const initialDescriptor = initial?.[INSPECTED_FILE_DESCRIPTOR];
+  const currentDescriptor = current?.[INSPECTED_FILE_DESCRIPTOR];
+  if (!initialDescriptor || !currentDescriptor) return false;
+  if (!sameBigIntStat(initialDescriptor.fileStat, currentDescriptor.fileStat, [
+    "dev",
+    "ino",
+  ])) {
+    return false;
+  }
+  if (initialDescriptor.directoryStat === null) {
+    return currentDescriptor.directoryStat === null;
+  }
+  return currentDescriptor.directoryStat !== null
+    && sameBigIntStat(
+      initialDescriptor.directoryStat,
+      currentDescriptor.directoryStat,
+      ["dev", "ino"],
+    );
+}
+
+async function closeInspectionDescriptor(snapshot) {
+  const descriptor = snapshot?.[INSPECTED_FILE_DESCRIPTOR];
+  if (!descriptor) return;
+  try {
+    delete snapshot[INSPECTED_FILE_DESCRIPTOR];
+  } catch {
+    // A caller may freeze the public snapshot. Descriptor closure remains
+    // mandatory even when its opaque non-enumerable marker cannot be removed.
+  }
+  await Promise.all([
+    descriptor.fileHandle?.close().catch(() => {}),
+    descriptor.directoryHandle?.close().catch(() => {}),
+  ]);
+}
+
+export async function releaseInspectedFileDescriptors(...values) {
+  const visited = new WeakSet();
+  const snapshots = [];
+  const visit = (value) => {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) return;
+    if (visited.has(value)) return;
+    visited.add(value);
+    if (leasedInspectionSnapshots.has(value)) {
+      if (value[INSPECTED_FILE_DESCRIPTOR]) snapshots.push(value);
+      // Parsed evidence may be adversarially deep. The descriptor-bearing
+      // inspection result remains the lifecycle boundary after closure; never
+      // recurse through its untrusted `value` on either first or repeated
+      // release merely because the opaque live-descriptor symbol was removed.
+      return;
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  for (const value of values) visit(value);
+  await Promise.all(snapshots.map((snapshot) => closeInspectionDescriptor(snapshot)));
+}
+
 export async function validateStableFileBindings(bindings) {
   if (!Array.isArray(bindings) || bindings.length === 0 || bindings.length > 64) {
     return false;
   }
+  let rereads = [];
   try {
-    const rereads = await Promise.all(bindings.map((binding) => inspectFile(
+    const settled = await Promise.allSettled(bindings.map((binding) => inspectFile(
       binding.path,
-      binding.options || {},
+      { ...(binding.options || {}), retainDescriptor: true },
     )));
+    rereads = settled
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+    if (rereads.length !== bindings.length) return false;
+    const descriptorChecks = await Promise.all(bindings.flatMap((binding, index) => [
+      retainedInspectionDescriptorMatches(binding.initial),
+      retainedInspectionDescriptorMatches(rereads[index]),
+    ]));
     return bindings.every((binding, index) => (
-      inspectedFileSnapshotMatches(binding.initial, rereads[index])
+      descriptorChecks[index * 2] === true
+      && descriptorChecks[(index * 2) + 1] === true
+      && inspectedFileSnapshotMatches(binding.initial, rereads[index])
+      && inspectionDescriptorsShareIdentity(binding.initial, rereads[index])
     ));
   } catch {
     return false;
+  } finally {
+    await releaseInspectedFileDescriptors(rereads);
   }
 }
 
@@ -1271,13 +1382,34 @@ export async function inspectFile(filePath, {
   json = false,
   mode0600 = false,
   strictReleaseEvidence = false,
+  // A collection scope retains descriptors automatically. Direct library
+  // callers opt in only when they intend to perform a later stability check,
+  // and must then call releaseInspectedFileDescriptors in a finally block.
+  retainDescriptor = null,
 } = {}) {
   if (!filePath) return { exists: false, valid: false, mode: null, value: null };
   let handle;
+  let directoryHandle;
+  let retained = false;
   try {
     const strictBefore = strictReleaseEvidence
       ? strictReleaseEvidencePathSnapshot(filePath)
       : null;
+    let openedDirectory = null;
+    if (strictBefore) {
+      directoryHandle = await open(
+        strictBefore.releaseDirectoryPath,
+        constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | constants.O_NOFOLLOW,
+      );
+      openedDirectory = await directoryHandle.stat({ bigint: true });
+      if (!openedDirectory.isDirectory() || !sameBigIntStat(
+        strictBefore.directory,
+        openedDirectory,
+        ["dev", "ino", "mode", "uid", "gid", "mtimeNs", "ctimeNs"],
+      )) {
+        return { exists: true, valid: false, mode: null, value: null };
+      }
+    }
     handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = await handle.stat({ bigint: true });
     const mode = Number(before.mode & 0o777n);
@@ -1346,7 +1478,7 @@ export async function inspectFile(filePath, {
     )) {
       return { exists: true, valid: false, mode, value: null };
     }
-    return {
+    const result = {
       exists: true,
       valid: (!mode0600 || mode === 0o600)
         && (!strictReleaseEvidence || mode === 0o600),
@@ -1368,10 +1500,32 @@ export async function inspectFile(filePath, {
         releaseDirectoryMode: Number(strictBefore.directory.mode & 0o777n),
       } : {}),
     };
+    const descriptorRegistry = inspectionDescriptorScope.getStore();
+    const shouldRetainDescriptor = retainDescriptor === true
+      || (retainDescriptor === null && descriptorRegistry instanceof Set);
+    if (result.valid && shouldRetainDescriptor) {
+      Object.defineProperty(result, INSPECTED_FILE_DESCRIPTOR, {
+        configurable: true,
+        enumerable: false,
+        value: Object.freeze({
+          fileHandle: handle,
+          fileStat: after,
+          directoryHandle: directoryHandle || null,
+          directoryStat: openedDirectory,
+        }),
+      });
+      leasedInspectionSnapshots.add(result);
+      descriptorRegistry?.add(result);
+      retained = true;
+    }
+    return result;
   } catch {
     return { exists: false, valid: false, mode: null, value: null };
   } finally {
-    if (handle) await handle.close().catch(() => {});
+    if (!retained) {
+      if (handle) await handle.close().catch(() => {});
+      if (directoryHandle) await directoryHandle.close().catch(() => {});
+    }
   }
 }
 
@@ -3977,29 +4131,11 @@ function resolvePathBinding({
   return fallback || cliPath;
 }
 
-export function releaseScopedLedgerPath(
-  releaseShaValue,
-  gitHeadValue,
-  repositoryRoot = rootDir,
-) {
-  const releaseSha = clean(releaseShaValue).toLowerCase();
-  const gitHead = clean(gitHeadValue).toLowerCase();
-  if (!/^[0-9a-f]{40}$/.test(releaseSha) || releaseSha !== gitHead) return "";
-  return path.join(
-    repositoryRoot,
-    "deployments",
-    "fresh-contract-suites",
-    releaseSha,
-    "base-sepolia.json",
-  );
-}
-
 export function resolveEvidencePaths(
   args,
   env,
-  { gitHead = "", repositoryRoot = rootDir } = {},
+  { repositoryRoot = rootDir } = {},
 ) {
-  const defaultLedger = releaseScopedLedgerPath(env.RELEASE_SHA, gitHead, repositoryRoot);
   const resolved = {
     release: resolvePathBinding({
       args,
@@ -4099,7 +4235,6 @@ export function resolveEvidencePaths(
       key: "ledger",
       env,
       envKey: "DEPLOYMENT_MANIFEST_PATH",
-      fallback: defaultLedger,
       requireAbsoluteEnv: true,
     }),
     releaseCeremonyLedger: resolvePathBinding({
@@ -4198,6 +4333,20 @@ export function resolveEvidencePaths(
   );
   if (resolved.ledger === repositoryHistoricalLedger || resolved.ledger === historicalLedger) {
     throw new Error("the historical deployments/base-sepolia.json ledger is not activation authority");
+  }
+  if (resolved.ledger) {
+    const relativeLedgerPath = path.relative(
+      path.resolve(repositoryRoot),
+      path.resolve(resolved.ledger),
+    );
+    if (
+      relativeLedgerPath === ""
+      || (!relativeLedgerPath.startsWith(`..${path.sep}`) && relativeLedgerPath !== "..")
+    ) {
+      throw new Error(
+        "DEPLOYMENT_MANIFEST_PATH must be explicit release evidence outside the clean source checkout",
+      );
+    }
   }
   return resolved;
 }
@@ -4610,7 +4759,7 @@ export async function collectCompletedDiligenceReleaseCeremony({
   }
 }
 
-export async function collectSnapshot(args) {
+async function collectSnapshotWithRetainedEvidence(args) {
   const envFile = await inspectFile(args.env);
   const fileEnv = envFile.exists ? parseEnvText(envFile.text) : {};
   const env = { ...fileEnv, ...process.env };
@@ -5319,7 +5468,7 @@ export async function collectSnapshot(args) {
     });
   const reportCheckedAtMs = Date.now();
 
-  return {
+  const snapshot = {
     env,
     tools,
     toolVersions,
@@ -5465,6 +5614,22 @@ export async function collectSnapshot(args) {
     semanticEvidenceReason: semanticValidation.reason,
     semanticValidationReceipt: semanticValidation.receipt || null,
   };
+  return snapshot;
+}
+
+export async function collectSnapshot(args) {
+  const retainedSnapshots = new Set();
+  return inspectionDescriptorScope.run(retainedSnapshots, async () => {
+    try {
+      return await collectSnapshotWithRetainedEvidence(args);
+    } finally {
+      // Every successful inspection in this asynchronous collection lifetime
+      // registers its opaque descriptor lease here. Closing in the wrapper's
+      // finally covers both the normal report path and every fail-closed throw.
+      await releaseInspectedFileDescriptors([...retainedSnapshots]);
+      retainedSnapshots.clear();
+    }
+  });
 }
 
 export async function main(argv = process.argv.slice(2)) {

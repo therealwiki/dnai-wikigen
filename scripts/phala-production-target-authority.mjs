@@ -13,6 +13,9 @@ import {
 import {
   parseCanonicalPublicHttpsUrl,
 } from "./canonical-public-https-url-core.mjs";
+import {
+  PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
+} from "./phala-sdk-runtime-capsule.mjs";
 
 export const PHALA_COMPATIBILITY_PROBE_PLAN_SCHEMA =
   "dnai.phala-compatibility-probe-plan.v1";
@@ -21,13 +24,17 @@ export const PHALA_COMPATIBILITY_RECEIPT_SCHEMA =
 export const PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA =
   "dnai.phala-production-target-authority.v2";
 export const PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA =
-  "dnai.phala-sdk-wire-transform-staging-receipt.v2";
+  "dnai.phala-sdk-wire-transform-staging-receipt.v3";
 export const PHALA_PRODUCTION_TARGET_AUTHORITY_DOMAIN =
   "dnai-wikigen/phala-production-target-authority/v2\0";
 export const PHALA_COMPATIBILITY_RECEIPT_DOMAIN =
   "dnai-wikigen/phala-compatibility-receipt/v1\0";
 export const PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-sdk-wire-transform-staging-receipt/v2\0";
+  "dnai-wikigen/phala-sdk-wire-transform-staging-receipt/v3\0";
+export const PHALA_PROVISION_REQUEST_TARGET_SHA256 =
+  "sha256:08c22056de45a714d43276269d96d9ff5198a3e97c4b3a3626ca6307fdd76bd6";
+export const PHALA_PRODUCTION_TARGET_REVIEW_INPUT_DOMAIN =
+  "dnai-wikigen/phala-production-target-review-input/v1\0";
 export const PHALA_CLOUD_SDK_VERSION = "0.2.10";
 export const PHALA_DSTACK_SDK_VERSION = "0.5.8";
 export const PHALA_CLI_PACKAGE_VERSION = "1.1.19";
@@ -51,7 +58,8 @@ const COMPRESSED_K256 = /^0x0[23][0-9a-f]{64}$/;
 const ISO_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
 const INSTANCE_TYPE = /^[a-z][a-z0-9.-]{1,63}$/;
-const MAX_RECEIPT_LIFETIME_MS = 60 * 60 * 1_000;
+export const MAX_PHALA_COMPATIBILITY_RECEIPT_LIFETIME_MS = 30 * 60 * 1_000;
+export const MAX_PHALA_SDK_WIRE_TRANSFORM_STAGING_LIFETIME_MS = 10 * 60 * 1_000;
 export const MAX_PHALA_PRODUCTION_TARGET_LIFETIME_MS = 10 * 60 * 1_000;
 export const PHALA_TARGET_FRESHNESS_CHECKPOINTS = Object.freeze([
   "before_prediction",
@@ -179,6 +187,24 @@ function domainDigest(domain, value) {
     .update(Buffer.from(domain, "utf8"))
     .update(Buffer.from(JSON.stringify(sortedObject(value)), "utf8"))
     .digest("hex")}`;
+}
+
+export function phalaProductionTargetReviewInputProjectionDigest(value) {
+  const projection = Object.fromEntries([
+    "release_sha",
+    "cvm_launch_intent_sha256",
+    "review_envelope_sha256",
+    "review_evidence_sha256",
+    "compatibility_receipt_sha256",
+    "api",
+    "workspace",
+    "sdk_identity",
+    "kms",
+    "os_image",
+    "resource_targets",
+    "app_compose_profiles",
+  ].map((field) => [field, structuredClone(value[field])]));
+  return domainDigest(PHALA_PRODUCTION_TARGET_REVIEW_INPUT_DOMAIN, projection);
 }
 
 function assertSecretFree(value, label = "artifact", path = []) {
@@ -339,8 +365,8 @@ export function normalizePhalaCompatibilityReceipt(value) {
   const checkedAt = canonicalTimestamp(parsed.checked_at, "checked_at");
   const expiresAt = canonicalTimestamp(parsed.expires_at, "expires_at");
   const lifetime = Date.parse(expiresAt) - Date.parse(checkedAt);
-  if (lifetime < 1 || lifetime > MAX_RECEIPT_LIFETIME_MS) {
-    throw new Error("compatibility receipt lifetime is outside the one-hour bound");
+  if (lifetime < 1 || lifetime > MAX_PHALA_COMPATIBILITY_RECEIPT_LIFETIME_MS) {
+    throw new Error("compatibility receipt lifetime is outside the thirty-minute bound");
   }
   const apiOrigin = exactHttpsUrl(parsed.api_origin, "api_origin", { originOnly: true });
   if (apiOrigin !== PHALA_CONTROL_PLANE_AUTHORITY.api_origin) {
@@ -383,26 +409,14 @@ export function normalizePhalaCompatibilityReceipt(value) {
   if (workspace.authenticated !== true) {
     throw new Error("compatibility workspace is not authenticated");
   }
-  const sdk = exactRecord(parsed.sdk_identity, [
-    "phala_cli_version",
-    "phala_cli_manifest_sha256",
-    "phala_cloud_version",
-    "phala_cloud_manifest_sha256",
-    "phala_cloud_npm_dist_integrity_sha512",
-    "phala_cloud_module_sha256",
-    "dstack_sdk_version",
-    "dstack_sdk_manifest_sha256",
-    "dstack_verify_module_sha256",
-    "dstack_compose_hash_module_sha256",
-    "dstack_encryption_module_sha256",
-  ], "compatibility SDK identity");
-  if (sdk.phala_cli_version !== PHALA_CLI_PACKAGE_VERSION
-    || sdk.phala_cloud_version !== PHALA_CLOUD_SDK_VERSION
-    || sdk.dstack_sdk_version !== PHALA_DSTACK_SDK_VERSION
-    || sdk.phala_cloud_npm_dist_integrity_sha512
-      !== PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY.package
-        .npm_dist_integrity_sha512) {
-    throw new Error("compatibility SDK versions are not the exact pinned versions");
+  const sdk = exactRecord(
+    parsed.sdk_identity,
+    Object.keys(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
+    "compatibility SDK identity",
+  );
+  if (JSON.stringify(sortedObject(sdk))
+      !== JSON.stringify(sortedObject(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY))) {
+    throw new Error("compatibility SDK identity differs from the reviewed runtime capsule");
   }
   const kms = exactRecord(parsed.kms, [
     "id",
@@ -449,42 +463,7 @@ export function normalizePhalaCompatibilityReceipt(value) {
       ),
       authenticated: true,
     },
-    sdk_identity: {
-      phala_cli_version: PHALA_CLI_PACKAGE_VERSION,
-      phala_cli_manifest_sha256: exactSha256(
-        sdk.phala_cli_manifest_sha256,
-        "phala_cli_manifest_sha256",
-      ),
-      phala_cloud_version: PHALA_CLOUD_SDK_VERSION,
-      phala_cloud_manifest_sha256: exactSha256(
-        sdk.phala_cloud_manifest_sha256,
-        "phala_cloud_manifest_sha256",
-      ),
-      phala_cloud_npm_dist_integrity_sha512:
-        PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY.package
-          .npm_dist_integrity_sha512,
-      phala_cloud_module_sha256: exactSha256(
-        sdk.phala_cloud_module_sha256,
-        "phala_cloud_module_sha256",
-      ),
-      dstack_sdk_version: PHALA_DSTACK_SDK_VERSION,
-      dstack_sdk_manifest_sha256: exactSha256(
-        sdk.dstack_sdk_manifest_sha256,
-        "dstack_sdk_manifest_sha256",
-      ),
-      dstack_verify_module_sha256: exactSha256(
-        sdk.dstack_verify_module_sha256,
-        "dstack_verify_module_sha256",
-      ),
-      dstack_compose_hash_module_sha256: exactSha256(
-        sdk.dstack_compose_hash_module_sha256,
-        "dstack_compose_hash_module_sha256",
-      ),
-      dstack_encryption_module_sha256: exactSha256(
-        sdk.dstack_encryption_module_sha256,
-        "dstack_encryption_module_sha256",
-      ),
-    },
+    sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
     kms: {
       id: exactIdentifier(kms.id, "kms.id"),
       slug: "phala",
@@ -634,15 +613,19 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
     "workspace",
     "sdk_identity",
     "capture_method",
-    "staging_account_isolated",
+    "target_review_input_sha256",
+    "workspace_preflight",
     "provision_call_count",
     "commit_calls",
-    "cleanup_receipt_sha256",
+    "journal_final_sha256",
+    "journal_successful_prepare_count",
+    "server_cleanup_claimed",
+    "pending_server_state_status",
     "domains",
   ], "Phala SDK wire-transform staging receipt");
   if (parsed.schema !== PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA
     || parsed.truth_status
-      !== "authenticated_staging_wire_capture_not_production_cvm_commit_tdx_attestation_or_launch_authority") {
+      !== "authenticated_empty_operator_designated_staging_workspace_wire_capture_not_exclusive_isolation_proof_production_cvm_commit_tdx_attestation_or_launch_authority") {
     throw new Error("Phala SDK wire-transform staging receipt identity is invalid");
   }
   if (parsed.compatibility_receipt_sha256
@@ -654,7 +637,9 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
   if (Date.parse(capturedAt) < Date.parse(compatibility.checked_at)
     || Date.parse(capturedAt) > Date.parse(compatibility.expires_at)
     || Date.parse(expiresAt) <= Date.parse(capturedAt)
-    || Date.parse(expiresAt) > Date.parse(compatibility.expires_at)) {
+    || Date.parse(expiresAt) > Date.parse(compatibility.expires_at)
+    || Date.parse(expiresAt) - Date.parse(capturedAt)
+      > MAX_PHALA_SDK_WIRE_TRANSFORM_STAGING_LIFETIME_MS) {
     throw new Error("staging wire-transform receipt is stale against compatibility");
   }
   if (parsed.api_origin !== compatibility.api_origin
@@ -674,11 +659,37 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
       !== JSON.stringify(sortedObject(compatibility.sdk_identity))) {
     throw new Error("staging wire-transform receipt SDK identity drifted");
   }
+  const workspacePreflight = exactRecord(parsed.workspace_preflight, [
+    "authenticated_committed_cvm_count_before_prepare",
+    "page",
+    "page_size",
+    "pages",
+    "items_count",
+    "total",
+    "response_sha256",
+    "operator_asserted_dedicated_workspace",
+    "exclusive_workspace_control_proven",
+  ], "staging workspace preflight");
+  if (workspacePreflight.authenticated_committed_cvm_count_before_prepare !== 0
+    || workspacePreflight.page !== 1
+    || workspacePreflight.page_size !== 100
+    || ![0, 1].includes(workspacePreflight.pages)
+    || workspacePreflight.items_count !== 0
+    || workspacePreflight.total !== 0
+    || workspacePreflight.operator_asserted_dedicated_workspace !== true
+    || workspacePreflight.exclusive_workspace_control_proven !== false) {
+    throw new Error(
+      "staging workspace preflight must bind an authenticated empty committed-CVM list and an explicit non-exclusive operator designation",
+    );
+  }
   if (parsed.capture_method
       !== "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization"
-    || parsed.staging_account_isolated !== true
     || parsed.provision_call_count !== CVM_LAUNCH_DOMAINS.length
-    || !Array.isArray(parsed.commit_calls) || parsed.commit_calls.length !== 0) {
+    || !Array.isArray(parsed.commit_calls) || parsed.commit_calls.length !== 0
+    || parsed.journal_successful_prepare_count !== CVM_LAUNCH_DOMAINS.length
+    || parsed.server_cleanup_claimed !== false
+    || parsed.pending_server_state_status
+      !== "seven_prepares_succeeded_uncommitted_operator_reconciliation_required") {
     throw new Error("staging receipt does not prove the bounded prepare-only capture boundary");
   }
   if (!Array.isArray(parsed.domains)
@@ -688,6 +699,9 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
   const domains = CVM_LAUNCH_DOMAINS.map((domain, index) => {
     const entry = exactRecord(parsed.domains[index], [
       "domain",
+      "http_method",
+      "request_target_sha256",
+      "request_semantics_sha256",
       "pre_transform_request_sha256",
       "expected_post_transform_body_sha256",
       "captured_post_transform_body_sha256",
@@ -699,6 +713,14 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
     if (entry.domain !== domain) {
       throw new Error("staging wire captures must use canonical seven-domain order");
     }
+    if (entry.http_method !== "POST"
+      || entry.request_target_sha256 !== PHALA_PROVISION_REQUEST_TARGET_SHA256) {
+      throw new Error("staging wire capture did not use exact POST /api/v1/cvms/provision");
+    }
+    const requestSemantics = exactSha256(
+      entry.request_semantics_sha256,
+      `staging domains[${index}].request_semantics_sha256`,
+    );
     const preRequest = exactSha256(
       entry.pre_transform_request_sha256,
       `staging domains[${index}].pre_transform_request_sha256`,
@@ -731,6 +753,9 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
     }
     return {
       domain,
+      http_method: "POST",
+      request_target_sha256: PHALA_PROVISION_REQUEST_TARGET_SHA256,
+      request_semantics_sha256: requestSemantics,
       pre_transform_request_sha256: preRequest,
       expected_post_transform_body_sha256: expectedBody,
       captured_post_transform_body_sha256: capturedBody,
@@ -749,6 +774,7 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
     "pre_transform_compose_hash",
     "expected_post_transform_compose_hash",
     "prepare_response_sha256",
+    "request_semantics_sha256",
   ]) {
     if (new Set(domains.map((entry) => entry[field])).size !== domains.length) {
       throw new Error(`staging ${field} values must be pairwise distinct`);
@@ -757,7 +783,7 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
   const normalized = {
     schema: PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
     truth_status:
-      "authenticated_staging_wire_capture_not_production_cvm_commit_tdx_attestation_or_launch_authority",
+      "authenticated_empty_operator_designated_staging_workspace_wire_capture_not_exclusive_isolation_proof_production_cvm_commit_tdx_attestation_or_launch_authority",
     compatibility_receipt_sha256: parsed.compatibility_receipt_sha256,
     captured_at: capturedAt,
     expires_at: expiresAt,
@@ -770,13 +796,34 @@ export function normalizePhalaSdkWireTransformStagingReceipt(value, {
     sdk_identity: structuredClone(compatibility.sdk_identity),
     capture_method:
       "authenticated_transport_interceptor_after_sdk_transform_before_http_serialization",
-    staging_account_isolated: true,
+    target_review_input_sha256: exactSha256(
+      parsed.target_review_input_sha256,
+      "staging target_review_input_sha256",
+    ),
+    workspace_preflight: {
+      authenticated_committed_cvm_count_before_prepare: 0,
+      page: 1,
+      page_size: 100,
+      pages: workspacePreflight.pages,
+      items_count: 0,
+      total: 0,
+      response_sha256: exactSha256(
+        workspacePreflight.response_sha256,
+        "staging workspace preflight response_sha256",
+      ),
+      operator_asserted_dedicated_workspace: true,
+      exclusive_workspace_control_proven: false,
+    },
     provision_call_count: CVM_LAUNCH_DOMAINS.length,
     commit_calls: [],
-    cleanup_receipt_sha256: exactSha256(
-      parsed.cleanup_receipt_sha256,
-      "staging cleanup_receipt_sha256",
+    journal_final_sha256: exactSha256(
+      parsed.journal_final_sha256,
+      "staging journal_final_sha256",
     ),
+    journal_successful_prepare_count: CVM_LAUNCH_DOMAINS.length,
+    server_cleanup_claimed: false,
+    pending_server_state_status:
+      "seven_prepares_succeeded_uncommitted_operator_reconciliation_required",
     domains,
   };
   assertSecretFree(normalized, "SDK wire-transform staging receipt");
@@ -861,19 +908,11 @@ export function normalizePhalaProductionTargetAuthority(value, {
       !== compatibility.workspace.account_subject_sha256) {
     throw new Error("target workspace differs from the authenticated compatibility observation");
   }
-  const sdk = exactRecord(parsed.sdk_identity, [
-    "phala_cli_version",
-    "phala_cli_manifest_sha256",
-    "phala_cloud_version",
-    "phala_cloud_manifest_sha256",
-    "phala_cloud_npm_dist_integrity_sha512",
-    "phala_cloud_module_sha256",
-    "dstack_sdk_version",
-    "dstack_sdk_manifest_sha256",
-    "dstack_verify_module_sha256",
-    "dstack_compose_hash_module_sha256",
-    "dstack_encryption_module_sha256",
-  ], "target SDK identity");
+  const sdk = exactRecord(
+    parsed.sdk_identity,
+    Object.keys(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
+    "target SDK identity",
+  );
   if (JSON.stringify(sortedObject(sdk))
       !== JSON.stringify(sortedObject(compatibility.sdk_identity))) {
     throw new Error("target SDK identity differs from the compatibility receipt");
@@ -922,6 +961,7 @@ export function normalizePhalaProductionTargetAuthority(value, {
     || Date.parse(expiresAt) > Date.parse(compatibility.expires_at)
     || Date.parse(expiresAt) > Date.parse(staging.expires_at)
     || targetLifetime > MAX_PHALA_PRODUCTION_TARGET_LIFETIME_MS
+    || Date.parse(reviewedAt) < Date.parse(signerValidFrom)
     || Date.parse(expiresAt) > Date.parse(signerValidUntil)) {
     throw new Error(
       "target review interval is invalid, too long, stale against compatibility, or outlives the KMS signer pin",
@@ -983,6 +1023,10 @@ export function normalizePhalaProductionTargetAuthority(value, {
     reviewed_at: reviewedAt,
     expires_at: expiresAt,
   };
+  if (staging.target_review_input_sha256
+      !== phalaProductionTargetReviewInputProjectionDigest(normalized)) {
+    throw new Error("production target projection differs from the staging-bound review input");
+  }
   assertSecretFree(normalized, "production target authority");
   return normalized;
 }

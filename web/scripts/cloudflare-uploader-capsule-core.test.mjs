@@ -28,7 +28,7 @@ import {
 } from "./cloudflare-uploader-capsule-core.mjs";
 
 const NPM_VERSION = "11.6.0";
-const WRANGLER_VERSION = "4.110.0";
+const WRANGLER_VERSION = "4.131.0";
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
 const SYNTHETIC_KAT_RUNTIME = Object.freeze({
   architecture: "arm64",
@@ -44,8 +44,12 @@ const SYNTHETIC_KAT_OBSERVED_RUNTIME = Object.freeze({
   osPlatform: SYNTHETIC_KAT_RUNTIME.osPlatform,
   osRelease: SYNTHETIC_KAT_RUNTIME.osRelease,
 });
-const SYNTHETIC_KAT_MANIFEST_SHA256 =
-  "sha256:163126df2da62577e1636ecdbc7eea91004bfd6968605bcc87933e12d1a7ab7a";
+const SYNTHETIC_KAT_MANIFEST_SHA256_BY_FILESYSTEM = Object.freeze({
+  darwin:
+    "sha256:a2821ebb3a019c0ae73a380987ce1f556ff5f08586a1060966ff45f29006c49d",
+  linux:
+    "sha256:8fc812f8ce8ad569fa434873787979b4f8de25e2f565cc11f1bdb2ecc44f9e0f",
+});
 
 function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -270,14 +274,21 @@ test("projects a deterministic exact-byte Wrangler-only uploader capsule", async
   });
 });
 
-test("synthetic capsule projection matches its fixed host-independent known-answer digest", async () => {
+test("synthetic capsule projection matches its fixed filesystem-specific known-answer digest", async () => {
+  const expectedManifestSha256 =
+    SYNTHETIC_KAT_MANIFEST_SHA256_BY_FILESYSTEM[process.platform];
+  assert.match(
+    String(expectedManifestSha256 || ""),
+    /^sha256:[0-9a-f]{64}$/,
+    `unsupported uploader capsule KAT filesystem: ${process.platform}`,
+  );
   const fixture = await createFixture({ runtime: SYNTHETIC_KAT_RUNTIME });
   try {
     const projection = __test.repeatedProjection({
       ...fixture.options,
       observedRuntimeIdentity: SYNTHETIC_KAT_OBSERVED_RUNTIME,
     });
-    assert.equal(projection.manifestSha256, SYNTHETIC_KAT_MANIFEST_SHA256);
+    assert.equal(projection.manifestSha256, expectedManifestSha256);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -806,7 +817,7 @@ test("runtime identity substitutions and non-exact dependency versions fail clos
     assert.throws(
       () => projectCloudflareUploaderCapsule({
         ...options,
-        runtimeIdentity: runtimeIdentity({ wranglerVersion: "^4.110.0" }),
+        runtimeIdentity: runtimeIdentity({ wranglerVersion: "^4.131.0" }),
       }),
       /not an exact version/,
     );

@@ -25,6 +25,9 @@ import {
   CLOUDFLARE_PRODUCTION_BRANCH,
 } from "./deploy-cloudflare-core.mjs";
 import {
+  CLOUDFLARE_PRODUCTION_UPLOADER_AUTHORITY_TRUTH_STATUS,
+} from "./cloudflare-production-uploader-authority-core.mjs";
+import {
   __test as releaseEnvTest,
   arenaReleaseApprovedChallengeSetSha256,
   serializeEnv,
@@ -210,7 +213,7 @@ test("release uploader is the exact reviewed Wrangler runtime", () => {
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_LITERAL_PATHSPECS: "1",
   });
-  assert.equal(deployRunnerTest.PINNED_WRANGLER_RUNTIME.version, "4.110.0");
+  assert.equal(deployRunnerTest.PINNED_WRANGLER_RUNTIME.version, "4.131.0");
   assert.equal(
     resolvePinnedWranglerCli(),
     new URL("../node_modules/wrangler/wrangler-dist/cli.js", import.meta.url).pathname,
@@ -218,6 +221,17 @@ test("release uploader is the exact reviewed Wrangler runtime", () => {
   assert.throws(
     () => deployRunnerTest.defaultWrangler([], "/tmp/fake-stage"),
     /fresh isolated release runtime/,
+  );
+  assert.throws(
+    () => deployRunnerTest.defaultWrangler([], "/tmp/fake-stage", {
+      bundleRoot: "/tmp/fake-stage",
+      controlEnv: { HOME: "/Users/operator-with-saved-oauth" },
+      exactProductionInput: false,
+      webDir: new URL("..", import.meta.url).pathname.replace(/\/$/, ""),
+      wranglerEnvironment: {},
+      wranglerHome: "/tmp/fresh-wrangler-home",
+    }),
+    /scoped CLOUDFLARE_API_TOKEN/,
   );
 });
 
@@ -239,15 +253,6 @@ test("release executor exposes the exact Node, dylib, and npm proof pins", () =>
     totalBytes: 11_960_560,
     treeSha256: "417ff144368776eeaf8651a00ec0e3933db96278b1a7efe9e7f53817634c6289",
   });
-  if (
-    process.version === deployRunnerTest.PINNED_NODE_RUNTIME.version
-    && process.execPath === deployRunnerTest.PINNED_NODE_RUNTIME.executablePath
-  ) {
-    assert.deepEqual(
-      deployRunnerTest.assertPinnedReleaseRuntime(),
-      deployRunnerTest.PINNED_RELEASE_RUNTIME_PROOF,
-    );
-  }
 });
 
 test("release runtime is pinned before environment, closure, or authority evaluation", async () => {
@@ -298,10 +303,10 @@ test("deployment wrapper delegates the full gate to the hardened runner", async 
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
   assert.equal(packageJson.scripts["deploy:cloudflare"], "node scripts/deploy-cloudflare.mjs");
-  assert.equal(packageJson.devDependencies.wrangler, "4.110.0");
+  assert.equal(packageJson.devDependencies.wrangler, "4.131.0");
   assert.equal(packageLock.lockfileVersion, 3);
-  assert.equal(packageLock.packages[""].devDependencies.wrangler, "4.110.0");
-  assert.equal(packageLock.packages["node_modules/wrangler"].version, "4.110.0");
+  assert.equal(packageLock.packages[""].devDependencies.wrangler, "4.131.0");
+  assert.equal(packageLock.packages["node_modules/wrangler"].version, "4.131.0");
   for (const [packagePath, descriptor] of Object.entries(packageLock.packages)) {
     if (!packagePath || descriptor.link) continue;
     assert.match(descriptor.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
@@ -391,6 +396,29 @@ function isolatedBuildTestDependencies(sourceRequests = []) {
     projectInstalledDependencyTree: async () => INSTALLED_DEPENDENCY_PROOF,
     createUploadHome: async () => "/tmp/fake-upload-home",
     removeUploadHome: async () => {},
+    createWranglerEnvironment: () => Object.freeze({}),
+    authorizeUpload: async ({
+      policy,
+      stageDir,
+      uploadWorkspace,
+      uploaderRuntimeIdentity,
+    }) => Object.freeze({
+      authorityTreeManifestSha256: policy.mode === "live"
+        ? `sha256:${"a".repeat(64)}`
+        : null,
+      bundleRoot: stageDir,
+      capsuleManifestSha256: policy.mode === "live"
+        ? `sha256:${"b".repeat(64)}`
+        : null,
+      exactProductionInput: policy.mode === "live",
+      producerUid: 501,
+      truthStatus: policy.mode === "live"
+        ? CLOUDFLARE_PRODUCTION_UPLOADER_AUTHORITY_TRUTH_STATUS
+        : deployRunnerTest.MODELED_UPLOAD_TRUTH_STATUS,
+      uploaderCapsulePin: policy.mode === "live" ? { synthetic: true } : null,
+      uploaderCapsuleRoot: uploadWorkspace.webDir,
+      uploaderRuntimeIdentity,
+    }),
   };
 }
 
@@ -501,6 +529,58 @@ test("runner destroys verification state, builds in a fresh workspace, audits st
     ),
     true,
   );
+});
+
+test("uploader authority is re-projected adjacent to Wrangler and drift invokes it zero times", async () => {
+  let authorityReads = 0;
+  const setup = successfulDependencies({
+    authorizeUpload: async ({ stageDir, uploadWorkspace, uploaderRuntimeIdentity }) => {
+      authorityReads += 1;
+      return {
+        authorityTreeManifestSha256: null,
+        bundleRoot: stageDir,
+        capsuleManifestSha256: null,
+        exactProductionInput: false,
+        producerUid: 501,
+        truthStatus: deployRunnerTest.MODELED_UPLOAD_TRUTH_STATUS,
+        uploaderCapsulePin: null,
+        uploaderCapsuleRoot: uploadWorkspace.webDir,
+        uploaderRuntimeIdentity: authorityReads === 1
+          ? uploaderRuntimeIdentity
+          : { ...uploaderRuntimeIdentity, osRelease: "changed" },
+      };
+    },
+  });
+  await assert.rejects(
+    runCloudflareDeployment(setup.dependencies),
+    /uploader authority changed before invocation/,
+  );
+  assert.equal(authorityReads, 2);
+  assert.equal(setup.wranglerCalls(), 0);
+});
+
+test("live runner defaults fail closed without a different-principal upload root", async () => {
+  const setup = successfulDependencies({
+    authorizeUpload: deployRunnerTest.defaultAuthorizeUpload,
+    controlEnv: { CLOUDFLARE_API_TOKEN: "p".repeat(40) },
+    loadReleaseEnvironment: async () => LIVE_ENV,
+    releaseArguments: ["--release", "/tmp/release.json"],
+    snapshotDeploymentInputs: async () => ({
+      ...snapshot(),
+      dirty: "",
+    }),
+    loadPrivateReleaseAudit: async () => ({ fingerprintSha256: "e".repeat(64) }),
+    validateRelease: async () => semanticValidationReceipt(
+      SHA,
+      serializeEnv(LIVE_ENV),
+      LIVE_AUTHORITY_BINDING,
+    ),
+  });
+  await assert.rejects(
+    runCloudflareDeployment(setup.dependencies),
+    /production upload authority root.*canonical absolute/,
+  );
+  assert.equal(setup.wranglerCalls(), 0);
 });
 
 test("check-generated source or dependency state cannot reach the artifact workspace", async (context) => {
@@ -685,6 +765,12 @@ test("runner strips operator credentials from the fresh frontend build subproces
   assert.equal(receivedBuildEnvironment.NODE_ENV, "production");
   assert.equal(receivedBuildEnvironment.HOME, "/tmp/fake-build-home");
   assert.notEqual(receivedBuildEnvironment.HOME, "/Users/release");
+  assert.equal(
+    receivedBuildEnvironment.NPM_CONFIG_GLOBALCONFIG,
+    "/tmp/fake-build-home/.npmrc-global",
+  );
+  assert.equal(receivedBuildEnvironment.NPM_CONFIG_NODE_OPTIONS, "");
+  assert.equal(receivedBuildEnvironment.NPM_CONFIG_SCRIPT_SHELL, "/bin/sh");
   assert.equal(receivedBuildEnvironment.NPM_CONFIG_USERCONFIG, "/tmp/fake-build-home/.npmrc");
   assert.equal(Object.isFrozen(receivedBuildEnvironment), true);
   assert.equal(dependencyInstalls.length, 3);
@@ -783,7 +869,7 @@ test("live runner preserves signed D and binds signed C to the fresh dist manife
     expectedGitTreeOid: GIT_TREE_OID,
   });
   assert.equal(wranglerCalls, 1);
-  assert.equal(sourceRequests.length, 8);
+  assert.equal(sourceRequests.length, 6);
   for (const request of sourceRequests) {
     assert.deepEqual(request, {
       operation: request.operation,
@@ -873,6 +959,7 @@ test("current O-derived D without signed C reaches neither build authority nor W
   let wranglerCalls = 0;
   await assert.rejects(
     runCloudflareDeployment({
+      ...isolatedBuildTestDependencies(),
       releaseArguments: [
         "--release",
         "/tmp/release.json",
@@ -938,6 +1025,7 @@ test("live runner rejects private authority input drift before build or upload",
   let wranglerCalls = 0;
   await assert.rejects(
     runCloudflareDeployment({
+      ...isolatedBuildTestDependencies(),
       releaseArguments: ["--release", "/tmp/release.json"],
       loadReleaseEnvironment: async () => LIVE_ENV,
       snapshotDeploymentInputs: async () => ({

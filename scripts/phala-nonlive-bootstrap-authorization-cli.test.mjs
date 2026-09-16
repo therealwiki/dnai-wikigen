@@ -84,7 +84,7 @@ const bare = (digit) => String(digit).repeat(64);
 const address = (digit) => `0x${String(digit).repeat(40)}`;
 const BATCH_ID = sha("b");
 const ISSUED_AT = "2026-07-21T10:01:00Z";
-const EXPIRES_AT = "2026-07-21T10:11:00Z";
+const EXPIRES_AT = "2026-07-21T10:09:00Z";
 const NOW = "2026-07-21T10:02:00Z";
 
 function canonicalFile(filePath, value, mode = 0o600) {
@@ -302,7 +302,7 @@ function bootstrapAuthority(deploymentIntentSha256) {
     sdk_wire_transform_staging_receipt_sha256: sha("9"),
     qvl_measurement_policy_set_sha256: sha("d"),
     reviewed_at: "2026-07-21T10:00:00Z",
-    valid_until: "2026-07-21T11:00:00Z",
+    valid_until: "2026-07-21T10:10:00Z",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => ({
       domain,
       descriptor_sha256: sha(String(index + 1)),

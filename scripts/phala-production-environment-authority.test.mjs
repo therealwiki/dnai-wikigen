@@ -151,7 +151,7 @@ function bootstrapAuthority() {
     sdk_wire_transform_staging_receipt_sha256: sha("9"),
     qvl_measurement_policy_set_sha256: sha("d"),
     reviewed_at: "2026-07-21T10:00:00Z",
-    valid_until: "2026-07-21T11:00:00Z",
+    valid_until: "2026-07-21T10:10:00Z",
     domains: CVM_LAUNCH_DOMAINS.map((domain, index) => ({
       domain,
       descriptor_sha256: sha(String(index + 1)),
@@ -181,7 +181,7 @@ function provisioningAuthority(bootstrap = bootstrapAuthority()) {
     targetAuthoritySha256: sha("8"),
     cvmLaunchIntentSha256: bootstrap.cvm_launch_intent_sha256,
     bootstrapAuthoritySha256: bootstrapPublicEnvironmentAuthorityDigest(bootstrap),
-    preparedAt: "2026-07-21T10:10:00Z",
+    preparedAt: "2026-07-21T10:02:00Z",
     prepareObservations: prepareObservations(),
   });
 }
@@ -508,14 +508,14 @@ test("bootstrap private assembly exposes exact entries while its receipt is secr
   const provisioning = provisioningAuthority(bootstrap);
   const first = assemblePrivateBootstrapEnvironment({
     domain: "main_runtime_cvm",
-    now: "2026-07-21T10:20:00Z",
+    now: "2026-07-21T10:05:00Z",
     bootstrapAuthority: bootstrap,
     provisioningAuthority: provisioning,
     secretInput: secretInput("main_runtime_cvm", bootstrap, "one"),
   });
   const second = assemblePrivateBootstrapEnvironment({
     domain: "main_runtime_cvm",
-    now: "2026-07-21T10:20:00Z",
+    now: "2026-07-21T10:05:00Z",
     bootstrapAuthority: bootstrap,
     provisioningAuthority: provisioning,
     secretInput: secretInput("main_runtime_cvm", bootstrap, "two"),
@@ -545,7 +545,7 @@ test("bootstrap private assembly exposes exact entries while its receipt is secr
   assert.throws(
     () => assemblePrivateBootstrapEnvironment({
       domain: "main_runtime_cvm",
-      now: "2026-07-21T10:20:00Z",
+      now: "2026-07-21T10:05:00Z",
       bootstrapAuthority: bootstrap,
       provisioningAuthority: provisioning,
       secretInput: secretInput("main_runtime_cvm", bootstrap),
@@ -560,7 +560,7 @@ test("bootstrap assembly rejects stale, cross-batch, cross-launch, and wrong-pha
   const provisioning = provisioningAuthority(bootstrap);
   const base = {
     domain: "main_runtime_cvm",
-    now: "2026-07-21T10:20:00Z",
+    now: "2026-07-21T10:05:00Z",
     bootstrapAuthority: bootstrap,
     provisioningAuthority: provisioning,
     secretInput: secretInput("main_runtime_cvm", bootstrap),

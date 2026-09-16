@@ -42,7 +42,7 @@ test("reviewed Pages configuration omits Wrangler's unsupported account_id field
   assert.match(artifactTest.EXPECTED_WRANGLER_CONFIG, /^pages_build_output_dir = "\.\/dist"$/m);
 });
 
-test("D build controls are an exact stable 26-file projection", async () => {
+test("D build controls are an exact stable 28-file projection", async () => {
   assert.deepEqual(CLOUDFLARE_D_BUILD_CONTROL_PATHS, [
     "web/functions/_middleware.js",
     "web/index.html",
@@ -54,7 +54,9 @@ test("D build controls are an exact stable 26-file projection", async () => {
     "web/scripts/cloudflare-build-sandbox-core.mjs",
     "web/scripts/collaboration-execution-release-env-core.mjs",
     "web/scripts/cloudflare-external-build-closure-core.mjs",
+    "web/scripts/cloudflare-production-uploader-authority-core.mjs",
     "web/scripts/cloudflare-release-artifact-core.mjs",
+    "web/scripts/cloudflare-uploader-capsule-core.mjs",
     "web/scripts/deploy-cloudflare-core.mjs",
     "web/scripts/deploy-cloudflare.mjs",
     "web/scripts/durable-private-file-core.mjs",

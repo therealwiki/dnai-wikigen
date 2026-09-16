@@ -59,7 +59,7 @@ test("fresh getCvmInfo produces one immutable branded production posture receipt
   assert.equal(assertVerifiedProductionCvmPostureReceipt(receipt), receipt);
   assert.equal(
     productionCvmPostureVerificationReceiptSha256(receipt),
-    "sha256:8b7714f14c3755224e7d91ee7d4c0c195948ca1e185ae3b1b48b9099befbf72d",
+    "sha256:3f8505d0e0df7f39b9c6d435ea39b58d1870adac68824639f78fb0b69bc5531d",
   );
   const before = productionCvmPostureVerificationReceiptSha256(receipt);
   assert.throws(() => { receipt.compose_hash = "3".repeat(64); }, TypeError);

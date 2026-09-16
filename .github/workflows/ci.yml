@@ -4,6 +4,10 @@ on:
   # Build TEE Images calls this exact workflow before it is allowed to publish
   # any registry subject. Keep the reusable invocation byte-identical to the
   # pull-request and branch gates so a release cannot pass a narrower test set.
+  # Generic Linux proves portable source logic only. It cannot satisfy the
+  # frozen Darwin operator authorities; live activation separately requires
+  # the exact-HEAD materialized wrapper in `operator-host` mode on the reviewed
+  # operator machine. A mutable worktree script is not bootstrap authority.
   workflow_call:
   pull_request:
   push:
@@ -21,62 +25,264 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+      - name: Canonicalize pinned Node release authority
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          source_node="$(type -P node)"
+          source_root="${source_node%/bin/node}"
+          runtime_root="$RUNNER_TEMP/dnai-node-22.23.2"
+          if [[ "$source_node" != /* \
+            || "$source_node" != "$(/usr/bin/readlink -f -- "$source_node")" \
+            || "$(/usr/bin/sha256sum -- "$source_node")" \
+              != "3517c2df0b2f8cd7f422b4b8450ef81c6889f08eb03e281d6de9079b15e6a327  $source_node" \
+            || -e "$runtime_root" || -L "$runtime_root" ]]; then
+            echo "setup-node did not provide the reviewed Node v22.23.2 Linux x64 runtime" >&2
+            exit 64
+          fi
+          umask 022
+          /bin/mkdir -m 0700 -- "$runtime_root"
+          /usr/bin/install -d -m 0755 -- \
+            "$runtime_root/bin" "$runtime_root/lib/node_modules"
+          /usr/bin/install -m 0755 -- "$source_node" "$runtime_root/bin/node"
+          /bin/cp -a --no-preserve=ownership -- \
+            "$source_root/lib/node_modules/npm" "$runtime_root/lib/node_modules/npm"
+          /bin/ln -s ../lib/node_modules/npm/bin/npm-cli.js "$runtime_root/bin/npm"
+          /usr/bin/printf '%s\n' "$runtime_root/bin" >> "$GITHUB_PATH"
       - name: Scan tracked files for secret-shaped material
-        run: scripts/verify-local.sh secrets
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set +x
+          gate="$(/usr/bin/mktemp "$RUNNER_TEMP/dnai-verify-local.XXXXXX")"
+          trap '/bin/rm -f -- "$gate"' EXIT
+          /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat \
+            /usr/bin/git --no-replace-objects -c core.hooksPath=/dev/null \
+              -C "$GITHUB_WORKSPACE" show \
+              "$GITHUB_SHA:scripts/verify-local.sh" > "$gate"
+          /bin/chmod 0755 "$gate"
+          /usr/bin/env -i HOME="$HOME" PATH="$PATH" CI=true \
+            /bin/bash -p "$gate" --head-materialized-root \
+              "$GITHUB_WORKSPACE" "$GITHUB_SHA" secrets
 
   contracts:
     name: Foundry Contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22.23.2
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Canonicalize pinned Node release authority
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          source_node="$(type -P node)"
+          source_root="${source_node%/bin/node}"
+          runtime_root="$RUNNER_TEMP/dnai-node-22.23.2"
+          if [[ "$source_node" != /* \
+            || "$source_node" != "$(/usr/bin/readlink -f -- "$source_node")" \
+            || "$(/usr/bin/sha256sum -- "$source_node")" \
+              != "3517c2df0b2f8cd7f422b4b8450ef81c6889f08eb03e281d6de9079b15e6a327  $source_node" \
+            || -e "$runtime_root" || -L "$runtime_root" ]]; then
+            echo "setup-node did not provide the reviewed Node v22.23.2 Linux x64 runtime" >&2
+            exit 64
+          fi
+          umask 022
+          /bin/mkdir -m 0700 -- "$runtime_root"
+          /usr/bin/install -d -m 0755 -- \
+            "$runtime_root/bin" "$runtime_root/lib/node_modules"
+          /usr/bin/install -m 0755 -- "$source_node" "$runtime_root/bin/node"
+          /bin/cp -a --no-preserve=ownership -- \
+            "$source_root/lib/node_modules/npm" "$runtime_root/lib/node_modules/npm"
+          /bin/ln -s ../lib/node_modules/npm/bin/npm-cli.js "$runtime_root/bin/npm"
+          /usr/bin/printf '%s\n' "$runtime_root/bin" >> "$GITHUB_PATH"
       - uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
-          version: stable
-      - name: Install locked release-tool dependencies
-        working-directory: web
-        run: npm ci
-      - name: Build and test contracts
-        run: scripts/verify-local.sh foundry
+          version: v1.5.1
+      - name: Build contracts with portable Node suites — not operator-host activation authority
+        # The hosted runner is the trusted process-launch boundary for this
+        # non-authorizing portable proof as well as for the web gate below.
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set +x
+          gate="$(/usr/bin/mktemp "$RUNNER_TEMP/dnai-verify-local.XXXXXX")"
+          trap '/bin/rm -f -- "$gate"' EXIT
+          /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat \
+            /usr/bin/git --no-replace-objects -c core.hooksPath=/dev/null \
+              -C "$GITHUB_WORKSPACE" show \
+              "$GITHUB_SHA:scripts/verify-local.sh" > "$gate"
+          /bin/chmod 0755 "$gate"
+          /usr/bin/env -i HOME="$HOME" PATH="$PATH" CI=true \
+            /bin/bash -p "$gate" --head-materialized-root \
+              "$GITHUB_WORKSPACE" "$GITHUB_SHA" foundry-ci
 
   python:
     name: Python Packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: 22.23.2
+      - name: Canonicalize pinned Node release authority
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          source_node="$(type -P node)"
+          source_root="${source_node%/bin/node}"
+          runtime_root="$RUNNER_TEMP/dnai-node-22.23.2"
+          if [[ "$source_node" != /* \
+            || "$source_node" != "$(/usr/bin/readlink -f -- "$source_node")" \
+            || "$(/usr/bin/sha256sum -- "$source_node")" \
+              != "3517c2df0b2f8cd7f422b4b8450ef81c6889f08eb03e281d6de9079b15e6a327  $source_node" \
+            || -e "$runtime_root" || -L "$runtime_root" ]]; then
+            echo "setup-node did not provide the reviewed Node v22.23.2 Linux x64 runtime" >&2
+            exit 64
+          fi
+          umask 022
+          /bin/mkdir -m 0700 -- "$runtime_root"
+          /usr/bin/install -d -m 0755 -- \
+            "$runtime_root/bin" "$runtime_root/lib/node_modules"
+          /usr/bin/install -m 0755 -- "$source_node" "$runtime_root/bin/node"
+          /bin/cp -a --no-preserve=ownership -- \
+            "$source_root/lib/node_modules/npm" "$runtime_root/lib/node_modules/npm"
+          /bin/ln -s ../lib/node_modules/npm/bin/npm-cli.js "$runtime_root/bin/npm"
+          /usr/bin/printf '%s\n' "$runtime_root/bin" >> "$GITHUB_PATH"
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
-      - name: Install locked release-tool dependencies
-        working-directory: web
-        run: npm ci
       - name: Sync, compile, and test Python packages
-        run: scripts/verify-local.sh python
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set +x
+          gate="$(/usr/bin/mktemp "$RUNNER_TEMP/dnai-verify-local.XXXXXX")"
+          trap '/bin/rm -f -- "$gate"' EXIT
+          /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat \
+            /usr/bin/git --no-replace-objects -c core.hooksPath=/dev/null \
+              -C "$GITHUB_WORKSPACE" show \
+              "$GITHUB_SHA:scripts/verify-local.sh" > "$gate"
+          /bin/chmod 0755 "$gate"
+          /usr/bin/env -i HOME="$HOME" PATH="$PATH" CI=true \
+            /bin/bash -p "$gate" --head-materialized-root \
+              "$GITHUB_WORKSPACE" "$GITHUB_SHA" python
 
   web:
     name: SolidJS Release Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 22.23.2
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install locked frontend dependencies
-        working-directory: web
-        run: npm ci
-      - name: Verify all release and activation tooling
-        run: node --test scripts/*.test.mjs
-      - name: Typecheck, test, build, headers, and dependency audit
-        working-directory: web
-        run: npm run check
+      - name: Canonicalize pinned Node release authority
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          source_node="$(type -P node)"
+          source_root="${source_node%/bin/node}"
+          runtime_root="$RUNNER_TEMP/dnai-node-22.23.2"
+          if [[ "$source_node" != /* \
+            || "$source_node" != "$(/usr/bin/readlink -f -- "$source_node")" \
+            || "$(/usr/bin/sha256sum -- "$source_node")" \
+              != "3517c2df0b2f8cd7f422b4b8450ef81c6889f08eb03e281d6de9079b15e6a327  $source_node" \
+            || -e "$runtime_root" || -L "$runtime_root" ]]; then
+            echo "setup-node did not provide the reviewed Node v22.23.2 Linux x64 runtime" >&2
+            exit 64
+          fi
+          umask 022
+          /bin/mkdir -m 0700 -- "$runtime_root"
+          /usr/bin/install -d -m 0755 -- \
+            "$runtime_root/bin" "$runtime_root/lib/node_modules"
+          /usr/bin/install -m 0755 -- "$source_node" "$runtime_root/bin/node"
+          /bin/cp -a --no-preserve=ownership -- \
+            "$source_root/lib/node_modules/npm" "$runtime_root/lib/node_modules/npm"
+          /bin/ln -s ../lib/node_modules/npm/bin/npm-cli.js "$runtime_root/bin/npm"
+          /usr/bin/printf '%s\n' "$runtime_root/bin" >> "$GITHUB_PATH"
+      - uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: v1.5.1
+      - name: Canonicalize generic Linux cast for rejection evidence
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          cast_source="$(/usr/bin/realpath "$HOME/.foundry/bin/cast")"
+          /usr/bin/install -m 0755 "$cast_source" "$RUNNER_TEMP/dnai-generic-linux-cast"
+          /bin/rm -f "$HOME/.foundry/bin/cast"
+          /usr/bin/install -m 0755 "$RUNNER_TEMP/dnai-generic-linux-cast" \
+            "$HOME/.foundry/bin/cast"
+      - name: Verify generic-Linux portable web and root gates — not operator-host activation authority
+        # The hosted runner is the trusted process-launch boundary. Native
+        # constructors execute before Bash can inspect its own environment, so
+        # loader variables must be empty when the runner creates the process.
+        env:
+          LD_PRELOAD: ""
+          LD_AUDIT: ""
+          LD_LIBRARY_PATH: ""
+          DYLD_INSERT_LIBRARIES: ""
+          DYLD_LIBRARY_PATH: ""
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set +x
+          gate="$(/usr/bin/mktemp "$RUNNER_TEMP/dnai-verify-local.XXXXXX")"
+          trap '/bin/rm -f -- "$gate"' EXIT
+          /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
+            GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat \
+            /usr/bin/git --no-replace-objects -c core.hooksPath=/dev/null \
+              -C "$GITHUB_WORKSPACE" show \
+              "$GITHUB_SHA:scripts/verify-local.sh" > "$gate"
+          /bin/chmod 0755 "$gate"
+          /usr/bin/env -i HOME="$HOME" PATH="$PATH" CI=true \
+            /bin/bash -p "$gate" --head-materialized-root \
+              "$GITHUB_WORKSPACE" "$GITHUB_SHA" web-ci

@@ -18,6 +18,9 @@ import {
   COLLABORATION_EXECUTION_RELEASE_ENV_KEYS,
   normalizeCollaborationExecutionReleaseEnv,
 } from "./collaboration-execution-release-env-core.mjs";
+import {
+  assertScopedCloudflarePagesToken,
+} from "./cloudflare-production-uploader-authority-core.mjs";
 
 const LIVE_FEATURE_FLAGS = [
   "VITE_ENABLE_CONTRACT_WRITES",
@@ -91,7 +94,6 @@ const FORBIDDEN_CLOUDFLARE_CONTROL_ENV = Object.freeze([
   "DYLD_INSERT_LIBRARIES",
 ]);
 const WRANGLER_CHILD_ENV_ALLOWLIST = Object.freeze([
-  "HOME",
   "TMPDIR",
   "USER",
   "LOGNAME",
@@ -357,6 +359,33 @@ export function cloudflareWranglerEnvironment(env = {}) {
   return Object.freeze(child);
 }
 
+export function cloudflareScopedPagesWranglerEnvironment(env = {}, isolatedHome) {
+  if (
+    typeof isolatedHome !== "string"
+    || !path.isAbsolute(isolatedHome)
+    || path.resolve(isolatedHome) !== isolatedHome
+    || path.normalize(isolatedHome) !== isolatedHome
+  ) {
+    throw new Error("Cloudflare uploader requires a canonical absolute isolated HOME");
+  }
+  const token = assertScopedCloudflarePagesToken(env);
+  const child = {
+    ...cloudflareWranglerEnvironment({ CLOUDFLARE_API_TOKEN: token }),
+    HOME: isolatedHome,
+    TMPDIR: path.join(isolatedHome, "tmp"),
+    XDG_CACHE_HOME: path.join(isolatedHome, ".cache"),
+    XDG_CONFIG_HOME: path.join(isolatedHome, ".config"),
+    XDG_DATA_HOME: path.join(isolatedHome, ".local", "share"),
+    LANG: "C",
+    LC_ALL: "C",
+    TZ: "UTC",
+    CI: "true",
+    NO_COLOR: "1",
+    TERM: "dumb",
+  };
+  return Object.freeze(child);
+}
+
 export function cloudflareBuildEnvironment(releaseEnv = {}, _hostEnv = {}, isolatedHome) {
   if (
     typeof isolatedHome !== "string"
@@ -387,6 +416,9 @@ export function cloudflareBuildEnvironment(releaseEnv = {}, _hostEnv = {}, isola
   child.NPM_CONFIG_AUDIT = "false";
   child.NPM_CONFIG_CACHE = path.join(isolatedHome, ".npm-cache");
   child.NPM_CONFIG_FUND = "false";
+  child.NPM_CONFIG_GLOBALCONFIG = path.join(isolatedHome, ".npmrc-global");
+  child.NPM_CONFIG_NODE_OPTIONS = "";
+  child.NPM_CONFIG_SCRIPT_SHELL = "/bin/sh";
   child.NPM_CONFIG_UPDATE_NOTIFIER = "false";
   child.NPM_CONFIG_USERCONFIG = path.join(isolatedHome, ".npmrc");
   return Object.freeze(child);

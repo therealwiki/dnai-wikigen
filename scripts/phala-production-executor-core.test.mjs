@@ -107,7 +107,7 @@ test("explicit AppCompose and provision request contain no mutable SDK defaults"
   });
   assert.equal(request.instance_type, "tdx.large");
   assert.equal(request.disk_size, 40);
-  assert.equal(request.image, "dstack-0.5.10");
+  assert.equal(request.image, "dstack-0.5.9");
   assert.equal(request.listed, false);
   assert.equal(request.key_provider_mode, "kms");
   assert.equal(request.skip_gateway, false);

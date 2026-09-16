@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Reviewed, fresh-only Phala CVM launch planner with hard-disabled execution.
+ * Reviewed, fresh-only Phala CVM launch diagnostic with hard-disabled execution.
  *
- * The command-line entry point is deliberately plan-only.  It never imports the
- * Phala SDK, reads PHALA_CLOUD_API_KEY, or calls a Phala API.  This module has no
- * caller-injected client/collector surface.  Production execution is hard
- * blocked until every authority and confidentiality dependency listed below is
- * implemented by a sealed adapter.
+ * The command-line entry point is deliberately plan-only. It never imports the
+ * Phala SDK, reads PHALA_CLOUD_API_KEY, or calls a Phala API. This retired
+ * planner cannot become an alternate execution path now that the guarded
+ * production executor exists under scripts/phala-production-executor*. Its
+ * remaining purpose is to validate a complete current authority bundle and
+ * print a bounded, secret-free, explicitly non-executable diagnostic plan.
  */
 
 import { createHash } from "node:crypto";
@@ -34,6 +35,7 @@ import {
 import {
   canonicalArtifactSha256,
   describeAuthorityReviewSubjectText,
+  parseCanonicalArtifactText,
   parseAuthorityReviewEnvelopeText,
   parseDeploymentIntentCoreText,
   parseFreshContractDeploymentReceiptText,
@@ -78,6 +80,16 @@ export const PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES =
   CANONICAL_PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES;
 export const PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES =
   CANONICAL_PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES;
+// The guarded production executor is available, so its canonical blocker list
+// is empty. This retired diagnostic remains deliberately non-executable and
+// must carry its own path-local reasons instead of misrepresenting the guarded
+// executor's release posture.
+export const PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES = Object.freeze([
+  "legacy_plan_only_diagnostic_not_an_execution_path",
+  "runtime_value_authority_not_bound",
+  "static_public_environment_authority_projection_required",
+  "deferred_public_environment_final_authority_projection_required",
+]);
 export const PHALA_FUTURE_SEALED_AUTHORITY_SEQUENCE = Object.freeze([
   "stable_read_verify_bootstrap_target_wire_staging_contract_anchor_sigstore_and_clean_ci_seven_descriptor_set:before_prediction",
   "nextAppIds(counts=7)",
@@ -122,6 +134,7 @@ const NONZERO_SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const FILE_LIMITS = Object.freeze({
   deploymentIntent: 65_536,
   contractDeploymentReceipt: 65_536,
+  tinkerAccountBindingCeremonyReceipt: 65_536,
   launchIntent: MAX_CVM_LAUNCH_INTENT_BYTES,
   launchIntentReceipt: 65_536,
   reviewEnvelope: 65_536,
@@ -138,6 +151,8 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const ARGUMENTS = Object.freeze({
   "deployment-intent": "deploymentIntent",
   "contract-deployment-receipt": "contractDeploymentReceipt",
+  "tinker-account-binding-ceremony-receipt":
+    "tinkerAccountBindingCeremonyReceipt",
   "launch-intent": "launchIntent",
   "launch-intent-receipt": "launchIntentReceipt",
   "review-envelope": "reviewEnvelope",
@@ -164,6 +179,7 @@ function usage() {
     "Usage:",
     "  node scripts/redeploy-phala-cvm.mjs \\",
     "    --deployment-intent FILE --contract-deployment-receipt FILE \\",
+    "    --tinker-account-binding-ceremony-receipt FILE \\",
     "    --launch-intent FILE --launch-intent-receipt FILE \\",
     "    --review-envelope FILE --review-evidence FILE \\",
     "    --readiness-evidence FILE --domain CANONICAL_DOMAIN \\",
@@ -692,7 +708,9 @@ export function buildReviewedPhaseTransitionPlan({
     runtime_value_authority_bound: false,
     static_public_environment_authority_projection_bound: false,
     deferred_public_environment_final_authority_projection_bound: false,
-    execution_blocker_codes: [...PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES],
+    execution_blocker_codes: [
+      ...PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
+    ],
     service_start_authorized: false,
     phala_api_called: false,
   });
@@ -855,6 +873,7 @@ export async function validateLaunchInputsFromFiles(args, {
   const [
     deploymentIntentFile,
     contractDeploymentReceiptFile,
+    tinkerAccountBindingCeremonyReceiptFile,
     launchFile,
     launchReceiptFile,
     reviewEnvelopeFile,
@@ -871,6 +890,12 @@ export async function validateLaunchInputsFromFiles(args, {
       label: "fresh-contract deployment receipt",
       maxBytes: FILE_LIMITS.contractDeploymentReceipt,
       minBytes: 1,
+    }),
+    readStableBoundedFile(args.tinkerAccountBindingCeremonyReceipt, {
+      label: "Tinker account-binding ceremony receipt",
+      maxBytes: FILE_LIMITS.tinkerAccountBindingCeremonyReceipt,
+      minBytes: 1,
+      requireMode0600: true,
     }),
     readStableBoundedFile(args.launchIntent, {
       label: "launch intent", maxBytes: FILE_LIMITS.launchIntent, minBytes: 1,
@@ -923,6 +948,21 @@ export async function validateLaunchInputsFromFiles(args, {
   if (!parsedDeploymentIntent.ok) {
     throw new Error("deployment intent dependency is not canonical or valid");
   }
+  const parsedTinkerAccountBindingCeremonyReceipt = parseCanonicalArtifactText(
+    tinkerAccountBindingCeremonyReceiptFile.text,
+    { label: "Tinker account-binding ceremony receipt" },
+  );
+  const tinkerAccountBindingCeremonyReceipt =
+    parsedTinkerAccountBindingCeremonyReceipt.artifact;
+  const tinkerAccountBindingCeremonyReceiptSha256 =
+    tinkerAccountBindingCeremonyReceipt
+      ?.tinker_account_binding_ceremony_receipt_sha256;
+  if (!parsedTinkerAccountBindingCeremonyReceipt.ok
+    || !NONZERO_SHA256.test(tinkerAccountBindingCeremonyReceiptSha256)) {
+    throw new Error(
+      "Tinker account-binding ceremony receipt dependency is not canonical or valid",
+    );
+  }
   const parsedContractReceipt = parseFreshContractDeploymentReceiptText(
     contractDeploymentReceiptFile.text,
     {
@@ -931,6 +971,8 @@ export async function validateLaunchInputsFromFiles(args, {
       expectedReviewerAuthorityGenesisAcceptanceSha256:
         parsedDeploymentIntent.intent.release
           .reviewerAuthorityGenesisAcceptanceSha256,
+      expectedTinkerAccountBindingCeremonyReceiptSha256:
+        tinkerAccountBindingCeremonyReceiptSha256,
     },
   );
   if (!parsedContractReceipt.ok) {
@@ -945,6 +987,7 @@ export async function validateLaunchInputsFromFiles(args, {
     authorityDependencies: {
       deploymentIntent: parsedDeploymentIntent.intent,
       freshContractDeploymentReceipt: parsedContractReceipt.receipt,
+      tinkerAccountBindingCeremonyReceipt,
     },
   });
   if (!parsedReview.ok) throw new Error("review envelope does not authorize the launch intent");
@@ -1002,6 +1045,9 @@ export async function validateLaunchInputsFromFiles(args, {
     deploymentIntentSha256: canonicalArtifactSha256(parsedDeploymentIntent.intent),
     freshContractDeploymentReceipt: parsedContractReceipt.receipt,
     freshContractDeploymentReceiptSha256: parsedContractReceipt.receiptSha256,
+    tinkerAccountBindingCeremonyReceiptSha256,
+    tinkerAccountBindingCeremonyReceiptFileSha256:
+      tinkerAccountBindingCeremonyReceiptFile.sha256,
     descriptor,
     descriptorFile: composeFile,
     runtimeEntries: lifecycle.entries,
@@ -1140,7 +1186,7 @@ function secretFreePlanReceipt(validated) {
       validated.descriptor.launch_settings.phala_os_image_catalog_entry_sha256,
     production_execution_available: false,
     production_execution_blocker_codes:
-      [...PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES],
+      [...PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES],
     runtime_value_authority_bound: false,
     fresh_cli_deploy_forbidden: true,
     command_executed: false,
@@ -1227,7 +1273,7 @@ export function canonicalPhalaCvmLaunchReceiptText(receipt) {
       || receipt.production_execution_available !== false
       || !exactJson(
         receipt.production_execution_blocker_codes,
-        PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
+        PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
       )
       || receipt.runtime_value_authority_bound !== false
       || receipt.fresh_cli_deploy_forbidden !== true
@@ -1368,7 +1414,9 @@ export function buildFreshCreateCommandPlan(validated, {
     production_execution: {
       available: false,
       reason_code: PHALA_PRODUCTION_EXECUTION_DISABLED_CODE,
-      blocker_codes: [...PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES],
+      blocker_codes: [
+        ...PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES,
+      ],
       bootstrap_blocker_codes: [
         ...PHALA_PRODUCTION_BOOTSTRAP_EXECUTION_BLOCKER_CODES,
       ],
@@ -1386,7 +1434,7 @@ export function buildFreshCreateCommandPlan(validated, {
 export async function executeReviewedFreshCvmBatch() {
   throw new Error(
     `${PHALA_PRODUCTION_EXECUTION_DISABLED_CODE}:`
-      + PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES.join(","),
+      + PHALA_LEGACY_DIAGNOSTIC_EXECUTION_BLOCKER_CODES.join(","),
   );
 }
 
