@@ -832,7 +832,7 @@ test("HEAD-materialized wrapper is the bootstrap authority, not mutable worktree
       HOME: fixture,
       LANG: "C",
       LC_ALL: "C",
-      PATH: process.env.PATH || "/usr/bin:/bin",
+      PATH: `${path.dirname(fs.realpathSync(process.execPath))}:/usr/bin:/bin`,
     };
     const exactHead = spawnSync("/bin/bash", [
       "-p",
@@ -908,7 +908,14 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
   assert.match(canonicalNodeStep, /\/bin\/mkdir -m 0700 -- "\$runtime_root"/);
   assert.match(canonicalNodeStep, /\/usr\/bin\/install -d -m 0755 --/);
   assert.match(canonicalNodeStep, /\/usr\/bin\/install -m 0755 -- "\$source_node"/);
-  assert.match(canonicalNodeStep, /\/bin\/cp -a --no-preserve=ownership --/);
+  assert.match(
+    canonicalNodeStep,
+    /https:\/\/nodejs\.org\/dist\/v22\.23\.2\/node-v22\.23\.2-linux-x64\.tar\.xz/,
+  );
+  assert.match(
+    canonicalNodeStep,
+    /d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307[\s\S]*sha256sum --check --status[\s\S]*\/bin\/tar -xJf[\s\S]*--no-same-owner --no-same-permissions/,
+  );
   assert.match(
     canonicalNodeStep,
     /\/bin\/ln -s \.\.\/lib\/node_modules\/npm\/bin\/npm-cli\.js "\$runtime_root\/bin\/npm"/,
@@ -933,7 +940,7 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
     4,
   );
   assert.equal(
-    (workflow.match(/\/bin\/cp -a --no-preserve=ownership --/g) || []).length,
+    (workflow.match(/d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307/g) || []).length,
     4,
   );
   assert.equal(
@@ -1094,20 +1101,21 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
   );
   assert.equal(
     createHash("sha256").update(releaseRuntimeCore).digest("hex"),
-    "d80450f4b05fe97569043dc605620ab2751535cb9f8e103dca4b73da2c9581c3",
+    "1923c498ff6f742b6f66ee0c623502adde3934bc2ceeb0f256a4822122cd3243",
   );
   assert.match(genericNpmAuthority, /assertPinnedNpmRuntime/);
   assert.equal(
     createHash("sha256").update(genericNpmAuthority).digest("hex"),
-    "08b183de0fcfcbcc21bdaadff42018f4c16268222ebbb078dd046868d9f739e1",
+    "000144c70f7e3c3bcd3495ceda1b2541572e8f5895f30c9d51c2cb66cce5e750",
   );
   assert.match(genericNpmAuthority, /version: "10\.9\.8"/);
   assert.match(genericNpmAuthority, /entryCount: 2_464/);
-  assert.match(genericNpmAuthority, /totalBytes: 10_950_194/);
+  assert.match(genericNpmAuthority, /totalBytes: 10_899_866/);
   assert.match(
     genericNpmAuthority,
-    /307821a332a032c54ceadefc30718b13d0c3a2b1acdd5f4f072e3de8099d5f83/,
+    /6f92747e6e2eceba3212e91daa0b6df5d412956da7b59ab85119c1890623c4c0/,
   );
+  assert.match(genericNpmAuthority, /normalizeDirectorySizes: true/);
   assert.match(
     genericNpmAuthority,
     /executableLinkTarget: "\.\.\/lib\/node_modules\/npm\/bin\/npm-cli\.js"/,

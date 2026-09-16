@@ -912,8 +912,16 @@ export function assertReadOnlyInvocation(command, args) {
     ) return;
   }
   if (command === "gh" && arraysEqual(args, ["auth", "status"])) return;
-  if (command === "phala" && arraysEqual(args, ["status"])) return;
-  if (command === "wrangler" && arraysEqual(args, ["whoami"])) return;
+  if (command === "phala" && (
+    arraysEqual(args, ["status"])
+    || arraysEqual(args, [
+      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+    ])
+  )) return;
+  if (command === "wrangler" && (
+    arraysEqual(args, ["whoami"])
+    || arraysEqual(args, ["whoami", "--json"])
+  )) return;
   if (
     command === "gh"
     && args.length === 16
@@ -4025,16 +4033,48 @@ function cloudflareEnvironment(env) {
   };
 }
 
+function authenticationResponse(result) {
+  if (result?.ok !== true
+    || typeof result.stdout !== "string"
+    || result.stdout.length === 0
+    || result.stdout.length > 32 * 1024) return null;
+  const response = JSON.parse(result.stdout);
+  return response && typeof response === "object" && !Array.isArray(response)
+    ? response
+    : null;
+}
+
+export function probePhalaAuthentication(
+  env = process.env,
+  execute = runReadOnly,
+) {
+  try {
+    const response = authenticationResponse(execute("phala", [
+      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+    ], {
+      env: phalaEnvironment(env),
+      timeout: COMMAND_TIMEOUT_MS,
+    }));
+    return response?.success === true
+      && response.apiUrl === PHALA_CONTROL_PLANE_AUTHORITY.api_origin
+      && response.apiVersion === PHALA_CONTROL_PLANE_AUTHORITY.api_version
+      && typeof response.username === "string" && clean(response.username).length > 0
+      && typeof response.team_name === "string" && clean(response.team_name).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function probeCloudflareAuthentication(
   env,
   execute = runReadOnly,
 ) {
   try {
-    const result = execute("wrangler", ["whoami"], {
+    const result = execute("wrangler", ["whoami", "--json"], {
       env: cloudflareEnvironment(env),
       timeout: CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS,
     });
-    return result?.ok === true;
+    return authenticationResponse(result)?.loggedIn === true;
   } catch {
     return false;
   }
@@ -4922,8 +4962,11 @@ async function collectSnapshotWithRetainedEvidence(args) {
     }
     probes.githubAuth = tools.gh
       && runReadOnly("gh", ["auth", "status"], { env: authEnvironment(env) }).ok;
+    // Probe the active operator CLI session. Application .env credentials may
+    // be stale and do not select credentials for the separate SDK executor.
+    // Explicit process overrides still apply and never trigger a fallback.
     probes.phalaAuth = tools.phala
-      && runReadOnly("phala", ["status"], { env: phalaEnvironment(env) }).ok;
+      && probePhalaAuthentication(process.env);
     probes.cloudflareAuth = tools.wrangler
       && probeCloudflareAuthentication(env);
   }

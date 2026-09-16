@@ -51,7 +51,7 @@ class GithubImageWorkflowTest(unittest.TestCase):
                 expected_dependency = "source-gate" if job_name == "build" else "build"
                 self.assertEqual(job["needs"], expected_dependency)
 
-    def test_tee_image_publication_requires_the_complete_exact_source_ci_gate(self):
+    def test_tee_image_publication_requires_the_reusable_source_ci_gate(self):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "build-tee-images.yml"
         ).read_text(encoding="utf-8")
@@ -59,8 +59,22 @@ class GithubImageWorkflowTest(unittest.TestCase):
             REPO_ROOT / ".github" / "workflows" / "ci.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("workflow_call:", ci_workflow)
-        self.assertIn("run: node --test scripts/*.test.mjs", ci_workflow)
+        ci = yaml.safe_load(ci_workflow)
+        self.assertIn("workflow_call", ci.get("on", ci.get(True)))
+        expected_modes = {
+            "secret-scan": "secrets",
+            "contracts": "foundry-ci",
+            "python": "python",
+            "web": "web-ci",
+        }
+        self.assertEqual(set(ci["jobs"]), set(expected_modes))
+        for job_name, mode in expected_modes.items():
+            commands = "\n".join(
+                step.get("run", "") for step in ci["jobs"][job_name]["steps"]
+            )
+            self.assertIn('"$GITHUB_SHA:scripts/verify-local.sh" > "$gate"', commands)
+            self.assertIn('"$gate" --head-materialized-root', commands)
+            self.assertIn(f'"$GITHUB_WORKSPACE" "$GITHUB_SHA" {mode}', commands)
         self.assertIn("source-gate:", workflow)
         self.assertIn("name: Verify exact release source", workflow)
         self.assertIn("uses: ./.github/workflows/ci.yml", workflow)

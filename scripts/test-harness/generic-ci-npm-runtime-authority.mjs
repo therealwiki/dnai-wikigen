@@ -9,8 +9,8 @@ import {
 const PINNED_GENERIC_CI_NPM = Object.freeze({
   version: "10.9.8",
   entryCount: 2_464,
-  totalBytes: 10_950_194,
-  treeSha256: "307821a332a032c54ceadefc30718b13d0c3a2b1acdd5f4f072e3de8099d5f83",
+  totalBytes: 10_899_866,
+  treeSha256: "6f92747e6e2eceba3212e91daa0b6df5d412956da7b59ab85119c1890623c4c0",
 });
 
 function canonicalEntrypoint() {
@@ -42,6 +42,7 @@ export function assertPinnedGenericCiNpmRuntime({
   const executableTarget = path.join(treeRoot, "bin", "npm-cli.js");
   return assertPinnedNpmRuntime({
     expectedUid,
+    normalizeDirectorySizes: true,
     pin: {
       ...PINNED_GENERIC_CI_NPM,
       executableSymlink,

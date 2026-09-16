@@ -467,9 +467,9 @@ assert_pinned_generic_ci_node_authority() {
   npm_authority_core="$ROOT_DIR/web/scripts/release-runtime-pins-core.mjs"
   for authority_source in "$npm_authority_helper" "$npm_authority_core"; do
     if [[ "$authority_source" == "$npm_authority_helper" ]]; then
-      authority_source_expected_sha="08b183de0fcfcbcc21bdaadff42018f4c16268222ebbb078dd046868d9f739e1"
+      authority_source_expected_sha="000144c70f7e3c3bcd3495ceda1b2541572e8f5895f30c9d51c2cb66cce5e750"
     else
-      authority_source_expected_sha="d80450f4b05fe97569043dc605620ab2751535cb9f8e103dca4b73da2c9581c3"
+      authority_source_expected_sha="1923c498ff6f742b6f66ee0c623502adde3934bc2ceeb0f256a4822122cd3243"
     fi
     if [[ ! -f "$authority_source" || -L "$authority_source" \
       || "$(/usr/bin/readlink -f -- "$authority_source")" != "$authority_source" \
@@ -1860,6 +1860,9 @@ run_pytest_package() {
 run_python() {
   assert_plain_web_ci_environment "python CI"
   assert_head_materialized_launch
+  # Python release tests invoke the canonical Node deployment-intent checker,
+  # whose signature verifier imports the locked web cryptography dependencies.
+  npm --ignore-scripts --prefix "$ROOT_DIR/web" ci
   run_python_package "⚙️/tinker-delegate" "tinker_delegate" "tests"
   run_python_package "⚙️/tee-email-oracle" "email_oracle captcha-solver/captcha_solver" "tests"
   run_pytest_package "⚙️/attestation-qvl" "src/attestation_qvl"

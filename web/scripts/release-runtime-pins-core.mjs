@@ -191,6 +191,7 @@ function relativeRuntimePath(root, absolute) {
 
 export function projectNpmRuntimeTree(treeRoot, {
   expectedUid = typeof process.geteuid === "function" ? process.geteuid() : 0,
+  normalizeDirectorySizes = false,
 } = {}) {
   if (
     typeof treeRoot !== "string"
@@ -230,7 +231,9 @@ export function projectNpmRuntimeTree(treeRoot, {
         path: relative,
         type: "directory",
         mode,
-        size: Number(named.size),
+        // Portable CI binds entries and modes, independent of filesystem allocation.
+        // The operator runtime keeps its existing metadata projection by default.
+        size: normalizeDirectorySizes ? 0 : Number(named.size),
         sha256: EMPTY_SHA256,
       });
       for (const entry of entries) visit(path.join(absolute, entry.name));
@@ -318,6 +321,7 @@ function readNpmPackageVersion(treeRoot, expectedUid) {
 export function assertPinnedNpmRuntime({
   pin = PINNED_NPM_RUNTIME,
   expectedUid = typeof process.geteuid === "function" ? process.geteuid() : 0,
+  normalizeDirectorySizes = false,
 } = {}) {
   const symlink = fs.lstatSync(pin.executableSymlink, { bigint: true });
   const mode = Number(symlink.mode & 0o777n);
@@ -339,8 +343,8 @@ export function assertPinnedNpmRuntime({
   ) {
     throw new Error("npm executable symlink does not match the reviewed target");
   }
-  const first = projectNpmRuntimeTree(pin.treeRoot, { expectedUid });
-  const second = projectNpmRuntimeTree(pin.treeRoot, { expectedUid });
+  const first = projectNpmRuntimeTree(pin.treeRoot, { expectedUid, normalizeDirectorySizes });
+  const second = projectNpmRuntimeTree(pin.treeRoot, { expectedUid, normalizeDirectorySizes });
   if (canonicalText(first) !== canonicalText(second)) {
     throw new Error("npm runtime tree changed during its repeated projection");
   }

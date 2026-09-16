@@ -228,7 +228,7 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
   const { sources, externalImports } = staticImportClosure(entrypoint);
   const entrypointSource = sources.get(entrypoint);
   const basenames = new Set([...sources.keys()].map((file) => path.basename(file)));
-  assert.equal(sources.size, 53, "dual current/historical DCAP closure file count drifted");
+  assert.equal(sources.size, 54, "dual current/historical DCAP closure file count drifted");
   assert.match(
     entrypointSource,
     /TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256[\s\S]*?main\.machine_evidence_sha256/,
@@ -254,6 +254,7 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
     "phala-seven-cvm-historical-release-verification-authority.mjs",
     "phala-seven-cvm-verifier-evidence.mjs",
     "phala-seven-cvm-opened-fd-runtime-core.mjs",
+    "phala-sdk-runtime-capsule.mjs",
     "release-manifest-descriptor-historical-core.mjs",
     "cvm-descriptor-runtime-authority-v1-policy.mjs",
     "cvm-release-descriptor-set-v3.mjs",
@@ -295,13 +296,22 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
     ],
   );
   for (const [file, source] of sources) {
+    let executableSource = source;
+    if (path.basename(file) === "phala-sdk-runtime-capsule.mjs") {
+      // This exact regex rejects network identifiers; it does not use them.
+      // Keep scanning every other byte of the capsule boundary module.
+      const networkDenylist = String.raw`    /\b(?:fetch|XMLHttpRequest|WebSocket)\b/u,`;
+      assert.equal(source.split(networkDenylist).length, 2,
+        "capsule boundary must retain its single explicit network denylist");
+      executableSource = source.replace(networkDenylist, "");
+    }
     for (const forbidden of [
       /\bfetch\s*\(/,
       /\bWebSocket\b/,
       /\bXMLHttpRequest\b/,
       /["']node:(?:net|http|https)["']/,
     ]) {
-      assert.equal(forbidden.test(source), false,
+      assert.equal(forbidden.test(executableSource), false,
         `${path.basename(file)} contains network authority ${forbidden}`);
     }
   }

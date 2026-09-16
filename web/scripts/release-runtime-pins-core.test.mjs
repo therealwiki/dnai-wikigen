@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   chmod,
   mkdir,
@@ -181,6 +182,39 @@ test("npm runtime rejects file tampering and undeclared extra files", async () =
     });
     assert.throws(
       () => assertPinnedNpmRuntime({ pin: fixture.pin }),
+      /exact manifest/,
+    );
+  });
+});
+
+test("portable npm projection ignores directory allocation but still binds file bytes and modes", async (t) => {
+  await withNpmFixture(async (fixture) => {
+    const projection = projectNpmRuntimeTree(fixture.treeRoot, {
+      normalizeDirectorySizes: true,
+    });
+    const pin = { ...fixture.pin, ...projection };
+    const originalLstat = fs.lstatSync;
+    t.mock.method(fs, "lstatSync", (...args) => {
+      const metadata = originalLstat(...args);
+      if (metadata.isDirectory()) {
+        metadata.size += typeof metadata.size === "bigint" ? 4096n : 4096;
+      }
+      return metadata;
+    });
+    assert.notEqual(projectNpmRuntimeTree(fixture.treeRoot).treeSha256, fixture.pin.treeSha256);
+    assert.equal(
+      assertPinnedNpmRuntime({ pin, normalizeDirectorySizes: true }).treeSha256,
+      projection.treeSha256,
+    );
+    await writeFile(fixture.libraryPath, "export const runtime = TRUE;\n");
+    assert.throws(
+      () => assertPinnedNpmRuntime({ pin, normalizeDirectorySizes: true }),
+      /exact manifest/,
+    );
+    await writeFile(fixture.libraryPath, "export const runtime = true;\n");
+    await chmod(fixture.libraryPath, 0o500);
+    assert.throws(
+      () => assertPinnedNpmRuntime({ pin, normalizeDirectorySizes: true }),
       /exact manifest/,
     );
   });

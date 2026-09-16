@@ -68,6 +68,7 @@ import {
   parseArgs as parsePreflightArgs,
   parseSemanticValidationReceipt,
   probeCloudflareAuthentication,
+  probePhalaAuthentication,
   releaseInspectedFileDescriptors,
   resolveEvidencePaths,
   inspectInstalledCliVersion,
@@ -3162,6 +3163,10 @@ test("missing Phala, GitHub, and Cloudflare auth is explicit and blocking", () =
 test("read-only command allowlist rejects deploy, broadcast, login, and keystore unlocks", () => {
   assert.doesNotThrow(() => assertReadOnlyInvocation("gh", ["auth", "status"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("phala", ["status"]));
+  assert.doesNotThrow(() => assertReadOnlyInvocation("phala", [
+    "status", "--json", "--api-version", "2026-01-21",
+  ]));
+  assert.doesNotThrow(() => assertReadOnlyInvocation("wrangler", ["whoami", "--json"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("cast", [
     "call",
     address("1"),
@@ -3211,6 +3216,12 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   );
   assert.throws(() => assertReadOnlyInvocation("phala", ["deploy"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", ["login"]), /unsafe|allowlist/);
+  assert.throws(() => assertReadOnlyInvocation("phala", [
+    "status", "--json", "--api-version", "2025-10-28",
+  ]), /allowlist/);
+  assert.throws(() => assertReadOnlyInvocation("wrangler", [
+    "whoami", "--json", "--account", "unreviewed",
+  ]), /unsafe|allowlist/);
   assert.throws(
     () => assertReadOnlyInvocation("forge", ["script", "Deploy.s.sol", "--broadcast"]),
     /unsafe|allowlist/,
@@ -3377,7 +3388,81 @@ test("tool presence and Phala identity are bounded without executing a hanging C
   }
 });
 
-test("Cloudflare OAuth probe accepts bounded delayed success without projecting output", () => {
+const phalaAuthenticationResponse = () => ({
+  success: true,
+  apiUrl: "https://cloud-api.phala.network/api/v1",
+  apiVersion: "2026-01-21",
+  username: "test-operator",
+  team_name: "Test workspace",
+  profile: "test-profile",
+});
+
+test("Phala CLI auth requires structured identity from the fixed control plane", () => {
+  let invocation;
+  const result = probePhalaAuthentication(
+    {
+      PHALA_CLOUD_API_PREFIX: "https://unreviewed.invalid/api",
+      PHALA_CLOUD_DIR: "/tmp/test-phala-profile",
+      UNRELATED_SECRET: "must-not-be-forwarded",
+    },
+    (command, args, options) => {
+      invocation = { command, args, options };
+      return { ok: true, stdout: JSON.stringify(phalaAuthenticationResponse()) };
+    },
+  );
+  assert.equal(result, true);
+  assert.equal(invocation.command, "phala");
+  assert.deepEqual(invocation.args, ["status", "--json", "--api-version", "2026-01-21"]);
+  assert.equal(Number.isSafeInteger(invocation.options.timeout), true);
+  assert.equal(invocation.options.timeout > 0 && invocation.options.timeout <= 60_000, true);
+  assert.deepEqual(invocation.options.env, {
+    PHALA_CLOUD_API_KEY: "",
+    PHALA_CLOUD_API_PREFIX: "https://cloud-api.phala.network/api/v1",
+    PHALA_CLOUD_DIR: "/tmp/test-phala-profile",
+  });
+});
+
+test("Phala CLI auth never falls back after an explicit credential override fails", () => {
+  const invocations = [];
+  assert.equal(probePhalaAuthentication(
+    { PHALA_CLOUD_API_KEY: "test-invalid-secret" },
+    (command, args, options) => {
+      invocations.push({ command, args, options });
+      return { ok: false, stdout: JSON.stringify({ success: false, error: "Unauthorized" }) };
+    },
+  ), false);
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].options.env.PHALA_CLOUD_API_KEY, "test-invalid-secret");
+});
+
+test("Phala CLI auth rejects exit-zero failures, incomplete identities, and origin drift", () => {
+  for (const value of [
+    { ...phalaAuthenticationResponse(), success: false },
+    { ...phalaAuthenticationResponse(), success: "true" },
+    { ...phalaAuthenticationResponse(), apiUrl: "https://unreviewed.invalid/api/v1" },
+    { ...phalaAuthenticationResponse(), apiVersion: "2025-10-28" },
+    { ...phalaAuthenticationResponse(), username: " " },
+    { ...phalaAuthenticationResponse(), team_name: null },
+    { success: true },
+    [phalaAuthenticationResponse()],
+    null,
+  ]) {
+    assert.equal(probePhalaAuthentication({}, () => ({
+      ok: true,
+      stdout: JSON.stringify(value),
+    })), false);
+  }
+  for (const stdout of ["", "Authenticated", "{malformed", " ".repeat(32 * 1024 + 1)]) {
+    assert.equal(probePhalaAuthentication({}, () => ({ ok: true, stdout })), false);
+  }
+  assert.equal(probePhalaAuthentication({}, () => ({
+    ok: false,
+    stdout: JSON.stringify(phalaAuthenticationResponse()),
+  })), false);
+  assert.equal(probePhalaAuthentication({}, () => { throw new Error("probe failed"); }), false);
+});
+
+test("Cloudflare OAuth probe accepts bounded JSON success without projecting output", () => {
   let invocation;
   const result = probeCloudflareAuthentication(
     {
@@ -3388,19 +3473,46 @@ test("Cloudflare OAuth probe accepts bounded delayed success without projecting 
       invocation = { command, args, options };
       return {
         ok: true,
-        stdout: "authenticated response that must not be projected",
+        stdout: JSON.stringify({
+          loggedIn: true,
+          authType: "OAuth Token",
+          email: "operator@example.invalid",
+          accounts: [{ id: "test-account-id", name: "Test account" }],
+        }),
       };
     },
   );
   assert.equal(result, true);
   assert.equal(invocation.command, "wrangler");
-  assert.deepEqual(invocation.args, ["whoami"]);
+  assert.deepEqual(invocation.args, ["whoami", "--json"]);
   assert.equal(invocation.options.timeout, CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS);
   assert.equal(invocation.options.timeout >= 120_000, true);
   assert.deepEqual(invocation.options.env, {
     CLOUDFLARE_API_TOKEN: "test-secret-token",
     CLOUDFLARE_ACCOUNT_ID: "test-account-id",
   });
+});
+
+test("Cloudflare auth rejects unauthenticated exit-zero output and malformed JSON", () => {
+  for (const stdout of [
+    "You are not authenticated. Please run `wrangler login`.",
+    "You are logged in with an OAuth Token.",
+    JSON.stringify({ loggedIn: false }),
+    JSON.stringify({ loggedIn: "true" }),
+    JSON.stringify({ success: true }),
+    JSON.stringify([{ loggedIn: true }]),
+    "null",
+    "",
+    "{malformed",
+    " ".repeat(32 * 1024 + 1),
+  ]) {
+    assert.equal(probeCloudflareAuthentication({}, () => ({ ok: true, stdout })), false);
+  }
+  assert.equal(probeCloudflareAuthentication({}, () => ({
+    ok: false,
+    stdout: JSON.stringify({ loggedIn: true }),
+  })), false);
+  assert.equal(probeCloudflareAuthentication({}, () => { throw new Error("probe failed"); }), false);
 });
 
 test("activation preflight rejects duplicate path and mode flags", () => {

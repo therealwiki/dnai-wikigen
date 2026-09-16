@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -42,7 +43,7 @@ test("tracked prior-operator ledger is explicitly historical and contains no pre
   );
 });
 
-test("fresh receipt projection and release ceremony boundary reject the legacy ledger", () => {
+test("fresh receipt projection and release ceremony boundary reject the legacy ledger", (t) => {
   const ledger = JSON.parse(fs.readFileSync(LEGACY_LEDGER, "utf8"));
   assert.throws(
     () => projectFreshContractDeploymentReceipt(ledger, {
@@ -52,6 +53,10 @@ test("fresh receipt projection and release ceremony boundary reject the legacy l
     /schemaVersion|fresh|contract ledger/i,
   );
 
+  const externalRoot = fs.realpathSync(fs.mkdtempSync(
+    path.join(os.tmpdir(), "dnai-legacy-ledger-"),
+  ));
+  t.after(() => fs.rmSync(externalRoot, { recursive: true, force: true }));
   const result = spawnSync(
     "bash",
     [
@@ -70,9 +75,9 @@ test("fresh receipt projection and release ceremony boundary reject the legacy l
       RELEASE_CEREMONY_PATHS,
       CONFIGURE_GUARD,
       ROOT,
-      path.join(ROOT, "deployments", "fresh-base-sepolia.json"),
+      path.join(externalRoot, "fresh-base-sepolia.json"),
       LEGACY_LEDGER,
-      path.join(ROOT, ".release-ceremony-evidence"),
+      path.join(externalRoot, "release-ceremony-evidence"),
     ],
     { cwd: ROOT, encoding: "utf8" },
   );

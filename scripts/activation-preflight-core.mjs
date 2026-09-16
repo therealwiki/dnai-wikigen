@@ -3305,8 +3305,8 @@ export function buildPreflightReport(snapshot) {
     "auth.phala",
     snapshot.probes?.phalaAuth === true ? "pass" : "fail",
     snapshot.probes?.phalaAuth === true
-      ? "Phala CLI authentication is usable via a read-only status probe."
-      : "Phala CLI authentication is missing or unusable.",
+      ? "The active Phala CLI session returned an authenticated identity; SDK deployment credentials require separate verification."
+      : "The active Phala CLI session did not return an authenticated identity.",
     "Authenticate with the Phala auth skill, then rerun this preflight.",
   ));
   checks.push(check(
@@ -3321,8 +3321,8 @@ export function buildPreflightReport(snapshot) {
     "auth.cloudflare",
     snapshot.probes?.cloudflareAuth === true ? "pass" : "fail",
     snapshot.probes?.cloudflareAuth === true
-      ? "Wrangler authentication is usable via a read-only identity probe."
-      : "Wrangler authentication is missing or unusable.",
+      ? "Wrangler returned an authenticated identity; deployment account permissions require separate verification."
+      : "Wrangler did not return an authenticated identity.",
     "Authenticate Wrangler for the intended Cloudflare account.",
   ));
   const evidenceLabels = [
