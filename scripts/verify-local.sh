@@ -678,8 +678,8 @@ make_trusted_generic_ci_tool_shim() {
   expected_uid="$(/usr/bin/id -u)"
   if [[ "$private_root" != /* || -L "$private_root" || ! -d "$private_root" \
     || "$(/usr/bin/readlink -f -- "$private_root")" != "$private_root" \
-    || "$(/usr/bin/stat -Lc '%h:%u:%a' -- "$private_root")" \
-      != "1:${expected_uid}:700" ]]; then
+    || "$(/usr/bin/stat -Lc '%u:%a' -- "$private_root")" \
+      != "${expected_uid}:700" ]]; then
     echo "trusted tool shim requires a canonical private root" >&2
     return 64
   fi
@@ -698,8 +698,10 @@ make_trusted_generic_ci_tool_shim() {
     fi
     /bin/ln -s "$target" "$shim/$tool"
   done
-  if [[ "$(/usr/bin/stat -Lc '%h:%u:%a' -- "$shim")" \
-      != "1:${expected_uid}:700" ]]; then
+  # Directory link counts include child '..' entries on ext4/tmpfs and vary
+  # by filesystem; the single-link invariant applies to executable files.
+  if [[ "$(/usr/bin/stat -Lc '%u:%a' -- "$shim")" \
+      != "${expected_uid}:700" ]]; then
     echo "trusted tool shim metadata drifted" >&2
     return 64
   fi
