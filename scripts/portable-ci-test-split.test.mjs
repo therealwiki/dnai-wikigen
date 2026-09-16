@@ -455,18 +455,19 @@ test("portable runner rejects hooks, authority sentinels, credentials, and entry
         /Generic-Linux portable web|truth: portable_test_suites|npm (?:ci|run)/,
       );
     }
+    const importedFunctionSentinel = path.join(startupRoot, "imported-function-ran");
     const importedFunction = portableWrapperFailure({
+      DNAI_IMPORTED_FUNCTION_SENTINEL: importedFunctionSentinel,
+      "BASH_FUNC_compgen%%": '() { : > "$DNAI_IMPORTED_FUNCTION_SENTINEL"; return 0; }',
       "BASH_FUNC_node%%": "() { return 0; }",
     });
     assert.equal(importedFunction.status, 64);
-    // Linux Bash privileged mode strips the exported function before line 1,
-    // so the next exact-HEAD launch guard is the first observable rejection.
-    // Darwin leaves the hostile variable observable to the startup-hook guard.
+    assert.equal(fs.existsSync(importedFunctionSentinel), false);
+    // Both Bash families reject raw imported-function entries at startup,
+    // including Linux's entries that privileged mode hides from compgen.
     assert.match(
       `${importedFunction.stdout}\n${importedFunction.stderr}`,
-      process.platform === "linux"
-        ? /reject observable shell, interpreter, Node, TLS, and native-loader hooks|wrapper materialized from the exact HEAD blob/
-        : /reject observable shell, interpreter, Node, TLS, and native-loader hooks/,
+      /reject observable shell, interpreter, Node, TLS, and native-loader hooks: BASH_FUNC_/,
     );
     assert.doesNotMatch(
       `${importedFunction.stdout}\n${importedFunction.stderr}`,

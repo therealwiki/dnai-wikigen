@@ -35,6 +35,27 @@ if [ "$DNAI_RELEASE_STARTUP_HOOK_FOUND" = "true" ]; then
   echo "Shell startup, imported-function, and native-loader control variables are forbidden for release wrappers." >&2
   exit 1
 fi
+# Privileged Bash 5 omits ignored exported-function entries from compgen -e.
+# Check raw names only after the builtin loader/startup-variable guard above.
+# NUL framing keeps newlines in values from becoming names; pipefail makes an
+# unavailable or failed fixed env scanner fail closed without printing values.
+DNAI_RELEASE_RAW_FUNCTION_MARKER="$(
+  set -o pipefail
+  /usr/bin/env -0 | while IFS= read -r -d '' DNAI_RELEASE_RAW_ENV_ENTRY; do
+    if [[ "${DNAI_RELEASE_RAW_ENV_ENTRY%%=*}" == BASH_FUNC_* ]]; then
+      builtin printf '%s\n' forbidden
+    fi
+  done
+)" || {
+  echo "Exported environment names could not be enumerated safely." >&2
+  exit 1
+}
+if [ -n "$DNAI_RELEASE_RAW_FUNCTION_MARKER" ]; then
+  echo "Shell startup, imported-function, and native-loader control variables are forbidden for release wrappers." >&2
+  exit 1
+fi
+unset DNAI_RELEASE_RAW_FUNCTION_MARKER
+
 unset DNAI_RELEASE_EXPORTED_NAMES DNAI_RELEASE_STARTUP_ENV_NAME DNAI_RELEASE_STARTUP_HOOK_FOUND
 unset BASH_ENV ENV BASH_XTRACEFD PS4 CDPATH GLOBIGNORE 2>/dev/null || true
 export -n SHELLOPTS BASHOPTS

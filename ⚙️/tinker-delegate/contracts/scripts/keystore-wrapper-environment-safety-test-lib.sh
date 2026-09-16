@@ -422,14 +422,58 @@ assert_keystore_wrapper_environment_safety() (
     PATH="$fake_bin:/usr/bin:/bin" \
     HOME="$test_home" \
     DNAI_STARTUP_HOOK_SENTINEL="$hook_sentinel" \
+    DNAI_FORBIDDEN_TOOL_SENTINEL="$tool_sentinel" \
     'BASH_FUNC_dirname%%=() { : > "$DNAI_STARTUP_HOOK_SENTINEL"; /usr/bin/dirname "$@"; }' \
     "$test_wrapper" >/dev/null 2>"$test_root/imported-function.err"
   status=$?
   set -e
-  if [ "$status" -eq 0 ] \
-    || [ -e "$hook_sentinel" ] \
-    || ! grep -Fxq 'Shell startup, imported-function, and native-loader control variables are forbidden for release wrappers.' "$test_root/imported-function.err"; then
+  if [ -e "$hook_sentinel" ]; then
     echo "Imported dirname function ran before the protected entry guard: $wrapper" >&2
+    exit 1
+  fi
+  if [ "$status" -eq 0 ] \
+    || [ -e "$tool_sentinel" ] \
+    || ! grep -Fxq 'Shell startup, imported-function, and native-loader control variables are forbidden for release wrappers.' "$test_root/imported-function.err"; then
+    echo "Raw imported-function environment was not rejected by the protected entry guard before later wrapper actions: $wrapper" >&2
+    exit 1
+  fi
+
+  # Raw-name inspection must preserve NUL framing: a value containing a newline
+  # and a function-looking line is not itself an exported-function name.
+  set +e
+  env -i \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    HOME="$test_home" \
+    DNAI_FORBIDDEN_TOOL_SENTINEL="$tool_sentinel" \
+    DNAI_BENIGN_MULTILINE=$'ordinary-value\nBASH_FUNC_not_a_name%%=synthetic-value' \
+    PRIVATE_KEY=forbidden-probe-value \
+    "$test_wrapper" >/dev/null 2>"$test_root/multiline-environment-value.err"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ] \
+    || [ -e "$tool_sentinel" ] \
+    || ! grep -Fxq 'PRIVATE_KEY is forbidden for Base Sepolia release operations; use only the encrypted Foundry account dev.' "$test_root/multiline-environment-value.err" \
+    || grep -Fq 'synthetic-value' "$test_root/multiline-environment-value.err"; then
+    echo "Raw environment name scan misread or disclosed a multiline value: $wrapper" >&2
+    exit 1
+  fi
+
+  # A failed scanner must not be hidden by the successful builtin reader at the
+  # end of the pipeline. Only this disposable fixture substitutes the scanner.
+  sed 's|/usr/bin/env -0 |/usr/bin/false |' "$test_wrapper" > "$test_root/scanner-failure.sh"
+  chmod 0700 "$test_root/scanner-failure.sh"
+  set +e
+  env -i \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    HOME="$test_home" \
+    DNAI_FORBIDDEN_TOOL_SENTINEL="$tool_sentinel" \
+    "$test_root/scanner-failure.sh" >/dev/null 2>"$test_root/scanner-failure.err"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ] \
+    || [ -e "$tool_sentinel" ] \
+    || ! grep -Fxq 'Exported environment names could not be enumerated safely.' "$test_root/scanner-failure.err"; then
+    echo "Raw environment scanner failure did not fail closed before wrapper actions: $wrapper" >&2
     exit 1
   fi
 

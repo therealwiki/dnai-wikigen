@@ -12,6 +12,7 @@ esac
 
 assert_plain_shell_startup_environment() {
   local name
+  local raw_function_marker
   while IFS= read -r name; do
     case "$name" in
       BASH_ENV|ENV|BASHOPTS|SHELLOPTS|CDPATH|GLOBIGNORE|PS4|BASH_XTRACEFD|PROMPT_COMMAND|BASH_FUNC_*|NPM_CONFIG_*|npm_config_*|npm_execpath|npm_node_execpath|INIT_CWD|PERL5OPT|PERL5LIB|NODE_OPTIONS|NODE_PATH|NODE_USE_ENV_PROXY|NODE_EXTRA_CA_CERTS|NODE_TLS_REJECT_UNAUTHORIZED|SSL_CERT_FILE|SSL_CERT_DIR|SSLKEYLOGFILE|LD_*|DYLD_*|GLIBC_TUNABLES)
@@ -20,6 +21,23 @@ assert_plain_shell_startup_environment() {
         ;;
     esac
   done < <(compgen -e)
+  # Privileged Bash 5 hides exported functions from compgen while retaining
+  # their raw environment entries. Inspect NUL-framed names after loader checks.
+  raw_function_marker="$(
+    set -o pipefail
+    /usr/bin/env -0 | while IFS= read -r -d '' name; do
+      if [[ "${name%%=*}" == BASH_FUNC_* ]]; then
+        builtin printf '%s\n' forbidden
+      fi
+    done
+  )" || {
+    printf '%s\n' "release gates could not enumerate raw environment names safely" >&2
+    return 64
+  }
+  if [[ -n "$raw_function_marker" ]]; then
+    printf '%s\n' "release gates reject observable shell, interpreter, Node, TLS, and native-loader hooks: BASH_FUNC_*" >&2
+    return 64
+  fi
 }
 
 assert_plain_shell_startup_environment
