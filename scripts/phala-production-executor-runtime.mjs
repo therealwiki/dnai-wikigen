@@ -210,11 +210,13 @@ export function validateAuthenticatedPhalaReadinessCatalog({
     || resources.kms_nodes.length > MAX_CATALOG_ITEMS) {
     throw new Error("authenticated CVM resource graph is incomplete or unbounded");
   }
-  const instanceByName = new Map(resources.instance_types.map((entry) => [entry?.name, entry]));
   const totalDisk = PHALA_EXECUTION_ORDER.reduce((sum, domain) => {
     const reviewed = target.resource_targets?.[domain];
-    const observed = instanceByName.get(reviewed?.instance_type);
-    if (!reviewed || !observed || observed.name !== reviewed.instance_type
+    const matches = resources.instance_types.filter((entry) => (
+      isRecord(entry) && entry.id === reviewed?.instance_type
+    ));
+    const observed = matches.length === 1 ? matches[0] : null;
+    if (!reviewed || !observed || observed.id !== reviewed.instance_type
       || !Number.isSafeInteger(observed.default_disk_size_gb)
       || reviewed.disk_size < observed.default_disk_size_gb
       || observed.requires_gpu !== false) {

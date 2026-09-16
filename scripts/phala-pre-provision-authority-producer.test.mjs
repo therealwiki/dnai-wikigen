@@ -114,16 +114,16 @@ function resourceGraph() {
     kms_nodes: [],
     node_kms_relations: [],
     gateway_nodes: [],
-    instance_types: ["tdx.large", "tdx.small"].map((name, index) => ({
-      id: `instance-${index + 1}`,
-      name,
-      vcpu: name === "tdx.large" ? 2 : 1,
-      memory_mb: name === "tdx.large" ? 4096 : 2048,
+    instance_types: ["tdx.large", "tdx.small"].map((id) => ({
+      id,
+      name: id === "tdx.large" ? "Large TDX Instance" : "Small TDX Instance",
+      vcpu: id === "tdx.large" ? 4 : 1,
+      memory_mb: id === "tdx.large" ? 8192 : 2048,
       default_disk_size_gb: 20,
       requires_gpu: false,
       requires_gpu_count: 0,
-      family: "tdx",
-      display_order: index + 1,
+      family: "cpu",
+      display_order: null,
     })),
     gpu_availability: {
       has_reserved_gpus: false,
@@ -209,7 +209,7 @@ function installFakeHttps(t, handler) {
   t.after(() => { https.request = original; });
 }
 
-function compatibilityHandler(calls) {
+function compatibilityHandler(calls, resources) {
   return (options) => {
     calls.push({
       method: options.method,
@@ -220,7 +220,7 @@ function compatibilityHandler(calls) {
     });
     if (options.path === "/api/v1/auth/me") return { body: CURRENT_USER };
     if (options.path === "/api/v1/teepods/cvm-create-resources") {
-      return { body: resourceGraph() };
+      return { body: resources };
     }
     if (options.path === "/api/v1/kms?page=1&page_size=100&is_onchain=false") {
       return { body: kmsList() };
@@ -233,10 +233,10 @@ function compatibilityHandler(calls) {
   };
 }
 
-async function observedCompatibility(t) {
+async function observedCompatibility(t, resources = resourceGraph()) {
   installCredentialHome(t);
   const calls = [];
-  installFakeHttps(t, compatibilityHandler(calls));
+  installFakeHttps(t, compatibilityHandler(calls, resources));
   return { receipt: await observePinnedPhalaCompatibility(), calls };
 }
 
@@ -396,7 +396,50 @@ test("authenticated compatibility uses the exact origin, versions, calls, and se
   assert.equal(JSON.stringify(receipt).includes("phak_"), false);
   assert.equal(JSON.stringify(receipt).includes(CURRENT_USER.user.email), false);
   assert.deepEqual(receipt.mutation_calls, []);
+  assert.deepEqual(receipt.resource_catalog, ["tdx.large", "tdx.small"].map((name) => ({
+    name,
+    default_disk_size_gb: 20,
+    maximum_disk_size_gb: 2_048,
+    requires_gpu: false,
+  })), "provider IDs retain the existing internal receipt name field");
 });
+
+test("compatibility ignores instance display labels when selecting canonical IDs", async (t) => {
+  const resources = resourceGraph();
+  resources.instance_types.forEach((entry) => { entry.name = "Shared display label"; });
+  resources.instance_types.push({
+    ...resources.instance_types[0],
+    id: "tdx.unreviewed",
+    name: "tdx.large",
+    requires_gpu: true,
+  });
+  const { receipt } = await observedCompatibility(t, resources);
+  assert.deepEqual(receipt.resource_catalog.map(({ name }) => name), ["tdx.large", "tdx.small"]);
+});
+
+for (const [label, mutate] of [
+  ["missing canonical ID", (resources) => {
+    resources.instance_types[0].name = "tdx.large";
+    delete resources.instance_types[0].id;
+  }],
+  ["duplicate canonical ID", (resources) => {
+    resources.instance_types.push({
+      ...resources.instance_types[0],
+      name: "Another large display label",
+    });
+  }],
+  ["display-name spoofing", (resources) => {
+    resources.instance_types.forEach((entry) => { entry.name = entry.id; });
+    resources.instance_types[0].id = "tdx.unreviewed";
+  }],
+]) {
+  test(`compatibility rejects ${label} in the provider resource graph`, async (t) => {
+    const resources = resourceGraph();
+    mutate(resources);
+    await assert.rejects(observedCompatibility(t, resources),
+      /reviewed Phala API version failed the exact compatibility plan/);
+  });
+}
 
 test("compatibility and staging fail closed on origin, version, and capsule drift", async (t) => {
   const { receipt } = await observedCompatibility(t);
