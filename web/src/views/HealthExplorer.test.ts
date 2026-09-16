@@ -2,11 +2,23 @@ import { createComponent } from "solid-js";
 import { renderToString } from "solid-js/web";
 import { describe, expect, it } from "vitest";
 import healthSource from "./HealthExplorer.tsx?raw";
-import { HealthExplorer } from "./HealthExplorer";
+import { HealthExplorer, healthPatternContext } from "./HealthExplorer";
 
 const noNavigation = () => undefined;
 
 describe("modeled Health Guide boundary", () => {
+  it.each([
+    { duration: "A few days", sleep: "Rest restores me", expected: "a few days" },
+    { duration: "Six weeks", sleep: "Sleep is not refreshing", expected: "six weeks" },
+    { duration: "Three months+", sleep: "Not sure", expected: "three months+" },
+  ])("reflects the selected rest answer: $sleep", ({ duration, sleep, expected }) => {
+    const context = healthPatternContext({ duration, sleep });
+
+    expect(context).toBe(`You reported a change lasting ${expected} and chose “${sleep}” for how rest affects it.`);
+    if (sleep !== "Sleep is not refreshing") expect(context).not.toContain("Sleep is not refreshing");
+    expect(healthSource).toContain("{healthPatternContext(answers())}");
+  });
+
   it("renders a non-diagnostic, no-intake worked example with attached source status", () => {
     const html = renderToString(() => createComponent(HealthExplorer, { navigate: noNavigation }));
 

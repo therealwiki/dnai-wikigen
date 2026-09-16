@@ -203,7 +203,7 @@ label > span, fieldset legend { display: block; margin-bottom: 7px; color: var(-
 .brand-word { font-size: 18px; font-weight: 780; letter-spacing: -.06em; }
 .brand-word span { color: var(--mint); }
 .brand-beta { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted-2); font: 700 8px "JetBrains Mono Variable", monospace; letter-spacing: .1em; }
-.desktop-nav { display: flex; justify-content: center; gap: 4px; min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: none; }
+.desktop-nav { display: flex; justify-content: safe center; gap: 4px; min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: none; }
 .desktop-nav::-webkit-scrollbar { display: none; }
 .desktop-nav button { flex: 0 0 auto; height: 34px; padding: 0 11px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
 .desktop-nav button:hover, .desktop-nav button.active { color: var(--ink); background: rgba(255,255,255,.05); }
@@ -1650,8 +1650,12 @@ label > span, fieldset legend { display: block; margin-bottom: 7px; color: var(-
   .tinker-authority-actions .device-row > button:last-child { grid-column: 3; }
 }
 
-@media (min-width: 901px) and (max-width: 1340px) {
-  .desktop-nav button { padding-inline: 6px; font-size: 9px; }
+@media (min-width: 1121px) and (max-width: 1540px) {
+  .topbar { grid-template-rows: 60px 44px; padding-bottom: 6px; }
+  .topbar > .brand { grid-column: 1; grid-row: 1; }
+  .topbar-actions { grid-column: 3; grid-row: 1; }
+  .desktop-nav { grid-column: 1 / -1; grid-row: 2; }
+  .desktop-nav button { padding-inline: 11px; font-size: 12px; }
 }
 
 @media (min-width: 901px) and (max-width: 1120px) {

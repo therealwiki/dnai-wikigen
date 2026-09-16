@@ -886,6 +886,15 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
   const workflow = fs.readFileSync(path.join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
   assert.equal((workflow.match(/version: v1\.5\.1/g) || []).length, 2);
   assert.doesNotMatch(workflow, /version: stable/);
+  const canonicalFoundrySteps = [...workflow.matchAll(
+    /^      - name: Canonicalize pinned Foundry release authority\n[\s\S]*?(?=^      - (?:name|uses):)/gm,
+  )].map((match) => match[0]);
+  assert.equal(canonicalFoundrySteps.length, 2);
+  assert.equal(new Set(canonicalFoundrySteps).size, 1);
+  assert.match(
+    canonicalFoundrySteps[0],
+    /for tool in forge cast; do[\s\S]*\/usr\/bin\/realpath[\s\S]*\/usr\/bin\/install -m 0755[\s\S]*\/bin\/rm -f[\s\S]*\/usr\/bin\/install -m 0755/,
+  );
   assert.equal((workflow.match(/node-version: 22\.23\.2/g) || []).length, 4);
   assert.doesNotMatch(workflow, /node-version:\s*22\s*(?:#.*)?$/m);
   const canonicalNodeSteps = [...workflow.matchAll(
@@ -990,13 +999,13 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
     /PINNED_CAST_SIGNATURE_VERIFIER\.version|PINNED_CAST_SIGNATURE_VERIFIER\.commit_sha|PINNED_CAST_SIGNATURE_VERIFIER\.build_profile/,
   );
   const webBlock = workflow.match(/\n  web:[\s\S]*$/)?.[0] || "";
-  const castStep = webBlock.indexOf(
-    "Canonicalize generic Linux cast for rejection evidence",
+  const foundryStep = webBlock.indexOf(
+    "Canonicalize pinned Foundry release authority",
   );
   const webCiStep = webBlock.indexOf(
     "Verify generic-Linux portable web and root gates — not operator-host activation authority",
   );
-  assert.ok(castStep > 0 && webCiStep > castStep);
+  assert.ok(foundryStep > 0 && webCiStep > foundryStep);
   assert.equal((workflow.match(/--head-materialized-root/g) || []).length, 4);
   assert.equal((workflow.match(/GIT_NO_REPLACE_OBJECTS=1 GIT_PAGER=cat/g) || []).length, 4);
   assert.equal((workflow.match(/show \\\n\s+"\$GITHUB_SHA:scripts\/verify-local\.sh"/g) || []).length, 4);
@@ -1005,11 +1014,11 @@ test("CI keeps portable tests, operator rejection, frontend build, and local ful
     (workflow.match(
       /^\s*shell: \/bin\/bash --noprofile --norc -p -e -o pipefail \{0\}$/gm,
     ) || []).length,
-    9,
+    10,
   );
   assert.equal(
     (workflow.match(/^\s*shell:.*$/gm) || []).length,
-    9,
+    10,
   );
   assert.doesNotMatch(
     workflow,

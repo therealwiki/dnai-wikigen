@@ -140,6 +140,17 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.5.1
+      - name: Canonicalize pinned Foundry release authority
+        shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          for tool in forge cast; do
+            tool_source="$(/usr/bin/realpath "$HOME/.foundry/bin/$tool")"
+            /usr/bin/install -m 0755 "$tool_source" "$RUNNER_TEMP/dnai-generic-linux-$tool"
+            /bin/rm -f "$HOME/.foundry/bin/$tool"
+            /usr/bin/install -m 0755 "$RUNNER_TEMP/dnai-generic-linux-$tool" \
+              "$HOME/.foundry/bin/$tool"
+          done
       - name: Build contracts with portable Node suites — not operator-host activation authority
         # The hosted runner is the trusted process-launch boundary for this
         # non-authorizing portable proof as well as for the web gate below.
@@ -288,15 +299,17 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
         with:
           version: v1.5.1
-      - name: Canonicalize generic Linux cast for rejection evidence
+      - name: Canonicalize pinned Foundry release authority
         shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
         run: |
           set -euo pipefail
-          cast_source="$(/usr/bin/realpath "$HOME/.foundry/bin/cast")"
-          /usr/bin/install -m 0755 "$cast_source" "$RUNNER_TEMP/dnai-generic-linux-cast"
-          /bin/rm -f "$HOME/.foundry/bin/cast"
-          /usr/bin/install -m 0755 "$RUNNER_TEMP/dnai-generic-linux-cast" \
-            "$HOME/.foundry/bin/cast"
+          for tool in forge cast; do
+            tool_source="$(/usr/bin/realpath "$HOME/.foundry/bin/$tool")"
+            /usr/bin/install -m 0755 "$tool_source" "$RUNNER_TEMP/dnai-generic-linux-$tool"
+            /bin/rm -f "$HOME/.foundry/bin/$tool"
+            /usr/bin/install -m 0755 "$RUNNER_TEMP/dnai-generic-linux-$tool" \
+              "$HOME/.foundry/bin/$tool"
+          done
       - name: Verify generic-Linux portable web and root gates — not operator-host activation authority
         # The hosted runner is the trusted process-launch boundary. Native
         # constructors execute before Bash can inspect its own environment, so

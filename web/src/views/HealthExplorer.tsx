@@ -61,6 +61,10 @@ const ARCHIVE_EVENTS = [
   { date: "+5 WK", title: "Travel horizon", copy: "High-altitude itinerary needs official destination review", icon: Plane },
 ];
 
+export function healthPatternContext(answers: Pick<Answers, "duration" | "sleep">): string {
+  return `You reported a change lasting ${answers.duration.toLowerCase()} and chose “${answers.sleep}” for how rest affects it.`;
+}
+
 export function HealthExplorer(props: { navigate: (route: RouteKey) => void }) {
   const [answers, setAnswers] = createSignal<Answers>(DEFAULT_ANSWERS);
   const [archived, setArchived] = createSignal(false);
@@ -129,7 +133,7 @@ export function HealthExplorer(props: { navigate: (route: RouteKey) => void }) {
           </div>
 
           <Show when={urgent()} fallback={
-            <div class="health-message assistant result"><span><Stethoscope size={15} /></span><div><small>GUIDE · ROUTE BUILT</small><p>Because the change has lasted {answers().duration.toLowerCase()} and sleep is not refreshing, the responsible first route is a clinical review of possible causes—not a performance product. Microbiome research can remain an exploratory branch after safety and root-cause checks.</p></div></div>
+            <div class="health-message assistant result"><span><Stethoscope size={15} /></span><div><small>GUIDE · ROUTE BUILT</small><p>{healthPatternContext(answers())} The responsible first route is a clinical review of possible causes—not a performance product. Microbiome research can remain an exploratory branch after safety and root-cause checks.</p></div></div>
           }>
             <div class="health-urgent-route" role="alert"><ShieldAlert size={20} /><div><strong>Stop the wellness ranking.</strong><span>Chest pain or discomfort, fainting or loss of consciousness, and difficulty breathing can be medical-emergency warning signs. This demo cannot determine severity. Call local emergency services now.</span><a href="https://medlineplus.gov/ency/article/001927.htm" target="_blank" rel="noreferrer">MedlinePlus emergency signs <ExternalLink size={12} /></a></div></div>
           </Show>
