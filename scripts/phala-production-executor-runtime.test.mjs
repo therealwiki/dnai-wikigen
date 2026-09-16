@@ -53,10 +53,17 @@ function fixture() {
     targetAuthority,
     resources: {
       capacity: { max_instances: 7, max_disk: 2_048 },
-      instance_types: [
-        { name: "tdx.large", default_disk_size_gb: 20, requires_gpu: false },
-        { name: "tdx.small", default_disk_size_gb: 20, requires_gpu: false },
-      ],
+      instance_types: ["tdx.large", "tdx.small"].map((id) => ({
+        id,
+        name: id === "tdx.large" ? "Large TDX Instance" : "Small TDX Instance",
+        vcpu: id === "tdx.large" ? 4 : 1,
+        memory_mb: id === "tdx.large" ? 8192 : 2048,
+        default_disk_size_gb: 20,
+        requires_gpu: false,
+        requires_gpu_count: 0,
+        family: "cpu",
+        display_order: null,
+      })),
       kms_nodes: [observedKms],
     },
     osImages: { items: [structuredClone(PHALA_OS_IMAGE_CATALOG_ENTRY)] },
@@ -91,6 +98,43 @@ test("catalog validation rejects capacity, resource, KMS, and dev-image drift", 
     assert.throws(() => validateAuthenticatedPhalaReadinessCatalog(value));
   }
 });
+
+test("fresh readiness catalog selects canonical IDs independently of display labels", () => {
+  const value = fixture();
+  value.resources.instance_types.forEach((entry) => { entry.name = "Shared display label"; });
+  value.resources.instance_types.push({
+    ...value.resources.instance_types[0],
+    id: "tdx.unreviewed",
+    name: "tdx.large",
+    requires_gpu: true,
+  });
+  const projected = validateAuthenticatedPhalaReadinessCatalog(value);
+  assert.deepEqual(projected.resource_targets, value.targetAuthority.resource_targets);
+});
+
+for (const [label, mutate] of [
+  ["missing canonical ID", (value) => {
+    value.resources.instance_types[0].name = "tdx.large";
+    delete value.resources.instance_types[0].id;
+  }],
+  ["duplicate canonical ID", (value) => {
+    value.resources.instance_types.push({
+      ...value.resources.instance_types[0],
+      name: "Another large display label",
+    });
+  }],
+  ["display-name spoofing", (value) => {
+    value.resources.instance_types.forEach((entry) => { entry.name = entry.id; });
+    value.resources.instance_types[0].id = "tdx.unreviewed";
+  }],
+]) {
+  test(`fresh readiness catalog rejects ${label}`, () => {
+    const value = fixture();
+    mutate(value);
+    assert.throws(() => validateAuthenticatedPhalaReadinessCatalog(value),
+      /absent from the fresh authenticated resource catalog/);
+  });
+}
 
 test("production runtime rejects caller hooks before reading files or credentials", async () => {
   await assert.rejects(executePhalaSevenCvmProductionLaunch({

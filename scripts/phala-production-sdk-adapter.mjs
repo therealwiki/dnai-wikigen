@@ -1441,7 +1441,8 @@ function projectCompatibilityResourceAuthority(resources) {
   }
   const resourceCatalog = requiredTypes.map((name) => {
     const matches = resources.instance_types.filter((entry) => (
-      isRecord(entry) && entry.name === name
+      // Provider IDs are canonical instance types; names are display labels.
+      isRecord(entry) && entry.id === name
     ));
     if (matches.length !== 1
       || !Number.isSafeInteger(matches[0].default_disk_size_gb)
