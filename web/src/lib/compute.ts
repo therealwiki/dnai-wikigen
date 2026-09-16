@@ -987,6 +987,14 @@ function baseUrl(): string {
   return deployment.delegateUrl.replace(/\/$/, "");
 }
 
+/** Preserve HTTP status without exposing response bodies or credential material. */
+export class ComputeHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ComputeHttpError";
+  }
+}
+
 async function request(
   path: string,
   options: { method?: "GET" | "POST" | "DELETE"; token?: string; body?: unknown; idempotencyKey?: string; timeout?: number } = {},
@@ -1004,17 +1012,27 @@ async function request(
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: AbortSignal.timeout(options.timeout ?? 12_000),
   });
-  const raw = await readBoundedResponseText(response);
   let value: unknown;
   try {
-    value = parseJsonWithoutPrecisionLoss(raw);
-  } catch {
-    throw new Error("Compute service returned malformed JSON");
+    const raw = await readBoundedResponseText(response);
+    try {
+      value = parseJsonWithoutPrecisionLoss(raw);
+    } catch {
+      throw new Error("Compute service returned malformed JSON");
+    }
+  } catch (cause) {
+    if (!response.ok) {
+      throw new ComputeHttpError(response.status, `Request failed with status ${response.status}`);
+    }
+    throw cause;
   }
   if (!response.ok) {
     const body = value && typeof value === "object" && "detail" in value ? (value as { detail: unknown }).detail : undefined;
     const fallback = `Request failed with status ${response.status}`;
-    throw new Error(publicErrorText(typeof body === "string" ? body : fallback, fallback));
+    throw new ComputeHttpError(
+      response.status,
+      publicErrorText(typeof body === "string" ? body : fallback, fallback),
+    );
   }
   assertNoSensitiveFields(value);
   return value;

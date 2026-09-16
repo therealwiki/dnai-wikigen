@@ -30,6 +30,7 @@ import {
   withdrawVaultAccrued,
   withdrawVaultUnused,
   type VaultChainSnapshot,
+  type VaultWorkloadAuthorizationBinding,
 } from "./computeVault";
 import { parseComputeVaultConfig } from "./computeVaultConfig";
 import { publicClient } from "./contract";
@@ -288,6 +289,17 @@ describe("Compute vault identifiers and exact amounts", () => {
 });
 
 describe("Compute vault EIP-712 ABI", () => {
+  const originalDeployment = {
+    ...computeVaultDeployment,
+    issues: [...computeVaultDeployment.issues],
+    token: computeVaultDeployment.token ? { ...computeVaultDeployment.token } : undefined,
+  };
+
+  afterEach(() => {
+    Object.assign(computeVaultDeployment, originalDeployment);
+    vi.restoreAllMocks();
+  });
+
   const validWorkload = {
     workloadId: `wrk_${"1".repeat(32)}`,
     workloadSchema: "dnai.compute.workload.inference.v1" as const,
@@ -304,6 +316,18 @@ describe("Compute vault EIP-712 ABI", () => {
     executionBindingCommitment: `sha256:${"77".repeat(32)}` as `sha256:${string}`,
     recipientReleaseCommitment: `sha256:${"88".repeat(32)}` as `sha256:${string}`,
   };
+
+  function workloadForOperation(operation: "inference" | "training"): VaultWorkloadAuthorizationBinding {
+    return operation === "inference" ? { ...validWorkload } : {
+      ...validWorkload,
+      workloadSchema: "dnai.compute.workload.sft-jsonl.v1",
+      operation: "training",
+      recipe: "qwen3_8b_lora_r32",
+      maxPrefillTokens: 0,
+      maxSampleTokens: 0,
+      maxTrainTokens: 50_000,
+    };
+  }
 
   it("uses the contract's exact authorization domain and field order", () => {
     const config = configured();
@@ -428,6 +452,74 @@ describe("Compute vault EIP-712 ABI", () => {
       executionBindingCommitment: `sha256:${"0".repeat(64)}`,
     })).rejects.toThrow(/execution binding/);
   });
+
+
+  it.each(["inference", "training"] as const)(
+    "rejects unsupported %s policy before wallet access, RPC, signing, or reservation",
+    async (operation) => {
+      Object.assign(computeVaultDeployment, configured());
+      const signTypedData = vi.fn();
+      const writeContract = vi.fn();
+      const account = vi.spyOn(wallet, "account").mockReturnValue(developer as Address);
+      const client = vi.spyOn(wallet, "client").mockReturnValue({ signTypedData, writeContract } as never);
+      const chain = vi.spyOn(wallet, "isCorrectChain").mockReturnValue(true);
+      const switchChain = vi.spyOn(wallet, "switchToBase").mockResolvedValue(undefined);
+      const generation = vi.spyOn(wallet, "authorizationVersion").mockReturnValue(12);
+      const block = vi.spyOn(publicClient, "getBlockNumber").mockRejectedValue(new Error("Unexpected RPC"));
+      const simulate = vi.spyOn(publicClient, "simulateContract").mockRejectedValue(new Error("Unexpected simulation"));
+
+      await expect(authorizeVaultJob({
+        projectReference: "project-alpha",
+        jobReference: "job-alpha",
+        assetKind: "native",
+        maxAssetDebit: 1n,
+        lifetimeSeconds: 900,
+        workload: { ...workloadForOperation(operation), resultPolicy: "score_band_hash" },
+      })).rejects.toThrow(/not supported by the pinned Tinker provider/);
+
+      for (const interaction of [
+        account, client, chain, switchChain, generation, block, simulate, signTypedData, writeContract,
+      ]) expect(interaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["inference", "training"] as const)(
+    "allows supported %s bindings to reach the existing wallet and pinned-runtime gates",
+    async (operation) => {
+      Object.assign(computeVaultDeployment, configured());
+      const signTypedData = vi.fn();
+      const writeContract = vi.fn();
+      const account = vi.spyOn(wallet, "account").mockReturnValue(undefined);
+      const client = vi.spyOn(wallet, "client").mockReturnValue({ signTypedData, writeContract } as never);
+      vi.spyOn(wallet, "isCorrectChain").mockReturnValue(true);
+      vi.spyOn(wallet, "authorizationVersion").mockReturnValue(12);
+      const block = vi.spyOn(publicClient, "getBlockNumber").mockResolvedValue(1n);
+      const bytecode = vi.spyOn(publicClient, "getBytecode").mockResolvedValue("0x");
+      const simulate = vi.spyOn(publicClient, "simulateContract").mockRejectedValue(new Error("Unexpected simulation"));
+      const input = {
+        projectReference: "project-alpha",
+        jobReference: "job-alpha",
+        assetKind: "native" as const,
+        maxAssetDebit: 1n,
+        lifetimeSeconds: 900,
+        workload: workloadForOperation(operation),
+      };
+
+      await expect(authorizeVaultJob(input)).rejects.toThrow(/Connect a wallet/);
+      expect(account).toHaveBeenCalled();
+      expect(client).not.toHaveBeenCalled();
+      expect(block).not.toHaveBeenCalled();
+
+      account.mockReturnValue(developer as Address);
+      await expect(authorizeVaultJob(input)).rejects.toThrow(/runtime code does not match/);
+      expect(client).toHaveBeenCalled();
+      expect(block).toHaveBeenCalledOnce();
+      expect(bytecode).toHaveBeenCalledOnce();
+      expect(signTypedData).not.toHaveBeenCalled();
+      expect(simulate).not.toHaveBeenCalled();
+      expect(writeContract).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not expose TEE-only dispatch or metering writes in the browser ABI", () => {
     const names = computeCreditVaultAbi.map((entry) => entry.name);

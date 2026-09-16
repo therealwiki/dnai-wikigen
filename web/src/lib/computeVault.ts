@@ -12,6 +12,7 @@ import {
 } from "viem";
 import { BASE_SEPOLIA, computeVaultDeployment } from "../config";
 import type { ComputeVaultDeploymentConfig } from "./computeVaultConfig";
+import { assertPinnedComputeProviderResultPolicy } from "./computeProviderPolicy";
 import {
   computeDispatchIntentV3Commitment,
   computeStandaloneAuthorizationContextCommitment,
@@ -1375,6 +1376,7 @@ export async function authorizeVaultJob(input: {
     throw new Error("Authorization lifetime must be between 15 minutes and 7 days");
   }
   validateWorkloadAuthorizationBinding(input.workload);
+  assertPinnedComputeProviderResultPolicy(input.workload.resultPolicy);
   const { account, client, authorizationVersion } = await walletContext();
   const state = await loadComputeVaultState(account, input.projectReference);
   const ready = input.assetKind === "native"

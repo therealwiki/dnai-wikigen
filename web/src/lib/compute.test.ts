@@ -9,6 +9,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { deployment } from "../config";
 import {
+  ComputeHttpError,
+  listProjects,
   cancelComputeDispatchIntent,
   cancelComputeJob,
   canCancelComputeDispatchIntent,
@@ -54,6 +56,50 @@ import { computeVaultJobId, computeVaultProjectId } from "./computeVault";
 import contextVectors from "./computeExecutionPolicyContextVectors.json";
 
 const encoder = new TextEncoder();
+
+describe("Compute HTTP error status", () => {
+  const originalDelegateUrl = deployment.delegateUrl;
+  afterEach(() => {
+    Object.assign(deployment, { delegateUrl: originalDelegateUrl });
+    vi.unstubAllGlobals();
+  });
+
+  it.each([401, 403, 500])("preserves HTTP %s separately from sanitized text", async (status) => {
+    Object.assign(deployment, { delegateUrl: "https://delegate.example" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "The request is unavailable." }),
+      { status, headers: { "Content-Type": "application/json" } },
+    )));
+    await expect(listProjects("test-wallet-session")).rejects.toMatchObject({
+      name: "ComputeHttpError",
+      status,
+    });
+  });
+
+  it.each([
+    ["text/html", "<html>login required</html>"],
+    ["application/json", "{invalid-json"],
+  ])("retains a 401 on an unusable %s error body without exposing it", async (contentType, body) => {
+    Object.assign(deployment, { delegateUrl: "https://delegate.example" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      body,
+      { status: 401, headers: { "Content-Type": contentType } },
+    )));
+    await expect(listProjects("test-wallet-session")).rejects.toMatchObject({
+      name: "ComputeHttpError",
+      status: 401,
+      message: "Request failed with status 401",
+    });
+  });
+
+  it("does not misclassify a transport error as an authentication failure", async () => {
+    Object.assign(deployment, { delegateUrl: "https://delegate.example" });
+    const failure = new TypeError("Network unavailable");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(failure));
+    await expect(listProjects("test-wallet-session")).rejects.toBe(failure);
+    expect(failure).not.toBeInstanceOf(ComputeHttpError);
+  });
+});
 
 function buffer(value: Uint8Array): ArrayBuffer {
   return value.slice().buffer as ArrayBuffer;

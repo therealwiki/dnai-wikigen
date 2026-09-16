@@ -124,8 +124,18 @@ jobs:
           format: spdx-json
           output-file: ${{ matrix.name }}.spdx.json
           artifact-name: ${{ matrix.name }}-sbom.spdx.json
-          upload-artifact: true
+          upload-artifact: false
           syft-version: v1.44.0
+
+      # Anchore's artifact-name also renames the ZIP member. Preserve the
+      # original filename used by the descriptor and signed SBOM attestation.
+      - name: Upload canonical SPDX SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.name }}-sbom.spdx.json
+          path: ${{ matrix.name }}.spdx.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Generate GitHub provenance attestation
         id: provenance

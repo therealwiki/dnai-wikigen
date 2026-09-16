@@ -410,6 +410,14 @@ export class ComputeWorkloadWireError extends Error {
   }
 }
 
+/** Status from an authenticated workload endpoint, never a public trust fetch. */
+export class ComputeWorkloadHttpError extends ComputeWorkloadWireError {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ComputeWorkloadHttpError";
+  }
+}
+
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 function asciiJsonString(value: string): string {
@@ -1156,8 +1164,12 @@ export async function authenticateComputeWorkloadEncryptionContract(
   return Object.freeze(contract) as AuthenticatedComputeWorkloadContract;
 }
 
-async function strictJsonResponse(response: Response, label: string): Promise<unknown> {
-  if (response.redirected || !response.ok) throw new ComputeWorkloadWireError(`${label} was rejected`);
+async function strictJsonResponse(response: Response, label: string, authenticated = false): Promise<unknown> {
+  if (response.redirected) throw new ComputeWorkloadWireError(`${label} was rejected`);
+  if (!response.ok) {
+    if (authenticated) throw new ComputeWorkloadHttpError(response.status, `${label} was rejected`);
+    throw new ComputeWorkloadWireError(`${label} was rejected`);
+  }
   const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "application/json" && !contentType?.endsWith("+json")) throw new ComputeWorkloadWireError(`${label} did not return JSON`);
   const raw = new Uint8Array(await response.arrayBuffer());
@@ -1706,7 +1718,7 @@ async function workloadMetadataRequest(
   return {
     state: "found",
     metadata: parseComputeWorkloadMetadata(
-      await strictJsonResponse(response, "Compute workload metadata lookup"),
+      await strictJsonResponse(response, "Compute workload metadata lookup", true),
       workloadId,
     ),
   };
@@ -1779,7 +1791,7 @@ export async function eraseUnconsumedComputeWorkload(
       "This workload has no deletable sealed ciphertext; it may already be consumed, released, deleted, or outside the authorized project",
     );
   } else if (response && !response.redirected && response.status >= 400 && response.status < 500) {
-    throw new ComputeWorkloadWireError("Compute workload deletion was rejected");
+    throw new ComputeWorkloadHttpError(response.status, "Compute workload deletion was rejected");
   }
 
   const recovered = await workloadMetadataRequest(
@@ -1821,7 +1833,7 @@ export async function uploadPreparedComputeWorkload(
     },
     body: JSON.stringify(prepared.body),
   });
-  const receipt = parseReceipt(await strictJsonResponse(response, "Compute workload upload"), prepared.expected);
+  const receipt = parseReceipt(await strictJsonResponse(response, "Compute workload upload", true), prepared.expected);
   return {
     receipt,
     dispatchBinding: {

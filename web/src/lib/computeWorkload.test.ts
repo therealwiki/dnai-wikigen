@@ -3,6 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Address, Hex } from "viem";
 import {
   authenticateComputeWorkloadEncryptionContract,
+  ComputeWorkloadHttpError,
   canonicalAsciiJson,
   computeIndependentQvlVerdictDigest,
   computeWorkloadActivationCommitment,
@@ -11,6 +12,7 @@ import {
   computeWorkloadRecipientReleaseCommitment,
   deriveComputeWorkloadWireBinding,
   eraseUnconsumedComputeWorkload,
+  fetchAuthenticatedComputeWorkloadContract,
   fetchComputeWorkloadMetadata,
   parseComputeWorkloadMetadata,
   parseComputeWorkloadEncryptionContract,
@@ -329,6 +331,58 @@ function workloadMetadata(
 afterEach(() => vi.restoreAllMocks());
 
 describe("Compute sealed workload browser wire", () => {
+  it.each([401, 403, 503])("preserves authenticated metadata HTTP %s without exposing its body", async (status) => {
+    const response = new Response("PRIVATE upstream response", { status, headers: { "Content-Type": "text/html" } });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response);
+    const failure = await fetchComputeWorkloadMetadata("https://delegate.example", "Bearer wallet-session-token-123456", PROJECT_ID, WORKLOAD_ID).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ComputeWorkloadHttpError);
+    expect(failure).toMatchObject({ status, message: "Compute workload metadata lookup was rejected" });
+    expect(response.bodyUsed).toBe(false);
+  });
+
+  it("does not classify a public recipient/QVL HTTP 401 as a wallet-session rejection", async () => {
+    const { trust } = await fixture();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 401 }));
+    const failure = await fetchAuthenticatedComputeWorkloadContract("https://delegate.example", trust, NOW).catch((cause: unknown) => cause);
+    expect(failure).not.toBeInstanceOf(ComputeWorkloadHttpError);
+    expect(failure).toMatchObject({ name: "ComputeWorkloadWireError", message: "Compute workload contract was rejected" });
+  });
+
+  it("keeps authenticated upload HTTP 401 bounded and does not automatically retry ciphertext", async () => {
+    const { raw, trust } = await fixture();
+    const contract = await authenticateComputeWorkloadEncryptionContract(raw, trust, NOW);
+    const prepared = await prepareComputeWorkloadUpload({
+      contract,
+      principal: { kind: "wallet", projectId: PROJECT_ID, actorId: WALLET },
+      idempotencyKey: "workload.browser.auth.0001",
+      manifest: inferenceManifest,
+      workload: { kind: "inference", prompt: "PRIVATE AUTH RETRY PAYLOAD" },
+    });
+    const originalBody = JSON.stringify(prepared.body);
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("PRIVATE denial", { status: 401 }));
+    await expect(uploadPreparedComputeWorkload("https://delegate.example", "Bearer wallet-session-token-123456", prepared))
+      .rejects.toMatchObject({ name: "ComputeWorkloadHttpError", status: 401, message: "Compute workload upload was rejected" });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(prepared.body)).toBe(originalBody);
+    expect(request.mock.calls[0]?.[1]?.headers).toMatchObject({ "Idempotency-Key": prepared.idempotencyKey });
+  });
+
+  it("reports an explicit deletion HTTP 401 without pretending deletion succeeded or retrying", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(null, { status: 401 }));
+    await expect(eraseUnconsumedComputeWorkload("https://delegate.example", "Bearer wallet-session-token-123456", PROJECT_ID, WORKLOAD_ID))
+      .rejects.toMatchObject({ name: "ComputeWorkloadHttpError", status: 401, message: "Compute workload deletion was rejected" });
+    expect(request.mock.calls.map(([, init]) => init?.method)).toEqual(["DELETE"]);
+  });
+
+  it("retains uncertain deletion semantics when its recovery read rejects the session", async () => {
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("connection reset after DELETE"))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+    await expect(eraseUnconsumedComputeWorkload("https://delegate.example", "Bearer wallet-session-token-123456", PROJECT_ID, WORKLOAD_ID))
+      .rejects.toMatchObject({ name: "ComputeWorkloadHttpError", status: 401, message: "Compute workload metadata lookup was rejected" });
+    expect(request.mock.calls.map(([, init]) => init?.method)).toEqual(["DELETE", "GET"]);
+  });
+
   it("matches Python ASCII canonical JSON, including non-ASCII strings", () => {
     expect(canonicalAsciiJson({ z: "β🧬", a: { n: 2, ok: true } })).toBe(
       '{"a":{"n":2,"ok":true},"z":"\\u03b2\\ud83e\\uddec"}',

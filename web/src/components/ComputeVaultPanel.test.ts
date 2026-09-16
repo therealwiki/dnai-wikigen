@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createComponent } from "solid-js";
+import { renderToString } from "solid-js/web";
+import type { VaultWorkloadAuthorizationBinding } from "../lib/computeVault";
+import { wallet } from "../lib/wallet";
 import panelSource from "./ComputeVaultPanel.tsx?raw";
 import {
+  ComputeVaultPanel,
   computeVaultUiOperationContextIsCurrent,
   computeVaultUiOperationFingerprint,
   computeVaultUiOperationGenerationIsCurrent,
@@ -47,7 +52,44 @@ function authorizationFingerprint(overrides: {
   });
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("Compute vault async UI attribution", () => {
+  it("explains and blocks a provider-incompatible authorization before any wallet action", () => {
+    vi.spyOn(wallet, "account").mockReturnValue("0x1111111111111111111111111111111111111111");
+    const workload: VaultWorkloadAuthorizationBinding = {
+      workloadId: `wrk_${"ab".repeat(16)}`,
+      workloadSchema: "dnai.compute.workload.inference.v1",
+      workloadCommitment: `0x${"1".repeat(64)}`,
+      manifestCommitment: `0x${"2".repeat(64)}`,
+      operation: "inference",
+      model: "qwen3_8b",
+      recipe: "qwen3_8b_bounded",
+      resultPolicy: "score_band_hash",
+      maxPrefillTokens: 4096,
+      maxSampleTokens: 512,
+      maxTrainTokens: 0,
+      sourceKind: "wallet",
+      executionBindingCommitment: `sha256:${"3".repeat(64)}`,
+      recipientReleaseCommitment: `sha256:${"4".repeat(64)}`,
+    };
+    const html = renderToString(() => createComponent(ComputeVaultPanel, {
+      projectReference: "prj_0123456789abcdef01234567",
+      workloadAuthorization: workload,
+    }));
+    expect(html).toContain("The pinned Tinker provider cannot execute this result policy.");
+    expect(html).toContain("No funds can be authorized for it here.");
+    expect(panelSource).toContain("disabled={!authorizationReady() || !workloadProviderReady()");
+    const submit = panelSource.slice(panelSource.indexOf("async function submitAuthorization"));
+    expect(submit.indexOf("assertPinnedComputeProviderResultPolicy(workload.resultPolicy)"))
+      .toBeLessThan(submit.indexOf("await authorizeVaultJob("));
+    const supported = renderToString(() => createComponent(ComputeVaultPanel, {
+      projectReference: "prj_0123456789abcdef01234567",
+      workloadAuthorization: { ...workload, resultPolicy: "bounded_summary_receipt" },
+    }));
+    expect(supported).not.toContain("The pinned Tinker provider cannot execute this result policy.");
+  });
+
   it("exposes the capacity asset picker as a pressed-button group, not a tab interface", () => {
     expect(panelSource).toContain(
       'class="vault-asset-tabs" role="group" aria-label="Capacity asset"',
