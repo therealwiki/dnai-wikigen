@@ -7117,54 +7117,65 @@ def arena_create_submission(
             detail="Arena registry admission is unavailable",
         ) from exc
 
-    ingress = _get_arena_ingress()
-    try:
-        ingress_result = ingress.ingest(
-            challenge=challenge,
-            identity=identity,
-            candidate_commitment=payload.candidate_commitment,
-            manifest=manifest,
-            idempotency_key=idempotency_key,
-            registry_authorization_sha256=(
-                registry_authorization.snapshot_sha256
-            ),
-            envelope=payload.envelope.model_dump(),
-        )
-    except ArenaIngressConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except (ArenaIngressCorruptError, ArenaIngressUnavailable, OSError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Arena candidate ingress is unavailable",
-        ) from exc
-    except ArenaIngressError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     store = _get_arena_store()
     try:
-        result = store.submit(
+        # Hold the durable queue lock until ingress, queue persistence and any
+        # rollback finish. Terminal rows remain authoritative even after their
+        # ciphertext/index entry is unlinked; an API retry must not recreate it.
+        with store.submission_ingress_guard(
             challenge_id=challenge_id,
             challenge_version=challenge_version,
             identity=identity,
-            candidate_commitment=payload.candidate_commitment,
-            encrypted_reference=ingress_result.sealed_reference,
-            manifest=manifest,
             idempotency_key=idempotency_key,
-            submitted_at=int(_time.time()),
-            ciphertext_receipt={
-                "blob_sha256": ingress_result.blob_sha256,
-                "ciphertext_sha256": ingress_result.ciphertext_sha256,
-                "key_id": ingress_result.key_id,
-            },
-        )
+        ) as ingress_guard:
+            ingress = _get_arena_ingress()
+            try:
+                ingress_result = ingress.ingest(
+                    challenge=challenge,
+                    identity=identity,
+                    candidate_commitment=payload.candidate_commitment,
+                    manifest=manifest,
+                    idempotency_key=idempotency_key,
+                    registry_authorization_sha256=(
+                        registry_authorization.snapshot_sha256
+                    ),
+                    envelope=payload.envelope.model_dump(),
+                    queue_guard=ingress_guard,
+                )
+            except ArenaIngressConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except (ArenaIngressCorruptError, ArenaIngressUnavailable, OSError) as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Arena candidate ingress is unavailable",
+                ) from exc
+            except ArenaIngressError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            try:
+                result = store.submit(
+                    challenge_id=challenge_id,
+                    challenge_version=challenge_version,
+                    identity=identity,
+                    candidate_commitment=payload.candidate_commitment,
+                    encrypted_reference=ingress_result.sealed_reference,
+                    manifest=manifest,
+                    idempotency_key=idempotency_key,
+                    submitted_at=int(_time.time()),
+                    ciphertext_receipt={
+                        "blob_sha256": ingress_result.blob_sha256,
+                        "ciphertext_sha256": ingress_result.ciphertext_sha256,
+                        "key_id": ingress_result.key_id,
+                    },
+                )
+            except (ArenaStoreError, OSError):
+                _rollback_arena_ingress_or_503(ingress, ingress_result)
+                raise
     except ArenaIdempotencyConflict as exc:
-        _rollback_arena_ingress_or_503(ingress, ingress_result)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ArenaStoreError as exc:
-        _rollback_arena_ingress_or_503(ingress, ingress_result)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
-        _rollback_arena_ingress_or_503(ingress, ingress_result)
         raise HTTPException(503, "Arena durable store write failed") from exc
     return {
         "surface": "arena_submission_result",

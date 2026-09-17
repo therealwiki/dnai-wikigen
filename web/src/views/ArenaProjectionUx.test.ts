@@ -2,7 +2,8 @@ import { createComponent } from "solid-js";
 import { renderToString } from "solid-js/web";
 import { describe, expect, it } from "vitest";
 import arenaSource from "./Arena.tsx?raw";
-import { Arena, arenaPublicQueuePresentation } from "./Arena";
+import { Arena, arenaPublicQueuePresentation, canReusePreparedArenaSubmission } from "./Arena";
+import type { PreparedArenaSubmission } from "../lib/arena";
 
 const noNavigation = () => undefined;
 
@@ -126,6 +127,72 @@ describe("Arena public projection freshness", () => {
     expect(arenaSource).toContain("wallet.authorizationVersion() !== walletVersion");
     expect(arenaSource).toContain("prepared.walletAddress !== token.address.toLowerCase()");
     expect(arenaSource).toContain("Wallet session changed while preparing the Arena submission");
+  });
+
+  it("offers owner-state recovery after a submission error without replacing or resending the prepared request", () => {
+    const errorRecovery = arenaSource.match(/<Show when=\{submissionError\(\)\}>([\s\S]*?)<\/Show>/)?.[1];
+    expect(errorRecovery).toBeDefined();
+    expect(errorRecovery).toContain('role="alert">{submissionError()}');
+    expect(errorRecovery).toContain('data-arena-action="inspect-submission-error"');
+    expect(errorRecovery).toContain('disabled={submitting()}');
+    expect(errorRecovery).toContain('onClick={() => { closeSubmissionDialog(); chooseTab("submissions"); }}');
+    expect(errorRecovery).toContain("View my submissions");
+    expect(errorRecovery).toContain("Inspect your wallet-owned records before retrying.");
+    expect(errorRecovery).toContain("Viewing records does not resend or replace your prepared request.");
+    expect(errorRecovery).not.toMatch(/submitProgram|submitPreparedArenaSubmission|prepareArenaSubmission|newArenaIdempotencyKey|setPreparedSubmission|setSubmissionResult/);
+
+    const closeDialog = arenaSource.match(/const closeSubmissionDialog = \(\): void => \{([\s\S]*?)\n  \};/)?.[1];
+    const switchTab = arenaSource.match(/const chooseTab = \(next: ArenaTab\): void => \{([\s\S]*?)\n  \};/)?.[1];
+    expect(closeDialog).toBeDefined();
+    expect(switchTab).toBeDefined();
+    expect(closeDialog).toContain("if (submitting()) return;");
+    expect(switchTab).toContain("setTab(next)");
+    for (const navigation of [closeDialog, switchTab]) {
+      expect(navigation).not.toMatch(/setPreparedSubmission|setSubmissionFile|setSubmissionHash|prepareArenaSubmission|submitPreparedArenaSubmission|newArenaIdempotencyKey/);
+    }
+    expect(arenaSource).toContain('onClick={() => void refreshOwnerView()}');
+    expect(arenaSource).toContain('onClick={() => void authorizeOwnerView()}');
+    expect(arenaSource).toContain("if (!canReusePreparedArenaSubmission(prepared, {");
+    expect(arenaSource).toContain(": canReusePreparedArenaSubmission(preparedSubmission(), {");
+    expect(arenaSource).toContain('? "Retry same encrypted request"');
+    expect(arenaSource).toContain('onClick={() => void submitProgram()}');
+    expect(arenaSource).toContain('disabled={!submissionConfigured() || !challenge().apiBacked || !submissionFile() || !submissionHash() || !wallet.account() || hashing() || submitting()}');
+  });
+
+  it("promises same-request retry only for the exact retained wallet, challenge, manifest, and source context", () => {
+    const context = {
+      challengeId: "dnaseq-variant-qc-safe-ir",
+      challengeVersion: "1.0.0",
+      challengeManifestHash: "1".repeat(64),
+      candidateCommitment: `sha256:${"2".repeat(64)}`,
+      sourceBytes: 200,
+      walletAddress: `0x${"ab".repeat(20)}`,
+    };
+    const prepared = {
+      challengeId: context.challengeId,
+      challengeVersion: context.challengeVersion,
+      candidateCommitment: context.candidateCommitment,
+      sourceBytes: context.sourceBytes,
+      walletAddress: context.walletAddress,
+      idempotencyKey: "original-uncertain-attempt",
+      payload: { manifest: { challenge_manifest_hash: context.challengeManifestHash } },
+    } as PreparedArenaSubmission;
+    const retained = JSON.stringify(prepared);
+    expect(canReusePreparedArenaSubmission(prepared, context)).toBe(true);
+    expect(canReusePreparedArenaSubmission(undefined, context)).toBe(false);
+    for (const changed of [
+      { challengeId: "another-challenge" },
+      { challengeVersion: "2.0.0" },
+      { challengeManifestHash: "3".repeat(64) },
+      { candidateCommitment: `sha256:${"4".repeat(64)}` },
+      { sourceBytes: 201 },
+      { walletAddress: `0x${"cd".repeat(20)}` },
+      { walletAddress: undefined },
+    ]) {
+      expect(canReusePreparedArenaSubmission(prepared, { ...context, ...changed })).toBe(false);
+    }
+    expect(JSON.stringify(prepared)).toBe(retained);
+    expect(prepared.idempotencyKey).toBe("original-uncertain-attempt");
   });
 
   it("offers owner-only pre-claim cancellation and retryable unlink with explicit evidence limits", () => {

@@ -2722,7 +2722,7 @@ export function parseArenaEncryptionContract(value: unknown): ArenaEncryptionCon
   const aad = exactRecord(contract.aad, ["service", "context", "schema_version", "exact_fields", "hash_formulas", "identity_derivation"], "Arena AAD contract");
   if (aad.service !== "dnai-wikigen" || aad.context !== "arena_candidate_ingress" || aad.schema_version !== 1) throw new Error("Arena AAD context is unsupported");
   exactStringArray(aad.exact_fields, AAD_FIELDS, "Arena AAD fields");
-  exactRecord(aad.hash_formulas, ["challenge_manifest_hash", "submission_manifest_hash", "candidate_commitment", "identity.wallet_address_hash", "identity.project_id_hash", "idempotency_key_hash", "key_id", "attestation_report_data_sha256"], "Arena AAD hash formulas");
+  exactRecord(aad.hash_formulas, ["challenge_manifest_hash", "submission_manifest_hash", "candidate_commitment", "identity.wallet_address_hash", "identity.project_id_hash", "idempotency_key_hash", "key_id", "attestation_report_data_sha256", "registry_authorization_sha256"], "Arena AAD hash formulas");
   exactRecord(aad.identity_derivation, ["wallet_address", "project_id"], "Arena identity derivation");
 
   const recipient = exactRecord(contract.recipient, ["encryption_public_key", "key_id", "report_context", "report_data", "attestation_report_data_sha256", "report_data_contract"], "Arena recipient");

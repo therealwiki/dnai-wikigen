@@ -1011,6 +1011,13 @@ async function authorizeDealUpload(dealId: bigint | string): Promise<WalletToken
 
 async function authorizeComputeConsole(): Promise<ComputeWalletTokenResponse> {
   if (!deployment.computeConsoleEnabled) throw new Error("Fresh Compute Console is not enabled for this deployment");
+  return authorizeComputeWalletSession("Compute Console · wallet scoped");
+}
+
+/** Shared protocol only; each public surface must enforce its own release gate. */
+async function authorizeComputeWalletSession(
+  sessionLabel: "Compute Console · wallet scoped" | "Tinker customer lifecycle · wallet scoped",
+): Promise<ComputeWalletTokenResponse> {
   if (!deployment.delegateUrl) throw new Error("Fresh delegate endpoint is not configured");
   const context = await walletAuthorizationContext();
   const expectedAddress = context.address;
@@ -1040,7 +1047,7 @@ async function authorizeComputeConsole(): Promise<ComputeWalletTokenResponse> {
   }));
   assertWalletAuthorizationContext(context);
   validateWalletToken(token, expectedAddress, "compute:console");
-  setSessionProof("Compute Console · wallet scoped");
+  setSessionProof(sessionLabel);
   return token;
 }
 
@@ -1094,9 +1101,8 @@ async function signWalletAuthorizationMessage(message: string): Promise<Hex> {
  * provider, funding, or contract-write signature domain.
  */
 async function authorizeTinkerCustomer(): Promise<ComputeWalletTokenResponse> {
-  const token = await authorizeComputeConsole();
-  setSessionProof("Tinker customer lifecycle · wallet scoped");
-  return token;
+  if (!deployment.tinkerCustomerEnabled) throw new Error("Fresh Tinker customer lifecycle is not enabled for this deployment");
+  return authorizeComputeWalletSession("Tinker customer lifecycle · wallet scoped");
 }
 
 async function authorizeArenaProfile(

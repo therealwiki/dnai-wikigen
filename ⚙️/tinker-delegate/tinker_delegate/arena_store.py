@@ -2307,6 +2307,75 @@ class _ArenaState:
     idempotency: dict[str, _IdempotencyRecord]
 
 
+_INGRESS_GUARD_ISSUER = object()
+
+
+class ArenaSubmissionIngressGuard:
+    """Process-local capability valid only inside its issuing queue lock.
+
+    This is never serialized or accepted from HTTP. Recovery authorization
+    rechecks actual queue ownership, not a caller-supplied cleanup flag.
+    """
+
+    def __init__(
+        self,
+        issuer: object,
+        store: "ArenaStore",
+        identity: SubmissionIdentity,
+        challenge_id: str,
+        challenge_version: str,
+        idempotency_key: str,
+        key_hash: str,
+    ) -> None:
+        if issuer is not _INGRESS_GUARD_ISSUER:
+            raise ArenaStoreError("Arena ingress guard must be issued by the queue store")
+        self._store = store
+        self._key_hash = key_hash
+        self._challenge = (challenge_id, challenge_version)
+        self._identity_hashes = identity.to_public_dict()
+        # Exactly the browser ingress key commitment; the queue's own key hash
+        # remains separately domain-separated and authoritative for ownership.
+        self._ingress_key_hash = "sha256:" + hashlib.sha256(_canonical_json({
+            "challenge_id": challenge_id,
+            "challenge_version": challenge_version,
+            "identity": self._identity_hashes,
+            "idempotency_key": idempotency_key,
+        })).hexdigest()
+        self._thread = threading.get_ident()
+        self._descriptor = store._operation_fd
+        self._active = True
+
+    def _close(self) -> None:
+        self._active = False
+
+    def authorize_orphan_recovery(
+        self,
+        *,
+        challenge_id: str,
+        challenge_version: str,
+        identity_hashes: Mapping[str, str],
+        idempotency_key_hash: str,
+        sealed_reference: str,
+    ) -> None:
+        store = self._store
+        if (
+            not self._active
+            or threading.get_ident() != self._thread
+            or self._descriptor is None
+            or store._operation_fd != self._descriptor
+            or store._operation_depth < 1
+            or (challenge_id, challenge_version) != self._challenge
+            or dict(identity_hashes) != self._identity_hashes
+            or idempotency_key_hash != self._ingress_key_hash
+        ):
+            raise ArenaIdempotencyConflict("Arena orphan recovery requires the exact live queue guard")
+        if (
+            self._key_hash in store._state.idempotency
+            or any(record.encrypted_reference == sealed_reference for record in store._state.submissions.values())
+        ):
+            raise ArenaIdempotencyConflict("Arena queued ciphertext is not eligible for orphan recovery")
+
+
 class ArenaStore:
     """Thread- and process-safe, authenticated copy-on-write Arena JSON store.
 
@@ -2712,6 +2781,75 @@ class ArenaStore:
             )
             return tuple(candidates[:cleanup_limit])
 
+    @staticmethod
+    def _submission_idempotency_hash(
+        identity: SubmissionIdentity,
+        challenge_id: str,
+        challenge_version: str,
+        idempotency_key: str,
+    ) -> str:
+        key = _require_bounded_string(
+            idempotency_key,
+            label="idempotency_key",
+            maximum_bytes=MAX_IDEMPOTENCY_KEY_BYTES,
+        )
+        if not _IDEMPOTENCY_KEY.fullmatch(key):
+            raise ArenaStoreError("idempotency_key is malformed")
+        return _sha256_json(
+            {
+                "wallet_address": identity.wallet_address,
+                "project_id": identity.project_id,
+                "challenge_id": challenge_id,
+                "challenge_version": challenge_version,
+                "idempotency_key": key,
+            },
+            prefix="arena_idempotency_key",
+        )
+
+    @contextmanager
+    def submission_ingress_guard(
+        self,
+        *,
+        challenge_id: str,
+        challenge_version: str,
+        identity: SubmissionIdentity,
+        idempotency_key: str,
+    ):
+        """Keep candidate ingress and queue replay atomic with terminalization.
+
+        The caller holds this guard through ciphertext persistence, submit,
+        and any rollback. Cancellation/expiry use this same cross-process lock,
+        so a terminal transition cannot interleave after this check but before
+        ciphertext persistence. Lock ordering is Arena state, then ingress;
+        never hold an ingress operation while acquiring this guard.
+        """
+
+        if not isinstance(identity, SubmissionIdentity):
+            raise ArenaStoreError("Arena submission identity is required")
+        key_hash = self._submission_idempotency_hash(
+            identity, challenge_id, challenge_version, idempotency_key
+        )
+        with self._operation():
+            self._state.catalog.get(challenge_id, challenge_version)
+            existing = self._state.idempotency.get(key_hash)
+            if existing is not None:
+                current = self._state.submissions[existing.submission_id]
+                if (
+                    current.state in _TERMINAL_QUEUE_STATES
+                    or current.ciphertext_state != CiphertextState.RETAINED
+                ):
+                    raise ArenaIdempotencyConflict(
+                        "Arena terminal submission no longer accepts candidate ingress replay"
+                    )
+            guard = ArenaSubmissionIngressGuard(
+                _INGRESS_GUARD_ISSUER, self, identity, challenge_id,
+                challenge_version, idempotency_key, key_hash,
+            )
+            try:
+                yield guard
+            finally:
+                guard._close()
+
     def submit(
         self,
         *,
@@ -2754,27 +2892,13 @@ class ArenaStore:
             minimum=0,
             maximum=MAX_TIMESTAMP,
         )
-        key = _require_bounded_string(
-            idempotency_key,
-            label="idempotency_key",
-            maximum_bytes=MAX_IDEMPOTENCY_KEY_BYTES,
+        key_hash = self._submission_idempotency_hash(
+            caller_identity, challenge_id, challenge_version, idempotency_key
         )
-        if not _IDEMPOTENCY_KEY.fullmatch(key):
-            raise ArenaStoreError("idempotency_key is malformed")
 
         with self._operation():
             challenge = self._state.catalog.get(challenge_id, challenge_version)
             candidate_manifest.validate_for(challenge)
-            key_hash = _sha256_json(
-                {
-                    "wallet_address": caller_identity.wallet_address,
-                    "project_id": caller_identity.project_id,
-                    "challenge_id": challenge_id,
-                    "challenge_version": challenge_version,
-                    "idempotency_key": key,
-                },
-                prefix="arena_idempotency_key",
-            )
             request_payload = {
                 "challenge_id": challenge_id,
                 "challenge_version": challenge_version,
