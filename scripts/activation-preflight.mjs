@@ -156,6 +156,9 @@ const SEMANTIC_VALIDATION_TIMEOUT_MS = 180_000;
 const INSPECTED_FILE_DESCRIPTOR = Symbol("dnai.inspected-file-descriptor");
 const leasedInspectionSnapshots = new WeakSet();
 const inspectionDescriptorScope = new AsyncLocalStorage();
+// The pinned Phala CLI 1.1.19 supports this read-only identity API. This is
+// deliberately separate from the newer production SDK deployment authority.
+export const PHALA_CLI_DIAGNOSTIC_API_VERSION = "2026-01-21";
 export const CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS = 120_000;
 export {
   SEMANTIC_VALIDATION_SCHEMA,
@@ -915,7 +918,7 @@ export function assertReadOnlyInvocation(command, args) {
   if (command === "phala" && (
     arraysEqual(args, ["status"])
     || arraysEqual(args, [
-      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+      "status", "--json", "--api-version", PHALA_CLI_DIAGNOSTIC_API_VERSION,
     ])
   )) return;
   if (command === "wrangler" && (
@@ -4050,14 +4053,14 @@ export function probePhalaAuthentication(
 ) {
   try {
     const response = authenticationResponse(execute("phala", [
-      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+      "status", "--json", "--api-version", PHALA_CLI_DIAGNOSTIC_API_VERSION,
     ], {
       env: phalaEnvironment(env),
       timeout: COMMAND_TIMEOUT_MS,
     }));
     return response?.success === true
       && response.apiUrl === PHALA_CONTROL_PLANE_AUTHORITY.api_origin
-      && response.apiVersion === PHALA_CONTROL_PLANE_AUTHORITY.api_version
+      && response.apiVersion === PHALA_CLI_DIAGNOSTIC_API_VERSION
       && typeof response.username === "string" && clean(response.username).length > 0
       && typeof response.team_name === "string" && clean(response.team_name).length > 0;
   } catch {

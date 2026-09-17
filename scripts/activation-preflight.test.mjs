@@ -49,6 +49,7 @@ import {
 } from "./activation-preflight-core.mjs";
 import {
   CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS,
+  PHALA_CLI_DIAGNOSTIC_API_VERSION,
   EXECUTION_POLICY_ANCHOR_TYPEHASH,
   EXECUTION_POLICY_DECISION_ANCHORED_EVENT,
   EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
@@ -115,6 +116,7 @@ import {
   FRESH_CONTRACT_BROADCAST_PROOF,
   FRESH_CONTRACT_CREATION_INPUT_PROOF,
   FRESH_DEPLOYMENT_TRANSACTION_SPEC,
+  PHALA_CONTROL_PLANE_AUTHORITY,
   createDraftCvmLaunchIntentCore,
   freshContractDeploymentReceiptDigest,
   projectFreshContractDeploymentReceipt,
@@ -3164,7 +3166,7 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   assert.doesNotThrow(() => assertReadOnlyInvocation("gh", ["auth", "status"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("phala", ["status"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("phala", [
-    "status", "--json", "--api-version", "2026-06-23",
+    "status", "--json", "--api-version", "2026-01-21",
   ]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("wrangler", ["whoami", "--json"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("cast", [
@@ -3217,7 +3219,7 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   assert.throws(() => assertReadOnlyInvocation("phala", ["deploy"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", ["login"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", [
-    "status", "--json", "--api-version", "2026-01-21",
+    "status", "--json", "--api-version", "2026-06-23",
   ]), /allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", [
     "status", "--json", "--api-version", "2025-10-28",
@@ -3394,10 +3396,23 @@ test("tool presence and Phala identity are bounded without executing a hanging C
 const phalaAuthenticationResponse = () => ({
   success: true,
   apiUrl: "https://cloud-api.phala.network/api/v1",
-  apiVersion: "2026-06-23",
+  apiVersion: "2026-01-21",
   username: "test-operator",
   team_name: "Test workspace",
   profile: "test-profile",
+});
+
+test("Phala CLI diagnostic API stays separate from the production SDK authority", () => {
+  assert.equal(PHALA_CLI_DIAGNOSTIC_API_VERSION, "2026-01-21");
+  assert.equal(PHALA_CONTROL_PLANE_AUTHORITY.api_version, "2026-06-23");
+  assert.notEqual(PHALA_CLI_DIAGNOSTIC_API_VERSION, PHALA_CONTROL_PLANE_AUTHORITY.api_version);
+  assert.equal(probePhalaAuthentication({}, () => ({
+    ok: true,
+    stdout: JSON.stringify({
+      ...phalaAuthenticationResponse(),
+      apiVersion: PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+    }),
+  })), false, "a fabricated SDK-version response is not valid CLI diagnostic evidence");
 });
 
 test("Phala CLI auth requires structured identity from the fixed control plane", () => {
@@ -3415,7 +3430,7 @@ test("Phala CLI auth requires structured identity from the fixed control plane",
   );
   assert.equal(result, true);
   assert.equal(invocation.command, "phala");
-  assert.deepEqual(invocation.args, ["status", "--json", "--api-version", "2026-06-23"]);
+  assert.deepEqual(invocation.args, ["status", "--json", "--api-version", "2026-01-21"]);
   assert.equal(Number.isSafeInteger(invocation.options.timeout), true);
   assert.equal(invocation.options.timeout > 0 && invocation.options.timeout <= 60_000, true);
   assert.deepEqual(invocation.options.env, {
@@ -3443,7 +3458,11 @@ test("Phala CLI auth rejects exit-zero failures, incomplete identities, and orig
     { ...phalaAuthenticationResponse(), success: false },
     { ...phalaAuthenticationResponse(), success: "true" },
     { ...phalaAuthenticationResponse(), apiUrl: "https://unreviewed.invalid/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "https://cloud-api.phala.com/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "http://cloud-api.phala.network/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "https://cloud-api.phala.network/api/v1/" },
     { ...phalaAuthenticationResponse(), apiVersion: "2025-10-28" },
+    { ...phalaAuthenticationResponse(), apiVersion: null },
     { ...phalaAuthenticationResponse(), username: " " },
     { ...phalaAuthenticationResponse(), team_name: null },
     { success: true },
