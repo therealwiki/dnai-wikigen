@@ -3,8 +3,10 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -428,6 +430,9 @@ test("test seam validates exact evidence but cannot clear the production blocker
   );
   assert.equal(calls[1].options.timeout, GH_ATTESTATION_TIMEOUT_MS);
   assert.equal(calls[1].options.maxBuffer, MAX_GH_ATTESTATION_OUTPUT_BYTES);
+  const cacheDirectory = calls[1].options.env.XDG_CACHE_HOME;
+  assert.match(path.basename(cacheDirectory), /^dnai-gh-sigstore-cache-/);
+  assert.notEqual(cacheDirectory, path.dirname(calls[1].command));
   for (const call of calls) {
     assert.equal(call.options.cwd, value.root);
     assert.equal(call.options.shell, false);
@@ -437,6 +442,7 @@ test("test seam validates exact evidence but cannot clear the production blocker
       HOME: "/var/empty",
       TMPDIR: "/var/empty",
       XDG_CONFIG_HOME: "/var/empty",
+      ...(call === calls[1] ? { XDG_CACHE_HOME: cacheDirectory } : {}),
       LANG: "C",
       LC_ALL: "C",
       NO_COLOR: "1",
@@ -459,6 +465,127 @@ test("test seam validates exact evidence but cannot clear the production blocker
     readFile(path.dirname(calls[0].command)),
     (error) => error?.code === "ENOENT",
   );
+  await assert.rejects(lstat(cacheDirectory), (error) => error?.code === "ENOENT");
+});
+
+test("each verification gets an empty private cache without ambient auth or cache reuse", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const ambientCache = path.join(value.root, "ambient-cache");
+  await mkdir(ambientCache, { mode: 0o700 });
+  const sentinel = path.join(ambientCache, "untouched");
+  await writeFile(sentinel, "not verifier input\n");
+  const overrides = {
+    XDG_CACHE_HOME: ambientCache,
+    GH_CONFIG_DIR: ambientCache,
+    GH_TOKEN: "test-only-token-must-not-be-inherited",
+  };
+  const previous = Object.fromEntries(
+    Object.keys(overrides).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, overrides);
+  const caches = [];
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      await verifyFixture(value, runnerFor(value, {
+        onVerify: async ({ command, options }) => {
+          const cache = options.env.XDG_CACHE_HOME;
+          const stats = await lstat(cache);
+          assert.equal(await realpath(cache), cache);
+          assert.ok(stats.isDirectory() && !stats.isSymbolicLink());
+          assert.equal(stats.uid, process.getuid());
+          assert.equal(stats.mode & 0o7777, 0o700);
+          assert.notEqual(cache, ambientCache);
+          assert.notEqual(cache, path.dirname(command));
+          assert.equal(options.env.HOME, "/var/empty");
+          assert.equal(options.env.TMPDIR, "/var/empty");
+          assert.equal(options.env.XDG_CONFIG_HOME, "/var/empty");
+          assert.equal(options.env.GH_CONFIG_DIR, undefined);
+          assert.equal(options.env.GH_TOKEN, undefined);
+          assert.deepEqual(await readdir(cache), []);
+          caches.push(cache);
+          const metadata = path.join(cache, "gh", ".sigstore", "root");
+          await mkdir(metadata, { recursive: true, mode: 0o700 });
+          await writeFile(path.join(metadata, "downloaded.json"), "{}\n");
+          await symlink(ambientCache, path.join(cache, "outside"), "dir");
+          return ok(`${JSON.stringify(
+            verificationOutput(value.bundle, value.manifestDigest),
+          )}\n`);
+        },
+      }));
+      await assert.rejects(lstat(caches[index]), (error) => error?.code === "ENOENT");
+    }
+  } finally {
+    for (const [key, prior] of Object.entries(previous)) {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  }
+  assert.notEqual(caches[0], caches[1]);
+  assert.equal(await readFile(sentinel, "utf8"), "not verifier input\n");
+});
+
+test("private cache and executable are removed after verifier failure or timeout", async (t) => {
+  const cases = [
+    ["failed signature", "gh_attestation_verification_failed", () => failed()],
+    ["runner exception", "gh_attestation_verification_runner_failed", () => {
+      throw new Error("test runner failed");
+    }],
+    ["timeout", "gh_attestation_verification_timeout", () => ({
+      status: null,
+      signal: "SIGTERM",
+      error: { code: "ETIMEDOUT" },
+      stdout: "",
+      stderr: "",
+    })],
+  ];
+  for (const [name, code, result] of cases) {
+    await t.test(name, async (t) => {
+      const value = await fixture();
+      t.after(() => rm(value.root, { recursive: true, force: true }));
+      let cache;
+      let executable;
+      await rejectsCode(verifyFixture(value, runnerFor(value, {
+        onVerify: async ({ command, options }) => {
+          cache = options.env.XDG_CACHE_HOME;
+          executable = command;
+          await mkdir(path.join(cache, "metadata"));
+          await writeFile(path.join(cache, "metadata", "partial.json"), "{}\n");
+          return result();
+        },
+      })), code);
+      for (const removed of [cache, executable, path.dirname(executable)]) {
+        await assert.rejects(lstat(removed), (error) => error?.code === "ENOENT");
+      }
+    });
+  }
+});
+
+test("a substituted cache root fails closed without following or deleting its target", async (t) => {
+  const value = await fixture();
+  t.after(() => rm(value.root, { recursive: true, force: true }));
+  const sentinel = path.join(value.root, "untouched");
+  await writeFile(sentinel, "outside cache\n");
+  let cache;
+  let parked;
+  let executable;
+  await rejectsCode(verifyFixture(value, runnerFor(value, {
+    onVerify: async ({ command, options }) => {
+      executable = command;
+      cache = options.env.XDG_CACHE_HOME;
+      parked = `${cache}-parked`;
+      t.after(() => rm(cache, { recursive: true, force: true }));
+      t.after(() => rm(parked, { recursive: true, force: true }));
+      await rename(cache, parked);
+      await symlink(value.root, cache, "dir");
+      return ok(`${JSON.stringify(
+        verificationOutput(value.bundle, value.manifestDigest),
+      )}\n`);
+    },
+  })), "gh_private_cache_cleanup_failed");
+  assert.equal(await readFile(sentinel, "utf8"), "outside cache\n");
+  assert.ok((await lstat(cache)).isSymbolicLink());
+  await assert.rejects(lstat(executable), (error) => error?.code === "ENOENT");
 });
 
 test("source parent swap-and-restore cannot change executed gh bytes", async (t) => {
