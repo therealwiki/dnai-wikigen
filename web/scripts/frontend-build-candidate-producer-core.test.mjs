@@ -140,6 +140,8 @@ function projection() {
         semanticLineage.ceremony_authorization_sha256,
       runtimeAuthorityDependencySha256:
         semanticLineage.runtime_authority_dependency_sha256,
+      postMeasurementActivationExecutionReceiptSha256:
+        semanticLineage.post_measurement_activation_execution_receipt_sha256,
       computeWorkloadActivationObservationSha256:
         semanticLineage.compute_workload_activation_observation_sha256,
     },
@@ -290,7 +292,7 @@ function dependencies(overrides = {}) {
   };
 }
 
-test("D producer runs exact36 -> isolated verify -> independent fresh build -> audit with no upload hook", async () => {
+test("D producer runs current exact37 -> isolated verify -> independent fresh build -> audit with no upload hook", async () => {
   const fixture = dependencies();
   assert.equal("invokeWrangler" in fixture.values, false);
   const result = await runFrontendBuildCandidateProduction(fixture.values);
@@ -335,13 +337,15 @@ test("D producer runs exact36 -> isolated verify -> independent fresh build -> a
   assert.equal(result.receipt.frontend_build_sha256, pin("dist"));
   assert.equal(result.receipt.release_env_sha256,
     result.inputManifest.projected_env_sha256);
-  assert.equal(result.inputManifest.pre_D_private_inputs.length, 36);
+  assert.equal(result.inputManifest.pre_D_private_inputs.length, 37);
   assert.deepEqual(result.inputManifest.royalty_release_history,
     fixture.semantic.royaltyReleaseHistoryBinding);
   assert.equal(result.receipt.royalty_release_history_sha256,
     fixture.semantic.royaltyReleaseHistoryBinding.history_sha256);
   assert.equal(result.receipt.royalty_release_history_receipt_sha256,
     fixture.semantic.royaltyReleaseHistoryBinding.receipt_sha256);
+  assert.equal(result.receipt.post_measurement_activation_execution_receipt_sha256,
+    fixture.semantic.authorityBinding.postMeasurementActivationExecutionReceiptSha256);
   assert.equal(result.serializedEnv, fixture.semantic.serializedEnv);
   assert.equal(result.inputManifest.git_source.source_fingerprint_sha256,
     fixture.source.sourceFingerprintSha256);
@@ -358,6 +362,29 @@ test("D producer runs exact36 -> isolated verify -> independent fresh build -> a
     sourceFingerprintSha256: fixture.source.sourceFingerprintSha256,
     externalBuildClosureSha256: fixture.source.externalBuildClosureSha256,
   });
+});
+
+test("D producer rejects standalone activation receipt raw-byte drift before any build", async () => {
+  const fixture = dependencies();
+  const input = fixture.audit.inputs.find(
+    ({ flag }) => flag === "--post-measurement-activation-execution-receipt",
+  );
+  input.content_sha256 = "e".repeat(64);
+  await assert.rejects(
+    runFrontendBuildCandidateProduction(fixture.values),
+    /does not match the exact scanned private input bytes/,
+  );
+  assert.deepEqual(fixture.events, []);
+});
+
+test("D producer rejects a projection without the standalone activation authority binding", async () => {
+  const fixture = dependencies();
+  delete fixture.semantic.authorityBinding.postMeasurementActivationExecutionReceiptSha256;
+  await assert.rejects(
+    runFrontendBuildCandidateProduction(fixture.values),
+    /receipt authority binding does not have the exact frozen shape/,
+  );
+  assert.deepEqual(fixture.events, []);
 });
 
 test("D producer rejects Royalty H raw, history, and receipt binding mismatches", async () => {
@@ -555,6 +582,7 @@ test("D producer freezes its exact Git/runtime/semantic API contract", () => {
     "ceremonyAuthorizationSha256",
     "computeWorkloadActivationObservationSha256",
     "deploymentIntentSha256",
+    "postMeasurementActivationExecutionReceiptSha256",
     "reviewerAuthorityGenesisAcceptanceSha256",
     "runtimeAuthorityDependencySha256",
   ]);

@@ -327,6 +327,26 @@ function Trend(props: { value: number }) {
   return <span class="trend flat">—</span>;
 }
 
+export function canReusePreparedArenaSubmission(
+  prepared: PreparedArenaSubmission | undefined,
+  context: {
+    challengeId: string;
+    challengeVersion?: string;
+    challengeManifestHash?: string;
+    candidateCommitment?: string;
+    sourceBytes?: number;
+    walletAddress?: string;
+  },
+): prepared is PreparedArenaSubmission {
+  return prepared !== undefined
+    && prepared.challengeId === context.challengeId
+    && prepared.challengeVersion === context.challengeVersion
+    && prepared.payload.manifest.challenge_manifest_hash === context.challengeManifestHash
+    && prepared.candidateCommitment === context.candidateCommitment
+    && prepared.sourceBytes === context.sourceBytes
+    && prepared.walletAddress === context.walletAddress?.toLowerCase();
+}
+
 export function Arena(props: {
   navigate: (route: RouteKey) => void;
   inspectEvidence: (context: VerificationContext) => void;
@@ -1201,15 +1221,14 @@ export function Arena(props: {
         throw new Error("Connect a Base Sepolia wallet before preparing an Arena submission");
       }
       let prepared = preparedSubmission();
-      if (
-        !prepared
-        || prepared.challengeId !== selected.id
-        || prepared.challengeVersion !== selected.version
-        || prepared.payload.manifest.challenge_manifest_hash !== manifest.manifest_hash
-        || prepared.candidateCommitment !== submissionHash()
-        || prepared.sourceBytes !== file.size
-        || prepared.walletAddress !== account
-      ) {
+      if (!canReusePreparedArenaSubmission(prepared, {
+        challengeId: selected.id,
+        challengeVersion: selected.version,
+        challengeManifestHash: manifest.manifest_hash,
+        candidateCommitment: submissionHash(),
+        sourceBytes: file.size,
+        walletAddress: account,
+      })) {
         source = new Uint8Array(await file.arrayBuffer());
         const localCommitment = await candidateCommitment(source);
         if (localCommitment !== submissionHash()) throw new Error("The selected program changed after it was committed. Choose it again.");
@@ -1730,7 +1749,13 @@ export function Arena(props: {
               <p>Your source is hashed locally, browser-preflighted against the exact frozen Base Sepolia challenge version, encrypted to the independently quote-pinned Arena recipient, authorized by your wallet, and sent as ciphertext only. The proposed finalized block/hash snapshot is cryptographically bound to the ciphertext; the proxy independently verifies it before either durable write.</p>
               <div class="submission-steps"><span class="done">1 <em>Commit</em></span><i /><span>2 <em>Verify + encrypt</em></span><i /><span>3 <em>Authorize</em></span><i /><span>4 <em>Queue</em></span></div>
               <label class="file-drop compact-drop"><input type="file" accept={challenge().runtime === "dnai-safe-ir-v1" ? ".json,application/json" : ".py,.zip,.tar.gz"} disabled={submitting()} onChange={(event) => void selectFile(event.currentTarget.files?.[0])} /><FileCode2 size={23} /><span><strong>{submissionFile()?.name || (challenge().runtime === "dnai-safe-ir-v1" ? "Choose a canonical Safe-IR JSON program" : "Choose a Python file or package")}</strong><small>{hashing() ? "Hashing locally…" : `Maximum ${(challenge().maxSourceBytes ?? 8 * 1024).toLocaleString()} bytes · plaintext never enters the request body`}</small></span></label>
-              <Show when={submissionError()}><p class="form-error" role="alert">{submissionError()}</p></Show>
+              <Show when={submissionError()}>
+                <div>
+                  <p class="form-error" role="alert">{submissionError()}</p>
+                  <p class="modeled-note">Inspect your wallet-owned records before retrying. Reauthorize or refresh there to see the current submission and ciphertext-unlink state. Viewing records does not resend or replace your prepared request.</p>
+                  <button class="secondary-button full" type="button" data-arena-action="inspect-submission-error" disabled={submitting()} onClick={() => { closeSubmissionDialog(); chooseTab("submissions"); }}><FileCode2 size={17} /> View my submissions</button>
+                </div>
+              </Show>
               <Show when={submissionHash()}><div class="hash-preview"><Hash size={15} /><code>{shortAddress(submissionHash() ?? "", 14)}</code></div></Show>
               <div class="submission-policy"><ShieldCheck size={16} /><span>{safeIrWorkerPresenceMatchesPreflight()
                 ? "This creates a ciphertext-only queue record. The release-bound Safe-IR worker may claim it only after independent per-job gates pass. It does not charge Compute Credits, expose the sealed object reference, or promise a reward."
@@ -1754,7 +1779,16 @@ export function Arena(props: {
                           ? "Fresh independently verified CVM required"
                       : !wallet.account()
                         ? "Connect a wallet to continue"
-                        : "Encrypt and create gated ingress record"}
+                        : canReusePreparedArenaSubmission(preparedSubmission(), {
+                          challengeId: challenge().id,
+                          challengeVersion: challenge().version,
+                          challengeManifestHash: challenge().manifest?.manifest_hash,
+                          candidateCommitment: submissionHash(),
+                          sourceBytes: submissionFile()?.size,
+                          walletAddress: wallet.account(),
+                        })
+                          ? "Retry same encrypted request"
+                          : "Encrypt and create gated ingress record"}
                 <ArrowRight size={16} />
               </button>
               <p class="modeled-note"><Sparkles size={13} /> This client requires the exact release-approved challenge-set digest, selected id/version commitments, the independently approved TDX quote/compose identity, and a finalized browser-side Base Sepolia snapshot. The snapshot is only a proposal: proxy authorization exists only after the service independently matches its pinned block/hash and contract state. Queue acceptance never grants worker execution authorization.</p>

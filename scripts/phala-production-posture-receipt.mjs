@@ -11,11 +11,17 @@ import {
   PHALA_EXECUTION_ORDER,
   assertProductionCvmPosture,
   assertSecretFreeExecutorStructure,
+  normalizeProductionCvmPreparedBinding,
+  normalizeProductionCvmEnvironmentPublicKey,
 } from "./phala-production-posture-core.mjs";
 
 export const PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA =
-  "dnai.phala-production-cvm-posture-verification-receipt.v1";
+  "dnai.phala-production-cvm-posture-verification-receipt.v2";
 export const PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_DOMAIN =
+  "dnai-wikigen/phala-production-cvm-posture-verification-receipt/v2\0";
+const LEGACY_RECEIPT_SCHEMA =
+  "dnai.phala-production-cvm-posture-verification-receipt.v1";
+const LEGACY_RECEIPT_DOMAIN =
   "dnai-wikigen/phala-production-cvm-posture-verification-receipt/v1\0";
 export const PHALA_CVM_INFO_OBSERVATION_DOMAIN =
   "dnai-wikigen/phala-cvm-info-observation/v1\0";
@@ -33,6 +39,7 @@ function isRecord(value) {
 }
 
 function exactRecord(value, fields, label) {
+  assertCanonicalPlainDataGraph(value, { label });
   if (!isRecord(value)
     || JSON.stringify(Object.keys(value).sort())
       !== JSON.stringify([...fields].sort())) {
@@ -83,7 +90,7 @@ function timestamp(value, label) {
   return value;
 }
 
-function normalizeExpected(value) {
+function normalizeLegacyExpected(value) {
   const expected = exactRecord(value, [
     "domain",
     "app_id",
@@ -114,11 +121,13 @@ function normalizeExpected(value) {
   };
 }
 
-export function normalizeProductionCvmPostureVerificationReceipt(value, {
+// Historical v1 bytes retain their original statement and hash domain. They
+// lack durable prepare/contract evidence and are never issued or branded anew.
+function normalizeHistoricalV1Receipt(value, {
   expectedAuthority,
 } = {}) {
   assertCanonicalPlainDataGraph(value, { label: "production CVM posture receipt" });
-  const expected = normalizeExpected(expectedAuthority);
+  const expected = normalizeLegacyExpected(expectedAuthority);
   const parsed = exactRecord(value, [
     "schema",
     "status",
@@ -140,7 +149,7 @@ export function normalizeProductionCvmPostureVerificationReceipt(value, {
     "observed_at",
     "raw_secret_egress",
   ], "production CVM posture receipt");
-  if (parsed.schema !== PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA
+  if (parsed.schema !== LEGACY_RECEIPT_SCHEMA
     || parsed.status !== "private_production_posture_verified"
     || parsed.truth_status
       !== "fresh_getCvmInfo_observation_matches_exact_committed_app_compose_kms_os_resource_and_privacy_posture"
@@ -161,7 +170,7 @@ export function normalizeProductionCvmPostureVerificationReceipt(value, {
     throw new Error("production CVM posture receipt does not match exact authority");
   }
   return deepFreezeCanonicalPlainDataGraph({
-    schema: PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA,
+    schema: LEGACY_RECEIPT_SCHEMA,
     status: "private_production_posture_verified",
     truth_status:
       "fresh_getCvmInfo_observation_matches_exact_committed_app_compose_kms_os_resource_and_privacy_posture",
@@ -187,6 +196,62 @@ export function normalizeProductionCvmPostureVerificationReceipt(value, {
   }, { label: "normalized production CVM posture receipt" });
 }
 
+const POSTURE_V2_TRUTH =
+  "fresh_getCvmInfo_rpc_node_device_env_public_key_app_compose_os_resource_privacy_readback_matches_retained_prepare_binding_not_fresh_contract_or_replica_id_evidence";
+
+function normalizeExpected(value) {
+  const expected = exactRecord(value, [
+    "domain", "app_id", "cvm_id", "compose_hash", "kms_id", "instance_type", "disk_size",
+    "prepared_binding", "environment_public_key",
+  ], "production CVM posture expected authority");
+  assertCanonicalPlainDataGraph(expected, { label: "production CVM posture expected authority" });
+  const { prepared_binding: preparedBinding, environment_public_key: publicKey, ...legacy } = expected;
+  const identity = normalizeLegacyExpected(legacy);
+  const binding = normalizeProductionCvmPreparedBinding(preparedBinding);
+  const environmentKey = normalizeProductionCvmEnvironmentPublicKey(publicKey);
+  if (identity.kms_id !== binding.kms_id || environmentKey !== publicKey) {
+    throw new Error("posture expected authority must bind the exact prepared replica and canonical environment public key");
+  }
+  return { ...identity, prepared_binding: binding, environment_public_key: environmentKey };
+}
+
+export function normalizeProductionCvmPostureVerificationReceipt(value, { expectedAuthority } = {}) {
+  assertCanonicalPlainDataGraph(value, { label: "production CVM posture receipt" });
+  if (value?.schema === LEGACY_RECEIPT_SCHEMA) {
+    return normalizeHistoricalV1Receipt(value, { expectedAuthority });
+  }
+  const expected = normalizeExpected(expectedAuthority);
+  const parsed = exactRecord(value, [
+    "schema", "status", "truth_status", "domain", "app_id", "cvm_id", "compose_hash", "kms_id",
+    "instance_type", "disk_size", "prepared_binding", "environment_public_key", "os_image_hash",
+    "kms_type", "listed", "public_logs", "public_sysinfo", "public_tcbinfo",
+    "cvm_info_observation_sha256", "observed_at", "raw_secret_egress",
+  ], "production CVM posture receipt");
+  if (parsed.schema !== PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA
+    || parsed.status !== "private_production_posture_verified" || parsed.truth_status !== POSTURE_V2_TRUTH
+    || Object.keys(expected).some((field) => canonical(parsed[field]) !== canonical(expected[field]))
+    || parsed.os_image_hash !== PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash
+    || parsed.kms_type !== "phala" || parsed.listed !== false || parsed.public_logs !== false
+    || parsed.public_sysinfo !== false || parsed.public_tcbinfo !== false || parsed.raw_secret_egress !== false) {
+    throw new Error("production CVM posture receipt does not match exact authority");
+  }
+  return deepFreezeCanonicalPlainDataGraph({
+    schema: PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA,
+    status: "private_production_posture_verified",
+    truth_status: POSTURE_V2_TRUTH,
+    ...expected,
+    os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
+    kms_type: "phala",
+    listed: false,
+    public_logs: false,
+    public_sysinfo: false,
+    public_tcbinfo: false,
+    cvm_info_observation_sha256: digest(parsed.cvm_info_observation_sha256, "CVM info observation digest"),
+    observed_at: timestamp(parsed.observed_at, "CVM posture observed_at"),
+    raw_secret_egress: false,
+  }, { label: "normalized production CVM posture receipt" });
+}
+
 export function verifyProductionCvmPostureObservation(options = {}) {
   const {
     domain,
@@ -201,30 +266,30 @@ export function verifyProductionCvmPostureObservation(options = {}) {
   ], "production CVM posture verification input");
   assertCanonicalPlainDataGraph(cvmInfo, { label: `${domain} raw getCvmInfo observation` });
   assertSecretFreeExecutorStructure(cvmInfo, `${domain} raw getCvmInfo observation`);
+  exactRecord(expected, [
+    "appId", "composeHash", "instanceType", "diskSize", "kmsProjection", "preparedBinding", "environmentPublicKey",
+  ], "production CVM posture expectation");
   const authority = normalizeExpected({
     domain,
     app_id: expected?.appId,
     cvm_id: cvmId,
     compose_hash: expected?.composeHash,
-    kms_id: expected?.kmsId,
+    kms_id: expected?.preparedBinding?.kms_id,
     instance_type: expected?.instanceType,
     disk_size: expected?.diskSize,
+    prepared_binding: expected?.preparedBinding,
+    environment_public_key: normalizeProductionCvmEnvironmentPublicKey(expected?.environmentPublicKey),
   });
   if (cvmInfo.id !== authority.cvm_id) {
     throw new Error("getCvmInfo response does not identify the requested CVM ID");
   }
   assertProductionCvmPosture(cvmInfo, {
-    appId: authority.app_id,
-    composeHash: authority.compose_hash,
-    kmsId: authority.kms_id,
-    instanceType: authority.instance_type,
-    diskSize: authority.disk_size,
+    ...expected, domain,
   });
   const receipt = normalizeProductionCvmPostureVerificationReceipt({
     schema: PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA,
     status: "private_production_posture_verified",
-    truth_status:
-      "fresh_getCvmInfo_observation_matches_exact_committed_app_compose_kms_os_resource_and_privacy_posture",
+    truth_status: POSTURE_V2_TRUTH,
     domain: authority.domain,
     app_id: authority.app_id,
     cvm_id: authority.cvm_id,
@@ -232,6 +297,8 @@ export function verifyProductionCvmPostureObservation(options = {}) {
     kms_id: authority.kms_id,
     instance_type: authority.instance_type,
     disk_size: authority.disk_size,
+    prepared_binding: authority.prepared_binding,
+    environment_public_key: authority.environment_public_key,
     os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
     kms_type: "phala",
     listed: false,
@@ -268,8 +335,9 @@ export function canonicalProductionCvmPostureVerificationReceiptText(value, opti
 }
 
 export function productionCvmPostureVerificationReceiptSha256(value, options = {}) {
+  const text = canonicalProductionCvmPostureVerificationReceiptText(value, options);
   return sha256Domain(
-    PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_DOMAIN,
-    canonicalProductionCvmPostureVerificationReceiptText(value, options),
+    value.schema === LEGACY_RECEIPT_SCHEMA ? LEGACY_RECEIPT_DOMAIN : PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_DOMAIN,
+    text,
   );
 }

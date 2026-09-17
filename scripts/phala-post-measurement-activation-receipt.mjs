@@ -26,7 +26,7 @@ import {
     phalaArenaWorkerPresenceActivationProofCoreSha256,
   phalaCombinedArenaComputeActivationVerificationSha256 as
     phalaCombinedArenaComputeActivationVerificationCoreSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   assertDurablyPersistedCompletedPhalaPostMeasurementActivationJournal,
   normalizePhalaPostMeasurementActivationJournal,
@@ -43,8 +43,10 @@ import {
   assertAuthenticatedPhalaSdkObservation,
   authenticatedPhalaSdkObservationSha256,
   encryptExactEnvironmentWithPinnedDstack,
+  normalizePhalaAuthenticatedAccountSubject,
   phalaAuthenticatedSdkRequestSemanticsSha256,
   pinnedPhalaProductionSdkAdapterIdentitySha256,
+  projectPinnedPhalaProductionSdkAdapterIdentity,
   readAuthenticatedPhalaSdkObservationResponse,
 } from "./phala-production-sdk-adapter.mjs";
 import {
@@ -70,13 +72,13 @@ import {
 } from "./reviewed-final-authority-runtime.mjs";
 
 export const PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_SCHEMA =
-  "dnai.phala-post-measurement-activation-execution-receipt.v3";
+  "dnai.phala-post-measurement-activation-execution-receipt.v4";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_STATUS =
   "main_runtime_arena_and_compute_post_measurement_activation_verified_not_live_traffic";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_TRUTH =
   "signed_b_authorized_exact_combined_profile_encrypted_only_patch_restart_authenticated_arena_worker_presence_initial_and_recipient_evidence_leases_verified_no_live_traffic_claim";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-post-measurement-activation-execution-receipt/v3\0";
+  "dnai-wikigen/phala-post-measurement-activation-execution-receipt/v4\0";
 export const PHALA_POST_MEASUREMENT_RUNTIME_COMMITMENTS_DOMAIN =
   "dnai-wikigen/phala-post-measurement-runtime-commitments/v1\0";
 export const PHALA_POST_MEASUREMENT_PRIVATE_ASSEMBLY_RECEIPT_DOMAIN =
@@ -729,7 +731,7 @@ function normalizePatch(value) {
     "finalized_readiness",
   ], "activation PATCH receipt");
   if (parsed.sdk_action !== "updateCvmEnvs"
-    || parsed.call_sequence !== 4
+    || parsed.call_sequence !== 6
     || JSON.stringify(parsed.body_field_names) !== JSON.stringify(["encrypted_env"])
     || parsed.encrypted_environment_only !== true
     || parsed.allowed_environment_keys_mutated !== false) {
@@ -737,7 +739,7 @@ function normalizePatch(value) {
   }
   return {
     sdk_action: "updateCvmEnvs",
-    call_sequence: 4,
+    call_sequence: 6,
     request_semantics_sha256: sha256(
       parsed.request_semantics_sha256,
       "PATCH request semantics",
@@ -772,13 +774,13 @@ function normalizeRestart(value) {
     "finalized_readiness",
   ], "activation restart receipt");
   if (parsed.sdk_action !== "restartCvm"
-    || parsed.call_sequence !== 5
+    || parsed.call_sequence !== 7
     || parsed.force !== false) {
     throw new Error("activation restart receipt is widened or reordered");
   }
   return {
     sdk_action: "restartCvm",
-    call_sequence: 5,
+    call_sequence: 7,
     request_semantics_sha256: sha256(
       parsed.request_semantics_sha256,
       "restart request semantics",
@@ -814,8 +816,8 @@ function normalizePostRestartEvidence(value) {
     "app_certificate_quote_present",
     "pre_injection_attestation_sufficient",
   ], "post-restart Phala evidence");
-  if (parsed.get_cvm_info_call_sequence !== 6
-    || parsed.get_cvm_attestation_call_sequence !== 7
+  if (parsed.get_cvm_info_call_sequence !== 8
+    || parsed.get_cvm_attestation_call_sequence !== 9
     || parsed.cvm_online !== true
     || parsed.attestation_error_absent !== true
     || parsed.tcb_info_present !== true
@@ -824,7 +826,7 @@ function normalizePostRestartEvidence(value) {
     throw new Error("post-restart authenticated evidence is incomplete or weakened");
   }
   return {
-    get_cvm_info_call_sequence: 6,
+    get_cvm_info_call_sequence: 8,
     get_cvm_info_observation_sha256: sha256(
       parsed.get_cvm_info_observation_sha256,
       "post-restart getCvmInfo observation",
@@ -837,7 +839,7 @@ function normalizePostRestartEvidence(value) {
       parsed.get_cvm_info_observed_at,
       "post-restart getCvmInfo observed_at",
     ),
-    get_cvm_attestation_call_sequence: 7,
+    get_cvm_attestation_call_sequence: 9,
     get_cvm_attestation_observation_sha256: sha256(
       parsed.get_cvm_attestation_observation_sha256,
       "post-restart getCvmAttestation observation",
@@ -1323,7 +1325,7 @@ function exactObservationProjection(observation, adapter, method, expectedSequen
   const branded = assertAuthenticatedPhalaSdkObservation(observation, {
     adapter,
     method,
-    domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+    domain: ["getCurrentUser", "getWorkspace"].includes(method) ? null : "main_runtime_cvm",
   });
   if (branded.call_sequence !== expectedSequence) {
     throw new Error("activation SDK observation sequence is not exact");
@@ -1334,7 +1336,7 @@ function exactObservationProjection(observation, adapter, method, expectedSequen
     observation_sha256: authenticatedPhalaSdkObservationSha256(branded, {
       adapter,
       method,
-      domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+      domain: ["getCurrentUser", "getWorkspace"].includes(method) ? null : "main_runtime_cvm",
     }),
     request_semantics_sha256: branded.request_semantics_sha256,
     response_sha256: branded.sdk_response_sha256,
@@ -1342,7 +1344,7 @@ function exactObservationProjection(observation, adapter, method, expectedSequen
     response: readAuthenticatedPhalaSdkObservationResponse(branded, {
       adapter,
       method,
-      domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+      domain: ["getCurrentUser", "getWorkspace"].includes(method) ? null : "main_runtime_cvm",
     }),
   };
 }
@@ -1352,6 +1354,32 @@ function hasQuotedCertificate(value) {
     && value.app_certificates.some((certificate) => (
       typeof certificate?.quote === "string" && certificate.quote.length > 0
     ));
+}
+
+function assertPrePatchPhalaEvidenceResponses({
+  currentUserResponse,
+  workspaceResponse,
+  prePatchCvmInfoResponse,
+  adapterIdentity,
+  target,
+}) {
+  const account = normalizePhalaAuthenticatedAccountSubject(currentUserResponse);
+  if (!isRecord(workspaceResponse)
+    || !Object.hasOwn(workspaceResponse, "billing_status")
+    || workspaceResponse.billing_status !== "active"
+    || workspaceResponse.id !== account.workspace.id
+    || workspaceResponse.slug !== account.workspace.slug
+    || account.workspace.id !== adapterIdentity.workspace_id) {
+    throw new Error("fresh pre-PATCH workspace must match the authenticated target with explicit active billing");
+  }
+  if (!isRecord(prePatchCvmInfoResponse)
+    || String(prePatchCvmInfoResponse.id) !== target.cvm_id
+    || String(prePatchCvmInfoResponse.app_id).replace(/^0x/, "").toLowerCase()
+      !== target.app_id
+    || prePatchCvmInfoResponse.compose_hash !== target.compose_hash
+    || prePatchCvmInfoResponse.os?.os_image_hash !== target.os_image_hash) {
+    throw new Error("fresh pre-PATCH Phala CVM evidence differs from the exact main target");
+  }
 }
 
 function reviewedComputeWorkloadObservationAuthority(reviewedProjection) {
@@ -1539,6 +1567,8 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
   }
   const observationSet = exactRecord(observations, [
     "getCurrentUser",
+    "getWorkspace",
+    "prePatchCvmInfo",
     "firstEnvironmentKey",
     "refetchedEnvironmentKey",
     "patch",
@@ -1548,26 +1578,40 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
   ], "activation authenticated observation set");
   const projected = [
     exactObservationProjection(observationSet.getCurrentUser, adapter, "getCurrentUser", 1),
-    exactObservationProjection(observationSet.firstEnvironmentKey, adapter, "getAppEnvEncryptPubKey", 2),
-    exactObservationProjection(observationSet.refetchedEnvironmentKey, adapter, "getAppEnvEncryptPubKey", 3),
-    exactObservationProjection(observationSet.patch, adapter, "updateCvmEnvs", 4),
-    exactObservationProjection(observationSet.restart, adapter, "restartCvm", 5),
-    exactObservationProjection(observationSet.postRestartInfo, adapter, "getCvmInfo", 6),
-    exactObservationProjection(observationSet.postRestartAttestation, adapter, "getCvmAttestation", 7),
+    exactObservationProjection(observationSet.getWorkspace, adapter, "getWorkspace", 2),
+    exactObservationProjection(observationSet.prePatchCvmInfo, adapter, "getCvmInfo", 3),
+    exactObservationProjection(observationSet.firstEnvironmentKey, adapter, "getAppEnvEncryptPubKey", 4),
+    exactObservationProjection(observationSet.refetchedEnvironmentKey, adapter, "getAppEnvEncryptPubKey", 5),
+    exactObservationProjection(observationSet.patch, adapter, "updateCvmEnvs", 6),
+    exactObservationProjection(observationSet.restart, adapter, "restartCvm", 7),
+    exactObservationProjection(observationSet.postRestartInfo, adapter, "getCvmInfo", 8),
+    exactObservationProjection(observationSet.postRestartAttestation, adapter, "getCvmAttestation", 9),
   ];
+  if (state.sdk_observations.length !== projected.length) {
+    throw new Error("durable activation journal must bind exactly nine authenticated SDK observations");
+  }
   for (let index = 0; index < projected.length; index += 1) {
     const expected = state.sdk_observations[index];
-    if (projected[index].observation_sha256 !== expected.observation_sha256
+    if (projected[index].method !== expected.method
+      || projected[index].call_sequence !== expected.call_sequence
+      || projected[index].observation_sha256 !== expected.observation_sha256
       || projected[index].request_semantics_sha256
         !== expected.request_semantics_sha256
       || projected[index].observed_at !== expected.observed_at) {
       throw new Error("durable activation journal differs from authenticated SDK replay");
     }
   }
-  const patch = projected[3];
-  const restart = projected[4];
-  const info = projected[5];
-  const attestation = projected[6];
+  assertPrePatchPhalaEvidenceResponses({
+    currentUserResponse: projected[0].response,
+    workspaceResponse: projected[1].response,
+    prePatchCvmInfoResponse: projected[2].response,
+    adapterIdentity: projectPinnedPhalaProductionSdkAdapterIdentity(adapter),
+    target: plan.target,
+  });
+  const patch = projected[5];
+  const restart = projected[6];
+  const info = projected[7];
+  const attestation = projected[8];
   if (!isRecord(info.response)
     || String(info.response.id) !== plan.target.cvm_id
     || String(info.response.app_id).replace(/^0x/, "").toLowerCase()
@@ -1710,7 +1754,7 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
     mutation_sequence: [...PHALA_POST_MEASUREMENT_ACTIVATION_MUTATION_SEQUENCE],
     patch: {
       sdk_action: "updateCvmEnvs",
-      call_sequence: 4,
+      call_sequence: 6,
       request_semantics_sha256: patch.request_semantics_sha256,
       observation_sha256: patch.observation_sha256,
       response_sha256: patch.response_sha256,
@@ -1723,7 +1767,7 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
     },
     restart: {
       sdk_action: "restartCvm",
-      call_sequence: 5,
+      call_sequence: 7,
       request_semantics_sha256: restart.request_semantics_sha256,
       observation_sha256: restart.observation_sha256,
       response_sha256: restart.response_sha256,
@@ -1733,11 +1777,11 @@ export async function prepareProductionPhalaPostMeasurementActivationExecutionRe
       finalized_readiness: restartReadiness,
     },
     post_restart_evidence: {
-      get_cvm_info_call_sequence: 6,
+      get_cvm_info_call_sequence: 8,
       get_cvm_info_observation_sha256: info.observation_sha256,
       get_cvm_info_response_sha256: info.response_sha256,
       get_cvm_info_observed_at: info.observed_at,
-      get_cvm_attestation_call_sequence: 7,
+      get_cvm_attestation_call_sequence: 9,
       get_cvm_attestation_observation_sha256: attestation.observation_sha256,
       get_cvm_attestation_response_sha256: attestation.response_sha256,
       get_cvm_attestation_observed_at: attestation.observed_at,
@@ -1986,6 +2030,7 @@ function createTestReceiptPreflightForDurabilityChecks(input = {}) {
 }
 
 export const __test = Object.freeze({
+  assertPrePatchPhalaEvidenceResponses,
   createReceiptPreflightForDurabilityChecks:
     createTestReceiptPreflightForDurabilityChecks,
 });

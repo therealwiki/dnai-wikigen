@@ -64,6 +64,16 @@ test("historical O core excludes mutation receipt and every fresh-brand API", ()
     typeof core.assertHistoricallyVerifiedComputeWorkloadActivationObservation,
     "function",
   );
+  for (const name of [
+    "assertPrebuildVerifiedComputeWorkloadActivationObservation",
+    "normalizeComputeWorkloadActivationObservationPrebuildReplay",
+    "projectComputeWorkloadBrowserBindingFromPrebuildObservation",
+    "projectComputeWorkloadBrowserEnvFromPrebuildObservation",
+  ]) assert.equal(typeof core[name], "function", name);
+  assert.notEqual(core.COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA,
+    core.COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_REPLAY_SCHEMA);
+  assert.notEqual(core.COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_AUTHORITY_DOMAIN,
+    core.COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_AUTHORITY_DOMAIN);
 });
 
 test("historical O recursive closure is static, pure, and browser-compatible", () => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -13,6 +14,16 @@ import {
 import {
   PHALA_EXECUTION_ORDER,
 } from "./phala-production-posture-core.mjs";
+import {
+  CVM_LAUNCH_DESCRIPTOR_POLICY,
+  PHALA_CVM_RESOURCE_TARGETS,
+  PHALA_OS_IMAGE_CATALOG_ENTRY,
+} from "./cvm-launch-intent-core.mjs";
+import {
+  productionCvmPostureVerificationReceiptSha256,
+  verifyProductionCvmPostureObservation,
+} from "./phala-production-posture-receipt.mjs";
+import { createSyntheticPhalaContractKmsProjection } from "./phala-contract-kms-test-fixture.mjs";
 import {
   PHALA_NONLIVE_BOOTSTRAP_ACTION_SCOPE,
   PHALA_NONLIVE_BOOTSTRAP_AUTHORIZATION_RECEIPT_SCHEMA,
@@ -39,6 +50,8 @@ import {
 const sha = (index) => `sha256:${index.toString(16).padStart(64, "0")}`;
 const at = (seconds) => new Date(Date.UTC(2026, 6, 21, 10, 0, seconds))
   .toISOString().replace(".000Z", "Z");
+const publicKeySha256 = (key) => `sha256:${createHash("sha256")
+  .update(Buffer.from(key, "hex")).digest("hex")}`;
 
 function signedA(value) {
   const expected = value.expectedAuthority;
@@ -94,12 +107,77 @@ function signedA(value) {
   });
 }
 
-function fixture() {
+function fixture(t) {
   const value = structuredClone(syntheticPhalaSevenCvmLaunchCompletionFixture());
   const launchByDomain = new Map(value.receipt.domains.map((entry) => [
     entry.domain,
     entry,
   ]));
+  const kmsProjection = createSyntheticPhalaContractKmsProjection();
+  const historicalPostureReceipts = [];
+  let postureObservedAt = at(120);
+  const mockedNow = t.mock.method(Date, "now", () => Date.parse(postureObservedAt));
+  try {
+    for (const [index, domain] of PHALA_EXECUTION_ORDER.entries()) {
+      const launch = launchByDomain.get(domain);
+      const placement = kmsProjection.eligible_placements.find((entry) => entry.target_domains.includes(domain));
+      const replica = kmsProjection.replicas.find((entry) => entry.id === placement.kms_id);
+      const resource = PHALA_CVM_RESOURCE_TARGETS[domain];
+      const environmentPublicKey = (index + 1).toString(16).repeat(64);
+      const preparedBinding = {
+        kms_contract_id: kmsProjection.contract.id,
+        kms_id: replica.id,
+        kms_url: replica.url,
+        node_id: placement.node_id,
+        teepod_id: placement.teepod_id,
+        device_id: placement.device_ids[0].device_id,
+        gateway_app_id: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled
+          ? placement.gateway_app_id : null,
+      };
+      // Only this local continuity fixture is migrated. The shared historical
+      // launch fixture retains its original synthetic authority and old hashes.
+      Object.assign(launch, { kms_id: replica.id, instance_type: resource.instance_type, disk_size: resource.disk_size });
+      postureObservedAt = launch.production_posture_verified_at;
+      const receipt = verifyProductionCvmPostureObservation({
+        domain,
+        cvmId: launch.cvm_id,
+        cvmInfo: {
+          id: launch.cvm_id,
+          app_id: launch.app_id,
+          compose_hash: launch.committed_compose_hash,
+          kms_type: "phala",
+          kms_info: { chain_id: null, rpc_endpoint: replica.url, encrypted_env_pubkey: environmentPublicKey },
+          node_info: { id: placement.node_id, device_ids: structuredClone(placement.device_ids) },
+          os: { is_dev: false, os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash },
+          resource: { instance_type: resource.instance_type, disk_in_gb: resource.disk_size },
+          listed: false,
+          public_logs: false,
+          public_sysinfo: false,
+          public_tcbinfo: false,
+        },
+        expected: {
+          appId: launch.app_id,
+          composeHash: launch.committed_compose_hash,
+          instanceType: resource.instance_type,
+          diskSize: resource.disk_size,
+          kmsProjection,
+          preparedBinding,
+          environmentPublicKey,
+        },
+      });
+      launch.production_posture_verification_receipt_sha256 = productionCvmPostureVerificationReceiptSha256(receipt);
+      Object.assign(value.expectedAuthority.domain_completion_authority_by_domain[domain], {
+        kms_id: launch.kms_id,
+        instance_type: launch.instance_type,
+        disk_size: launch.disk_size,
+        production_posture_verification_receipt_sha256: launch.production_posture_verification_receipt_sha256,
+      });
+      historicalPostureReceipts.push(structuredClone(receipt));
+    }
+  } finally {
+    mockedNow.mock.restore();
+  }
+  const historicalPostureByDomain = new Map(historicalPostureReceipts.map((receipt) => [receipt.domain, receipt]));
   const authorization = signedA(value);
   const signedASha256 = phalaNonLiveBootstrapAuthorizationReceiptSha256(
     authorization,
@@ -136,7 +214,7 @@ function fixture() {
     signed_key_bindings: PHALA_EXECUTION_ORDER.map((domain, index) => ({
       domain,
       binding_sha256: sha(1_020 + index),
-      public_key_sha256: sha(1_030 + index),
+      public_key_sha256: publicKeySha256(historicalPostureByDomain.get(domain).environment_public_key),
     })),
     committed_prefix: PHALA_EXECUTION_ORDER.map((domain, index) => ({
       domain,
@@ -180,6 +258,8 @@ function fixture() {
       cvm_id: launch.cvm_id,
       compose_hash: launch.committed_compose_hash,
       kms_id: launch.kms_id,
+      prepared_binding: structuredClone(historicalPostureByDomain.get(domain).prepared_binding),
+      environment_public_key: historicalPostureByDomain.get(domain).environment_public_key,
       instance_type: launch.instance_type,
       disk_size: launch.disk_size,
       os_image_hash: launch.os_image_hash,
@@ -214,6 +294,7 @@ function fixture() {
       observed_at: at(299),
     },
     currentDomains,
+    historicalPostureReceipts,
     historicalEvidenceReconstruction: {
       schema: "dnai.phala-seven-cvm-recorded-time-dcap-replay.v1",
       truth_status:
@@ -243,9 +324,10 @@ function fixture() {
   };
 }
 
-test("current continuity receipt binds exact journal, historical L/A/proofs, and 22 read-only observations", () => {
-  const input = fixture();
+test("current continuity receipt binds exact journal, historical L/A/proofs, and 22 read-only observations", (t) => {
+  const input = fixture(t);
   const receipt = createPhalaCompletedLaunchContinuityReceipt(input);
+  assert.equal(receipt.schema, "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v3");
   assert.equal(receipt.continuity_observation_count, 22);
   assert.equal(receipt.domains.length, 7);
   assert.equal(receipt.mutation_methods_called, false);
@@ -258,11 +340,17 @@ test("current continuity receipt binds exact journal, historical L/A/proofs, and
     /^sha256:[0-9a-f]{64}$/,
   );
   assert.deepEqual(normalizePhalaCompletedLaunchContinuityReceipt(receipt), receipt);
+  for (const domain of receipt.domains) {
+    const historical = input.historicalPostureReceipts.find((entry) => entry.domain === domain.domain);
+    assert.deepEqual(domain.prepared_binding, historical.prepared_binding);
+    assert.equal(domain.environment_public_key, historical.environment_public_key);
+    assert.equal(domain.environment_public_key_sha256, publicKeySha256(domain.environment_public_key));
+  }
   assert.throws(() => { receipt.domains[0].cvm_id = "cvm-tampered"; }, TypeError);
 });
 
-test("standalone receipt normalization rejects recomputed field and uniqueness tampering", () => {
-  const receipt = createPhalaCompletedLaunchContinuityReceipt(fixture());
+test("standalone receipt normalization rejects recomputed field and uniqueness tampering", (t) => {
+  const receipt = createPhalaCompletedLaunchContinuityReceipt(fixture(t));
   for (const mutate of [
     (value) => { value.domains[0].listed = true; },
     (value) => { value.domains[0].cvm_info_call_sequence = 22; },
@@ -270,6 +358,13 @@ test("standalone receipt normalization rejects recomputed field and uniqueness t
     (value) => { value.domains[1].app_id = value.domains[0].app_id; },
     (value) => { value.domains[1].environment_public_key_sha256 =
       value.domains[0].environment_public_key_sha256; },
+    (value) => { delete value.domains[0].prepared_binding; },
+    (value) => { delete value.domains[0].environment_public_key; },
+    (value) => { value.domains[0].prepared_binding.extra = true; },
+    (value) => { value.domains[0].prepared_binding.kms_id = "kms_Substitute"; },
+    (value) => { value.domains[0].environment_public_key = `0x${value.domains[0].environment_public_key}`; },
+    (value) => { value.domains[0].environment_public_key = "f".repeat(64); },
+    (value) => { value.schema = "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v2"; },
   ]) {
     const tampered = structuredClone(receipt);
     mutate(tampered);
@@ -280,8 +375,135 @@ test("standalone receipt normalization rejects recomputed field and uniqueness t
   }
 });
 
-test("continuation provenance accepts actual L v5 and rejects v4 or truth drift", () => {
-  const input = fixture();
+test("continuity requires seven actual v2 historical posture receipts without inferring prepare evidence", (t) => {
+  const mutations = [
+    ["omitted historical receipts", (input) => { delete input.historicalPostureReceipts; }],
+    ["only six historical receipts", (input) => { input.historicalPostureReceipts.pop(); }],
+    ["duplicated historical domain", (input) => {
+      input.historicalPostureReceipts[1] = structuredClone(input.historicalPostureReceipts[0]);
+    }],
+    ["substituted historical domain", (input) => {
+      input.historicalPostureReceipts[0].domain = "unreviewed_cvm";
+    }],
+    ["receipt wrappers instead of actual receipts", (input) => {
+      input.historicalPostureReceipts = input.historicalPostureReceipts.map((receipt) => ({
+        domain: receipt.domain,
+        receipt,
+      }));
+    }],
+    ["legacy v1 receipt", (input) => {
+      const historical = input.historicalPostureReceipts[0];
+      historical.schema = "dnai.phala-production-cvm-posture-verification-receipt.v1";
+      delete historical.prepared_binding;
+      delete historical.environment_public_key;
+    }],
+    ["missing retained prepare binding", (input) => {
+      delete input.historicalPostureReceipts[0].prepared_binding;
+    }],
+    ["missing retained environment public key", (input) => {
+      delete input.historicalPostureReceipts[0].environment_public_key;
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const input = fixture(t);
+    mutate(input);
+    assert.throws(() => createPhalaCompletedLaunchContinuityReceipt(input), undefined, label);
+  }
+  const reordered = fixture(t);
+  reordered.historicalPostureReceipts.reverse();
+  assert.deepEqual(
+    createPhalaCompletedLaunchContinuityReceipt(reordered).domains.map(({ domain }) => domain),
+    PHALA_EXECUTION_ORDER,
+    "actual historical receipts are matched by their immutable domain, not array position",
+  );
+});
+
+test("historical posture identity and exact receipt digest remain pinned by immutable L", (t) => {
+  const identityMutations = [
+    ["app_id", (receipt) => { receipt.app_id = "ed".repeat(20); }],
+    ["cvm_id", (receipt) => { receipt.cvm_id = "cvm-substituted"; }],
+    ["compose_hash", (receipt) => { receipt.compose_hash = "ed".repeat(32); }],
+    ["kms_id", (receipt) => { receipt.kms_id = "kms_Substitute"; }],
+    ["instance_type", (receipt) => { receipt.instance_type = "tdx.substituted"; }],
+    ["disk_size", (receipt) => { receipt.disk_size += 1; }],
+  ];
+  for (const [label, mutate] of identityMutations) {
+    const input = fixture(t);
+    mutate(input.historicalPostureReceipts[0]);
+    assert.throws(
+      () => createPhalaCompletedLaunchContinuityReceipt(input),
+      /does not match exact authority/,
+      `historical ${label} must match immutable L`,
+    );
+  }
+  const retainedFactMutations = [
+    ["contract", (receipt) => { receipt.prepared_binding.kms_contract_id = "kc_Substitute"; }],
+    ["KMS RPC", (receipt) => { receipt.prepared_binding.kms_url = "https://kms-substitute.phala.network/"; }],
+    ["node", (receipt) => { receipt.prepared_binding.node_id += 1; }],
+    ["teepod", (receipt) => { receipt.prepared_binding.teepod_id += 1; }],
+    ["device", (receipt) => { receipt.prepared_binding.device_id = "ed".repeat(32); }],
+    ["gateway", (receipt) => { receipt.prepared_binding.gateway_app_id = `0x${"ed".repeat(20)}`; }],
+    ["environment public key", (receipt) => { receipt.environment_public_key = "ed".repeat(32); }],
+    ["CVM observation", (receipt) => { receipt.cvm_info_observation_sha256 = sha(9_991); }],
+    ["observation time", (receipt) => { receipt.observed_at = at(250); }],
+  ];
+  for (const [label, mutate] of retainedFactMutations) {
+    const input = fixture(t);
+    mutate(input.historicalPostureReceipts[0]);
+    assert.throws(
+      () => createPhalaCompletedLaunchContinuityReceipt(input),
+      /historical v2 posture digest differs from immutable historical L/,
+      `self-consistent historical ${label} cannot replace original receipt evidence`,
+    );
+  }
+  const input = fixture(t);
+  const historical = input.historicalPostureReceipts[0];
+  input.launchCompletionReceipt.domains.find(({ domain }) => domain === historical.domain)
+    .production_posture_verification_receipt_sha256 = sha(9_992);
+  assert.throws(
+    () => createPhalaCompletedLaunchContinuityReceipt(input),
+    /historical v2 posture digest differs from immutable historical L/,
+  );
+});
+
+test("current continuity rejects all seven prepared-binding fields and self-consistent key substitution", (t) => {
+  const bindingMutations = [
+    ["kms_contract_id", (binding) => { binding.kms_contract_id = "kc_Substitute"; }],
+    ["kms_id", (binding) => { binding.kms_id = "kms_Substitute"; }],
+    ["kms_url", (binding) => { binding.kms_url = "https://kms-substitute.phala.network/"; }],
+    ["node_id", (binding) => { binding.node_id += 1; }],
+    ["teepod_id", (binding) => { binding.teepod_id += 1; }],
+    ["device_id", (binding) => { binding.device_id = "ed".repeat(32); }],
+    ["gateway_app_id", (binding) => { binding.gateway_app_id = `0x${"ed".repeat(20)}`; }],
+  ];
+  for (const [label, mutate] of bindingMutations) {
+    const input = fixture(t);
+    mutate(input.currentDomains[0].prepared_binding);
+    assert.throws(
+      () => createPhalaCompletedLaunchContinuityReceipt(input),
+      /current prepared binding or environment public key drifted from historical v2 posture/,
+      `current ${label} must match retained prepare evidence`,
+    );
+  }
+  const substitutedKey = fixture(t);
+  substitutedKey.currentDomains[0].environment_public_key = "ed".repeat(32);
+  substitutedKey.currentDomains[0].environment_public_key_sha256 = publicKeySha256("ed".repeat(32));
+  assert.throws(
+    () => createPhalaCompletedLaunchContinuityReceipt(substitutedKey),
+    /current prepared binding or environment public key drifted from historical v2 posture/,
+  );
+  const wrongHashEncoding = fixture(t);
+  wrongHashEncoding.currentDomains[0].environment_public_key_sha256 = `sha256:${createHash("sha256")
+    .update(wrongHashEncoding.currentDomains[0].environment_public_key, "utf8").digest("hex")}`;
+  assert.throws(
+    () => createPhalaCompletedLaunchContinuityReceipt(wrongHashEncoding),
+    /current environment public key bytes do not match their SHA-256/,
+    "the environment key pin hashes decoded bytes rather than hex text",
+  );
+});
+
+test("continuation provenance accepts actual L v5 and rejects v4 or truth drift", (t) => {
+  const input = fixture(t);
   const receipt = createPhalaCompletedLaunchContinuityReceipt(input);
   const dependencies = {
     executor_final_state: input.completedJournal.state,
@@ -331,8 +553,8 @@ test("continuation provenance accepts actual L v5 and rejects v4 or truth drift"
   }
 });
 
-test("ordinary Node cannot spoof a completed-launch continuation capability", () => {
-  const input = fixture();
+test("ordinary Node cannot spoof a completed-launch continuation capability", (t) => {
+  const input = fixture(t);
   const receipt = createPhalaCompletedLaunchContinuityReceipt(input);
   const receiptSha256 = phalaCompletedLaunchContinuityReceiptSha256(receipt);
   const forged = {
@@ -403,13 +625,13 @@ test("ordinary Node cannot spoof a completed-launch continuation capability", ()
   assert.equal(child.stdout, "rejected");
 });
 
-test("continuity rejects incomplete, ambiguous, or postmeasurement-shaped executor state", () => {
+test("continuity rejects incomplete, ambiguous, or postmeasurement-shaped executor state", (t) => {
   for (const status of [
     "ambiguous_reconcile_required",
     "partial_commit_requires_operator_reconciliation",
     "post_measurement_activation_complete",
   ]) {
-    const input = fixture();
+    const input = fixture(t);
     input.completedJournal.state.status = status;
     assert.throws(
       () => createPhalaCompletedLaunchContinuityReceipt(input),
@@ -418,7 +640,7 @@ test("continuity rejects incomplete, ambiguous, or postmeasurement-shaped execut
   }
 });
 
-test("continuity rejects journal/L tampering and original historical-A timing drift", () => {
+test("continuity rejects journal/L tampering and original historical-A timing drift", (t) => {
   const mutations = [
     (input) => { input.completedJournal.state.committed_prefix[0].cvm_id = "cvm-drifted"; },
     (input) => { input.launchCompletionReceipt.domains[0].committed_compose_hash = "fe".repeat(32); },
@@ -426,13 +648,13 @@ test("continuity rejects journal/L tampering and original historical-A timing dr
     (input) => { input.signedAReceipt.expires_at = at(10); },
   ];
   for (const mutate of mutations) {
-    const input = fixture();
+    const input = fixture(t);
     mutate(input);
     assert.throws(() => createPhalaCompletedLaunchContinuityReceipt(input));
   }
 });
 
-test("continuity rejects current app/CVM/compose/OS/KMS/resource/privacy/key drift", () => {
+test("continuity rejects current app/CVM/compose/OS/KMS/resource/privacy/key drift", (t) => {
   const mutations = [
     (entry) => { entry.app_id = "ef".repeat(20); },
     (entry) => { entry.cvm_id = "cvm-drifted"; },
@@ -445,13 +667,13 @@ test("continuity rejects current app/CVM/compose/OS/KMS/resource/privacy/key dri
     (entry) => { entry.environment_public_key_sha256 = sha(9_999); },
   ];
   for (const mutate of mutations) {
-    const input = fixture();
+    const input = fixture(t);
     mutate(input.currentDomains[0]);
     assert.throws(() => createPhalaCompletedLaunchContinuityReceipt(input));
   }
 });
 
-test("continuity rejects replay-shaped call order, stale observations, and proof/transcript drift", () => {
+test("continuity rejects replay-shaped call order, stale observations, and proof/transcript drift", (t) => {
   const mutations = [
     (input) => { input.currentDomains[0].cvm_info_call_sequence = 99; },
     (input) => { input.currentDomains[0].attestation_observed_at = at(297); },
@@ -465,7 +687,7 @@ test("continuity rejects replay-shaped call order, stale observations, and proof
     },
   ];
   for (const mutate of mutations) {
-    const input = fixture();
+    const input = fixture(t);
     mutate(input);
     assert.throws(() => createPhalaCompletedLaunchContinuityReceipt(input));
   }

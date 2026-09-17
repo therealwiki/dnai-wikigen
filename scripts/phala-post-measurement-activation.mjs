@@ -46,7 +46,7 @@ import {
 import {
   normalizePhalaSevenCvmReleaseVerificationAuthority,
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 const CHAIN_ID = 84_532;
 const PLANS = new WeakMap();
 const PLAN_EXPECTATIONS = new WeakMap();
@@ -354,7 +354,7 @@ export async function createPhalaPostMeasurementActivationPlan({
       arena_worker_presence_evidence_classification:
         PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
       arena_runtime_authenticated_worker_presence_required: true,
-      compute_workload_recipient_activation_v3_required: true,
+      compute_workload_recipient_activation_v4_required: true,
       independent_tdx_verdict_v4_required: true,
       pre_injection_attestation_sufficient: false,
     },

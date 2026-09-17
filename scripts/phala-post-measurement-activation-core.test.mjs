@@ -28,14 +28,14 @@ import {
 } from "./phala-post-measurement-activation.mjs";
 import {
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 import {
   syntheticPhalaSevenCvmReleaseDescriptorsFixture,
 } from "./phala-seven-cvm-release-verification-authority.fixture.mjs";
 import {
   syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as
     syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
-} from "./current-cvm-authority-v4.fixture.mjs";
+} from "./current-cvm-authority-v5.fixture.mjs";
 import {
   phalaQvlMeasurementPolicySha256,
 } from "./phala-seven-cvm-measurement-policy.mjs";
@@ -144,7 +144,7 @@ function planFixture() {
       arena_worker_presence_evidence_classification:
         PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
       arena_runtime_authenticated_worker_presence_required: true,
-      compute_workload_recipient_activation_v3_required: true,
+      compute_workload_recipient_activation_v4_required: true,
       independent_tdx_verdict_v4_required: true,
       pre_injection_attestation_sufficient: false,
     },
@@ -164,6 +164,8 @@ test("activation-plan core binds one complete release authority and exact target
   assert.equal(Object.isFrozen(normalized.runtime_commitments), true);
   assert.equal(Object.isFrozen(normalized.profile_activation), true);
   assert.equal(Object.isFrozen(normalized.profile_activation.profile_names), true);
+  assert.equal(normalized.post_restart_evidence.compute_workload_recipient_activation_v4_required, true);
+  assert.equal(Object.hasOwn(normalized.post_restart_evidence, "compute_workload_recipient_activation_v3_required"), false);
   assert.deepEqual(normalized.profile_activation, {
     profile_names: ["arena-runtime", "compute-execution"],
     compose_profiles_value: "arena-runtime,compute-execution",
@@ -203,6 +205,16 @@ test("activation-plan core rejects target, nonce, authority, and evidence drift"
     const fixture = planFixture();
     mutate(fixture);
     assert.throws(() => normalizePhalaPostMeasurementActivationPlan(fixture));
+  }
+});
+
+test("activation-plan core and facade reject old v3 requirements and mixed-version aliases", () => {
+  for (const retainV4 of [false, true]) {
+    const fixture = planFixture();
+    fixture.post_restart_evidence.compute_workload_recipient_activation_v3_required = true;
+    if (!retainV4) delete fixture.post_restart_evidence.compute_workload_recipient_activation_v4_required;
+    assert.throws(() => normalizePhalaPostMeasurementActivationPlan(fixture));
+    assert.throws(() => normalizeProductionPlan(fixture));
   }
 });
 

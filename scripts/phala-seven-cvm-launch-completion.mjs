@@ -44,6 +44,10 @@ import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   phalaSevenCvmReleaseVerificationAuthoritySha256 as
     currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as HISTORICAL_V4_RELEASE_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as historicalV4ReleaseAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
@@ -276,8 +280,8 @@ function externalAuthorityFromDependencies({
         releaseVerificationAuthority,
       )
     : historicalEvidence
-        && releaseAuthoritySchema
-          === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+        && [HISTORICAL_V4_RELEASE_SCHEMA, LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA]
+          .includes(releaseAuthoritySchema)
       ? assertHistoricallyReconstructedPhalaSevenCvmReleaseVerificationAuthority(
         releaseVerificationAuthority,
       )
@@ -286,8 +290,8 @@ function externalAuthorityFromDependencies({
             "seven-CVM completion release-verification authority version is unsupported",
           );
         })();
-  if ((releaseAuthoritySchema
-        === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+  if (([PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA, HISTORICAL_V4_RELEASE_SCHEMA]
+        .includes(releaseAuthoritySchema)
       && descriptorReceiptSchema
         !== CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA)
     || (releaseAuthoritySchema
@@ -301,7 +305,9 @@ function externalAuthorityFromDependencies({
   const releaseAuthoritySha256 = releaseAuthoritySchema
       === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
     ? currentPhalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority)
-    : legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+    : releaseAuthoritySchema === HISTORICAL_V4_RELEASE_SCHEMA
+      ? historicalV4ReleaseAuthoritySha256(releaseAuthority)
+      : legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
   const transcriptPersistence = transcriptPersistencePreflight === null
     ? assertDurablyPersistedPhalaSevenCvmHistoricalTranscriptReceipt(
       historicalTranscriptPersistenceReceipt,
@@ -383,8 +389,8 @@ function externalAuthorityFromDependencies({
     || releaseAuthority.bootstrap_authorization_receipt_sha256 !== signedASha256
     || releaseAuthority.contracts.fresh_contract_deployment_receipt_sha256
       !== contractReceiptSha256
-    || (releaseAuthoritySchema
-        === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+    || ([PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA, HISTORICAL_V4_RELEASE_SCHEMA]
+        .includes(releaseAuthoritySchema)
       && (releaseAuthority
         .tinker_account_binding_ceremony_receipt_sha256
           !== descriptors

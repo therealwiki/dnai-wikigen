@@ -206,6 +206,11 @@ test("R v4 rejects combined-profile/L drift, downgrade, O injection, and authori
     },
     (value) => {
       value.future_activation_authorization_transcript_policy
+        .source_activation_schema =
+        "dnai.compute.workload-recipient-activation.v3";
+    },
+    (value) => {
+      value.future_activation_authorization_transcript_policy
         .historical_transcript_flag_order.pop();
     },
     (value) => {

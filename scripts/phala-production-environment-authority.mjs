@@ -412,7 +412,13 @@ function exactValueMap(value, expectedKeys, label, { secret = false } = {}) {
       && !BARE_SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero bare lowercase hash`);
     }
-    if (!secret && key.endsWith("_SHA256") && !SHA256.test(item)) {
+    const computeWorkloadBytes32 =
+      key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256"
+      || key === "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH";
+    if (!secret && computeWorkloadBytes32 && !BYTES32.test(item)) {
+      throw new Error(`${label}.${key} must be a nonzero canonical bytes32`);
+    }
+    if (!secret && !computeWorkloadBytes32 && key.endsWith("_SHA256") && !SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero canonical SHA-256 digest`);
     }
     if (!secret && key.endsWith("_EPOCH")) {

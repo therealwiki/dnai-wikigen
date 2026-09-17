@@ -15,6 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {
+  CURRENT_MODEL_A_LIVE_INPUT_FLAGS,
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+} from "../../scripts/current-model-a-input-recipe-core.mjs";
 
 import {
   auditCloudflareBuild,
@@ -40,6 +44,13 @@ test("reviewed Pages configuration omits Wrangler's unsupported account_id field
   assert.doesNotMatch(artifactTest.EXPECTED_WRANGLER_CONFIG, /^account_id\s*=/m);
   assert.match(artifactTest.EXPECTED_WRANGLER_CONFIG, /^name = "wikigenme"$/m);
   assert.match(artifactTest.EXPECTED_WRANGLER_CONFIG, /^pages_build_output_dir = "\.\/dist"$/m);
+});
+
+test("private artifact audit aliases the central current recipe without caller-selected flags", () => {
+  assert.equal(artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS,
+    CURRENT_MODEL_A_LIVE_INPUT_FLAGS);
+  assert.equal(artifactTest.REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS,
+    CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS);
 });
 
 test("D build controls are an exact stable 28-file projection", async () => {
@@ -200,7 +211,7 @@ test("modeled and live build audits bind exact headers, assets, and release SHA"
   }
 });
 
-test("pre-C candidate audit requires exactly 36 acyclic inputs and scans the fresh dist", async () => {
+test("pre-C candidate audit requires exactly 37 acyclic inputs and scans the fresh dist", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-cloudflare-candidate-audit-"));
   try {
     const privateInputs = await writePrivateReleaseInputs(
@@ -213,12 +224,19 @@ test("pre-C candidate audit requires exactly 36 acyclic inputs and scans the fre
     ));
     const audit = await loadPrivateFrontendCandidateArtifactAudit(candidateArgs);
     assert.equal(audit.schema, artifactTest.PRIVATE_FRONTEND_CANDIDATE_AUDIT_SCHEMA);
-    assert.equal(audit.inputs.length, 36);
+    assert.equal(audit.inputs.length, 37);
     assert.deepEqual(
       audit.inputs.map(({ flag }) => flag),
       [...artifactTest.REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS]
         .sort((left, right) => left.localeCompare(right, "en")),
     );
+    const withoutActivation = candidateArgs.filter((value, index, values) => (
+      index % 2 === 0
+        ? value !== "--post-measurement-activation-execution-receipt"
+        : values[index - 1] !== "--post-measurement-activation-execution-receipt"
+    ));
+    await assert.rejects(loadPrivateFrontendCandidateArtifactAudit(withoutActivation),
+      /missing a required live input/);
 
     const dist = path.join(directory, "dist");
     await writeValidDist(dist, { releaseSha: SHA });
@@ -247,7 +265,7 @@ test("pre-C candidate audit requires exactly 36 acyclic inputs and scans the fre
     }
 
     const leaked = Buffer.from(
-      privateInputs.values.get("--compute-workload-activation-observation")
+      privateInputs.values.get("--post-measurement-activation-execution-receipt")
         .filePath,
       "utf8",
     ).toString("base64");
@@ -353,6 +371,9 @@ test("live build audit rejects raw, canonical, encoded, signature, and private-p
     const observation = privateInputs.values.get(
       "--compute-workload-activation-observation",
     );
+    const activationReceipt = privateInputs.values.get(
+      "--post-measurement-activation-execution-receipt",
+    );
     const release = privateInputs.values.get("--release");
     const cases = [
       `${JSON.stringify(c.value)}\n`,
@@ -364,6 +385,9 @@ test("live build audit rejects raw, canonical, encoded, signature, and private-p
       JSON.stringify(observation.value, null, 2),
       observation.filePath,
       observation.fileName,
+      JSON.stringify(activationReceipt.value),
+      activationReceipt.filePath,
+      Buffer.from(JSON.stringify(activationReceipt.value), "utf8").toString("base64"),
       Buffer.from(c.value.signature, "utf8").toString("base64"),
       Buffer.from(JSON.stringify(observation.value), "utf8").toString("base64url"),
       Buffer.from(c.filePath, "utf8").toString("hex"),
@@ -463,14 +487,14 @@ test("private release audit rejects aliased files and duplicate semantic inputs"
   }
 });
 
-test("private release audit normalization rejects a fingerprinted 39th input", async () => {
+test("private release audit normalization rejects a fingerprinted 40th input", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dnai-cloudflare-extra-private-input-"));
   try {
     const privateInputs = await writePrivateReleaseInputs(
       path.join(directory, "private-release-inputs"),
     );
-    assert.equal(artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS.length, 38);
-    assert.equal(privateInputs.audit.inputs.length, 38);
+    assert.equal(artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS.length, 39);
+    assert.equal(privateInputs.audit.inputs.length, 39);
     assert.deepEqual(
       privateInputs.audit.inputs.map(({ flag }) => flag),
       [...artifactTest.REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS]

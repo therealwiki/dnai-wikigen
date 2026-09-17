@@ -10,6 +10,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { phalaAppComposeExpectedRuntimeHash } from "./phala-app-compose-wire-core.mjs";
 
 import {
   canonicalCvmLaunchIntentCoreArtifactText,
@@ -277,11 +278,13 @@ function validLaunchIntent() {
     descriptor.app_compose_candidate.docker_compose_file_byte_length = 1_000 + index;
     descriptor.app_compose_candidate.expected_compose_hash =
       (index + 1).toString(16).repeat(64);
+    descriptor.app_compose_candidate.pre_transform_compose_hash =
+      (index + 8).toString(16).repeat(64);
   });
   return value;
 }
 
-test("tracked launch template and schema match the canonical v3 seven-CVM boundary", async () => {
+test("tracked launch template and schema match the canonical v4 seven-CVM hash boundary", async () => {
   const template = await readFile(TEMPLATE_PATH, "utf8");
   assert.equal(template, canonicalJson(createDraftCvmLaunchIntentCore()));
   assert.throws(() => parseCvmLaunchIntentCoreText(template));
@@ -364,14 +367,14 @@ test("launch core has a stable explicit-NUL compact canonical digest", () => {
   const value = validLaunchIntent();
   const normalized = normalizeCvmLaunchIntentCore(value);
   const expected = createHash("sha256")
-    .update(Buffer.from("dnai-wikigen/cvm-launch-intent-core/v3\0", "utf8"))
+    .update(Buffer.from("dnai-wikigen/cvm-launch-intent-core/v4\0", "utf8"))
     .update(Buffer.from(JSON.stringify(sortedObject(normalized)), "utf8"))
     .digest("hex");
   assert.equal(CVM_LAUNCH_INTENT_DOMAIN.endsWith("\0"), true);
   assert.equal(cvmLaunchIntentCoreDigest(value), expected);
   assert.equal(
     expected,
-    "cabf8241d094dce74cbae3b23cb7398ef8d3ce877931e3ddd9e416667b47fa00",
+    "95bf1c4aaf796a481f5081c582a4472843686b59265da051695e57f4f41f7c95",
   );
   assert.notEqual(
     expected,
@@ -417,7 +420,7 @@ test("launch core freezes seven descriptor policies and contains names but no va
   );
   assert.equal(
     value.phala_cloud_sdk_wire_transform_authority.package.npm_dist_integrity_sha512,
-    "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+    "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
   );
   assert.equal(
     value.phala_cloud_sdk_wire_transform_authority
@@ -430,9 +433,9 @@ test("launch core freezes seven descriptor policies and contains names but no va
   );
   assert.equal(value.phala_provision_request_authority.listed, false);
   assert.equal(value.phala_provision_request_authority.key_provider_mode, "kms");
-  assert.equal(value.phala_provision_request_authority.kms_id, null);
+  assert.equal(value.phala_provision_request_authority.kms_contract_id, null);
   assert.deepEqual(value.phala_provision_request_authority.unresolved_fields, [
-    "kms_id",
+    "kms_contract_id",
     "nonce",
     "app_id",
     "exact_request_sha256",
@@ -448,7 +451,7 @@ test("launch core freezes seven descriptor policies and contains names but no va
     assert.equal(descriptor.descriptor_hash_semantics, "raw_descriptor_bytes_sha256_not_phala_compose_hash");
     assert.equal(descriptor.launch_settings.platform, "phala_cloud");
     assert.equal(descriptor.launch_settings.phala_cli_version, "v1.1.19+d2300dd");
-    assert.equal(descriptor.launch_settings.phala_cloud_sdk_version, "0.2.10");
+    assert.equal(descriptor.launch_settings.phala_cloud_sdk_version, "0.4.0");
     assert.deepEqual(
       descriptor.launch_settings.cvm_resource_target,
       PHALA_CVM_RESOURCE_TARGETS[descriptor.trust_domain],
@@ -1805,6 +1808,9 @@ test("local compose hash projector matches @phala/dstack-sdk 0.5.8 normalize=fal
 
 test("launch core rejects uppercase pins, dynamic facts, extras, and policy drift", () => {
   for (const mutate of [
+    (value) => { value.schema = "dnai.cvm-launch-intent-core.v3"; },
+    (value) => { delete value.descriptors[0].app_compose_candidate.pre_transform_compose_hash; },
+    (value) => { value.descriptors[0].app_compose_candidate.pre_transform_compose_hash = value.descriptors[0].app_compose_candidate.expected_compose_hash; },
     (value) => { value.contract_deployment_receipt_sha256 = `sha256:${"A".repeat(64)}`; },
     (value) => { value.release_sha = "A".repeat(40); },
     (value) => { value.descriptors[0].descriptor_sha256 = `sha256:${"B".repeat(64)}`; },
@@ -1851,7 +1857,7 @@ test("validation receipt is hash-only and excludes all renewable review material
   assert.equal(receipt.publicEnvironmentValueAuthorityComplete, false);
   assert.equal(receipt.publicEnvironmentValueAuthorityBlockerCount, 4);
   assert.equal(receipt.phalaApiOrigin, "https://cloud-api.phala.network/api/v1");
-  assert.equal(receipt.phalaApiVersion, "2026-01-21");
+  assert.equal(receipt.phalaApiVersion, "2026-06-23");
   assert.equal(receipt.phalaControlPlaneAdapterReady, false);
   assert.equal(receipt.phalaWorkspaceAccountTargetBound, false);
   assert.equal(receipt.phalaSdkDebugSecretLoggingGuardComplete, false);
@@ -2773,6 +2779,14 @@ test("builder binds topology, fresh ledger, seven raw descriptors, images, and k
     );
     assert.equal(artifact.topology_sha256, rawSha256(await readFile(fixture.topologyPath)));
     assert.equal(artifact.descriptors.length, 7);
+    for (const descriptor of artifact.descriptors) {
+      const text = await readFile(path.join(fixture.directory, descriptor.descriptor_file), "utf8");
+      const input = createPhalaDstackComposeHashInput(descriptor.app_compose_candidate,
+        text, descriptor.exact_allowed_environment_keys);
+      assert.equal(descriptor.app_compose_candidate.pre_transform_compose_hash, phalaDstackComposeHash(input));
+      assert.equal(descriptor.app_compose_candidate.expected_compose_hash, phalaAppComposeExpectedRuntimeHash(input));
+      assert.notEqual(descriptor.app_compose_candidate.pre_transform_compose_hash, descriptor.app_compose_candidate.expected_compose_hash);
+    }
     assert.deepEqual(artifact.dynamic_runtime_authorities, {
       endpoint_origins: [],
       os_image_hashes: [],

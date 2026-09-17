@@ -35,6 +35,7 @@ test("current C facade exposes only the bounded v6 browser-build API", () => {
   assert.deepEqual(Object.keys(currentC).sort(), [
     "CURRENT_LIVE_ACTIVATION_AUTHORITY_SCHEMA",
     "assertHistoricalLiveActivationComputeWorkloadObservationBinding",
+    "assertLiveActivationFinalCvmsMatchAuthenticatedLaunch",
     "normalizeLiveActivationAuthority",
     "projectLiveActivationFrontendBinding",
   ]);

@@ -107,6 +107,46 @@ test("pure historical O structures and digests retain production byte parity", a
   );
 });
 
+test("historical and production source normalizers reject activation v3 without fallback", async () => {
+  const value = await fixture();
+  const legacy = structuredClone(value.computeWorkloadActivationRaw);
+  legacy.schema = "dnai.compute.workload-recipient-activation.v3";
+  for (const normalize of [
+    normalizePhalaComputeWorkloadRecipientSourceActivation,
+    productionNormalizeSource,
+    phalaComputeWorkloadRecipientSourceActivationSha256,
+    productionSourceDigest,
+  ]) {
+    assert.throws(() => normalize(legacy), /activation schema is invalid/);
+  }
+});
+
+test("activation v4 release artifacts still commit the full fresh proof rather than the stable upload identity", async () => {
+  const value = await fixture();
+  const original = value.computeWorkloadActivationRaw;
+  const originalDigest = productionSourceDigest(original);
+  for (const mutate of [
+    (activation) => { activation.authenticated_at += 1; },
+    (activation) => { activation.quote_hash = `0x${"e1".repeat(32)}`; },
+    (activation) => {
+      activation.authenticated_verdict.challenge_id = `0x${"e2".repeat(32)}`;
+    },
+    (activation) => {
+      activation.authenticated_verdict.verifier_signature = `0x${"e3".repeat(64)}1b`;
+    },
+  ]) {
+    const changed = structuredClone(original);
+    mutate(changed);
+    // These are structural/digest checks, not verification of the mutated proof.
+    assert.equal(changed.recipient_release_commitment, original.recipient_release_commitment);
+    assert.notEqual(productionSourceDigest(changed), originalDigest);
+    assert.equal(
+      phalaComputeWorkloadRecipientSourceActivationSha256(changed),
+      productionSourceDigest(changed),
+    );
+  }
+});
+
 test("TDX v4 structural parser extracts TD10 and TD15 candidates without verifying DCAP", () => {
   const quote = Buffer.alloc(1_024);
   quote.writeUInt16LE(4, 0);

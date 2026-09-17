@@ -548,14 +548,20 @@ def validate_compute_provider_public_release(settings: Any) -> dict[str, Any]:
         or not _BYTES32.fullmatch(binding["metering_policy_set_hash"])
     ):
         raise TinkerProviderReleaseError("exact-asset release binding is invalid")
+    # These two settings use the activation provider's canonical bytes32 wire
+    # format, unlike the sha256-prefixed release-lineage digests below.
     for value in (
         settings.compute_workload_fresh_deployment_receipt_sha256,
+        settings.compute_workload_qvl_release_policy_hash,
+    ):
+        if not _BYTES32.fullmatch(str(value or "")):
+            raise TinkerProviderReleaseError("workload release pin is invalid")
+    for value in (
         settings.compute_workload_deployment_intent_sha256,
         settings.compute_workload_release_authority_sha256,
         settings.compute_workload_measurement_policy_set_sha256,
         settings.compute_workload_qvl_measurement_policy_sha256,
         settings.compute_workload_main_runtime_evidence_sha256,
-        settings.compute_workload_qvl_release_policy_hash,
     ):
         if not _SHA256.fullmatch(str(value or "")):
             raise TinkerProviderReleaseError("workload release pin is invalid")

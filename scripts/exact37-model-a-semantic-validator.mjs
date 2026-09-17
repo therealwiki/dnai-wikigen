@@ -263,7 +263,7 @@ function keyForFlag(flag) {
   return flag.slice(2).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
 }
 
-function normalizeExactModelAInputSet(value, inputFlags, label) {
+export function normalizeModelAStableInputSet(value, inputFlags, label) {
   const parsed = exact(
     value,
     ["artifactPaths", "byFlag", "byKey", "entries", "totalBytes"],
@@ -372,7 +372,7 @@ function normalizeExactModelAInputSet(value, inputFlags, label) {
 }
 
 export function normalizeExact37ModelAInputSet(value) {
-  return normalizeExactModelAInputSet(
+  return normalizeModelAStableInputSet(
     value,
     EXACT37_MODEL_A_INPUT_FLAGS,
     "exact-37 Model-A",
@@ -380,7 +380,7 @@ export function normalizeExact37ModelAInputSet(value) {
 }
 
 export function normalizeExact35ModelAPrebuildInputSet(value) {
-  return normalizeExactModelAInputSet(
+  return normalizeModelAStableInputSet(
     value,
     EXACT35_MODEL_A_INPUT_FLAGS,
     "exact-35 Model-A prebuild",
@@ -572,49 +572,41 @@ export function normalizeExact37FreshContractDescriptorAuthorityTuple({
  * lineage replayed, while their current chain, KMS, and restart claims remain
  * a downstream proof boundary.
  */
-async function validateExactModelAHistoricalAuthority({
-  inputs,
-  validationTimeMs,
-  reviewerStatusHistory,
-  frontendBuildReproduction,
-  authorityStage,
-  expectedCoreSchema,
+/**
+ * Shared recorded A/L/R/B and raw14 prefix. No C, D, injected verifier,
+ * current-quote refresh, or new mutation authority enters this boundary.
+ */
+export async function reconstructModelARecordedLaunchAuthority({
+  exactInputs, validationTimeMs, reviewerStatusHistory,
 } = {}) {
-  if (authorityStage !== "live" && authorityStage !== "prebuild") {
-    fail("Model-A authority stage must be live or prebuild");
-  }
-  const live = authorityStage === "live";
   if (!Number.isSafeInteger(validationTimeMs) || validationTimeMs < 1
-    || validationTimeMs > 4_102_444_800_000
-    || validationTimeMs % 1_000 !== 0) {
+    || validationTimeMs > 4_102_444_800_000 || validationTimeMs % 1_000 !== 0) {
     fail("Model-A validation requires an explicit bounded whole-second validationTimeMs");
   }
-  if (!Array.isArray(reviewerStatusHistory)
-    || reviewerStatusHistory.length !== 0) {
+  if (!Array.isArray(reviewerStatusHistory) || reviewerStatusHistory.length !== 0) {
     fail("Model-A exact-37 requires the explicit empty epoch-1 reviewer history");
   }
-  const reproduction = live
-    ? exact(
-      frontendBuildReproduction,
-      REQUIRED_REPRODUCTION_FIELDS,
-      "frontend D reproduction",
-    )
-    : null;
-  if (!live && frontendBuildReproduction !== undefined) {
-    fail("Model-A prebuild validation must not accept a post-D reproduction");
+  assertCanonicalPlainDataGraph(exactInputs, { label: "Model-A normalized input snapshot" });
+  exact(exactInputs, ["entries", "byKey"], "Model-A normalized input snapshot");
+  if (!Array.isArray(exactInputs.entries) || exactInputs.entries.length < 35
+    || exactInputs.entries.length > 39
+    || Object.keys(exactInputs.byKey).length !== exactInputs.entries.length) {
+    fail("Model-A normalized input snapshot is incomplete or unbounded");
   }
-  const exactInputs = live
-    ? normalizeExact37ModelAInputSet(inputs)
-    : normalizeExact35ModelAPrebuildInputSet(inputs);
+  for (const entry of exactInputs.entries) {
+    exact(entry, ["flag", "key", "filePath", "byteLength", "value", "rawSha256"],
+      "Model-A normalized input entry");
+    const text = JSON.stringify(entry.value, null, 2) + "\n";
+    if (typeof entry.flag !== "string" || entry.key !== keyForFlag(entry.flag)
+      || exactInputs.byKey[entry.key] !== entry
+      || Buffer.byteLength(text, "utf8") !== entry.byteLength
+      || rawSha256(Buffer.from(text, "utf8")) !== entry.rawSha256) {
+      fail("Model-A normalized input entry differs from its canonical source bytes");
+    }
+  }
   const input = Object.fromEntries(
     Object.entries(exactInputs.byKey).map(([key, entry]) => [key, entry.value]),
   );
-  const releaseCore = normalizeExactModelAFinalReleaseAuthorityCore(
-    input.releaseCore,
-    { expectedCoreSchema },
-  );
-  const coreSha256 = historicalFinalReleaseAuthorityCoreSha256(releaseCore);
-
   const intentValidation = validateDeploymentIntentCore(input.deploymentIntent);
   if (!intentValidation.ok) fail("deployment intent is not the exact valid v6 artifact");
   const intent = input.deploymentIntent;
@@ -929,6 +921,151 @@ async function validateExactModelAHistoricalAuthority({
     launchReceipt.machine_verifier_evidence_set_sha256,
     "raw14 historical machine evidence set",
   );
+
+  return Object.freeze({
+    intent,
+    intentSha256,
+    roleSeparation,
+    reviewerReconstruction,
+    genesis,
+    acceptance,
+    genesisSha256,
+    acceptanceSha256,
+    activeReviewerAuthority,
+    reviewerAuthority,
+    freshContractDescriptorTuple,
+    descriptors,
+    contract,
+    contractSha256,
+    bootstrapAuthority,
+    bootstrapAuthoritySha256,
+    bootstrapAuthorizationSha256: phalaNonLiveBootstrapSigningDigest(
+      input.bootstrapAuthorization, { bootstrapAuthority },
+    ),
+    runtimeAuthority,
+    runtimeAuthoritySha256,
+    executor,
+    executorSha256,
+    signedA,
+    signedAReceipt,
+    signedAReceiptSha256,
+    historicalRuntimeBinding,
+    launch,
+    launchReceipt,
+    launchSha256,
+    historicalTranscript,
+    transcriptSha256,
+    persistenceReceiptSha256,
+    stageOneSignedAtMs,
+    stageOneExpiresAtMs,
+    persistedRuntimeAuthority,
+    stageOneExpectedContext,
+    stageOne,
+    stageOneSha256,
+    sigstore,
+    sigstoreSha256,
+    descriptorSetSha256,
+    historicalReleaseVerificationAuthority,
+    historicalMachineReplay,
+    historicalMachineEvidence,
+  });
+}
+
+async function validateExactModelAHistoricalAuthority({
+  inputs,
+  validationTimeMs,
+  reviewerStatusHistory,
+  frontendBuildReproduction,
+  authorityStage,
+  expectedCoreSchema,
+} = {}) {
+  if (authorityStage !== "live" && authorityStage !== "prebuild") {
+    fail("Model-A authority stage must be live or prebuild");
+  }
+  const live = authorityStage === "live";
+  if (!Number.isSafeInteger(validationTimeMs) || validationTimeMs < 1
+    || validationTimeMs > 4_102_444_800_000
+    || validationTimeMs % 1_000 !== 0) {
+    fail("Model-A validation requires an explicit bounded whole-second validationTimeMs");
+  }
+  if (!Array.isArray(reviewerStatusHistory)
+    || reviewerStatusHistory.length !== 0) {
+    fail("Model-A exact-37 requires the explicit empty epoch-1 reviewer history");
+  }
+  const reproduction = live
+    ? exact(
+      frontendBuildReproduction,
+      REQUIRED_REPRODUCTION_FIELDS,
+      "frontend D reproduction",
+    )
+    : null;
+  if (!live && frontendBuildReproduction !== undefined) {
+    fail("Model-A prebuild validation must not accept a post-D reproduction");
+  }
+  const exactInputs = live
+    ? normalizeExact37ModelAInputSet(inputs)
+    : normalizeExact35ModelAPrebuildInputSet(inputs);
+  const input = Object.fromEntries(
+    Object.entries(exactInputs.byKey).map(([key, entry]) => [key, entry.value]),
+  );
+  const releaseCore = normalizeExactModelAFinalReleaseAuthorityCore(
+    input.releaseCore,
+    { expectedCoreSchema },
+  );
+  const coreSha256 = historicalFinalReleaseAuthorityCoreSha256(releaseCore);
+
+  const {
+    intent,
+    intentSha256,
+    roleSeparation,
+    reviewerReconstruction,
+    genesis,
+    acceptance,
+    genesisSha256,
+    acceptanceSha256,
+    activeReviewerAuthority,
+    reviewerAuthority,
+    freshContractDescriptorTuple,
+    descriptors,
+    contract,
+    contractSha256,
+    bootstrapAuthority,
+    bootstrapAuthoritySha256,
+    runtimeAuthority,
+    runtimeAuthoritySha256,
+    executor,
+    executorSha256,
+    signedA,
+    signedAReceipt,
+    signedAReceiptSha256,
+    historicalRuntimeBinding,
+    launch,
+    launchReceipt,
+    launchSha256,
+    historicalTranscript,
+    transcriptSha256,
+    persistenceReceiptSha256,
+    stageOneSignedAtMs,
+    stageOneExpiresAtMs,
+    persistedRuntimeAuthority,
+    stageOneExpectedContext,
+    stageOne,
+    stageOneSha256,
+    sigstore,
+    sigstoreSha256,
+    descriptorSetSha256,
+    historicalReleaseVerificationAuthority,
+    historicalMachineReplay,
+    historicalMachineEvidence,
+  } = await reconstructModelARecordedLaunchAuthority({
+    exactInputs, validationTimeMs, reviewerStatusHistory,
+  });
+  const stageOneOptions = {
+    expectedContext: stageOneExpectedContext,
+    reviewerAuthority,
+    expectedSignatureVerifier: PINNED_CAST_SIGNATURE_VERIFIER,
+    verifyReviewSignatures: verifyHistoricalReviewSignatures,
+  };
 
   const stageTwoSignedAtMs = Date.parse(input.liveActivationAuthority?.review?.signed_at);
   assertReviewerStatusActiveAt(

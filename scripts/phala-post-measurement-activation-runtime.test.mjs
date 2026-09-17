@@ -14,11 +14,159 @@ import {
   readPrivatePostMeasurementEncryptedUpdateCiphertext,
   registerPrivatePostMeasurementEncryptedUpdateObservation,
 } from "./phala-post-measurement-activation-receipt.mjs";
+import { PHALA_OS_IMAGE_CATALOG_ENTRY } from "./cvm-launch-intent-core.mjs";
+import { createSyntheticPhalaContractKmsProjection } from "./phala-contract-kms-test-fixture.mjs";
+import { projectProductionCvmPostureReadback } from "./phala-production-posture-core.mjs";
+import {
+  assertVerifiedProductionCvmPostureReceipt,
+  verifyProductionCvmPostureObservation,
+} from "./phala-production-posture-receipt.mjs";
 
 const RUNTIME_SOURCE = fs.readFileSync(
   new URL("./phala-post-measurement-activation-runtime.mjs", import.meta.url),
   "utf8",
 );
+
+test("current activation uses exactly nine SDK calls and binds fresh committed posture before key lookup", () => {
+  const start = RUNTIME_SOURCE.indexOf("export async function beginProductionPhalaPostMeasurementActivation");
+  const end = RUNTIME_SOURCE.indexOf("function readLocalPhalaPostMeasurementActivationSession", start);
+  const begin = RUNTIME_SOURCE.slice(start, end);
+  assert.deepEqual(
+    [...begin.matchAll(/adapter\.(getCurrentUser|getWorkspace|getCvmInfo|getAppEnvEncryptPubKey|updateCvmEnvs|restartCvm|getCvmAttestation)\(/g)]
+      .map((match) => match[1]),
+    ["getCurrentUser", "getWorkspace", "getCvmInfo", "getAppEnvEncryptPubKey",
+      "getAppEnvEncryptPubKey", "updateCvmEnvs", "restartCvm", "getCvmInfo", "getCvmAttestation"],
+  );
+  const billing = begin.indexOf('billing_status !== "active"');
+  const currentInfo = begin.indexOf("adapter.getCvmInfo(");
+  const binding = begin.indexOf("bindFreshPostMeasurementCommittedPosture(");
+  const keyLookup = begin.indexOf("adapter.getAppEnvEncryptPubKey(");
+  assert.ok(billing > begin.indexOf("adapter.getWorkspace(") && billing < currentInfo);
+  assert.ok(currentInfo < binding && binding < keyLookup);
+  assert.match(RUNTIME_SOURCE, /dnai\.phala-post-measurement-activation-session\.v3/);
+  assert.match(RUNTIME_SOURCE, /dnai\.phala-post-measurement-activation-completion-result\.v3/);
+});
+
+test("recipient completion compares authentication against ninth-call attestation, not seventh-call restart", () => {
+  const start = RUNTIME_SOURCE.indexOf("if (activation.authenticated_at");
+  const end = RUNTIME_SOURCE.indexOf("const computeVerifiedState", start);
+  assert.ok(start >= 0 && end > start);
+  const check = new Function("activation", "state", "arenaWorkerPresence",
+    RUNTIME_SOURCE.slice(start, end));
+  const restartSecond = 1_900_000_000;
+  const attestationSecond = restartSecond + 20;
+  const state = { sdk_observations: Array.from({ length: 9 }, (_, index) => ({
+    observed_at: new Date((index === 8 ? attestationSecond : restartSecond) * 1_000)
+      .toISOString(),
+  })) };
+  const arena = { verified_at: restartSecond };
+  assert.throws(() => check({ authenticated_at: restartSecond + 10,
+    verified_at: attestationSecond + 1 }, state, arena), /predates/);
+  assert.doesNotThrow(() => check({ authenticated_at: attestationSecond,
+    verified_at: attestationSecond + 1 }, state, arena));
+});
+
+function localCommittedPostureBindingHarness() {
+  // Local structural fixtures only: no account, live SDK, or TDX evidence.
+  // The production posture projector, validator, and receipt brand run intact.
+  const kms = createSyntheticPhalaContractKmsProjection();
+  const prepared = {
+    kms_contract_id: kms.contract.id,
+    kms_id: kms.replicas[0].id,
+    kms_url: kms.replicas[0].url,
+    node_id: 7,
+    teepod_id: 21,
+    device_id: "1".repeat(64),
+    gateway_app_id: `0x${"1".repeat(40)}`,
+  };
+  const expected = {
+    appId: "1".repeat(40), composeHash: "2".repeat(64),
+    instanceType: "tdx.large", diskSize: 40,
+    kmsProjection: kms, preparedBinding: prepared,
+    environmentPublicKey: "3".repeat(64),
+  };
+  const raw = {
+    id: "cvm-production-main", app_id: expected.appId, compose_hash: expected.composeHash,
+    kms_type: "phala",
+    kms_info: {
+      chain_id: null, dstack_kms_address: null, dstack_app_address: null, deployer_address: null,
+      rpc_endpoint: prepared.kms_url, encrypted_env_pubkey: expected.environmentPublicKey,
+    },
+    node_info: { id: prepared.node_id,
+      device_ids: [{ device_id: prepared.device_id, algorithm_version: "v3.0.0", enabled: true }] },
+    os: { os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash, is_dev: false },
+    resource: { instance_type: expected.instanceType, disk_in_gb: expected.diskSize },
+    listed: false, public_logs: false, public_sysinfo: false, public_tcbinfo: false,
+  };
+  const original = verifyProductionCvmPostureObservation({
+    domain: "main_runtime_cvm", cvmId: raw.id, cvmInfo: raw, expected,
+  });
+  const launch = Object.freeze({ local_fixture: "completed-launch" });
+  const adapter = Object.freeze({ local_fixture: "new-adapter" });
+  const observation = Object.freeze({ local_fixture: "new-sdk-readback" });
+  const bindings = [];
+  const dependencies = {
+    readPhalaProductionExecutorRuntimeDependencies(value) {
+      assert.equal(value, launch);
+      return { production_posture_receipts: [original] };
+    },
+    assertVerifiedProductionCvmPostureReceipt,
+    verifyProductionCvmPostureObservation,
+    projectProductionCvmPostureReadback,
+    observationResponse(value, passedAdapter, method) {
+      assert.equal(value, observation);
+      assert.equal(passedAdapter, adapter);
+      assert.equal(method, "getCvmInfo");
+      return raw;
+    },
+    bindPinnedPhalaCommittedEnvironmentKeyLookup(binding) {
+      assert.equal(binding.adapter, adapter);
+      assert.equal(binding.cvmInfoObservation, observation);
+      assertVerifiedProductionCvmPostureReceipt(binding.postureReceipt);
+      bindings.push(binding);
+    },
+  };
+  const start = RUNTIME_SOURCE.indexOf("function bindFreshPostMeasurementCommittedPosture");
+  const end = RUNTIME_SOURCE.indexOf("function assertPatchAccepted", start);
+  assert.ok(start >= 0 && end > start);
+  const bind = new Function(...Object.keys(dependencies),
+    `${RUNTIME_SOURCE.slice(start, end)}; return bindFreshPostMeasurementCommittedPosture;`)(
+    ...Object.values(dependencies),
+  );
+  return {
+    raw, original, bindings,
+    bind: () => bind({ launch, adapter, prePatchCvmInfo: observation,
+      plan: { target: { app_id: original.app_id, cvm_id: original.cvm_id, compose_hash: original.compose_hash } },
+      targetAuthority: { kms } }),
+  };
+}
+
+test("committed key lookup uses a freshly verified readback with the original prepared identity", () => {
+  const fixture = localCommittedPostureBindingHarness();
+  const fresh = fixture.bind();
+  assert.equal(fixture.bindings.length, 1);
+  assert.notEqual(fresh, fixture.original);
+  assert.deepEqual(fresh.prepared_binding, fixture.original.prepared_binding);
+  assert.equal(fresh.environment_public_key, fixture.original.environment_public_key);
+  assert.equal(fixture.bindings[0].postureReceipt, fresh);
+});
+
+test("pre-PATCH KMS, key, placement, privacy, and missing-ID drift cannot authorize key lookup", () => {
+  for (const mutate of [
+    (raw) => { delete raw.id; },
+    (raw) => { raw.kms_info.rpc_endpoint = "https://changed.example/"; },
+    (raw) => { raw.kms_info.encrypted_env_pubkey = "4".repeat(64); },
+    (raw) => { raw.node_info.id = 8; },
+    (raw) => { raw.node_info.device_ids[0].device_id = "2".repeat(64); },
+    (raw) => { raw.os.is_dev = true; },
+    (raw) => { raw.public_logs = true; },
+  ]) {
+    const fixture = localCommittedPostureBindingHarness();
+    mutate(fixture.raw);
+    assert.throws(() => fixture.bind());
+    assert.equal(fixture.bindings.length, 0);
+  }
+});
 
 test("post-measurement signed-B dependencies preserve the complete reviewer lineage", () => {
   const projectorStart = RUNTIME_SOURCE.indexOf(
@@ -504,6 +652,8 @@ test("every begin await, mutation, restart, and normal journal boundary is autho
     ["deferred public-environment authorization", "authorizePhalaDeferredPublicEnvironmentAuthority"],
     ["pinned Phala SDK adapter creation", "createPinnedPhalaProductionSdkAdapter"],
     ["authenticated Phala account observation", "adapter.getCurrentUser"],
+    ["authenticated active-billing Phala workspace observation", "adapter.getWorkspace"],
+    ["pre-PATCH committed CVM info observation", "adapter.getCvmInfo"],
     ["first environment-encryption key observation", "adapter.getAppEnvEncryptPubKey"],
     ["immediate environment-encryption key refetch", "adapter.getAppEnvEncryptPubKey"],
     ["environment-encryption key signature verification", "verifyImmediatePinnedLegacyEnvironmentKeyRefetch"],

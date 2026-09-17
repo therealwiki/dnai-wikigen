@@ -5,14 +5,21 @@ import {
   deepFreezeCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
 import {
+  CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
   PHALA_OS_IMAGE_CATALOG_ENTRY,
 } from "./cvm-launch-intent-core.mjs";
 import {
+  assertPhalaWorkspaceActiveBilling,
+  buildPhalaContractKmsProjection,
+  normalizePhalaContractKmsProjection,
+  normalizePhalaKmsContract,
+} from "./phala-contract-kms-core.mjs";
+import {
   assertFreshCvmDescriptorRuntimeMaterials,
   createFreshCvmDescriptorRuntimeAuthority,
   readFreshCvmDescriptorRuntimeMaterials,
-} from "./cvm-descriptor-runtime-authority-v2.mjs";
+} from "./cvm-descriptor-runtime-authority-v3.mjs";
 import {
   assertCryptographicallyVerifiedPhalaNonLiveBootstrapAuthorizationReceipt,
   phalaNonLiveBootstrapAuthorizationReceiptSha256,
@@ -57,6 +64,7 @@ import {
   verifyProductionCvmPostureObservation,
   productionCvmPostureVerificationReceiptSha256,
 } from "./phala-production-posture-receipt.mjs";
+import { projectProductionCvmPostureReadback } from "./phala-production-posture-core.mjs";
 import {
   acquirePhalaRecoveryJournalLock,
   classifyPhalaRecoveryRequirement,
@@ -75,6 +83,7 @@ import {
   phalaAuthenticatedAccountSubjectSha256,
   pinnedPhalaProductionSdkAdapterIdentitySha256,
   projectPinnedProvisionWireBody,
+  readAuthenticatedPhalaSdkObservationRawIdentityFields,
   readAuthenticatedPhalaSdkObservationResponse,
   resolvePinnedPhalaPackageIdentity,
   verifyImmediatePinnedLegacyEnvironmentKeyRefetch,
@@ -169,38 +178,29 @@ function exactObservationResponse(observation, adapter, method, domain = null) {
   });
 }
 
-function exactSelectedKms(value, label) {
-  if (!isRecord(value)) throw new Error(`${label} is not an object`);
-  return {
-    id: value.id,
-    slug: value.slug,
-    url: value.url,
-    version: value.version,
-    chain_id: value.chain_id,
-    kms_contract_address: value.kms_contract_address,
-    gateway_app_id: typeof value.gateway_app_id === "string"
-      ? value.gateway_app_id.replace(/^0x/, "").toLowerCase()
-      : value.gateway_app_id,
-  };
-}
-
-function sameKms(left, right) {
-  return canonical(exactSelectedKms(left, "observed KMS"))
-    === canonical(exactSelectedKms(right, "reviewed KMS"));
-}
-
 /**
- * Pure semantic check for the five authenticated read-only catalog responses.
+ * Pure semantic check for the seven authenticated read-only catalog responses.
  * It accepts no client, clock, credential, or origin input.
+ * Fresh capacity may vary, but cannot authorize a new root, replica, host,
+ * gateway, device or resource requirement outside the reviewed target.
  */
 export function validateAuthenticatedPhalaReadinessCatalog({
+  authenticatedSubject,
+  workspace,
   resources,
   osImages,
-  kmsList,
-  kmsInfo,
+  kmsContracts,
+  kmsContract,
+  kmsContractNodes,
   targetAuthority,
 } = {}) {
   const target = targetAuthority;
+  const billing = assertPhalaWorkspaceActiveBilling({ workspace, authenticatedSubject });
+  if (billing.workspace_id !== target?.workspace?.workspace_id
+    || phalaAuthenticatedAccountSubjectSha256(authenticatedSubject)
+      !== target.workspace.account_subject_sha256) {
+    throw new Error("fresh authenticated workspace differs from reviewed target authority");
+  }
   if (!isRecord(resources) || !Array.isArray(resources.instance_types)
     || resources.instance_types.length < 1
     || resources.instance_types.length > MAX_CATALOG_ITEMS
@@ -230,13 +230,6 @@ export function validateAuthenticatedPhalaReadinessCatalog({
     || resources.capacity.max_disk < totalDisk) {
     throw new Error("fresh authenticated Phala capacity is insufficient for exact seven launch");
   }
-  const matchingResourceKms = resources.kms_nodes.filter((entry) => (
-    String(entry?.id) === target.kms.id && sameKms(entry, target.kms)
-  ));
-  if (matchingResourceKms.length !== 1) {
-    throw new Error("resource graph does not contain exactly one reviewed Phala KMS");
-  }
-
   if (!isRecord(osImages) || !Array.isArray(osImages.items)
     || osImages.items.length > MAX_CATALOG_ITEMS) {
     throw new Error("authenticated OS image catalog is invalid or unbounded");
@@ -253,19 +246,61 @@ export function validateAuthenticatedPhalaReadinessCatalog({
     throw new Error("OS catalog does not contain exactly one reviewed production image");
   }
 
-  if (!isRecord(kmsList) || !Array.isArray(kmsList.items)
-    || kmsList.items.length > MAX_CATALOG_ITEMS) {
-    throw new Error("authenticated KMS catalog is invalid or unbounded");
+  if (!isRecord(kmsContracts) || !Array.isArray(kmsContracts.items)
+    || kmsContracts.items.length < 1 || kmsContracts.items.length > 100
+    || kmsContracts.page !== 1 || kmsContracts.page_size !== 100
+    || kmsContracts.pages !== 1 || kmsContracts.total !== kmsContracts.items.length
+    || kmsContracts.items.some((entry) => !isRecord(entry) || typeof entry.id !== "string")
+    || new Set(kmsContracts.items.map((entry) => entry.id)).size !== kmsContracts.items.length) {
+    throw new Error("authenticated KMS contract catalog is incomplete, ambiguous or unbounded");
   }
-  const kmsMatches = kmsList.items.filter((entry) => (
-    String(entry?.id) === target.kms.id && sameKms(entry, target.kms)
-  ));
-  if (kmsMatches.length !== 1 || !sameKms(kmsInfo, target.kms)) {
-    throw new Error("fresh KMS list and detail do not equal the reviewed KMS authority");
+  const centralContracts = kmsContracts.items.filter((entry) => entry.slug === "phala"
+    && entry.chain_id === 0 && entry.contract_address === "phala");
+  if (centralContracts.length !== 1
+    || canonical(normalizePhalaKmsContract(centralContracts[0]))
+      !== canonical(normalizePhalaKmsContract(kmsContract))) {
+    throw new Error("fresh KMS contract list and detail differ");
+  }
+  const resourceTargets = Object.fromEntries(PHALA_EXECUTION_ORDER.map((domain) => [
+    domain, {
+      ...target.resource_targets[domain],
+      gateway_required: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
+    },
+  ]));
+  const reviewedKms = normalizePhalaContractKmsProjection({
+    contract: target.kms.contract,
+    replicas: target.kms.replicas,
+    eligible_placements: target.kms.eligible_placements,
+    gateways: target.kms.gateways,
+  }, { osImage: target.os_image, resourceTargets });
+  const freshKms = buildPhalaContractKmsProjection({
+    contract: kmsContract,
+    contractNodes: kmsContractNodes,
+    resources,
+    osImage: target.os_image,
+    resourceTargets,
+  });
+  for (const field of ["contract", "replicas", "gateways"]) {
+    if (canonical(freshKms[field]) !== canonical(reviewedKms[field])) {
+      throw new Error(`fresh KMS ${field} differs from reviewed authority`);
+    }
+  }
+  for (const placement of freshKms.eligible_placements) {
+    const reviewed = reviewedKms.eligible_placements.find((entry) => (
+      entry.node_id === placement.node_id && entry.teepod_id === placement.teepod_id
+      && entry.kms_id === placement.kms_id
+    ));
+    if (!reviewed || ["kms_contract_id", "os_image_hash", "device_ids", "gateway_app_id"]
+      .some((field) => canonical(placement[field]) !== canonical(reviewed[field]))
+      || placement.target_requirements.some((requirement) => !reviewed.target_requirements
+        .some((entry) => canonical(entry) === canonical(requirement)))) {
+      throw new Error("fresh eligible placement is outside the reviewed KMS authority");
+    }
   }
   const projected = {
     workspace_id: target.workspace.workspace_id,
-    kms_id: target.kms.id,
+    billing_status: billing.billing_status,
+    kms: freshKms,
     os_image_hash: target.os_image.os_image_hash,
     capacity: {
       max_instances: resources.capacity.max_instances,
@@ -360,28 +395,6 @@ function exactInitialStateAuthority(state, initial) {
     }
   }
   return state;
-}
-
-function buildPostureProjection(raw, cvmId) {
-  return {
-    id: String(raw.id ?? cvmId),
-    app_id: raw.app_id,
-    compose_hash: raw.compose_hash,
-    kms_info: { id: raw.kms_info?.id },
-    kms_type: raw.kms_type,
-    os: {
-      os_image_hash: raw.os?.os_image_hash,
-      is_dev: raw.os?.is_dev,
-    },
-    resource: {
-      instance_type: raw.resource?.instance_type,
-      disk_in_gb: raw.resource?.disk_in_gb,
-    },
-    listed: raw.listed,
-    public_logs: raw.public_logs,
-    public_sysinfo: raw.public_sysinfo,
-    public_tcbinfo: raw.public_tcbinfo,
-  };
 }
 
 function markMutationAmbiguous({ state, domain, action, directory, lock }) {
@@ -496,17 +509,22 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
     });
 
     const account = await adapter.getCurrentUser();
+    const workspaceObservation = await adapter.getWorkspace();
     const resourcesObservation = await adapter.getCvmCreateResources();
+    const kmsContractsObservation = await adapter.listKmsContracts();
+    const kmsContractObservation = await adapter.getKmsContract();
+    const kmsContractNodesObservation = await adapter.listKmsContractNodes();
     const osImagesObservation = await adapter.getOsImages();
-    const kmsListObservation = await adapter.getKmsList();
-    const kmsInfoObservation = await adapter.getKmsInfo();
     const catalogProjection = validateAuthenticatedPhalaReadinessCatalog({
+      authenticatedSubject: exactObservationResponse(account, adapter, "getCurrentUser"),
+      workspace: exactObservationResponse(workspaceObservation, adapter, "getWorkspace"),
       resources: exactObservationResponse(
         resourcesObservation, adapter, "getCvmCreateResources",
       ),
       osImages: exactObservationResponse(osImagesObservation, adapter, "getOsImages"),
-      kmsList: exactObservationResponse(kmsListObservation, adapter, "getKmsList"),
-      kmsInfo: exactObservationResponse(kmsInfoObservation, adapter, "getKmsInfo"),
+      kmsContracts: exactObservationResponse(kmsContractsObservation, adapter, "listKmsContracts"),
+      kmsContract: exactObservationResponse(kmsContractObservation, adapter, "getKmsContract"),
+      kmsContractNodes: exactObservationResponse(kmsContractNodesObservation, adapter, "listKmsContractNodes"),
       targetAuthority: target,
     });
 
@@ -564,7 +582,7 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
         activeEnvironmentKeys: materialByDomain.get(domain).allowed_environment_keys,
         appId: reservation.app_id,
         nonce: reservation.nonce,
-        kmsId: target.kms.id,
+        kmsContractId: target.kms.contract.id,
       });
       const requestSha256 = phalaAuthenticatedSdkRequestSemanticsSha256({
         httpMethod: "POST",
@@ -587,25 +605,20 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
         }
         const raw = exactObservationResponse(observation, adapter, "provisionCvm", domain);
         const prepared = assertPreparedCvmObservation({
-          response: {
-            app_id: raw.app_id,
-            compose_hash: raw.compose_hash,
-            kms_id: raw.kms_id ?? raw.kms_info?.id,
-            instance_type: raw.instance_type,
-            os_image_hash: raw.os_image_hash,
-            node_id: raw.node_id,
-            device_id: raw.device_id,
-            app_env_encrypt_pubkey: raw.app_env_encrypt_pubkey,
-          },
+          response: raw,
+          rawPlacement: readAuthenticatedPhalaSdkObservationRawIdentityFields(observation, {
+            adapter, method: "provisionCvm", domain,
+          }),
+          domain,
           appId: reservation.app_id,
           expectedComposeHash: materialByDomain.get(domain).app_compose_hash,
-          expectedKmsId: target.kms.id,
+          expectedKmsProjection: catalogProjection.kms,
           expectedInstanceType: target.resource_targets[domain].instance_type,
           expectedOsImageHash: target.os_image.os_image_hash,
         });
         await assertPinnedDstackComposeHash({
           identity: pinnedDstackIdentity,
-          appCompose,
+          appCompose: projectPinnedProvisionWireBody(request).compose_file,
           observedComposeHash: prepared.compose_hash,
         });
         preparedByDomain.set(domain, prepared);
@@ -768,7 +781,7 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
       const metadata = buildExactCommitMetadata({
         appId: reservation.app_id,
         composeHash: preparedByDomain.get(domain).compose_hash,
-        kmsId: target.kms.id,
+        kmsContractId: target.kms.contract.id,
         environmentKeys: entries.map(({ key }) => key),
       });
       const request = { ...metadata, encrypted_env: encryptedEnvironment };
@@ -835,11 +848,15 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
       const posture = verifyProductionCvmPostureObservation({
         domain,
         cvmId: committed.cvm_id,
-        cvmInfo: buildPostureProjection(raw, committed.cvm_id),
+        cvmInfo: projectProductionCvmPostureReadback(raw, committed.cvm_id),
         expected: {
           appId: reservations[index].app_id,
           composeHash: preparedByDomain.get(domain).compose_hash,
-          kmsId: target.kms.id,
+          kmsProjection: catalogProjection.kms,
+          preparedBinding: Object.fromEntries([
+            "kms_contract_id", "kms_id", "kms_url", "node_id", "teepod_id", "device_id", "gateway_app_id",
+          ].map((key) => [key, preparedByDomain.get(domain)[key]])),
+          environmentPublicKey: firstKeyBindings[index].public_key,
           instanceType: target.resource_targets[domain].instance_type,
           diskSize: target.resource_targets[domain].disk_size,
         },
@@ -886,10 +903,12 @@ export async function executePhalaSevenCvmProductionLaunch(input = {}) {
     const replayObservations = {
       globals: {
         getCurrentUser: account,
+        getWorkspace: workspaceObservation,
         getCvmCreateResources: resourcesObservation,
+        listKmsContracts: kmsContractsObservation,
+        getKmsContract: kmsContractObservation,
+        listKmsContractNodes: kmsContractNodesObservation,
         getOsImages: osImagesObservation,
-        getKmsList: kmsListObservation,
-        getKmsInfo: kmsInfoObservation,
         nextAppIds: reservationObservation,
       },
       provisions: provisionObservations,
@@ -1132,6 +1151,9 @@ function assertCompletedLaunchContinuationRuntimeDependencies(
       || current.cvm_id !== posture.cvm_id
       || current.compose_hash !== posture.compose_hash
       || current.kms_id !== posture.kms_id
+      || canonical(current.prepared_binding) !== canonical(posture.prepared_binding)
+      || current.environment_public_key !== posture.environment_public_key
+      || current.environment_public_key !== binding.public_key
       || current.instance_type !== posture.instance_type
       || current.disk_size !== posture.disk_size
       || current.os_image_hash !== posture.os_image_hash

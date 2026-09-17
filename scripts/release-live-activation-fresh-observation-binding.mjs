@@ -80,6 +80,8 @@ export function assertLiveActivationComputeWorkloadObservationBinding({
     || post.frontend_build_sha256 !== buildReceipt.frontend_build_sha256
     || buildReceipt.compute_workload_activation_observation_sha256
       !== observationSha256
+    || buildReceipt.post_measurement_activation_execution_receipt_sha256
+      !== activationExecutionReceiptSha256
     || buildReceipt.release_env_sha256 !== releaseEnvSha256
     || buildReceipt.release_sha !== authority.release_sha
     || buildReceipt.ceremony_authorization_sha256

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import {
+  CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS,
+  CURRENT_MODEL_A_LIVE_INPUT_FLAGS,
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+} from "../../scripts/current-model-a-input-recipe-core.mjs";
 
 import {
   CLOUDFLARE_D_BUILD_CONTROL_PATHS,
@@ -71,6 +76,8 @@ const BINDING = Object.freeze({
   ceremonyAuthorizationSha256: LINEAGE.ceremony_authorization_sha256,
   runtimeAuthorityDependencySha256:
     LINEAGE.runtime_authority_dependency_sha256,
+  postMeasurementActivationExecutionReceiptSha256:
+    LINEAGE.post_measurement_activation_execution_receipt_sha256,
   computeWorkloadActivationObservationSha256:
     LINEAGE.compute_workload_activation_observation_sha256,
   frontendBuildSha256: pin(200),
@@ -177,7 +184,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   const value = manifest();
   assert.equal(value.schema, FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA);
   assert.equal(value.truth_status, FRONTEND_BUILD_INPUT_MANIFEST_TRUTH_STATUS);
-  assert.equal(value.pre_D_private_inputs.length, 36);
+  assert.equal(value.pre_D_private_inputs.length, 37);
   assert.deepEqual(
     value.pre_D_private_inputs.map(({ flag }) => flag),
     FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
@@ -219,7 +226,7 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
   // producer/validator recipe drift.
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:9f6be203dd5de9e47f1d255a33ecb83bcef5319d97dcdf3a4896935a7ba6036b",
+    "sha256:14b928fd0b8954081b093c61ab54a40f0ee90a05e9a97e0855fce983496c3bef",
   );
 });
 
@@ -231,6 +238,7 @@ test("D receipt is hash-only, nonauthorizing, and independently reprojectable", 
     "compute_workload_activation_observation_sha256",
     "deployment_intent_sha256",
     "frontend_build_sha256",
+    "post_measurement_activation_execution_receipt_sha256",
     "raw_secret_egress",
     "release_env_sha256",
     "release_inputs_sha256",
@@ -255,6 +263,8 @@ test("D receipt is hash-only, nonauthorizing, and independently reprojectable", 
     manifest().royalty_release_history.history_sha256);
   assert.equal(value.royalty_release_history_receipt_sha256,
     manifest().royalty_release_history.receipt_sha256);
+  assert.equal(value.post_measurement_activation_execution_receipt_sha256,
+    LINEAGE.post_measurement_activation_execution_receipt_sha256);
   assert.match(frontendBuildCandidateReceiptSha256(value), /^sha256:[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(value).includes("VITE_"), false);
   assert.equal(JSON.stringify(value).includes("/Users/"), false);
@@ -265,6 +275,87 @@ test("D receipt is hash-only, nonauthorizing, and independently reprojectable", 
     inputManifest: manifest(),
     authorityBinding: BINDING,
   }), value);
+});
+
+test("current recipe is one frozen pre-D37/live39 definition with C and D excluded before build", () => {
+  assert.equal(FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
+    CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS);
+  assert.equal(FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS,
+    CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS);
+  assert.equal(Object.isFrozen(CURRENT_MODEL_A_LIVE_INPUT_FLAGS), true);
+  assert.equal(Object.isFrozen(CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS), true);
+  assert.equal(CURRENT_MODEL_A_LIVE_INPUT_FLAGS.length, 39);
+  assert.equal(CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS.length, 37);
+  assert.equal(new Set(CURRENT_MODEL_A_LIVE_INPUT_FLAGS).size, 39);
+  assert.deepEqual(CURRENT_MODEL_A_LIVE_INPUT_FLAGS.slice(-6), [
+    "--email-oracle-evidence",
+    "--live-activation-authority",
+    "--royalty-release-history-receipt",
+    "--post-measurement-activation-execution-receipt",
+    "--compute-workload-activation-observation",
+    "--frontend-build-candidate-receipt",
+  ]);
+  assert.deepEqual(CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+    CURRENT_MODEL_A_LIVE_INPUT_FLAGS.filter(
+      (flag) => !CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS.includes(flag),
+    ));
+});
+
+test("standalone activation receipt raw bytes and semantic digest are committed independently before C", () => {
+  const flag = "--post-measurement-activation-execution-receipt";
+  const makeManifest = (bytes) => {
+    const value = manifest();
+    const entry = value.pre_D_private_inputs.find((input) => input.flag === flag);
+    entry.sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    assert.equal(entry.projection, FRONTEND_BUILD_RAW_INPUT_PROJECTION);
+    assert.notEqual(entry.sha256,
+      value.semantic_lineage.post_measurement_activation_execution_receipt_sha256);
+    return value;
+  };
+  const canonicalBytes = Buffer.from('{"synthetic_activation_receipt":true}\n');
+  const substitutedBytes = Buffer.from('{ "synthetic_activation_receipt": true }\n');
+  const firstManifest = makeManifest(canonicalBytes);
+  const secondManifest = makeManifest(substitutedBytes);
+  const makeReceipt = (inputManifest) => createFrontendBuildCandidateReceipt({
+    releaseSha: RELEASE_SHA,
+    serializedEnv: SERIALIZED_ENV,
+    ...BINDING,
+    inputManifest,
+  });
+  const firstReceipt = makeReceipt(firstManifest);
+  const secondReceipt = makeReceipt(secondManifest);
+  assert.notEqual(frontendBuildInputManifestSha256(firstManifest),
+    frontendBuildInputManifestSha256(secondManifest));
+  assert.notEqual(frontendBuildCandidateReceiptSha256(firstReceipt),
+    frontendBuildCandidateReceiptSha256(secondReceipt));
+  assert.throws(() => assertFrontendBuildCandidateLineage({
+    receipt: firstReceipt,
+    serializedEnv: SERIALIZED_ENV,
+    inputManifest: secondManifest,
+    authorityBinding: BINDING,
+  }), /independently reprojected lineage/);
+  const missing = structuredClone(firstManifest);
+  missing.pre_D_private_inputs = missing.pre_D_private_inputs.filter(
+    (input) => input.flag !== flag,
+  );
+  assert.throws(() => normalizeFrontendBuildInputManifest(missing), /exact acyclic/);
+  assert.equal(firstManifest.pre_D_private_inputs.some(
+    (input) => CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS.includes(input.flag),
+  ), false);
+});
+
+test("v3 D receipts and input manifests cannot be relabeled as the current v4 recipe", () => {
+  const oldReceipt = { ...receipt(), schema: "dnai.frontend-build-candidate.v3" };
+  assert.throws(() => normalizeFrontendBuildCandidateReceipt(oldReceipt), /truth label/);
+  delete oldReceipt.post_measurement_activation_execution_receipt_sha256;
+  assert.throws(() => normalizeFrontendBuildCandidateReceipt(oldReceipt), /exact schema/);
+  const oldManifest = { ...manifest(), schema: "dnai.frontend-build-candidate-input-manifest.v3" };
+  assert.throws(() => normalizeFrontendBuildInputManifest(oldManifest), /acyclic truth boundary/);
+  oldManifest.schema = FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA;
+  oldManifest.pre_D_private_inputs = oldManifest.pre_D_private_inputs.filter(
+    ({ flag }) => flag !== "--post-measurement-activation-execution-receipt",
+  );
+  assert.throws(() => normalizeFrontendBuildInputManifest(oldManifest), /exact acyclic/);
 });
 
 test("D manifest rejects omission, substitution, reordering, extras, and cyclic inputs", () => {
@@ -455,12 +546,13 @@ test("every exact private input, build control, external file, and lineage pin c
   }
 });
 
-test("D enforces transitive L-R-B-O/env roots and rejects candidate-lineage drift", () => {
+test("D enforces transitive L-R-B-activation-O/env roots and rejects candidate-lineage drift", () => {
   for (const [bindingKey, lineageKey] of [
     ["deploymentIntentSha256", "deployment_intent_sha256"],
     ["reviewerAuthorityGenesisAcceptanceSha256", "reviewer_authority_genesis_acceptance_sha256"],
     ["ceremonyAuthorizationSha256", "ceremony_authorization_sha256"],
     ["runtimeAuthorityDependencySha256", "runtime_authority_dependency_sha256"],
+    ["postMeasurementActivationExecutionReceiptSha256", "post_measurement_activation_execution_receipt_sha256"],
     ["computeWorkloadActivationObservationSha256", "compute_workload_activation_observation_sha256"],
   ]) {
     assert.throws(() => createFrontendBuildCandidateReceipt({

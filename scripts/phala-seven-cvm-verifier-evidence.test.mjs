@@ -89,12 +89,70 @@ import {
   SYNTHETIC_PHALA_SEVEN_CVM_VERIFIER_EVIDENCE_TRUTH,
   syntheticPhalaSevenCvmVerifierEvidenceFixture,
 } from "./phala-seven-cvm-verifier-evidence.fixture.mjs";
+import {
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as currentV5Fixture,
+} from "./current-cvm-authority-v5.fixture.mjs";
+import {
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as historicalV4Fixture,
+} from "./current-cvm-authority-v4.fixture.mjs";
+import { createSyntheticPhalaContractKmsProjection } from "./phala-contract-kms-test-fixture.mjs";
 
 let fixturePromise;
 function fixture() {
   fixturePromise ||= syntheticPhalaSevenCvmVerifierEvidenceFixture();
   return fixturePromise;
 }
+
+test("current release v5 and historical v4 retain exact distinct non-branding routes", () => {
+  const current = currentV5Fixture();
+  const historical = historicalV4Fixture();
+  assert.equal(current.schema, "dnai.phala-seven-cvm-release-verification-authority.v5");
+  assert.equal(current.cvm_descriptor_runtime_authority.schema, "dnai.cvm-descriptor-runtime-authority.v3");
+  assert.equal(historical.schema, "dnai.phala-seven-cvm-release-verification-authority.v4");
+  for (const candidate of [current, historical]) {
+    assert.deepEqual(productionVerifier.normalizePhalaSevenCvmReleaseVerificationAuthority(candidate), candidate);
+    assert.throws(() => productionVerifier.assertBrandedPhalaSevenCvmReleaseVerificationAuthority(candidate), /not reconstructed/);
+  }
+  assert.notEqual(phalaSevenCvmReleaseVerificationAuthoritySha256(current), phalaSevenCvmReleaseVerificationAuthoritySha256(historical));
+});
+
+test("historical posture v2 retains exact prepared binding and environment key without rewriting v1", () => {
+  const projection = createSyntheticPhalaContractKmsProjection();
+  const legacy = {
+    domain: "main_runtime_cvm", app_id: "1".repeat(40), cvm_id: "cvm-production-main",
+    compose_hash: "2".repeat(64), kms_id: "kms-production-1",
+    instance_type: "tdx.large", disk_size: 40,
+  };
+  const current = {
+    ...legacy,
+    kms_id: projection.replicas[0].id,
+    prepared_binding: {
+      kms_contract_id: projection.contract.id, kms_id: projection.replicas[0].id,
+      kms_url: projection.replicas[0].url, node_id: 7, teepod_id: 21,
+      device_id: "1".repeat(64), gateway_app_id: `0x${"1".repeat(40)}`,
+    },
+    environment_public_key: "3".repeat(64),
+  };
+  const normalize = productionVerifier.normalizePhalaHistoricalPostureExpectedAuthority;
+  assert.deepEqual(normalize(legacy, legacy.domain), legacy);
+  assert.deepEqual(normalize(current, current.domain), current);
+  for (const mutate of [
+    (value) => { delete value.prepared_binding; },
+    (value) => { delete value.environment_public_key; },
+    (value) => { value.prepared_binding.kms_id = "kms-substitution"; },
+    (value) => { value.environment_public_key = "0".repeat(64); },
+    (value) => { value.extra = true; },
+  ]) {
+    const changed = structuredClone(current);
+    mutate(changed);
+    assert.throws(() => normalize(changed, legacy.domain));
+  }
+  let reads = 0;
+  const accessor = structuredClone(current);
+  Object.defineProperty(accessor, "prepared_binding", { enumerable: true, get() { reads += 1; return current.prepared_binding; } });
+  assert.throws(() => normalize(accessor, legacy.domain));
+  assert.equal(reads, 0);
+});
 
 const historicalTestSha = (seed) =>
   `sha256:${seed.toString(16).padStart(64, "0")}`;
@@ -1161,7 +1219,7 @@ test("compute-workload recipient activation is separately branded and excluded f
   );
   assert.match(phalaComputeWorkloadRecipientActivationVerificationSha256(proof),
     /^sha256:[0-9a-f]{64}$/);
-  assert.equal(proof.source_activation.schema, "dnai.compute.workload-recipient-activation.v3");
+  assert.equal(proof.source_activation.schema, "dnai.compute.workload-recipient-activation.v4");
   assert.equal(
     proof.recipient_evidence_lease_expires_at,
     proof.source_activation.recipient_evidence_lease_expires_at,
@@ -1248,6 +1306,7 @@ test("compute-workload activation rejects signer, QVL, recipient, vault, roots, 
     });
   const mutations = [
     (activation) => { activation.schema = "dnai.compute.workload-recipient-activation.v2"; },
+    (activation) => { activation.schema = "dnai.compute.workload-recipient-activation.v3"; },
     (activation) => { activation.recipient_evidence_lease_expires_at -= 1; },
     (activation) => {
       activation.authenticated_verdict.activation_evidence_lease_expires_at -= 1;

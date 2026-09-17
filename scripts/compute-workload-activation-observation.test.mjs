@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import test from "node:test";
 
@@ -22,13 +23,15 @@ import {
   phalaArenaWorkerPresenceActivationProofSha256,
   phalaCombinedArenaComputeActivationVerificationSha256,
   phalaPostMeasurementActivationExecutionReceiptSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   assertActivationExecutionReceiptMatchesComputeWorkloadObservation,
 } from "./release-authority-stages.mjs";
 import {
   COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_REPLAY_SCHEMA,
   COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_REPLAY_TRUTH,
+  COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA,
+  COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_TRUTH,
   COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_CLI_FLAG,
   COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_DOMAIN,
   COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_SCHEMA,
@@ -37,6 +40,7 @@ import {
   COMPUTE_WORKLOAD_BROWSER_ENV_KEYS,
   __test,
   assertHistoricallyVerifiedComputeWorkloadActivationObservation,
+  assertPrebuildVerifiedComputeWorkloadActivationObservation,
   assertPersistedComputeWorkloadActivationObservation,
   assertVerifiedComputeWorkloadActivationObservation,
   canonicalComputeWorkloadActivationObservationText,
@@ -45,10 +49,13 @@ import {
   createComputeWorkloadActivationObservation,
   normalizeComputeWorkloadActivationObservation,
   normalizeComputeWorkloadActivationObservationHistoricalReplay,
+  normalizeComputeWorkloadActivationObservationPrebuildReplay,
   normalizeComputeWorkloadBrowserBinding,
   projectComputeWorkloadBrowserBindingFromHistoricalObservation,
+  projectComputeWorkloadBrowserBindingFromPrebuildObservation,
   projectComputeWorkloadBrowserBindingFromObservation,
   projectComputeWorkloadBrowserEnvFromHistoricalObservation,
+  projectComputeWorkloadBrowserEnvFromPrebuildObservation,
   projectComputeWorkloadBrowserEnvFromObservation,
 } from "./compute-workload-activation-observation.mjs";
 import {
@@ -159,7 +166,7 @@ function activationExecutionReceiptForObservation(observation) {
     mutation_sequence: [...PHALA_POST_MEASUREMENT_ACTIVATION_MUTATION_SEQUENCE],
     patch: {
       sdk_action: "updateCvmEnvs",
-      call_sequence: 4,
+      call_sequence: 6,
       request_semantics_sha256: pin("db"),
       observation_sha256: pin("dc"),
       response_sha256: pin("dd"),
@@ -176,7 +183,7 @@ function activationExecutionReceiptForObservation(observation) {
     },
     restart: {
       sdk_action: "restartCvm",
-      call_sequence: 5,
+      call_sequence: 7,
       request_semantics_sha256: pin("df"),
       observation_sha256: pin("e0"),
       response_sha256: pin("e1"),
@@ -190,11 +197,11 @@ function activationExecutionReceiptForObservation(observation) {
       },
     },
     post_restart_evidence: {
-      get_cvm_info_call_sequence: 6,
+      get_cvm_info_call_sequence: 8,
       get_cvm_info_observation_sha256: pin("e3"),
       get_cvm_info_response_sha256: pin("e4"),
       get_cvm_info_observed_at: instant(authenticatedAt - 1),
-      get_cvm_attestation_call_sequence: 7,
+      get_cvm_attestation_call_sequence: 9,
       get_cvm_attestation_observation_sha256: pin("e5"),
       get_cvm_attestation_response_sha256: pin("e6"),
       get_cvm_attestation_observed_at: instant(authenticatedAt - 1),
@@ -323,6 +330,213 @@ function historicalExpectations(observation) {
       observation.terminal_evidence_lease_expires_at,
   };
 }
+
+// New prebuild tests obtain authority only from the independently constructed
+// release/activation fixtures and separate producer binding, never from O.
+function independentPrebuildExpectations(fixture) {
+  const release = fixture.releaseAuthority;
+  const activation = fixture.computeWorkloadActivationEvidence;
+  const binding = authorityBinding(fixture);
+  const main = release.descriptors.find((entry) => entry.domain === "main_runtime_cvm");
+  const qvl = release.descriptors.find((entry) => entry.domain === "compute_workload_qvl_cvm");
+  return {
+    ceremonyAuthorizationSha256: binding.ceremony_authorization_sha256,
+    ceremonyNonce: release.ceremony_nonce,
+    computeVaultAddress: activation.compute_vault_address,
+    computeVaultRuntimeCodeHash: activation.compute_vault_runtime_code_hash,
+    computeWorkloadQvlAppId: qvl.app_id,
+    computeWorkloadQvlComposeHash: qvl.compose_hash,
+    computeWorkloadQvlCvmId: qvl.cvm_id,
+    computeWorkloadQvlIdentityEvidenceSha256: activation.qvl_identity_evidence_sha256,
+    computeWorkloadQvlMeasurementPolicySha256: activation.measurement_policy_sha256,
+    computeWorkloadQvlOsImageHash: qvl.os_image_hash,
+    computeWorkloadQvlReleasePolicySha256: activation.qvl_release_policy_sha256,
+    computeWorkloadQvlVerifierAddress: activation.qvl_verdict_verifier_address,
+    deploymentIntentSha256: release.deployment_intent_sha256,
+    freshContractDeploymentReceiptSha256: release.contracts.fresh_contract_deployment_receipt_sha256,
+    historicalTranscriptFileSetSha256: binding.historical_transcript_file_set_sha256,
+    mainRuntimeAppId: main.app_id,
+    mainRuntimeComposeHash: main.compose_hash,
+    mainRuntimeCvmId: main.cvm_id,
+    mainRuntimeDescriptorSha256: activation.descriptor_sha256,
+    mainRuntimeEvidenceSha256: activation.main_runtime_evidence_sha256,
+    mainRuntimeOsImageHash: main.os_image_hash,
+    mainRuntimePostureReceiptSha256: activation.posture_receipt_sha256,
+    mainRuntimeTeeIdentity: activation.main_runtime_signer_address,
+    nonliveBootstrapAuthorizationReceiptSha256: release.bootstrap_authorization_receipt_sha256,
+    postMeasurementActivationExecutionReceiptSha256: binding.post_measurement_activation_execution_receipt_sha256,
+    postMeasurementActivationPlanSha256: binding.post_measurement_activation_plan_sha256,
+    preCeremonyRuntimeAuthoritySha256: binding.pre_ceremony_runtime_authority_sha256,
+    qvlMeasurementPolicySetSha256: release.qvl_measurement_policy_set_sha256,
+    releaseSha: release.release_sha,
+    releaseVerificationAuthoritySha256: activation.release_authority_sha256,
+    sevenCvmLaunchCompletionReceiptSha256: binding.seven_cvm_launch_completion_receipt_sha256,
+    sevenCvmVerifiedEvidenceSetSha256: binding.seven_cvm_verified_evidence_set_sha256,
+    initialActivationEvidenceLeaseExpiresAt: binding.initial_activation_evidence_lease_expires_at,
+    recipientEvidenceLeaseExpiresAt: binding.recipient_evidence_lease_expires_at,
+    terminalEvidenceLeaseExpiresAt: binding.terminal_evidence_lease_expires_at,
+  };
+}
+
+async function prebuildFixture() {
+  const { fixture, observation } = await fixtureAndObservation();
+  return {
+    persistedObservation: structuredClone(observation),
+    expected: independentPrebuildExpectations(fixture),
+    completedAtMs: fixture.now * 1_000,
+  };
+}
+
+test("O artifact and signed-C historical replay preserve their prebuild migration byte vectors", async () => {
+  const { fixture, observation } = await fixtureAndObservation();
+  const replay = assertHistoricallyVerifiedComputeWorkloadActivationObservation({
+    persistedObservation: structuredClone(observation),
+    expected: historicalExpectations(observation),
+    authorizedAtMs: fixture.now * 1_000,
+  });
+  const sorted = (value) => Array.isArray(value) ? value.map(sorted)
+    : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort()
+      .map((key) => [key, sorted(value[key])])) : value;
+  const canonicalReplay = `${JSON.stringify(sorted(replay), null, 2)}\n`;
+  assert.equal(computeWorkloadActivationObservationSha256(observation),
+    "sha256:789edae3d807acc9be0a1f9ddd0228a500d2f7e86382fb475faa55e4dad1c2ce");
+  assert.equal(`sha256:${createHash("sha256").update(canonicalReplay).digest("hex")}`,
+    "sha256:187269931b50586ab3ba710cbf7c1b93ba3f333dc751bfc26c296c82b882d6c8");
+  assert.equal(replay.expected_authority_sha256,
+    "sha256:98c094628b96e485c5c494501831d73234a7e3899df0a1f8f21caca5e7626d3c");
+});
+
+test("prebuild O replays independent lineage at completion without C, a current clock, or a fresh brand", async (t) => {
+  const input = await prebuildFixture();
+  const before = canonicalComputeWorkloadActivationObservationText(input.persistedObservation);
+  t.mock.method(Date, "now", () => { throw new Error("current clock is forbidden in recorded replay"); });
+  const replay = assertPrebuildVerifiedComputeWorkloadActivationObservation(input);
+  assert.equal(replay.schema, COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA);
+  assert.equal(replay.truth_status, COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_TRUTH);
+  assert.equal(replay.completed_at, input.completedAtMs / 1_000);
+  assert.equal(Object.hasOwn(replay, "authorized_at"), false);
+  assert.equal(replay.signed_c_authorization_verified, false);
+  for (const field of ["current_clock_consulted", "freshness_renewed", "production_brand_minted",
+    "deploy_authorized", "live_traffic_authorized", "original_pinned_cast_verifier_reexecuted"]) {
+    assert.equal(replay[field], false);
+  }
+  assert.equal(replay.independent_signature_replay_performed, true);
+  assert.equal(replay.signature_message_mode, "eip191_personal_sign_raw_bytes32");
+  assert.equal(canonicalComputeWorkloadActivationObservationText(replay.observation), before);
+  assert.equal(replay.observation_sha256, computeWorkloadActivationObservationSha256(input.persistedObservation));
+  assert.deepEqual(replay.expected_authority, input.expected);
+  assert.deepEqual(normalizeComputeWorkloadActivationObservationPrebuildReplay(structuredClone(replay)), replay);
+  assert.equal(Object.isFrozen(replay), true);
+  assert.equal(Object.isFrozen(replay.expected_authority), true);
+  assert.equal(Object.isFrozen(replay.observation.source_activation.authenticated_verdict), true);
+  assert.throws(() => assertVerifiedComputeWorkloadActivationObservation(replay.observation,
+    { checkedAt: input.completedAtMs / 1_000 }), /not reconstructed from branded production evidence/);
+});
+
+test("prebuild and signed-C O replay contexts reject each other and preserve identical browser values", async () => {
+  const input = await prebuildFixture();
+  const prebuild = assertPrebuildVerifiedComputeWorkloadActivationObservation(input);
+  const historical = assertHistoricallyVerifiedComputeWorkloadActivationObservation({
+    persistedObservation: input.persistedObservation, expected: input.expected,
+    authorizedAtMs: input.completedAtMs,
+  });
+  assert.notEqual(prebuild.expected_authority_sha256, historical.expected_authority_sha256);
+  assert.deepEqual(projectComputeWorkloadBrowserBindingFromPrebuildObservation(prebuild),
+    projectComputeWorkloadBrowserBindingFromHistoricalObservation(historical));
+  assert.deepEqual(projectComputeWorkloadBrowserEnvFromPrebuildObservation(structuredClone(prebuild)),
+    projectComputeWorkloadBrowserEnvFromHistoricalObservation(historical));
+  assert.deepEqual(Object.keys(projectComputeWorkloadBrowserEnvFromPrebuildObservation(prebuild)).sort(),
+    [...COMPUTE_WORKLOAD_BROWSER_ENV_KEYS].sort());
+  for (const value of [historical, input.persistedObservation]) {
+    assert.throws(() => projectComputeWorkloadBrowserBindingFromPrebuildObservation(value));
+    assert.throws(() => projectComputeWorkloadBrowserEnvFromPrebuildObservation(value));
+  }
+  assert.throws(() => projectComputeWorkloadBrowserBindingFromHistoricalObservation(prebuild));
+  assert.throws(() => projectComputeWorkloadBrowserEnvFromHistoricalObservation(prebuild));
+  const relabeled = structuredClone(prebuild);
+  relabeled.schema = historical.schema;
+  relabeled.truth_status = historical.truth_status;
+  relabeled.authorized_at = relabeled.completed_at;
+  delete relabeled.completed_at;
+  delete relabeled.signed_c_authorization_verified;
+  assert.throws(() => projectComputeWorkloadBrowserBindingFromHistoricalObservation(relabeled),
+    /differs from reconstruction/);
+});
+
+test("prebuild O requires every independent expectation and never fills it from the observation", async () => {
+  const input = await prebuildFixture();
+  for (const field of Object.keys(input.expected)) {
+    const omitted = structuredClone(input);
+    delete omitted.expected[field];
+    assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation(omitted), field);
+    const drifted = structuredClone(input);
+    const previous = drifted.expected[field];
+    drifted.expected[field] = typeof previous === "number" ? previous + 1
+      : previous.startsWith("sha256:") ? pin("ff")
+        : previous.startsWith("0x") ? `0x${"f".repeat(previous.length - 2)}`
+          : previous.startsWith("cvm-") ? "cvm-substituted-independent-root"
+            : "f".repeat(previous.length);
+    assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation(drifted), field);
+  }
+  for (const field of ["expected", "completedAtMs"]) {
+    const changed = structuredClone(input);
+    delete changed[field];
+    assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation(changed));
+  }
+  assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation({
+    ...input, authorizedAtMs: input.completedAtMs,
+  }));
+  assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation({
+    ...input, expected: { ...input.expected, caller_says_verified: true },
+  }));
+});
+
+test("prebuild O uses the exact recorded completion second within both original evidence leases", async () => {
+  const input = await prebuildFixture();
+  const verifiedAt = input.persistedObservation.verification.verified_at;
+  const expiresAt = input.persistedObservation.terminal_evidence_lease_expires_at;
+  for (const completedAtMs of [verifiedAt * 1_000, (expiresAt - 1) * 1_000]) {
+    assert.equal(assertPrebuildVerifiedComputeWorkloadActivationObservation({ ...input, completedAtMs })
+      .completed_at, completedAtMs / 1_000);
+  }
+  for (const completedAtMs of [0, -1, 1.5, input.completedAtMs + 1, null,
+    String(input.completedAtMs), (verifiedAt - 1) * 1_000, expiresAt * 1_000,
+    (expiresAt + 1) * 1_000, 4_102_444_801_000]) {
+    assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation({ ...input, completedAtMs }));
+  }
+});
+
+test("prebuild O rejects signature drift, wrapper tampering, and accessor inputs without execution", async () => {
+  const input = await prebuildFixture();
+  const badSignature = structuredClone(input);
+  badSignature.persistedObservation.source_activation.authenticated_verdict.verifier_signature =
+    `0x${"01".repeat(64)}1b`;
+  assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation(badSignature));
+  const replay = assertPrebuildVerifiedComputeWorkloadActivationObservation(input);
+  for (const mutate of [
+    (value) => { value.signed_c_authorization_verified = true; },
+    (value) => { value.current_clock_consulted = true; },
+    (value) => { value.freshness_renewed = true; },
+    (value) => { value.production_brand_minted = true; },
+    (value) => { value.live_traffic_authorized = true; },
+    (value) => { value.expected_authority_sha256 = pin("ff"); },
+    (value) => { value.observation_sha256 = pin("ff"); },
+    (value) => { value.qvl_verdict_signature_sha256 = pin("ff"); },
+    (value) => { value.completed_at += 1; },
+    (value) => { value.expected_authority.mainRuntimeDescriptorSha256 = pin("ff"); },
+  ]) {
+    const changed = structuredClone(replay);
+    mutate(changed);
+    assert.throws(() => normalizeComputeWorkloadActivationObservationPrebuildReplay(changed));
+  }
+  for (const field of ["expected", "completedAtMs", "persistedObservation"]) {
+    const changed = structuredClone(input);
+    let calls = 0;
+    Object.defineProperty(changed, field, { enumerable: true, get() { calls += 1; return input[field]; } });
+    assert.throws(() => assertPrebuildVerifiedComputeWorkloadActivationObservation(changed), /accessors/);
+    assert.equal(calls, 0);
+  }
+});
 
 test("O v3 schema, domain, CLI flag, exact lineage, leases, and browser key set are frozen", async () => {
   const { observation } = await fixtureAndObservation();

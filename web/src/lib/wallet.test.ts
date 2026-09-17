@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringToHex, type Address, type EIP1193Provider } from "viem";
 import {
   buildApprovedWalletSigningMessage,
@@ -16,6 +16,24 @@ import {
 } from "./wallet";
 
 vi.mock("./contract", () => ({ publicClient: { getBalance: vi.fn(async () => 0n) } }));
+
+const serviceDeployment = vi.hoisted(() => ({
+  computeConsoleEnabled: false,
+  tinkerCustomerEnabled: false,
+  delegateUrl: "",
+}));
+vi.mock("../config", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../config")>();
+  return {
+    ...original,
+    deployment: {
+      ...original.deployment,
+      get computeConsoleEnabled() { return serviceDeployment.computeConsoleEnabled; },
+      get tinkerCustomerEnabled() { return serviceDeployment.tinkerCustomerEnabled; },
+      get delegateUrl() { return serviceDeployment.delegateUrl; },
+    },
+  };
+});
 
 const ACCOUNT_A = "0x1111111111111111111111111111111111111111" as Address;
 const ACCOUNT_B = "0x2222222222222222222222222222222222222222" as Address;
@@ -93,6 +111,234 @@ function walletOption(provider: EIP1193Provider, overrides: Partial<WalletOption
 
 beforeEach(() => {
   wallet.disconnect();
+  serviceDeployment.computeConsoleEnabled = false;
+  serviceDeployment.tinkerCustomerEnabled = false;
+  serviceDeployment.delegateUrl = "";
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function computeAuthorizationFixture() {
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const challenge = {
+    address: ACCOUNT_A,
+    chain_id: 84532,
+    scope: "compute:console",
+    nonce: "0123456789abcdef0123456789abcdef",
+    issued_at: issuedAt,
+    expires_at: issuedAt + 300,
+    message: buildApprovedWalletSigningMessage({
+      address: ACCOUNT_A,
+      nonce: "0123456789abcdef0123456789abcdef",
+      issuedAt,
+      expiresAt: issuedAt + 300,
+      statement: "Authorize access to the off-chain Compute Console. This signature will not trigger a blockchain transaction or transfer funds.",
+      resources: ["- urn:dnai:scope:compute:console"],
+    }),
+  };
+  const token = {
+    access_token: `${"a".repeat(40)}.${"b".repeat(40)}.${"c".repeat(40)}`,
+    token_type: "Bearer",
+    address: ACCOUNT_A,
+    scopes: ["compute:console"],
+    issued_at: issuedAt,
+    expires_at: issuedAt + 300,
+  };
+  return { challenge, token };
+}
+
+function jsonWalletResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+}
+
+describe("independent Compute and Tinker release authorization gates", () => {
+  it.each([
+    { compute: false, tinker: true, method: "authorizeTinkerCustomer", label: "Tinker customer lifecycle · wallet scoped" },
+    { compute: true, tinker: false, method: "authorizeComputeConsole", label: "Compute Console · wallet scoped" },
+    { compute: true, tinker: true, method: "authorizeTinkerCustomer", label: "Tinker customer lifecycle · wallet scoped" },
+    { compute: true, tinker: true, method: "authorizeComputeConsole", label: "Compute Console · wallet scoped" },
+  ] as const)("authorizes $method with compute=$compute and tinker=$tinker", async ({ compute, tinker, method, label }) => {
+    Object.assign(serviceDeployment, {
+      computeConsoleEnabled: compute,
+      tinkerCustomerEnabled: tinker,
+      delegateUrl: "https://delegate.example.invalid/",
+    });
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonWalletResponse(challenge))
+      .mockResolvedValueOnce(jsonWalletResponse(token));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(wallet[method]()).resolves.toEqual(token);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://delegate.example.invalid/auth/compute/challenge",
+      "https://delegate.example.invalid/auth/compute/token",
+    ]);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: "POST", credentials: "omit", body: JSON.stringify({ address: ACCOUNT_A }),
+    });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: "POST", credentials: "omit",
+      body: JSON.stringify({ nonce: challenge.nonce, signature: `0x${"ab".repeat(65)}` }),
+    });
+    expect(provider.request).toHaveBeenCalledWith({
+      method: "personal_sign", params: [stringToHex(challenge.message), ACCOUNT_A],
+    });
+    expect(provider.request.mock.calls.some(([args]) => args.method === "eth_sendTransaction")).toBe(false);
+    expect(wallet.sessionProof()).toBe(label);
+  });
+
+  it.each([
+    { compute: false, tinker: false, method: "authorizeComputeConsole", surface: "Compute Console" },
+    { compute: false, tinker: false, method: "authorizeTinkerCustomer", surface: "Tinker customer lifecycle" },
+    { compute: false, tinker: true, method: "authorizeComputeConsole", surface: "Compute Console" },
+    { compute: true, tinker: false, method: "authorizeTinkerCustomer", surface: "Tinker customer lifecycle" },
+  ] as const)("rejects disabled $method before requests with compute=$compute and tinker=$tinker", async ({ compute, tinker, method, surface }) => {
+    Object.assign(serviceDeployment, {
+      computeConsoleEnabled: compute,
+      tinkerCustomerEnabled: tinker,
+      delegateUrl: "https://delegate.example.invalid",
+    });
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    provider.request.mockClear();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(wallet[method]()).rejects.toThrow(`Fresh ${surface} is not enabled for this deployment`);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(provider.request).not.toHaveBeenCalled();
+    expect(wallet.sessionProof()).toBe("");
+  });
+
+  it("still requires the delegate endpoint before Tinker requests or signatures", async () => {
+    serviceDeployment.tinkerCustomerEnabled = true;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow("Fresh delegate endpoint is not configured");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Tinker shared wallet authentication boundary", () => {
+  beforeEach(() => {
+    serviceDeployment.tinkerCustomerEnabled = true;
+    serviceDeployment.delegateUrl = "https://delegate.example.invalid";
+  });
+
+  function mockExchange(challenge: unknown, token: unknown) {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonWalletResponse(challenge))
+      .mockResolvedValueOnce(jsonWalletResponse(token));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("requires a connected wallet without opening an authentication request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow("Connect a wallet first");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("confirms Base Sepolia before exchanging a Tinker-only session", async () => {
+    const provider = mockProvider({ chainId: 1 });
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    mockExchange(challenge, token);
+    await expect(wallet.authorizeTinkerCustomer()).resolves.toEqual(token);
+    expect(wallet.isCorrectChain()).toBe(true);
+    const methods = provider.request.mock.calls.map(([args]) => args.method);
+    expect(methods.indexOf("wallet_switchEthereumChain")).toBeLessThan(methods.indexOf("personal_sign"));
+  });
+
+  it("does not exchange or sign after a rejected Base Sepolia switch", async () => {
+    const provider = mockProvider({ chainId: 1, switchBehavior: "reject" });
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    const fetchMock = mockExchange(challenge, token);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow(/rejected in the wallet/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(provider.request.mock.calls.some(([args]) => args.method === "personal_sign")).toBe(false);
+    expect(wallet.sessionProof()).toBe("");
+  });
+
+  it.each(["chain", "scope", "message"] as const)("rejects a mismatched challenge %s before signing", async (field) => {
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    if (field === "chain") challenge.chain_id = 1;
+    if (field === "scope") challenge.scope = "tinker:admin";
+    if (field === "message") challenge.message += "\nAuthorize an additional transfer.";
+    const fetchMock = mockExchange(challenge, token);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow(/Base Sepolia|invalid wallet challenge|exact approved signing request/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(provider.request.mock.calls.some(([args]) => args.method === "personal_sign")).toBe(false);
+    expect(wallet.sessionProof()).toBe("");
+  });
+
+  it.each(["address", "scope", "expiry", "lifetime"] as const)("rejects invalid token %s without installing a session", async (field) => {
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    if (field === "address") token.address = ACCOUNT_B;
+    if (field === "scope") token.scopes.push("tinker:admin");
+    if (field === "expiry") token.expires_at = token.issued_at - 1;
+    if (field === "lifetime") token.expires_at = token.issued_at + 901;
+    const fetchMock = mockExchange(challenge, token);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow("Delegate returned an invalid wallet-scoped token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(wallet.sessionProof()).toBe("");
+  });
+
+  it.each(["account", "network", "provider", "disconnect"] as const)("invalidates Tinker authorization on a %s change during signing", async (change) => {
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    const fetchMock = mockExchange(challenge, token);
+    const originalRequest = provider.request.getMockImplementation();
+    provider.request.mockImplementation(async (args) => {
+      if (args.method === "personal_sign") {
+        if (change === "account") {
+          provider.setAccount(ACCOUNT_B);
+          provider.emit("accountsChanged", [ACCOUNT_B]);
+        } else if (change === "network") {
+          provider.setChain(1);
+          provider.emit("chainChanged", "0x1");
+        } else if (change === "provider") {
+          await wallet.connect(walletOption(mockProvider().provider));
+        } else {
+          provider.emit("disconnect", { code: 4900 });
+        }
+        return `0x${"ab".repeat(65)}`;
+      }
+      return await originalRequest?.(args);
+    });
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow(/account, network, or provider changed/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(wallet.sessionProof()).toBe("");
+  });
+
+  it.each(["challenge", "token"] as const)("rejects an account change while the %s response is pending", async (phase) => {
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const { challenge, token } = computeAuthorizationFixture();
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith(`/${phase}`)) {
+        provider.setAccount(ACCOUNT_B);
+        provider.emit("accountsChanged", [ACCOUNT_B]);
+      }
+      return jsonWalletResponse(url.endsWith("/challenge") ? challenge : token);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(wallet.authorizeTinkerCustomer()).rejects.toThrow(/account, network, or provider changed/);
+    expect(fetchMock).toHaveBeenCalledTimes(phase === "challenge" ? 1 : 2);
+    expect(wallet.sessionProof()).toBe("");
+  });
 });
 
 describe("wallet signing boundary", () => {

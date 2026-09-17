@@ -781,7 +781,7 @@ function normalizeComputeWorkloadRecipientActivation(value) {
     "release_authority_sha256", "release_policy_hash", "report_data", "schema",
     "verdict_digest", "verifier_address",
   ], "compute-workload recipient activation");
-  if (parsed.schema !== "dnai.compute.workload-recipient-activation.v3"
+  if (parsed.schema !== "dnai.compute.workload-recipient-activation.v4"
     || parsed.chain_id !== CHAIN_ID || parsed.domain !== "main_runtime_cvm"
     || parsed.profile !== "compute_workload") {
     throw new TypeError("compute-workload recipient activation schema is invalid");

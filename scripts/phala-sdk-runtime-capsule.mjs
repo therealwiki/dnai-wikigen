@@ -6,15 +6,19 @@ import { fileURLToPath } from "node:url";
 export const PHALA_SDK_RUNTIME_CAPSULE_AUTHORITY_SCHEMA =
   "dnai.phala-sdk-runtime-capsule-authority.v1";
 export const PHALA_SDK_RUNTIME_CAPSULE_AUTHORITY_SHA256 =
-  "sha256:c6a9e84e62331ed929cae422166980e50c390dcb553c82436b7043c1f3a4ba7c";
+  "sha256:238bd708f9aa5bbc5e21ab26e69bfa25307e69236d7b8740da74ff5abbdb858c";
 export const PHALA_SDK_RUNTIME_CAPSULE_SHA256 =
-  "sha256:55249c4d189dea6aad95cdefd3e0310f4dfadbcc1f5d7e11ced1ddda5200d457";
+  "sha256:05ea7afcbf02ff779fc85a50765a95d2007286ec0dc6f686ef2e2636d45f34c0";
 export const PHALA_SDK_RUNTIME_CAPSULE_LEGAL_NOTICE_SHA256 =
-  "sha256:e0db15fc6e8e94df1c13d0cc483b57d6ad695c1506797da0d0bc4be4f60d0210";
+  "sha256:47d8d6cae4719c8b6703d27e02ce507eaef1eba5c080c583e2a8367a132ed335";
 export const PHALA_SDK_ACTION_REQUEST_POLICY_SHA256 =
-  "sha256:c2fe6c0baf65972bb1b6326a535123cb187bc36a0680b5183d1568a89879c495";
+  "sha256:9a5ab5cd0e64c9a47b5d87ebae7bd0a16a028d1f1b55b3500734b68b657b380f";
 export const PHALA_SDK_UPSTREAM_REGISTRY_EVIDENCE_SHA256 =
-  "sha256:847b1831fd971204e45bb2da03b00e3761d78d2495f9ff8ae83365c94a7a10c2";
+  "sha256:3dd3e06788205f3042bb51176e526c040e3314bcb635c8dd5b3119d403a147f2";
+export const PHALA_SDK_REGISTRY_AUDIT_INPUT_MANIFEST_SHA256 =
+  "sha256:a297531e00a45cb6c8259c781797665c42c94a05247a1dc6c5b4164f6da8e2c0";
+// Historical package-verification inputs are pinned for source audit, not
+// reread as runtime dependencies or represented as fresh online verification.
 export const PHALA_REVIEWED_NODE_RUNTIME = Object.freeze({
   version: "v24.9.0",
   executable_realpath: "/opt/homebrew/Cellar/node/24.9.0/bin/node",
@@ -41,17 +45,17 @@ export const PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY = Object.freeze({
   sdk_action_request_policy_sha256: PHALA_SDK_ACTION_REQUEST_POLICY_SHA256,
   sdk_upstream_registry_evidence_sha256:
     PHALA_SDK_UPSTREAM_REGISTRY_EVIDENCE_SHA256,
-  phala_cloud_version: "0.2.10",
+  phala_cloud_version: "0.4.0",
   phala_cloud_source_package_manifest_sha256:
-    "sha256:0ac15a2c4f80b3ba8ff6c7f45cdfbcdff22075967458ebd4af988be85ef804c7",
+    "sha256:228716a4cd3c1ba0c20dfd64be358de71517874a27917dae3acfb7ab472bef14",
   phala_cloud_source_module_sha256:
-    "sha256:ad67b0bda91dd37566dac18030aac8c267e5b88b931f12e37614e537b465729f",
+    "sha256:84573a8a86ace5da9264ef9e5c619bb2799da5ea0f12cdae5025d1fd5b4c7689",
   phala_cloud_module_sha256:
-    "sha256:ad67b0bda91dd37566dac18030aac8c267e5b88b931f12e37614e537b465729f",
+    "sha256:84573a8a86ace5da9264ef9e5c619bb2799da5ea0f12cdae5025d1fd5b4c7689",
   phala_cloud_source_tarball_sha256:
-    "sha256:5e7b91e84bc0aa4a3273c205c96103a7cdbdcb577ce0e0e740e54789e8e4f1b7",
+    "sha256:bc5a14bc10a0e8aff7b57ff96c64ab8388f5892052e6adc11a09eb8a59bc976e",
   phala_cloud_npm_dist_integrity_sha512:
-    "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+    "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
   dstack_sdk_version: "0.5.8",
   dstack_source_package_manifest_sha256:
     "sha256:3f7ef87b62b041be1e997ce18f87652694312cfc52c80efeb4ecdbff0f3a17c9",
@@ -78,9 +82,13 @@ export const PHALA_REVIEWED_CAPSULE_EXPORTS = Object.freeze([
   "getCvmCreateResources",
   "getCvmInfo",
   "getCvmList",
+  "getKmsContract",
   "getKmsInfo",
   "getKmsList",
   "getOsImages",
+  "getWorkspace",
+  "listKmsContractNodes",
+  "listKmsContracts",
   "nextAppIds",
   "provisionCvm",
   "restartCvm",
@@ -98,15 +106,15 @@ const REGISTRY_EVIDENCE_PATH = fileURLToPath(new URL(
   import.meta.url,
 ));
 const CAPSULE_PATH = fileURLToPath(new URL(
-  "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+  "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
   import.meta.url,
 ));
 const LEGAL_NOTICE_PATH = fileURLToPath(new URL(
-  "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+  "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
   import.meta.url,
 ));
 const CLOUD_TARBALL_PATH = fileURLToPath(new URL(
-  "./vendor/npm/phala-cloud-0.2.10.tgz",
+  "./vendor/npm/phala-cloud-0.4.0.tgz",
   import.meta.url,
 ));
 const DSTACK_TARBALL_PATH = fileURLToPath(new URL(
@@ -195,9 +203,9 @@ function exactAuthority(authorityBytes) {
     || authority?.schema !== PHALA_SDK_RUNTIME_CAPSULE_AUTHORITY_SCHEMA
     || authority?.truth_status !== EXPECTED_AUTHORITY_TRUTH
     || authority?.capsule?.path
-      !== "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs"
+      !== "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs"
     || authority?.capsule?.sha256 !== PHALA_SDK_RUNTIME_CAPSULE_SHA256
-    || authority?.capsule?.byte_length !== 454_408
+    || authority?.capsule?.byte_length !== 454_936
     || authority?.capsule?.format !== "single_esm_data_url_module"
     || authority?.capsule?.dynamic_imports_allowed !== false
     || JSON.stringify(authority?.capsule?.builtin_imports)
@@ -205,25 +213,31 @@ function exactAuthority(authorityBytes) {
     || JSON.stringify(authority?.capsule?.exports)
       !== JSON.stringify(PHALA_REVIEWED_CAPSULE_EXPORTS)
     || authority?.legal_notice?.path
-      !== "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt"
+      !== "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt"
     || authority?.legal_notice?.sha256
       !== PHALA_SDK_RUNTIME_CAPSULE_LEGAL_NOTICE_SHA256
-    || authority?.legal_notice?.byte_length !== 15_414
+    || authority?.legal_notice?.byte_length !== 28_135
     || JSON.stringify(authority?.legal_notice?.components) !== JSON.stringify([
       "@noble/curves@1.9.7",
       "@noble/hashes@1.8.0",
-      "@phala/cloud@0.2.10",
+      "@phala/cloud@0.4.0",
       "@phala/dstack-sdk@0.5.8",
       "viem@2.55.4",
       "zod@3.25.76",
     ])
-    || authority?.request_policy?.action_count !== 14
+    || authority?.request_policy?.action_count !== 18
     || authority?.request_policy?.sha256 !== PHALA_SDK_ACTION_REQUEST_POLICY_SHA256
     || authority?.registry_evidence?.path
       !== "deployments/phala-sdk-upstream-registry-evidence.json"
     || authority?.registry_evidence?.sha256
       !== PHALA_SDK_UPSTREAM_REGISTRY_EVIDENCE_SHA256
     || authority?.registry_evidence?.truth_status !== EXPECTED_REGISTRY_EVIDENCE_TRUTH
+    || authority?.registry_evidence?.audit_inputs?.path
+      !== "scripts/vendor/npm/provenance/phala-cloud-0.4.0-dstack-0.5.8/file-manifest.json"
+    || authority?.registry_evidence?.audit_inputs?.sha256
+      !== PHALA_SDK_REGISTRY_AUDIT_INPUT_MANIFEST_SHA256
+    || authority?.registry_evidence?.audit_inputs?.truth_status
+      !== "reviewed_source_evidence_not_runtime_reverification"
     || JSON.stringify(sorted(authority?.node_runtime))
       !== JSON.stringify(sorted(PHALA_REVIEWED_NODE_RUNTIME))) {
     throw new Error("Phala SDK runtime capsule authority fields differ from the reviewed pin");
@@ -250,8 +264,10 @@ function exactRegistryEvidence(registryEvidenceBytes, authority) {
     || evidence?.verification?.ambient_registry_tokens_used !== false
     || evidence?.verification?.empty_home_and_private_npm_cache !== true
     || evidence?.verification?.tarballs_refetched_and_byte_hashed !== true
+    || evidence?.verification?.attestation_verifier
+      !== "pacote_verifyAttestations_with_fresh_sigstore_TUF_update_and_force_cache"
     || JSON.stringify(evidence?.verification?.external_network_hosts)
-      !== JSON.stringify(["registry.npmjs.org"])
+      !== JSON.stringify(["registry.npmjs.org", "tuf-repo-cdn.sigstore.dev"])
     || !Array.isArray(evidence?.packages) || evidence.packages.length !== 2) {
     throw new Error("Phala SDK upstream registry evidence claims are not exact");
   }

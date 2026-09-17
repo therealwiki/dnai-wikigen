@@ -43,17 +43,25 @@ import {
   createPhalaProductionTargetReviewInput,
   finalizeBootstrapPublicEnvironmentAuthority,
   finalizePhalaProductionTargetAuthority,
+  normalizePhalaProductionTargetReviewInput,
   phalaProductionTargetReviewInputDigest,
 } from "./phala-pre-provision-authority-producer-core.mjs";
 import {
   assertBootstrapReviewInputMatchesFreshSources,
   assertTargetReviewInputMatchesFreshSources,
   normalizeOpaqueDeploymentTransactionPlan,
+  normalizeKmsSignerProvenance,
   parsePhalaPreProvisionAuthorityProducerArgs,
   publishCanonicalPhalaProducerArtifact,
   readStableBytes,
   runPhalaPreProvisionAuthorityProducer,
 } from "./phala-pre-provision-authority-producer.mjs";
+import {
+  createSyntheticPhalaContractKmsFixture,
+  SYNTHETIC_PHALA_CA_PUBKEY,
+  SYNTHETIC_PHALA_K256,
+  SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+} from "./phala-contract-kms-test-fixture.mjs";
 
 const SCRIPT = fileURLToPath(new URL(
   "./phala-pre-provision-authority-producer.mjs",
@@ -91,47 +99,16 @@ const CURRENT_USER = Object.freeze({
   }),
 });
 
-const KMS = Object.freeze({
-  id: "kms-production-1",
-  slug: "phala",
-  url: "https://kms.phala.network/",
-  version: "0.5.9",
-  chain_id: null,
-  kms_contract_address: null,
-  gateway_app_id: "1".repeat(40),
+const WORKSPACE = Object.freeze({
+  ...CURRENT_USER.workspace,
+  is_default: true,
+  created_at: "2026-01-01T00:00:00Z",
+  billing_status: "active",
 });
+const KMS_FIXTURE = createSyntheticPhalaContractKmsFixture();
 
 function resourceGraph() {
-  return {
-    tier: "production",
-    capacity: {
-      max_instances: 20,
-      max_vcpu: 100,
-      max_memory: 200_000,
-      max_disk: 2_048,
-    },
-    nodes: [],
-    kms_nodes: [],
-    node_kms_relations: [],
-    gateway_nodes: [],
-    instance_types: ["tdx.large", "tdx.small"].map((id) => ({
-      id,
-      name: id === "tdx.large" ? "Large TDX Instance" : "Small TDX Instance",
-      vcpu: id === "tdx.large" ? 4 : 1,
-      memory_mb: id === "tdx.large" ? 8192 : 2048,
-      default_disk_size_gb: 20,
-      requires_gpu: false,
-      requires_gpu_count: 0,
-      family: "cpu",
-      display_order: null,
-    })),
-    gpu_availability: {
-      has_reserved_gpus: false,
-      reserved_gpu_count: 0,
-      has_public_gpus: false,
-      public_gpu_count: 0,
-    },
-  };
+  return structuredClone(KMS_FIXTURE.resources);
 }
 
 function osImages() {
@@ -145,7 +122,7 @@ function osImages() {
 }
 
 function kmsList() {
-  return { items: [{ ...KMS }], total: 1, page: 1, page_size: 100, pages: 1 };
+  return { items: [structuredClone(KMS_FIXTURE.contract)], total: 1, page: 1, page_size: 100, pages: 1 };
 }
 
 function installCredentialHome(t) {
@@ -209,7 +186,7 @@ function installFakeHttps(t, handler) {
   t.after(() => { https.request = original; });
 }
 
-function compatibilityHandler(calls, resources) {
+function compatibilityHandler(calls, resources, { workspace = WORKSPACE } = {}) {
   return (options) => {
     calls.push({
       method: options.method,
@@ -219,13 +196,21 @@ function compatibilityHandler(calls, resources) {
       credential: options.headers["X-API-Key"],
     });
     if (options.path === "/api/v1/auth/me") return { body: CURRENT_USER };
+    if (options.path === `/api/v1/workspaces/${CURRENT_USER.workspace.slug}`) {
+      return { body: workspace };
+    }
     if (options.path === "/api/v1/teepods/cvm-create-resources") {
       return { body: resources };
     }
     if (options.path === "/api/v1/kms?page=1&page_size=100&is_onchain=false") {
       return { body: kmsList() };
     }
-    if (options.path === `/api/v1/kms/${KMS.id}`) return { body: KMS };
+    if (options.path === `/api/v1/kms/${KMS_FIXTURE.contract.id}`) {
+      return { body: KMS_FIXTURE.contract };
+    }
+    if (options.path === `/api/v1/kms/${KMS_FIXTURE.contract.id}/nodes`) {
+      return { body: KMS_FIXTURE.contractNodes };
+    }
     if (options.path === "/api/v1/os-images?page=1&page_size=100&is_dev=false") {
       return { body: osImages() };
     }
@@ -240,17 +225,20 @@ async function observedCompatibility(t, resources = resourceGraph()) {
   return { receipt: await observePinnedPhalaCompatibility(), calls };
 }
 
-function targetInput(compatibility) {
+function targetInput(compatibility, overrides = {}) {
   return createPhalaProductionTargetReviewInput({
     compatibilityReceipt: compatibility,
     releaseSha: "a".repeat(40),
     cvmLaunchIntentSha256: digest("2"),
     reviewEnvelopeSha256: digest("3"),
     reviewEvidenceSha256: digest("4"),
-    kmsSignerK256: `0x02${"5".repeat(64)}`,
+    kmsContractId: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+    kmsCaPubkey: SYNTHETIC_PHALA_CA_PUBKEY,
+    kmsSignerK256: SYNTHETIC_PHALA_K256,
     kmsSignerProvenanceSha256: digest("6"),
     kmsSignerValidFrom: second(-3_600),
     kmsSignerValidUntil: second(3_600),
+    ...overrides,
   });
 }
 
@@ -268,12 +256,16 @@ function installStagingHttps(t, calls, {
   committedCvmTotal = 0,
   failProvisionAt = null,
   onRequest = null,
+  workspace = WORKSPACE,
 } = {}) {
   let provisionIndex = 0;
   installFakeHttps(t, (options, bytes) => {
     calls.push({ method: options.method, path: options.path });
     onRequest?.(options);
     if (options.path === "/api/v1/auth/me") return { body: CURRENT_USER };
+    if (options.path === `/api/v1/workspaces/${CURRENT_USER.workspace.slug}`) {
+      return { body: workspace };
+    }
     if (options.path === "/api/v1/cvms/paginated?page=1&page_size=100") {
       return {
         body: {
@@ -315,7 +307,13 @@ function installStagingHttps(t, calls, {
             .digest("hex"),
           instance_type: body.instance_type,
           node_id: 7,
-          kms_id: body.kms_id,
+          kms_id: KMS_FIXTURE.contractNodes.items[0].id,
+          kms_contract_id: body.kms_contract_id,
+          kms_info: {
+            ...KMS_FIXTURE.resources.kms_nodes[0],
+            k256_pubkey: SYNTHETIC_PHALA_K256.slice(2),
+          },
+          device_id: KMS_FIXTURE.resources.nodes[0].device_id,
           os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
           app_env_encrypt_pubkey: "9".repeat(64),
         },
@@ -383,11 +381,10 @@ async function stagingFixture(t, compatibility) {
 
 test("authenticated compatibility uses the exact origin, versions, calls, and secret-free output", async (t) => {
   const { receipt, calls } = await observedCompatibility(t);
-  assert.equal(calls.length, PHALA_API_CANDIDATE_VERSIONS.length * 5);
-  assert.deepEqual(calls.map(({ version }) => version), [
-    ...Array(5).fill(PHALA_API_CANDIDATE_VERSIONS[0]),
-    ...Array(5).fill(PHALA_API_CANDIDATE_VERSIONS[1]),
-  ]);
+  assert.equal(calls.length, PHALA_API_CANDIDATE_VERSIONS.length * 7);
+  assert.deepEqual(calls.map(({ version }) => version), PHALA_API_CANDIDATE_VERSIONS.flatMap(
+    (version) => [version, version, version, "2026-06-23", "2026-06-23", "2026-06-23", version],
+  ));
   assert.equal(calls.every(({ hostname }) => hostname === "cloud-api.phala.network"), true);
   assert.equal(calls.every(({ method }) => method === "GET"), true);
   assert.equal(receipt.api_origin, PHALA_CONTROL_PLANE_AUTHORITY.api_origin);
@@ -447,7 +444,7 @@ test("compatibility and staging fail closed on origin, version, and capsule drif
   wrongOrigin.api_origin = "https://example.invalid/api/v1";
   assert.throws(() => normalizePhalaCompatibilityReceipt(wrongOrigin), /origin/);
   const wrongVersion = structuredClone(receipt);
-  wrongVersion.selected_api_version = PHALA_API_CANDIDATE_VERSIONS[1];
+  wrongVersion.selected_api_version = PHALA_API_CANDIDATE_VERSIONS[0];
   assert.throws(() => normalizePhalaCompatibilityReceipt(wrongVersion), /selected API version/);
   const dependencyDrift = structuredClone(receipt);
   dependencyDrift.sdk_identity.sdk_runtime_capsule_sha256 = digest("f");
@@ -479,6 +476,7 @@ test("compatibility and staging fail closed on origin, version, and capsule drif
     path: requestPath,
   })), [
     { method: "GET", path: "/api/v1/auth/me" },
+    { method: "GET", path: `/api/v1/workspaces/${CURRENT_USER.workspace.slug}` },
     { method: "GET", path: "/api/v1/cvms/paginated?page=1&page_size=100" },
     { method: "GET", path: "/api/v1/kms/phala/next_app_id?counts=7" },
   ], "ambient PATH must not select the SDK implementation");
@@ -499,13 +497,14 @@ test("staging session emits exactly seven wire captures, exposes no commit, and 
   assert.equal(session.commitCvmProvision, undefined);
   assert.deepEqual(calls.map(({ path: value }) => value), [
     "/api/v1/auth/me",
+    `/api/v1/workspaces/${CURRENT_USER.workspace.slug}`,
     "/api/v1/cvms/paginated?page=1&page_size=100",
     "/api/v1/kms/phala/next_app_id?counts=7",
     ...Array(7).fill("/api/v1/cvms/provision"),
   ]);
   await assert.rejects(session.reserveAppIds(), /exactly once/);
   await assert.rejects(session.captureProvisionBatch([]), /fresh reservation/);
-  assert.equal(calls.length, 10, "rejected extra calls must not reach HTTPS");
+  assert.equal(calls.length, 11, "rejected extra calls must not reach HTTPS");
   assert.equal(JSON.stringify(receipt).includes("docker_compose_file"), false);
   assert.equal(JSON.stringify(receipt).includes("phak_"), false);
   assert.equal(receipt.workspace_preflight.total, 0);
@@ -516,7 +515,7 @@ test("staging session emits exactly seven wire captures, exposes no commit, and 
   const journalNames = fs.readdirSync(directory)
     .filter((name) => name.startsWith("phala-staging-journal."))
     .sort();
-  assert.equal(journalNames.length, 31);
+  assert.equal(journalNames.length, 33);
   let previous = `sha256:${createHash("sha256")
     .update(fs.readFileSync(options.outputPath))
     .digest("hex")}`;
@@ -625,6 +624,7 @@ test("nonempty authenticated workspace and pathname replacement stop before rese
   await assert.rejects(nonemptySession.reserveAppIds(), /empty committed-CVM listing/);
   assert.deepEqual(nonemptyCalls.map(({ path: value }) => value), [
     "/api/v1/auth/me",
+    `/api/v1/workspaces/${CURRENT_USER.workspace.slug}`,
     "/api/v1/cvms/paginated?page=1&page_size=100",
   ]);
 
@@ -650,6 +650,81 @@ test("nonempty authenticated workspace and pathname replacement stop before rese
   await assert.rejects(swapSession.reserveAppIds(), /pathname or identity anchor/);
   assert.equal(swapCalls.length, 1);
   assert.equal(fs.readdirSync(originalDirectory).length, 0);
+});
+
+test("target review input requires independent exact contract, CA, and K256 provenance", async (t) => {
+  const { receipt: compatibility } = await observedCompatibility(t);
+  const input = targetInput(compatibility);
+  assert.deepEqual(input.kms.contract, compatibility.kms.contract);
+  for (const overrides of [
+    { kmsContractId: undefined },
+    { kmsCaPubkey: undefined },
+    { kmsSignerK256: undefined },
+    { kmsContractId: "kc_Substitute" },
+    { kmsCaPubkey: `${SYNTHETIC_PHALA_CA_PUBKEY}00` },
+    { kmsSignerK256: SYNTHETIC_PHALA_K256.replace("0x02", "0x03") },
+  ]) {
+    assert.throws(() => targetInput(compatibility, overrides), /independently reviewed exact KMS/);
+  }
+  for (const mutate of [
+    (kms) => { kms.contract.id = "kc_Substitute"; },
+    (kms) => { kms.contract.ca_pubkey += "00"; },
+    (kms) => { kms.replicas[0].url = "https://substitute.phala.network/"; },
+    (kms) => { kms.eligible_placements[0].kms_id = "kms_Substitute"; },
+    (kms) => { kms.env_encrypt_signer_k256 = SYNTHETIC_PHALA_K256.replace("0x02", "0x03"); },
+  ]) {
+    const changed = structuredClone(input);
+    mutate(changed.kms);
+    assert.throws(() => normalizePhalaProductionTargetReviewInput(changed, {
+      compatibilityReceipt: compatibility,
+    }), /KMS/);
+  }
+  for (const status of ["suspended", "abandoned"]) {
+    const nonactive = structuredClone(compatibility);
+    nonactive.workspace.billing_status = status;
+    assert.throws(() => targetInput(nonactive), /billing_status must explicitly be active/);
+    assert.throws(() => normalizePhalaProductionTargetReviewInput(input, {
+      compatibilityReceipt: nonactive,
+    }), /billing_status must explicitly be active/);
+  }
+});
+
+test("SDK workspace defaults cannot manufacture compatibility billing evidence", async (t) => {
+  installCredentialHome(t);
+  const workspace = { ...WORKSPACE };
+  delete workspace.billing_status;
+  const calls = [];
+  installFakeHttps(t, compatibilityHandler(calls, resourceGraph(), { workspace }));
+  await assert.rejects(observePinnedPhalaCompatibility(), /exact compatibility plan/);
+  assert.equal(calls.every(({ method }) => method === "GET"), true);
+  assert.equal(calls.some(({ path: value }) => value.includes("next_app_id")), false);
+});
+
+test("fresh missing, non-active, or cross-workspace billing stops before app-ID reservation", async (t) => {
+  const { receipt: compatibility } = await observedCompatibility(t);
+  const input = targetInput(compatibility);
+  const missing = { ...WORKSPACE };
+  delete missing.billing_status;
+  for (const workspace of [
+    missing,
+    { ...WORKSPACE, billing_status: "suspended" },
+    { ...WORKSPACE, billing_status: "abandoned" },
+    { ...WORKSPACE, id: "workspace-substitute" },
+  ]) {
+    const calls = [];
+    installStagingHttps(t, calls, { workspace });
+    const session = await createPinnedPhalaPreProvisionStagingSession({
+      compatibilityReceipt: compatibility,
+      ...stagingSessionOptions(t, compatibility, input),
+    });
+    await assert.rejects(session.reserveAppIds());
+    assert.deepEqual(calls.map(({ path: value }) => value), [
+      "/api/v1/auth/me",
+      `/api/v1/workspaces/${CURRENT_USER.workspace.slug}`,
+    ]);
+    await assert.rejects(session.reserveAppIds());
+    assert.equal(calls.length, 2, "failure is terminal and cannot issue a reservation on retry");
+  }
 });
 
 test("target finalization binds staging and rejects expired or extra authority input", async (t) => {
@@ -734,6 +809,7 @@ function descriptorReceipt(releaseSha) {
 }
 
 function publicValue(key) {
+  if (key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256") return `0x${"d".repeat(64)}`;
   if (key === "TINKER_CORS_ALLOWED_ORIGINS") {
     return "https://wikigen.me,https://wikigenme.pages.dev,https://www.wikigen.me";
   }
@@ -927,17 +1003,52 @@ test("KMS signer public choices are materialized canonically without hand-author
   const output = path.join(directory, "kms-signer-provenance.json");
   await runPhalaPreProvisionAuthorityProducer([
     "init-kms-signer-provenance",
-    "--env-encrypt-signer-k256", `0x02${"5".repeat(64)}`,
+    "--kms-contract-id", SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+    "--ca-pubkey", SYNTHETIC_PHALA_CA_PUBKEY,
+    "--env-encrypt-signer-k256", SYNTHETIC_PHALA_K256,
     "--valid-from", "2026-09-15T00:00:00Z",
     "--valid-until", "2026-09-16T00:00:00Z",
     "--out", output,
   ], { stdout() {} });
   assert.deepEqual(JSON.parse(fs.readFileSync(output, "utf8")), {
-    env_encrypt_signer_k256: `0x02${"5".repeat(64)}`,
+    kms_contract_id: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+    ca_pubkey: SYNTHETIC_PHALA_CA_PUBKEY,
+    env_encrypt_signer_k256: SYNTHETIC_PHALA_K256,
     valid_from: "2026-09-15T00:00:00Z",
     valid_until: "2026-09-16T00:00:00Z",
   });
   assert.equal(fs.statSync(output).mode & 0o777, 0o600);
+});
+
+test("signer provenance rejects old shape, extra fields, noncanonical or invalid public roots", () => {
+  const value = {
+    kms_contract_id: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+    ca_pubkey: SYNTHETIC_PHALA_CA_PUBKEY,
+    env_encrypt_signer_k256: SYNTHETIC_PHALA_K256,
+    valid_from: "2026-09-15T00:00:00Z",
+    valid_until: "2026-09-16T00:00:00Z",
+  };
+  assert.deepEqual(normalizeKmsSignerProvenance(value), value);
+  for (const mutate of [
+    (copy) => { delete copy.kms_contract_id; },
+    (copy) => { delete copy.ca_pubkey; },
+    (copy) => { copy.kms_contract_id = "kms_Synthetic1"; },
+    (copy) => { copy.ca_pubkey = "12".repeat(91); },
+    (copy) => { copy.ca_pubkey += "00"; },
+    (copy) => { copy.ca_pubkey = copy.ca_pubkey.toUpperCase(); },
+    (copy) => { copy.env_encrypt_signer_k256 = `0x02${"f".repeat(64)}`; },
+    (copy) => { copy.contract_inferred = true; },
+  ]) {
+    const copy = structuredClone(value);
+    mutate(copy);
+    assert.throws(() => normalizeKmsSignerProvenance(copy));
+  }
+  assert.throws(() => parsePhalaPreProvisionAuthorityProducerArgs([
+    "init-kms-signer-provenance",
+    "--env-encrypt-signer-k256", SYNTHETIC_PHALA_K256,
+    "--valid-from", value.valid_from, "--valid-until", value.valid_until,
+    "--out", "/tmp/synthetic.json",
+  ]), /required|missing/);
 });
 
 test("opaque transaction-plan bytes never become semantic or reviewer authority", () => {

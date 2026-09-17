@@ -1,0 +1,121 @@
+[
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/-/npm/v1/keys"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala%2fcloud/0.4.0"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala/cloud/-/cloud-0.4.0.tgz"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fcloud@0.4.0"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala%2fdstack-sdk/0.5.8"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala/dstack-sdk/-/dstack-sdk-0.5.8.tgz"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fdstack-sdk@0.5.8"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 5730,
+    "response_file": "raw/8-%2F13.root.json.response",
+    "response_sha256": "sha256:39277f1fbd482f84d924b6cb77748f62ab0f031b3b5b9b29e681dae056c32250",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/13.root.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 5490,
+    "response_file": "raw/9-%2F14.root.json.response",
+    "response_sha256": "sha256:c8c41ec13f06ccabf5b48541ee2550098b4c7b5349e1d180390c29a7d5c2642c",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/14.root.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 5630,
+    "response_file": "raw/10-%2F15.root.json.response",
+    "response_sha256": "sha256:73747011d0857ada15479a16c4cae0f3ed03aac698b523b97e1de314ac9d9ca8",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/15.root.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 127,
+    "response_file": "raw/11-%2F16.root.json.response",
+    "response_sha256": "sha256:bde9c2949e64d059c18d8f93566a64dafc6d2e8e259a70322fb804831dfd0b5b",
+    "status": 404,
+    "url": "https://tuf-repo-cdn.sigstore.dev/16.root.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 449,
+    "response_file": "raw/12-%2Ftimestamp.json.response",
+    "response_sha256": "sha256:0511494ca9cdfe308a1b48b58a55091008d15eebba4e319634ed03f08246049c",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/timestamp.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 1760,
+    "response_file": "raw/13-%2F165.snapshot.json.response",
+    "response_sha256": "sha256:8f784ab614ec62bfdd5f568eb2a2e3011668449ba235ed4eb7befa99f8469933",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/165.snapshot.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 4942,
+    "response_file": "raw/14-%2F14.targets.json.response",
+    "response_sha256": "sha256:6a697f7f8908c8ab26c11786ecb490b54acec97fa8c802e399f065f8a0cc1acd",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/14.targets.json"
+  },
+  {
+    "method": "GET",
+    "response_byte_length": 6787,
+    "response_file": "raw/15-%2Ftargets%2F6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66.trusted_root.json.response",
+    "response_sha256": "sha256:6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66",
+    "status": 200,
+    "url": "https://tuf-repo-cdn.sigstore.dev/targets/6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66.trusted_root.json"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala%2fcloud"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fcloud@0.4.0"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/@phala%2fdstack-sdk"
+  },
+  {
+    "method": "GET",
+    "status": 200,
+    "url": "https://registry.npmjs.org/-/npm/v1/attestations/@phala%2fdstack-sdk@0.5.8"
+  }
+]

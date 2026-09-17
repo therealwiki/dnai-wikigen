@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,12 @@ import {
     phalaPostMeasurementActivationExecutionReceiptCoreSha256,
   phalaPostMeasurementRuntimeCommitmentsSha256 as
     phalaPostMeasurementRuntimeCommitmentsCoreSha256,
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
+import {
+  normalizePhalaPostMeasurementActivationExecutionReceipt as
+    normalizeHistoricalPhalaPostMeasurementActivationExecutionReceipt,
+  phalaPostMeasurementActivationExecutionReceiptSha256 as
+    historicalPhalaPostMeasurementActivationExecutionReceiptSha256,
 } from "./phala-post-measurement-activation-receipt-core.mjs";
 import {
   PHALA_POST_MEASUREMENT_ACTIVATION_MUTATION_SEQUENCE,
@@ -92,12 +99,14 @@ function completedActivationStates() {
   advance({
     type: "pre_patch_reads_observed",
     observations: [
-      journalObservation("getCurrentUser", 1, "9", "2026-07-21T12:00:00Z"),
+      journalObservation("getCurrentUser", 1, "9", "2026-07-21T11:59:58Z"),
+      journalObservation("getWorkspace", 2, "7", "2026-07-21T11:59:59Z"),
+      journalObservation("getCvmInfo", 3, "8", "2026-07-21T12:00:00Z"),
       journalObservation(
-        "getAppEnvEncryptPubKey", 2, "a", "2026-07-21T12:00:01Z",
+        "getAppEnvEncryptPubKey", 4, "a", "2026-07-21T12:00:01Z",
       ),
       journalObservation(
-        "getAppEnvEncryptPubKey", 3, "b", "2026-07-21T12:00:02Z",
+        "getAppEnvEncryptPubKey", 5, "b", "2026-07-21T12:00:02Z",
       ),
     ],
   });
@@ -112,7 +121,7 @@ function completedActivationStates() {
     action: "updateCvmEnvs",
     observation: {
       ...journalObservation(
-        "updateCvmEnvs", 4, "d", "2026-07-21T12:00:04Z",
+        "updateCvmEnvs", 6, "d", "2026-07-21T12:00:04Z",
       ),
       request_semantics_sha256: sha("c"),
     },
@@ -127,16 +136,16 @@ function completedActivationStates() {
     type: "mutation_observed",
     action: "restartCvm",
     observation: {
-      ...journalObservation("restartCvm", 5, "f", "2026-07-21T12:00:06Z"),
+      ...journalObservation("restartCvm", 7, "f", "2026-07-21T12:00:06Z"),
       request_semantics_sha256: sha("e"),
     },
   });
   advance({
     type: "post_restart_authenticated_phala_attestation_observation_verified",
     observations: [
-      journalObservation("getCvmInfo", 6, "1", "2026-07-21T12:00:07Z"),
+      journalObservation("getCvmInfo", 8, "1", "2026-07-21T12:00:07Z"),
       journalObservation(
-        "getCvmAttestation", 7, "2", "2026-07-21T12:00:08Z",
+        "getCvmAttestation", 9, "2", "2026-07-21T12:00:08Z",
       ),
     ],
   });
@@ -227,7 +236,7 @@ function receiptFixture() {
     mutation_sequence: [...PHALA_POST_MEASUREMENT_ACTIVATION_MUTATION_SEQUENCE],
     patch: {
       sdk_action: "updateCvmEnvs",
-      call_sequence: 4,
+      call_sequence: 6,
       request_semantics_sha256: sha("3"),
       observation_sha256: sha("4"),
       response_sha256: sha("5"),
@@ -244,7 +253,7 @@ function receiptFixture() {
     },
     restart: {
       sdk_action: "restartCvm",
-      call_sequence: 5,
+      call_sequence: 7,
       request_semantics_sha256: sha("7"),
       observation_sha256: sha("8"),
       response_sha256: sha("9"),
@@ -258,11 +267,11 @@ function receiptFixture() {
       },
     },
     post_restart_evidence: {
-      get_cvm_info_call_sequence: 6,
+      get_cvm_info_call_sequence: 8,
       get_cvm_info_observation_sha256: sha("b"),
       get_cvm_info_response_sha256: sha("c"),
       get_cvm_info_observed_at: "2026-07-21T12:00:07Z",
-      get_cvm_attestation_call_sequence: 7,
+      get_cvm_attestation_call_sequence: 9,
       get_cvm_attestation_observation_sha256: sha("d"),
       get_cvm_attestation_response_sha256: sha("e"),
       get_cvm_attestation_observed_at: "2026-07-21T12:00:08Z",
@@ -634,6 +643,79 @@ test("receipt preflight token is opaque and finalization requires exact durable 
   }
 });
 
+test("current v4 receipt rejects historical v3 while preserving its byte-identical core and digest", () => {
+  const historical = receiptFixture();
+  historical.schema = "dnai.phala-post-measurement-activation-execution-receipt.v3";
+  historical.patch.call_sequence = 4;
+  historical.restart.call_sequence = 5;
+  historical.post_restart_evidence.get_cvm_info_call_sequence = 6;
+  historical.post_restart_evidence.get_cvm_attestation_call_sequence = 7;
+  assert.deepEqual(
+    normalizeHistoricalPhalaPostMeasurementActivationExecutionReceipt(historical),
+    historical,
+  );
+  assert.equal(
+    historicalPhalaPostMeasurementActivationExecutionReceiptSha256(historical),
+    "sha256:64653fbac10719adcd121f417d448253dbc4666eb7c26d2d08abdd9b0dd08e73",
+  );
+  for (const normalize of [
+    normalizePhalaPostMeasurementActivationExecutionReceipt,
+    normalizePhalaPostMeasurementActivationExecutionReceiptCore,
+  ]) {
+    assert.throws(() => normalize(historical), /truth boundary/);
+    const staleSequence = receiptFixture();
+    staleSequence.patch.call_sequence = 4;
+    assert.throws(() => normalize(staleSequence), /PATCH receipt/);
+  }
+  assert.equal(
+    createHash("sha256").update(fs.readFileSync(new URL(
+      "./phala-post-measurement-activation-receipt-core.mjs", import.meta.url,
+    ))).digest("hex"),
+    "608e89d75eb7ad97f9bf060347aff516bd22ba9add8ced3089e29b13e5d6e99a",
+  );
+});
+
+test("receipt preflight independently rejects inactive billing and substituted pre-PATCH targets", () => {
+  const valid = {
+    currentUserResponse: {
+      user: { username: "operator", email: "operator@example.invalid", role: "user" },
+      workspace: { id: "workspace-1", name: "reviewed", slug: "reviewed", role: "owner" },
+    },
+    workspaceResponse: { id: "workspace-1", slug: "reviewed", billing_status: "active" },
+    prePatchCvmInfoResponse: {
+      id: "cvm-main-0001",
+      app_id: "b".repeat(40),
+      compose_hash: "c".repeat(64),
+      os: { os_image_hash: "d".repeat(64) },
+    },
+    adapterIdentity: { workspace_id: "workspace-1" },
+    target: receiptFixture().target,
+  };
+  assert.doesNotThrow(() => __test.assertPrePatchPhalaEvidenceResponses(valid));
+  const mutations = [
+    (value) => { delete value.workspaceResponse.billing_status; },
+    (value) => { value.workspaceResponse.billing_status = "suspended"; },
+    (value) => { value.workspaceResponse.billing_status = "abandoned"; },
+    (value) => { value.workspaceResponse.id = "workspace-2"; },
+    (value) => { value.workspaceResponse.slug = "substituted"; },
+    (value) => { value.adapterIdentity.workspace_id = "workspace-2"; },
+    (value) => { value.prePatchCvmInfoResponse.id = "cvm-other-0002"; },
+    (value) => { value.prePatchCvmInfoResponse.app_id = "a".repeat(40); },
+    (value) => { value.prePatchCvmInfoResponse.compose_hash = "e".repeat(64); },
+    (value) => { value.prePatchCvmInfoResponse.os.os_image_hash = "f".repeat(64); },
+    (value) => { delete value.prePatchCvmInfoResponse.os; },
+  ];
+  for (const mutate of mutations) {
+    const invalid = structuredClone(valid);
+    mutate(invalid);
+    assert.throws(
+      () => __test.assertPrePatchPhalaEvidenceResponses(invalid),
+      /pre-PATCH/,
+      `must reject ${mutate.toString()}`,
+    );
+  }
+});
+
 test("activation execution receipt KAT freezes signed authorization through fresh post-restart proof", () => {
   const receipt = receiptFixture();
   assert.deepEqual(
@@ -646,11 +728,11 @@ test("activation execution receipt KAT freezes signed authorization through fres
   );
   assert.equal(
     phalaPostMeasurementActivationExecutionReceiptSha256(receipt),
-    "sha256:64653fbac10719adcd121f417d448253dbc4666eb7c26d2d08abdd9b0dd08e73",
+    "sha256:ce1600254bda598248a01e84bfef0cc57f1e8586418577bfa87ac252c13e8ab8",
   );
   assert.equal(
     phalaPostMeasurementActivationExecutionReceiptCoreSha256(receipt),
-    "sha256:64653fbac10719adcd121f417d448253dbc4666eb7c26d2d08abdd9b0dd08e73",
+    "sha256:ce1600254bda598248a01e84bfef0cc57f1e8586418577bfa87ac252c13e8ab8",
   );
   const runtimeCommitments = {
     TINKER_COMPUTE_WORKLOAD_CEREMONY_NONCE: bytes32("a"),
@@ -681,6 +763,11 @@ test("activation execution receipt KAT freezes signed authorization through fres
     true,
   );
   assert.equal(receipt.patch.allowed_environment_keys_mutated, false);
+  assert.equal(receipt.schema, "dnai.phala-post-measurement-activation-execution-receipt.v4");
+  assert.equal(receipt.patch.call_sequence, 6);
+  assert.equal(receipt.restart.call_sequence, 7);
+  assert.equal(receipt.post_restart_evidence.get_cvm_info_call_sequence, 8);
+  assert.equal(receipt.post_restart_evidence.get_cvm_attestation_call_sequence, 9);
   assert.equal(receipt.restart.force, false);
   assert.deepEqual(receipt.profile_activation, {
     profile_names: ["arena-runtime", "compute-execution"],

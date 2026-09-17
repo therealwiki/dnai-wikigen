@@ -53,15 +53,15 @@ import {
   parseEnvText,
 } from "./activation-preflight-core.mjs";
 import {
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
 } from "../web/scripts/build-release-env.mjs";
 
 export const SEMANTIC_VALIDATOR_INPUT_FLAGS =
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS;
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS;
 export {
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
 };
 import {
   describeAuthorityReviewSubjectText,
@@ -156,6 +156,9 @@ const SEMANTIC_VALIDATION_TIMEOUT_MS = 180_000;
 const INSPECTED_FILE_DESCRIPTOR = Symbol("dnai.inspected-file-descriptor");
 const leasedInspectionSnapshots = new WeakSet();
 const inspectionDescriptorScope = new AsyncLocalStorage();
+// The pinned Phala CLI 1.1.19 supports this read-only identity API. This is
+// deliberately separate from the newer production SDK deployment authority.
+export const PHALA_CLI_DIAGNOSTIC_API_VERSION = "2026-01-21";
 export const CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS = 120_000;
 export {
   SEMANTIC_VALIDATION_SCHEMA,
@@ -421,7 +424,7 @@ function usage() {
     "  --diligence-phase-4-review-envelope FILE  Phase-4 final-authority review",
     "  Live activation also requires RELEASE_CEREMONY_LEDGER_PATH,",
     "  RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT, and RELEASE_CEREMONY_LOCK_ROOT.",
-    "  Live activation additionally requires every current exact-38 semantic-validator input flag.",
+    "  Live activation additionally requires every current exact-39 input, including the standalone post-measurement activation execution receipt.",
     "  A single current review cannot replace the four phase-specific envelopes.",
     "  --artifact-evidence FILE         Independent diligence deployment evidence",
     "  --arena-evidence FILE            Independent Arena deployment evidence",
@@ -915,7 +918,7 @@ export function assertReadOnlyInvocation(command, args) {
   if (command === "phala" && (
     arraysEqual(args, ["status"])
     || arraysEqual(args, [
-      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+      "status", "--json", "--api-version", PHALA_CLI_DIAGNOSTIC_API_VERSION,
     ])
   )) return;
   if (command === "wrangler" && (
@@ -4050,14 +4053,14 @@ export function probePhalaAuthentication(
 ) {
   try {
     const response = authenticationResponse(execute("phala", [
-      "status", "--json", "--api-version", PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+      "status", "--json", "--api-version", PHALA_CLI_DIAGNOSTIC_API_VERSION,
     ], {
       env: phalaEnvironment(env),
       timeout: COMMAND_TIMEOUT_MS,
     }));
     return response?.success === true
       && response.apiUrl === PHALA_CONTROL_PLANE_AUTHORITY.api_origin
-      && response.apiVersion === PHALA_CONTROL_PLANE_AUTHORITY.api_version
+      && response.apiVersion === PHALA_CLI_DIAGNOSTIC_API_VERSION
       && typeof response.username === "string" && clean(response.username).length > 0
       && typeof response.team_name === "string" && clean(response.team_name).length > 0;
   } catch {
@@ -4343,6 +4346,8 @@ export function resolveEvidencePaths(
     liveActivationAuthority: "LIVE_ACTIVATION_AUTHORITY_PATH",
     royaltyReleaseHistoryReceipt:
       "ROYALTY_RELEASE_HISTORY_RECEIPT_PATH",
+    postMeasurementActivationExecutionReceipt:
+      "PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_PATH",
     computeWorkloadActivationObservation:
       "COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PATH",
     frontendBuildCandidateReceipt:
@@ -5467,7 +5472,7 @@ async function collectSnapshotWithRetainedEvidence(args) {
     } else if (args.authorityStage === "release_ceremony") {
       // The release-ceremony stage precedes O, D, and separately signed C.
       // Bind only the current artifacts this preflight actually interprets;
-      // Current exact-38 is reserved for live activation and must not make a
+      // Current exact-39 is reserved for live activation and must not make a
       // pre-mutation ceremony depend on its own future outputs.
       readinessStableBindings.push(
         { path: evidencePaths.release, initial: releaseCandidate, options: { json: true } },

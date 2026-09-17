@@ -16,8 +16,14 @@ import {
 } from "./public-https-origin-core.mjs";
 import {
   COMPUTE_WORKLOAD_BROWSER_ENV_KEYS,
+  normalizeComputeWorkloadActivationObservationHistoricalReplay,
+  normalizeComputeWorkloadActivationObservationPrebuildReplay,
   projectComputeWorkloadBrowserEnvFromHistoricalObservation,
+  projectComputeWorkloadBrowserEnvFromPrebuildObservation,
 } from "../../scripts/compute-workload-activation-observation-core.mjs";
+import {
+  CVM_LAUNCH_DOMAINS,
+} from "../../scripts/cvm-launch-intent-core.mjs";
 import {
   normalizeRoyaltyReleaseBrowserEnv,
   ROYALTY_RELEASE_BROWSER_ENV_KEYS,
@@ -2953,38 +2959,41 @@ export function assertLiveActivationFinalCvmsMatchCandidate(
   });
   const finalCvms = liveActivationFrontendBinding?.final_cvms;
   const topology = [
-    ["main_runtime", candidate.cvm, candidate.cvm.tee_identity],
+    ["main_runtime_cvm", candidate.cvm, candidate.cvm.tee_identity],
     [
-      "diligence_qvl",
+      "diligence_qvl_cvm",
       candidate.trust_domains.diligence_qvl,
       candidate.trust_domains.diligence_qvl.identity.verifier_address,
     ],
     [
-      "arena_qvl",
+      "arena_qvl_cvm",
       candidate.trust_domains.arena_qvl,
       candidate.trust_domains.arena_qvl.identity.verifier_address,
     ],
     [
-      "anchor_writer_qvl",
+      "anchor_writer_qvl_cvm",
       candidate.trust_domains.anchor_writer_qvl,
       candidate.trust_domains.anchor_writer_qvl.identity.verifier_address,
     ],
     [
-      "compute_metering_qvl",
-      candidate.trust_domains.compute_metering_qvl,
-      candidate.trust_domains.compute_metering_qvl.identity.verifier_address,
-    ],
-    [
-      "compute_workload_qvl",
+      "compute_workload_qvl_cvm",
       candidate.trust_domains.compute_workload_qvl,
       candidate.trust_domains.compute_workload_qvl.identity.verifier_address,
     ],
     [
-      "independent_metering",
+      "compute_metering_qvl_cvm",
+      candidate.trust_domains.compute_metering_qvl,
+      candidate.trust_domains.compute_metering_qvl.identity.verifier_address,
+    ],
+    [
+      "independent_metering_cvm",
       candidate.trust_domains.compute_metering,
       candidate.trust_domains.compute_metering.identity.metering_verifier,
     ],
   ];
+  if (JSON.stringify(topology.map(([key]) => key)) !== JSON.stringify(CVM_LAUNCH_DOMAINS)) {
+    throw new Error("release candidate topology projection drifted from canonical CVM launch domains");
+  }
   if (!Array.isArray(finalCvms) || finalCvms.length !== topology.length) {
     throw new Error("signed live activation does not contain the exact seven-CVM topology");
   }
@@ -6066,6 +6075,94 @@ export async function validateLiveChain(
   };
 }
 
+// The caller has already normalized the complete release candidate. This helper
+// only projects its Compute browser surface; replay wrappers remain nonauthorizing.
+function projectComputeWorkloadReleaseBrowserEnv({
+  candidate,
+  candidateAuthorityStage,
+  prebuildComputeWorkloadActivationObservationReplay,
+  historicalComputeWorkloadActivationObservation,
+}) {
+  let computeWorkloadEnv = Object.fromEntries(
+    COMPUTE_WORKLOAD_BROWSER_ENV_KEYS.map((key) => [key, ""]),
+  );
+  computeWorkloadEnv.VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD = "false";
+  computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_REVOKED_QUOTE_HASHES_JSON = "[]";
+  if (candidate.requested_features.compute_workload_upload) {
+    const hasPrebuild = prebuildComputeWorkloadActivationObservationReplay !== undefined;
+    const hasHistorical = historicalComputeWorkloadActivationObservation !== undefined;
+    if (hasPrebuild && hasHistorical) {
+      throw new Error("compute-workload upload requires exactly one stage-specific observation replay");
+    }
+    let replay;
+    if (candidateAuthorityStage === "prebuild") {
+      if (hasHistorical || !hasPrebuild) {
+        throw new Error("compute-workload upload prebuild requires only a revalidated prebuild observation replay");
+      }
+      replay = normalizeComputeWorkloadActivationObservationPrebuildReplay(
+        prebuildComputeWorkloadActivationObservationReplay,
+      );
+      computeWorkloadEnv = projectComputeWorkloadBrowserEnvFromPrebuildObservation(replay);
+    } else if (candidateAuthorityStage === "live") {
+      if (hasPrebuild || !hasHistorical) {
+        throw new Error("compute-workload upload requires a revalidated signed-C historical observation");
+      }
+      replay = normalizeComputeWorkloadActivationObservationHistoricalReplay(
+        historicalComputeWorkloadActivationObservation,
+      );
+      computeWorkloadEnv = projectComputeWorkloadBrowserEnvFromHistoricalObservation(replay);
+    } else {
+      throw new Error("compute-workload upload requires an exact prebuild or live candidate stage");
+    }
+    const observation = replay.observation;
+    const expectedCapabilityEndpoint =
+      `${candidate.cvm.delegate_url}/compute/workload-encryption-contract`;
+    if (observation.release_sha !== candidate.release_sha
+      || observation.chain_id !== BASE_SEPOLIA_CHAIN_ID
+      || observation.capability_endpoint
+        !== expectedCapabilityEndpoint
+      || observation.main_runtime.app_id !== candidate.cvm.app_id
+      || observation.main_runtime.cvm_id !== candidate.cvm.cvm_id
+      || observation.main_runtime.compose_hash
+        !== candidate.cvm.compose_hash
+      || observation.main_runtime.os_image_hash
+        !== candidate.cvm.os_image_hash
+      || observation.main_runtime.tee_identity
+        !== candidate.cvm.tee_identity
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_QVL_VERIFIER
+        !== candidate.trust_domains.compute_workload_qvl.identity.verifier_address
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CVM_ID
+        !== candidate.cvm.cvm_id
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256
+        !== candidate.deployment_intent_sha256
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256
+        !== candidate.attestations.artifact.verdict.release_authority_sha256
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CEREMONY_NONCE
+        !== candidate.attestations.artifact.verdict.ceremony_nonce
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256
+        !== observation.lineage.qvl_measurement_policy_set_sha256
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SHA256
+        !== observation.compute_workload_qvl.measurement_policy_sha256
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256
+        !== observation.main_runtime.seven_cvm_domain_evidence_sha256
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH
+        !== candidate.trust_domains.compute_workload_qvl.identity.release_policy_hash
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CONTRACT_ADDRESS
+        !== candidate.contracts.compute_credit_vault.address
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_VAULT_RUNTIME_CODE_HASH
+        !== candidate.contracts.compute_credit_vault.runtime_code_hash
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MAX_VERDICT_AGE_SECONDS
+        !== String(candidate.cvm.compute_workload_ingress.max_verdict_age_seconds)
+      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_REVOKED_QUOTE_HASHES_JSON
+        !== JSON.stringify(candidate.cvm.compute_workload_ingress.revoked_quote_hashes)) {
+      throw new Error(
+        "replayed compute-workload activation observation drifted from the exact reviewed release candidate",
+      );
+    }
+  }
+  return computeWorkloadEnv;
+}
+
 export async function buildReleaseEnv({
   candidate: candidateValue,
   ledger,
@@ -6082,6 +6179,7 @@ export async function buildReleaseEnv({
   trustedVerifierAddresses,
   authorityBinding: authorityBindingValue,
   candidateAuthorityStage = "live",
+  prebuildComputeWorkloadActivationObservationReplay,
   historicalComputeWorkloadActivationObservation,
   royaltyReleaseBrowserEnv = {},
   collaborationExecutionReleaseEnv = {},
@@ -6191,65 +6289,12 @@ export async function buildReleaseEnv({
   }
   const delegate = candidate.cvm.images.find((image) => image.service === "delegate");
   const requested = candidate.requested_features;
-  let computeWorkloadEnv = Object.fromEntries(
-    COMPUTE_WORKLOAD_BROWSER_ENV_KEYS.map((key) => [key, ""]),
-  );
-  computeWorkloadEnv.VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD = "false";
-  computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_REVOKED_QUOTE_HASHES_JSON = "[]";
-  if (requested.compute_workload_upload) {
-    if (!historicalComputeWorkloadActivationObservation) {
-      throw new Error(
-        "compute-workload upload requires a revalidated signed-C historical observation",
-      );
-    }
-    const observation = historicalComputeWorkloadActivationObservation;
-    computeWorkloadEnv =
-      projectComputeWorkloadBrowserEnvFromHistoricalObservation(observation);
-    const expectedCapabilityEndpoint =
-      `${candidate.cvm.delegate_url}/compute/workload-encryption-contract`;
-    if (observation.release_sha !== candidate.release_sha
-      || observation.chain_id !== BASE_SEPOLIA_CHAIN_ID
-      || observation.capability_endpoint
-        !== expectedCapabilityEndpoint
-      || observation.main_runtime.app_id !== candidate.cvm.app_id
-      || observation.main_runtime.cvm_id !== candidate.cvm.cvm_id
-      || observation.main_runtime.compose_hash
-        !== candidate.cvm.compose_hash
-      || observation.main_runtime.os_image_hash
-        !== candidate.cvm.os_image_hash
-      || observation.main_runtime.tee_identity
-        !== candidate.cvm.tee_identity
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_QVL_VERIFIER
-        !== candidate.trust_domains.compute_workload_qvl.identity.verifier_address
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CVM_ID
-        !== candidate.cvm.cvm_id
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256
-        !== candidate.deployment_intent_sha256
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256
-        !== candidate.attestations.artifact.verdict.release_authority_sha256
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CEREMONY_NONCE
-        !== candidate.attestations.artifact.verdict.ceremony_nonce
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256
-        !== observation.lineage.qvl_measurement_policy_set_sha256
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SHA256
-        !== observation.compute_workload_qvl.measurement_policy_sha256
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256
-        !== observation.main_runtime.seven_cvm_domain_evidence_sha256
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH
-        !== candidate.trust_domains.compute_workload_qvl.identity.release_policy_hash
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_CONTRACT_ADDRESS
-        !== candidate.contracts.compute_credit_vault.address
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_VAULT_RUNTIME_CODE_HASH
-        !== candidate.contracts.compute_credit_vault.runtime_code_hash
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_MAX_VERDICT_AGE_SECONDS
-        !== String(candidate.cvm.compute_workload_ingress.max_verdict_age_seconds)
-      || computeWorkloadEnv.VITE_COMPUTE_WORKLOAD_REVOKED_QUOTE_HASHES_JSON
-        !== JSON.stringify(candidate.cvm.compute_workload_ingress.revoked_quote_hashes)) {
-      throw new Error(
-        "branded compute-workload activation observation drifted from the exact reviewed release candidate",
-      );
-    }
-  }
+  const computeWorkloadEnv = projectComputeWorkloadReleaseBrowserEnv({
+    candidate,
+    candidateAuthorityStage,
+    prebuildComputeWorkloadActivationObservationReplay,
+    historicalComputeWorkloadActivationObservation,
+  });
   const royaltyReleaseEnvKeys = Object.keys(royaltyReleaseBrowserEnv).sort();
   const expectedRoyaltyReleaseEnvKeys = [...ROYALTY_RELEASE_BROWSER_ENV_KEYS].sort();
   if (royaltyReleaseEnvKeys.length > 0
@@ -6474,7 +6519,9 @@ export function githubAttestationCommands(value) {
   ]));
 }
 
-export const __test = Object.freeze({ canonicalVerdictDigest, ENV_KEYS });
+export const __test = Object.freeze({
+  canonicalVerdictDigest, ENV_KEYS, projectComputeWorkloadReleaseBrowserEnv,
+});
 
 // Additive compatibility exports only. Historical exact-37 must import the
 // pure module directly rather than this viem-backed production facade.

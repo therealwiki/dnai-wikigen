@@ -10,6 +10,7 @@ import { createPublicClient, http } from "viem";
 import {
   BASE_SEPOLIA_CHAIN_ID,
   CANONICAL_PUBLIC_RPC,
+  assertLiveActivationFinalCvmsMatchCandidate,
   assertLiveReleaseCandidateMatchesPrebuild,
   buildReleaseEnv,
   canonicalLiveReleaseCandidatePrebuildProjectionText,
@@ -25,8 +26,21 @@ import {
 import {
   EXACT35_MODEL_A_INPUT_FLAGS,
   EXACT37_MODEL_A_INPUT_FLAGS,
-  validateExact35ModelAPrebuildAuthority,
 } from "../../scripts/exact37-model-a-semantic-validator.mjs";
+import {
+  validateCurrentModelAPrebuildAuthority,
+} from "./current-model-a-prebuild-semantic-validator.mjs";
+import {
+  CURRENT_MODEL_A_LIVE_INPUT_FLAGS,
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+} from "../../scripts/current-model-a-input-recipe-core.mjs";
+import {
+  assertHistoricallyVerifiedComputeWorkloadActivationObservation,
+} from "../../scripts/compute-workload-activation-observation-core.mjs";
+import {
+  normalizePhalaPostMeasurementActivationExecutionReceipt,
+  phalaPostMeasurementActivationExecutionReceiptSha256,
+} from "../../scripts/phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   normalizeRoyaltyReleaseHistoryReceipt,
   royaltyReleaseHistoryReceiptSha256,
@@ -43,6 +57,7 @@ import {
   createFrontendBuildPreDPrivateInputs,
 } from "./frontend-build-candidate-core.mjs";
 import {
+  assertLiveActivationFinalCvmsMatchAuthenticatedLaunch,
   assertHistoricalLiveActivationComputeWorkloadObservationBinding,
   normalizeLiveActivationAuthority,
   projectLiveActivationFrontendBinding,
@@ -94,58 +109,18 @@ const PINNED_GIT_ENVIRONMENT = Object.freeze({
   GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_OPTIONAL_LOCKS: "0",
 });
-export const SEMANTIC_VALIDATOR_INPUT_FLAGS = Object.freeze([
-  "--release",
-  "--release-core",
-  "--runtime-authority-dependency",
-  "--deployment-intent",
-  "--contract-receipt",
-  "--reviewer-authority-genesis",
-  "--reviewer-authority-genesis-acceptance",
-  "--bootstrap-authority",
-  "--bootstrap-authorization",
-  "--bootstrap-authorization-receipt",
-  "--seven-cvm-launch-completion-receipt",
-  "--main-runtime-qvl-challenge",
-  "--main-runtime-independent-tdx-verdict",
-  "--diligence-qvl-identity-request",
-  "--diligence-qvl-identity-response",
-  "--arena-qvl-identity-request",
-  "--arena-qvl-identity-response",
-  "--anchor-writer-qvl-identity-request",
-  "--anchor-writer-qvl-identity-response",
-  "--compute-workload-qvl-identity-request",
-  "--compute-workload-qvl-identity-response",
-  "--compute-metering-qvl-identity-request",
-  "--compute-metering-qvl-identity-response",
-  "--independent-metering-qvl-challenge",
-  "--independent-metering-independent-tdx-verdict",
-  "--image-release-sigstore-verification-receipt",
-  "--cvm-descriptor-set-receipt",
-  "--phala-executor-final-state",
-  "--ceremony-authorization",
-  "--ledger",
-  "--artifact-evidence",
-  "--arena-evidence",
-  "--anchor-writer-evidence",
-  "--email-oracle-evidence",
-  "--live-activation-authority",
-  "--royalty-release-history-receipt",
-  "--compute-workload-activation-observation",
-  "--frontend-build-candidate-receipt",
-]);
-export const PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS = Object.freeze([
-  ...FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS,
-]);
-export const CURRENT_FRONTEND_EXACT38_INPUT_FLAGS =
+export const SEMANTIC_VALIDATOR_INPUT_FLAGS = CURRENT_MODEL_A_LIVE_INPUT_FLAGS;
+export const PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS =
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS;
+export const CURRENT_FRONTEND_EXACT39_INPUT_FLAGS =
   SEMANTIC_VALIDATOR_INPUT_FLAGS;
-export const CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS =
+export const CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS =
   PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS;
-if (CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.length !== 38
-  || CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS.length !== 36
+if (CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.length !== 39
+  || CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS.length !== 37
   || EXACT37_MODEL_A_INPUT_FLAGS.length !== 37
   || EXACT35_MODEL_A_INPUT_FLAGS.length !== 35) {
-  throw new Error("current exact36/38 and historical exact35/37 flag counts drifted");
+  throw new Error("current exact37/39 and historical exact35/37 flag counts drifted");
 }
 const SEMANTIC_VALIDATOR_INPUT_FLAG_SET = new Set(
   SEMANTIC_VALIDATOR_INPUT_FLAGS,
@@ -595,8 +570,9 @@ export async function loadExactPrebuildSemanticValidatorInputs(args) {
 }
 
 /**
- * Project the current exact-36/38 input set back to the immutable historical
- * exact-35/37 recipe. H is deliberately absent from the returned graph, so a
+ * Project a current input set back to the immutable historical exact-35/37
+ * recipe for explicit historical consumers only. H and the standalone current
+ * activation receipt are deliberately absent from the returned graph, so a
  * historical validator can never accidentally acquire current authority from
  * a post-transaction receipt it did not originally define.
  */
@@ -890,7 +866,7 @@ export function historicalTranscriptCorroborationFromSemanticInputs(inputs) {
 
 export function frontendBuildPreDPrivateInputsFromSemanticInputs(inputs) {
   if (!inputs?.byKey || !Array.isArray(inputs.entries)) {
-    throw new Error("frontend D input projection requires stable exact-37 inputs");
+    throw new Error("frontend D input projection requires stable current release inputs");
   }
   const byFlag = new Map(inputs.entries.map((entry) => [entry.flag, entry]));
   const actualFlags = [...byFlag.keys()].sort();
@@ -898,7 +874,7 @@ export function frontendBuildPreDPrivateInputsFromSemanticInputs(inputs) {
   const prebuildFlags = [...PREBUILD_SEMANTIC_VALIDATOR_INPUT_FLAGS].sort();
   if (JSON.stringify(actualFlags) !== JSON.stringify(liveFlags)
     && JSON.stringify(actualFlags) !== JSON.stringify(prebuildFlags)) {
-    throw new Error("frontend D input projection requires exactly the live-37 or acyclic prebuild-35 flags");
+    throw new Error("frontend D input projection requires exactly the current live-39 or acyclic prebuild-37 flags");
   }
   const releaseEntry = byFlag.get("--release");
   if (!releaseEntry) {
@@ -1181,6 +1157,7 @@ async function buildCurrentReleaseEnvironment({
   authorityStage,
   rpcEndpoints,
   verifierAddresses,
+  signedCObservationReplay,
 }) {
   const collaborationExecutionReleaseEnv =
     projectCollaborationExecutionReleaseEnv(
@@ -1211,8 +1188,10 @@ async function buildCurrentReleaseEnvironment({
         historical.authorityBinding.runtimeAuthorityDependencySha256,
     }),
     candidateAuthorityStage: authorityStage,
+    prebuildComputeWorkloadActivationObservationReplay:
+      authorityStage === "prebuild" ? historical.prebuildObservationReplay : undefined,
     historicalComputeWorkloadActivationObservation:
-      historical.normalizedArtifacts.historicalO,
+      authorityStage === "live" ? signedCObservationReplay : undefined,
     royaltyReleaseBrowserEnv,
     collaborationExecutionReleaseEnv,
   });
@@ -1223,6 +1202,26 @@ async function buildCurrentReleaseEnvironment({
  * chain/external evidence needed to deterministically produce nonauthorizing D.
  * This function never writes a file, signs C, or authorizes live traffic.
  */
+export function projectPrebuildReceiptAuthorityBinding({
+  authorityBinding,
+  semanticLineage,
+}) {
+  // D commits the recorded activation authority. The separately verified browser
+  // projection stays in the semantic validation result, not D's frozen shape.
+  return Object.freeze({
+    deploymentIntentSha256: authorityBinding.deploymentIntentSha256,
+    reviewerAuthorityGenesisAcceptanceSha256:
+      authorityBinding.reviewerAuthorityGenesisAcceptanceSha256,
+    ceremonyAuthorizationSha256: authorityBinding.ceremonyAuthorizationSha256,
+    runtimeAuthorityDependencySha256:
+      authorityBinding.runtimeAuthorityDependencySha256,
+    computeWorkloadActivationObservationSha256:
+      semanticLineage.compute_workload_activation_observation_sha256,
+    postMeasurementActivationExecutionReceiptSha256:
+      semanticLineage.post_measurement_activation_execution_receipt_sha256,
+  });
+}
+
 export async function validatePrebuildSemanticRelease(argv, {
   onHistoricalValidation,
 } = {}) {
@@ -1230,13 +1229,9 @@ export async function validatePrebuildSemanticRelease(argv, {
   const inputs = await loadExactPrebuildSemanticValidatorInputs(args);
   const independentRoyaltyHistory =
     validateIndependentRoyaltyReleaseHistoryInput(inputs);
-  const historicalInputs = historicalSemanticInputsWithoutRoyaltyHistory(
-    inputs,
-    EXACT35_MODEL_A_INPUT_FLAGS,
-  );
   const validationTimeMs = wholeSecondNowMs();
-  const historical = await validateExact35ModelAPrebuildAuthority({
-    inputs: historicalInputs,
+  const historical = await validateCurrentModelAPrebuildAuthority({
+    inputs,
     validationTimeMs,
     reviewerStatusHistory: [],
   });
@@ -1295,11 +1290,7 @@ export async function validatePrebuildSemanticRelease(argv, {
     secondaryRpcUrl: rpcEndpoints.secondary,
     qvlVerifierRoots: verifierAddresses,
     authorityRoots: historical.authorityRoots,
-    authorityBinding: Object.freeze({
-      ...historical.authorityBinding,
-      computeWorkloadActivationObservationSha256:
-        historical.semanticLineage.compute_workload_activation_observation_sha256,
-    }),
+    authorityBinding: projectPrebuildReceiptAuthorityBinding(historical),
   });
 }
 
@@ -1365,7 +1356,7 @@ export async function main(argv = process.argv.slice(2)) {
           {
             onHistoricalValidation: (value) => {
               if (prebuildHistoricalValidation) {
-                throw new Error("historical exact-35 validation must be captured exactly once");
+                throw new Error("current prebuild authority validation must be captured exactly once");
               }
               prebuildHistoricalValidation = value;
             },
@@ -1378,7 +1369,7 @@ export async function main(argv = process.argv.slice(2)) {
     await removePrivateReleaseBuildHome(replay.home);
   }
   if (!prebuildProjection || !prebuildHistoricalValidation) {
-    throw new Error("frontend D production omitted the authenticated exact-35 prebuild projection");
+    throw new Error("frontend D production omitted the authenticated current prebuild-37 projection");
   }
   const validationTimeMs = wholeSecondNowMs();
   const independentRoyaltyHistory =
@@ -1431,6 +1422,43 @@ export async function main(argv = process.argv.slice(2)) {
     currentLiveActivation,
     { ...liveActivationOptions, enforceFreshness: false },
   );
+  const standaloneActivationReceipt =
+    normalizePhalaPostMeasurementActivationExecutionReceipt(
+      inputs.byKey.postMeasurementActivationExecutionReceipt.value,
+    );
+  const standaloneActivationReceiptSha256 =
+    phalaPostMeasurementActivationExecutionReceiptSha256(standaloneActivationReceipt);
+  if (standaloneActivationReceiptSha256
+      !== prebuildProjection.authorityBinding.postMeasurementActivationExecutionReceiptSha256
+    || standaloneActivationReceiptSha256
+      !== currentLiveActivation.post_ceremony_evidence
+        .post_measurement_activation_execution_receipt_sha256
+    || standaloneActivationReceiptSha256
+      !== currentBuildReceipt.post_measurement_activation_execution_receipt_sha256
+    || JSON.stringify(standaloneActivationReceipt)
+      !== JSON.stringify(currentLiveActivation.post_ceremony_evidence
+        .post_measurement_activation_execution_receipt)) {
+    throw new Error("final C and D must bind the exact standalone prebuild activation receipt");
+  }
+  assertLiveActivationFinalCvmsMatchAuthenticatedLaunch({
+    liveActivationAuthority: currentLiveActivation,
+    liveActivationOptions: {
+      ...liveActivationOptions,
+      enforceFreshness: false,
+    },
+    authenticatedLaunchReceipt:
+      prebuildHistoricalValidation.normalizedArtifacts.launchReceipt,
+    activationExecutionReceipt: standaloneActivationReceipt,
+  });
+  assertLiveActivationFinalCvmsMatchCandidate(frontendBinding, candidate);
+  // Prebuild completion is not signed-C authorization. Replay the independently
+  // authenticated O expectations again at the actual C signing time.
+  const signedCObservationReplay =
+    assertHistoricallyVerifiedComputeWorkloadActivationObservation({
+      persistedObservation: prebuildHistoricalValidation.normalizedArtifacts.historicalO,
+      expected: prebuildHistoricalValidation.computeWorkloadObservationExpectations,
+      authorizedAtMs: Date.parse(currentLiveActivation.review.signed_at),
+    });
   const currentAuthorityBinding =
     assertHistoricalLiveActivationComputeWorkloadObservationBinding({
       liveActivationAuthority: currentLiveActivation,
@@ -1439,7 +1467,7 @@ export async function main(argv = process.argv.slice(2)) {
         enforceFreshness: false,
       },
       historicallyVerifiedObservation:
-        prebuildHistoricalValidation.normalizedArtifacts.historicalO,
+        signedCObservationReplay,
       frontendBuildCandidateReceipt: currentBuildReceipt,
       serializedEnv: candidateProduction.serializedEnv,
     });
@@ -1471,6 +1499,12 @@ export async function main(argv = process.argv.slice(2)) {
     candidate,
     inputs.byKey.releaseCore.value,
     inputs.byKey.runtimeAuthorityDependency.value,
+    {
+      authorityStage: "live",
+      authenticatedRuntimeAuthoritySha256:
+        prebuildProjection.authorityBinding.runtimeAuthorityDependencySha256,
+      royaltyReleaseHistoryReceipt: currentRoyaltyHistory.receipt,
+    },
   );
   assertCleanReleaseSource(candidate.release_sha);
   verifyGithubAttestations(candidate);
@@ -1485,6 +1519,7 @@ export async function main(argv = process.argv.slice(2)) {
     authorityStage: "live",
     rpcEndpoints,
     verifierAddresses,
+    signedCObservationReplay,
   });
   const serializedEnv = serializeEnv(env);
   if (serializedEnv !== candidateProduction.serializedEnv) {
@@ -1500,6 +1535,7 @@ export async function main(argv = process.argv.slice(2)) {
     Object.freeze({
       ...prebuildProjection.authorityBinding,
       ...currentAuthorityBinding,
+      releaseInputsSha256: currentBuildReceipt.release_inputs_sha256,
     }),
   ));
   if (!args.checkOnly) {

@@ -53,7 +53,10 @@ WORKLOAD_INGRESS_ENCODING = "base64url-nopad"
 WORKLOAD_INGRESS_CONTEXT = "compute_workload_ingress"
 WORKLOAD_ATTESTATION_CONTEXT = "compute_workload"
 WORKLOAD_RECIPIENT_ACTIVATION_SCHEMA = (
-    "dnai.compute.workload-recipient-activation.v3"
+    "dnai.compute.workload-recipient-activation.v4"
+)
+WORKLOAD_RECIPIENT_ACTIVATION_DOMAIN = (
+    b"dnai-wikigen/compute-workload-recipient-activation/v4\0"
 )
 WORKLOAD_HKDF_INFO = b"dnai-wikigen/compute-workload-ingress/v1"
 WORKLOAD_COMMITMENT_DOMAIN = b"dnai-wikigen/compute-workload/v1\0"
@@ -933,7 +936,24 @@ class ComputeWorkloadRecipientActivation:
 
     @property
     def commitment(self) -> str:
-        return _sha256(_canonical_json(self.to_dict()))
+        """Bind intake to a stable, independently authenticated release.
+
+        Each admission authenticates a new signed QVL challenge/verdict before
+        reaching this projection. Ephemeral proof bytes must not invalidate an
+        envelope prepared against the same exact recipient and release epoch.
+        The v2 release identity is rederived, never accepted from a caller.
+        """
+        return _sha256(
+            WORKLOAD_RECIPIENT_ACTIVATION_DOMAIN
+            + _canonical_json(
+                {
+                    "schema": WORKLOAD_RECIPIENT_ACTIVATION_SCHEMA,
+                    "recipient_release_commitment": (
+                        self.recipient_release_commitment
+                    ),
+                }
+            )
+        )
 
     @property
     def recipient_release_commitment(self) -> str:

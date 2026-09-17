@@ -2,6 +2,8 @@ import {
   LIVE_ACTIVATION_AUTHORITY_SCHEMA,
 } from "./release-ceremony-authorization.mjs";
 import {
+  assertLiveActivationFinalCvmsMatchAuthenticatedLaunch as
+    assertCurrentCFinalCvmsMatchAuthenticatedLaunch,
   assertHistoricalLiveActivationComputeWorkloadObservationBinding as
     assertCurrentCWorkloadObservationBinding,
   normalizeLiveActivationAuthority as normalizeCurrentC,
@@ -30,6 +32,12 @@ export function normalizeLiveActivationAuthority(value, options = {}) {
 
 export function projectLiveActivationFrontendBinding(value, options = {}) {
   return projectCurrentCFrontendBinding(value, options);
+}
+
+export function assertLiveActivationFinalCvmsMatchAuthenticatedLaunch(
+  options = {},
+) {
+  return assertCurrentCFinalCvmsMatchAuthenticatedLaunch(options);
 }
 
 export function assertHistoricalLiveActivationComputeWorkloadObservationBinding(

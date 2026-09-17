@@ -1,12 +1,13 @@
 # Production web release manifest
 
 The browser release is intended to be generated from evidence; operators do
-not hand-edit live `VITE_ENABLE_*` flags. `npm run release:env` implements an
-exact-36 pre-D build and an exact-38 final replay. Both phases independently
-authenticate the exact Royalty history receipt `H`; the latter authenticates
-the complete `L → R → signed B → H → O → D → signed C` chain and emits an in-process,
+not hand-edit live `VITE_ENABLE_*` flags. `npm run release:env` implements a
+37-input prebuild and a 39-input final replay. Both phases independently
+authenticate the exact Royalty history receipt `H` and standalone post-measurement
+activation execution receipt. The latter authenticates the complete
+`L → R → signed B → activation receipt + H → O → D → signed C` chain and emits an in-process,
 hash-only 19-field semantic receipt. `--check-only` writes nothing; normal
-exact-38 mode writes only the ignored, no-clobber
+live-39 mode writes only the ignored, no-clobber
 `web/.env.production.local`. That production boundary remains visibly
 distinct from the argument-free modeled preview.
 
@@ -25,7 +26,7 @@ and the current operator signatures. The existence of this workflow is not
 evidence that those deployments have happened.
 
 Start at the canonical repository root and use canonical absolute paths. The
-exact-38 order is part of the interface:
+live-39 order is part of the interface:
 
 ```bash
 ROOT="$(pwd -P)"
@@ -34,7 +35,7 @@ PRE_LIVE_CANDIDATE="$EVIDENCE/web-release.pre-live.json"
 LIVE_CANDIDATE="$EVIDENCE/web-release.live.json"
 D_RECEIPT="$ROOT/.release/frontend-build-candidate-receipt.json"
 
-EXACT38=(
+LIVE39=(
   --release "$LIVE_CANDIDATE"
   --release-core "$EVIDENCE/final-release-authority-core.json"
   --runtime-authority-dependency "$EVIDENCE/pre-ceremony-runtime-authority.json"
@@ -71,6 +72,7 @@ EXACT38=(
   --email-oracle-evidence "$EVIDENCE/email-oracle-evidence.json"
   --live-activation-authority "$EVIDENCE/live-activation-authority.signed.json"
   --royalty-release-history-receipt "$EVIDENCE/royalty-release-history-receipt.json"
+  --post-measurement-activation-execution-receipt "$EVIDENCE/post-measurement-activation-execution-receipt.json"
   --compute-workload-activation-observation "$EVIDENCE/compute-workload-activation-observation.json"
   --frontend-build-candidate-receipt "$D_RECEIPT"
 )
@@ -78,19 +80,19 @@ EXACT38=(
 
 The pre-D input set is the same ordered list with signed C and D removed, and
 with `--release` pointed at the pre-live candidate. `H` remains an independent
-input immediately before `O`. This loop constructs that exact 36-pair array
+input before the standalone activation receipt and `O`. This loop constructs that exact 37-pair array
 without maintaining a second hand-copied list:
 
 ```bash
-EXACT36=()
-for ((i = 0; i < ${#EXACT38[@]}; i += 2)); do
-  flag="${EXACT38[i]}"
-  value="${EXACT38[i + 1]}"
+PREBUILD37=()
+for ((i = 0; i < ${#LIVE39[@]}; i += 2)); do
+  flag="${LIVE39[i]}"
+  value="${LIVE39[i + 1]}"
   case "$flag" in
     --live-activation-authority|--frontend-build-candidate-receipt) continue ;;
     --release) value="$PRE_LIVE_CANDIDATE" ;;
   esac
-  EXACT36+=("$flag" "$value")
+  PREBUILD37+=("$flag" "$value")
 done
 ```
 
@@ -102,47 +104,52 @@ done
    install -d -m 700 "$ROOT/.release"
    ```
 
-2. Produce D from the exact-36 pre-live authority. The fixed output is
+2. Produce D from the prebuild-37 pre-live authority. The fixed output is
    `$ROOT/.release/frontend-build-candidate-receipt.json`, written mode `0600`
    with durable no-clobber semantics. D contains hashes and public release
    lineage, not raw environment values, quotes, collateral, or secrets:
 
    ```bash
    npm --prefix "$ROOT/web" run release:env -- \
-     --produce-candidate "${EXACT36[@]}"
+     --produce-candidate "${PREBUILD37[@]}"
    ```
 
 3. Use the reviewed ceremony signer to produce separately signed C only after
-   H, O, and D exist. C must bind both H digests, the exact O browser projection, D digest,
+   H, the activation receipt, O, and D exist. C must embed the same standalone
+   activation receipt and bind both H digests, the exact O browser projection, D digest,
    frontend environment hash, reproduced dist-manifest hash, final seven-CVM
    identities, and the signed-B/R/L lineage. Create the final live candidate by
    replacing only the pre-live operator-policy projection with the exact signed
    C digest projection; the validator independently reconstructs and compares
-   the pre-live candidate.
+   the pre-live candidate. Each final CVM's identity and compose must also match
+   authenticated L. The main CVM's final evidence digest must come from the
+   standalone activation receipt's post-restart attestation; the other six
+   evidence digests must exactly match L's recorded machine-verifier evidence.
+   Valid-looking or newly signed substitute evidence is not accepted.
 
-4. Run both read-only gates. Exact-38 regenerates the pre-D build in a fresh
+4. Run both read-only gates. Live-39 regenerates the pre-D build in a fresh
    private workspace and compares it to supplied D and signed C. Activation
    preflight invokes the same check-only validator and adds current chain,
    auth, source, image-attestation, compose, and topology checks:
 
    ```bash
    npm --prefix "$ROOT/web" run release:env -- \
-     --check-only "${EXACT38[@]}"
+     --check-only "${LIVE39[@]}"
 
    node "$ROOT/scripts/activation-preflight.mjs" \
      --stage live-activation \
      --env "$ROOT/.env" \
-     "${EXACT38[@]}"
+     "${LIVE39[@]}"
    ```
 
 5. Publish the ignored production environment, then deploy with the identical
-   exact-38 array. Environment publication is also durable and no-clobber. The
-   Cloudflare runner internally replays exact-38 in check-only mode before it
+   live-39 array. Environment publication is also durable and no-clobber. The
+   Cloudflare runner internally replays live-39 in check-only mode before it
    builds or invokes Wrangler:
 
    ```bash
-   npm --prefix "$ROOT/web" run release:env -- "${EXACT38[@]}"
-   npm --prefix "$ROOT/web" run deploy:cloudflare -- "${EXACT38[@]}"
+   npm --prefix "$ROOT/web" run release:env -- "${LIVE39[@]}"
+   npm --prefix "$ROOT/web" run deploy:cloudflare -- "${LIVE39[@]}"
    ```
 
 An existing D or `.env.production.local` aborts instead of being overwritten;
@@ -156,9 +163,17 @@ upload.
 The parser intentionally rejects retired renewable review-envelope options,
 including `--authority-review-envelope` and `--authority-review-evidence`.
 They cannot replace signed C, current reviewer-status validation, or any member
-of the exact-38 dependency chain. The argument-free deploy path remains
+of the live-39 dependency chain. The argument-free deploy path remains
 reserved for an explicitly modeled preview with no live `VITE_*` bindings and
 accepts no evidence arguments.
+
+The current D receipt and input manifest are version 4. Their canonical recipe
+commits the standalone activation receipt's raw bytes and semantic digest. The
+current prebuild validator replays O at the independently validated activation
+completion time; it does not invent a signed-C approval. Final replay rechecks O
+at C's actual signing time and requires the same receipt in C, D, and the stable
+private input set. Historical prebuild-35/live-37 formats remain separate;
+their artifacts cannot substitute for this current release path.
 
 `TRUSTED_ATTESTATION_VERIFIER_ADDRESSES` is deliberately external to the JSON
 manifest. It is the human-reviewed trust-root input established only after the
@@ -250,7 +265,7 @@ reviewed pre-ceremony authority, its live-activation digest binds the signed
 post-ceremony `dnai.live-activation-authority.v6`, and its runtime-authority
 dependency must equal `sha256:` plus the bare
 `execution_policy.rollback_anchor.release_manifest_commitment`. Review
-signatures and reviewer-status histories are authenticated by the exact-38
+signatures and reviewer-status histories are authenticated by the live-39
 validator rather than copied into the candidate as the retired
 `dnai.final-release-authority-evidence.v1` envelope fields. Independently, the
 anchor `writer_release_commitment` must equal `0x` plus the bare reviewed CVM
@@ -829,8 +844,8 @@ request and never appears in the artifact, stdout error path, or browser build.
 ### Compute-workload recipient activation
 
 Compute-workload upload additionally requires one exact
-`dnai.compute.workload-recipient-activation.v3` object. There is no activation
-v1/v2 compatibility path. Its outer record contains exactly the Base Sepolia
+`dnai.compute.workload-recipient-activation.v4` object. There is no activation
+v1/v2/v3 compatibility path. Its outer record contains exactly the Base Sepolia
 `chain_id`, `main_runtime_cvm` domain, `compute_workload` profile, main-runtime
 `cvm_id`, `deployment_intent_sha256`, `release_authority_sha256`, nonzero
 `ceremony_nonce`, `measurement_policy_set_sha256`, the dedicated
@@ -858,6 +873,36 @@ The recipient lease must exactly equal both the activation `expires_at` and the
 verdict's activation-evidence lease, remains capped at 300 seconds for this
 post-restart recipient epoch, and—not the already-consumed QVL challenge—is the
 freshness boundary used by the browser.
+
+The workload envelope's activation commitment is now the domain-separated
+`SHA-256("dnai-wikigen/compute-workload-recipient-activation/v4\0" ||
+canonical_ascii_json({schema: "dnai.compute.workload-recipient-activation.v4",
+recipient_release_commitment: independently_rederived_release_v2}))`.
+Both client and server rederive that stable v2 identity from exact authenticated
+recipient/release claims; they never trust the advertised hash. A fresh proof
+for the same key, release, policy, and ceremony epoch leaves this commitment
+unchanged. Every admission still independently authenticates the new signed
+challenge/verdict, lease, and revocation state.
+
+This stable upload binding is distinct from release verification's
+`activation_artifact_sha256`. The latter keeps hashing the complete fresh
+source activation under its existing activation-artifact v4 domain, including
+challenge, signature, and timestamps; it must not be replaced with the stable
+two-field projection. Old v3 source activations and post-restart requirements
+fail closed rather than being translated.
+
+The current post-measurement execution receipt is exact schema
+`dnai.phala-post-measurement-activation-execution-receipt.v4`. Its durable v3
+journal binds all nine authenticated SDK observations: account, active-billing
+workspace, pre-PATCH CVM info, first environment key, immediate key refetch,
+encrypted-only PATCH, restart, post-restart CVM info, and attestation. Before key
+lookup, fresh CVM readback must preserve the launch's prepared contract-KMS
+binding, environment public key, placement, measurements, and privacy posture.
+PATCH, restart, post-restart info, and attestation occupy call sequences 6, 7,
+8, and 9 respectively. Historical seven-call journal v2 and execution receipt
+v3 keep their original interpretation; they cannot satisfy the current receipt
+requirement. This ordering is a source-level safety boundary, not evidence that
+a production activation has occurred.
 
 The private recipient-verification proof separately carries the initial
 main-runtime lease, initial Compute-workload-QVL lease, recipient lease, and a

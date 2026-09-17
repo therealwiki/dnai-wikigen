@@ -21,6 +21,12 @@ import {
     currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as WIRE_RELEASE_SCHEMA,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as canonicalWireReleaseAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as normalizeWireReleaseAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as wireReleaseAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
+import {
   phalaNonLiveBootstrapAuthorizationReceiptSha256,
   reconstructPersistedPhalaNonLiveBootstrapAuthorizationForHistoricalLaunch,
 } from "./phala-nonlive-bootstrap-authorization-core.mjs";
@@ -138,6 +144,7 @@ function normalizeRecordedReleaseAuthority(value) {
     value,
     "recorded-time release-verification authority",
   );
+  if (schema === WIRE_RELEASE_SCHEMA) return normalizeWireReleaseAuthority(value);
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
   }
@@ -155,6 +162,7 @@ function recordedReleaseAuthoritySha256(value) {
     value,
     "recorded-time release-verification authority",
   );
+  if (schema === WIRE_RELEASE_SCHEMA) return wireReleaseAuthoritySha256(value);
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
   }
@@ -172,6 +180,7 @@ function canonicalRecordedReleaseAuthorityText(value) {
     value,
     "recorded-time release-verification authority",
   );
+  if (schema === WIRE_RELEASE_SCHEMA) return canonicalWireReleaseAuthorityText(value);
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText(value);
   }
@@ -329,7 +338,8 @@ export function normalizeRecordedCvmAuthorityTuple({
     releaseVerificationAuthority,
   );
   const currentTuple =
-    authority.schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA;
+    authority.schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+    || authority.schema === WIRE_RELEASE_SCHEMA;
   const descriptorSchema = ownSchema(
     descriptorSetReceipt,
     "recorded-time descriptor-set receipt",
@@ -476,7 +486,8 @@ export async function reconstructPersistedHistoricalPhalaSevenCvmReleaseVerifica
     "recorded-time release-verification authority",
   );
   const currentTuple =
-    authoritySchema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA;
+    authoritySchema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA
+    || authoritySchema === WIRE_RELEASE_SCHEMA;
   const authoritySha256 = recordedReleaseAuthoritySha256(authority);
   const signedAInput = exactRecord(signedAReconstructionInput, [
     "authorization",

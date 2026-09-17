@@ -49,11 +49,12 @@ import {
 } from "./activation-preflight-core.mjs";
 import {
   CLOUDFLARE_AUTH_PROBE_TIMEOUT_MS,
+  PHALA_CLI_DIAGNOSTIC_API_VERSION,
   EXECUTION_POLICY_ANCHOR_TYPEHASH,
   EXECUTION_POLICY_DECISION_ANCHORED_EVENT,
   EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
   SEMANTIC_VALIDATOR_INPUT_FLAGS,
   assertReadOnlyInvocation,
   collectExecutionPolicyReleaseMarkerEvidence,
@@ -115,6 +116,7 @@ import {
   FRESH_CONTRACT_BROADCAST_PROOF,
   FRESH_CONTRACT_CREATION_INPUT_PROOF,
   FRESH_DEPLOYMENT_TRANSACTION_SPEC,
+  PHALA_CONTROL_PLANE_AUTHORITY,
   createDraftCvmLaunchIntentCore,
   freshContractDeploymentReceiptDigest,
   projectFreshContractDeploymentReceipt,
@@ -224,7 +226,7 @@ const semanticPathKey = (flag) => flag.slice(2).replace(
   /-([a-z])/g,
   (_match, letter) => letter.toUpperCase(),
 );
-function semanticPaths(directory = "/tmp/dnai-preflight-exact38") {
+function semanticPaths(directory = "/tmp/dnai-preflight-exact39") {
   return Object.fromEntries(SEMANTIC_VALIDATOR_INPUT_FLAGS.map((flag) => [
     semanticPathKey(flag),
     path.join(directory, `${flag.slice(2)}.json`),
@@ -3217,6 +3219,9 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   assert.throws(() => assertReadOnlyInvocation("phala", ["deploy"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", ["login"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", [
+    "status", "--json", "--api-version", "2026-06-23",
+  ]), /allowlist/);
+  assert.throws(() => assertReadOnlyInvocation("phala", [
     "status", "--json", "--api-version", "2025-10-28",
   ]), /allowlist/);
   assert.throws(() => assertReadOnlyInvocation("wrangler", [
@@ -3397,6 +3402,19 @@ const phalaAuthenticationResponse = () => ({
   profile: "test-profile",
 });
 
+test("Phala CLI diagnostic API stays separate from the production SDK authority", () => {
+  assert.equal(PHALA_CLI_DIAGNOSTIC_API_VERSION, "2026-01-21");
+  assert.equal(PHALA_CONTROL_PLANE_AUTHORITY.api_version, "2026-06-23");
+  assert.notEqual(PHALA_CLI_DIAGNOSTIC_API_VERSION, PHALA_CONTROL_PLANE_AUTHORITY.api_version);
+  assert.equal(probePhalaAuthentication({}, () => ({
+    ok: true,
+    stdout: JSON.stringify({
+      ...phalaAuthenticationResponse(),
+      apiVersion: PHALA_CONTROL_PLANE_AUTHORITY.api_version,
+    }),
+  })), false, "a fabricated SDK-version response is not valid CLI diagnostic evidence");
+});
+
 test("Phala CLI auth requires structured identity from the fixed control plane", () => {
   let invocation;
   const result = probePhalaAuthentication(
@@ -3440,7 +3458,11 @@ test("Phala CLI auth rejects exit-zero failures, incomplete identities, and orig
     { ...phalaAuthenticationResponse(), success: false },
     { ...phalaAuthenticationResponse(), success: "true" },
     { ...phalaAuthenticationResponse(), apiUrl: "https://unreviewed.invalid/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "https://cloud-api.phala.com/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "http://cloud-api.phala.network/api/v1" },
+    { ...phalaAuthenticationResponse(), apiUrl: "https://cloud-api.phala.network/api/v1/" },
     { ...phalaAuthenticationResponse(), apiVersion: "2025-10-28" },
+    { ...phalaAuthenticationResponse(), apiVersion: null },
     { ...phalaAuthenticationResponse(), username: " " },
     { ...phalaAuthenticationResponse(), team_name: null },
     { success: true },
@@ -4419,8 +4441,8 @@ test("semantic release validation uses one exact check-only allowlisted invocati
   const paths = semanticPaths();
   const args = semanticValidatorArgs(paths);
   assert.doesNotThrow(() => assertReadOnlyInvocation(process.execPath, args));
-  assert.equal(CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS.length, 36);
-  assert.equal(CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.length, 38);
+  assert.equal(CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS.length, 37);
+  assert.equal(CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.length, 39);
   assert.equal(EXACT35_MODEL_A_INPUT_FLAGS.length, 35);
   assert.equal(EXACT37_MODEL_A_INPUT_FLAGS.length, 37);
   assert.equal(
@@ -4430,19 +4452,27 @@ test("semantic release validation uses one exact check-only allowlisted invocati
     false,
   );
   assert.equal(SEMANTIC_VALIDATOR_INPUT_FLAGS,
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS);
-  assert.equal(args.length, 78);
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS);
+  assert.equal(args.length, 80);
   assert.equal(
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.indexOf(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
       "--royalty-release-history-receipt",
     ),
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.indexOf(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
+      "--compute-workload-activation-observation",
+    ) - 2,
+  );
+  assert.equal(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
+      "--post-measurement-activation-execution-receipt",
+    ),
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
       "--compute-workload-activation-observation",
     ) - 1,
   );
   assert.deepEqual(
-    CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.filter((flag) => ![
+    CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.filter((flag) => ![
       "--live-activation-authority",
       "--frontend-build-candidate-receipt",
     ].includes(flag)),

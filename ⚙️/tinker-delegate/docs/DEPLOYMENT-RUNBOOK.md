@@ -412,11 +412,30 @@ challenge but does not renew challenge freshness. Never cache a challenge or
 reuse a verdict as freshness evidence for another release action.
 
 After the reviewed restart, Compute ingress accepts only
-`dnai.compute.workload-recipient-activation.v3`. Its explicit
+`dnai.compute.workload-recipient-activation.v4`. Its explicit
 `recipient_evidence_lease_expires_at` must equal activation expiry and may be
 at most 300 seconds after issuance. The stable recipient-release commitment
-remains `dnai.compute.workload-recipient-release.v2`; do not relabel that stable
-commitment as activation v3 or treat it as a fresh QVL challenge.
+remains `dnai.compute.workload-recipient-release.v2`. Independently rederive
+that identity from the authenticated recipient key/public attestation, release
+authority, deployment intent, ceremony nonce, measurement policies, runtime
+evidence, and attested vault address/runtime hash/fresh deployment receipt,
+together with the remaining release-lineage and verifier bindings.
+
+The v4 activation commitment is
+`SHA256(b"dnai-wikigen/compute-workload-recipient-activation/v4\0" || canonical_json(payload))`,
+where the exact payload is `{ "schema":
+"dnai.compute.workload-recipient-activation.v4", "recipient_release_commitment":
+<independently rederived stable v2 identity> }`. Do not hash the entire fresh
+envelope or trust a response's claimed release digest without recomputing it.
+A refreshed proof for the same recipient and release changes the verdict
+digest, not either stable commitment. The full activation still carries the
+fresh signed verdict, challenge, and lease; every admission independently
+authenticates the current proof and revocation state. Neither stable digest is
+a fresh challenge, a lease extension, or permission to omit those checks.
+
+Upgrade exact-schema clients and services together: v3 clients reject v4, and
+v4 consumers reject v3 with no compatibility fallback. These schema and digest
+rules do not establish a deployment or independent Intel TDX verification.
 
 Before trusting any QVL root, an external activation verifier must send an
 exact `dnai.qvl-identity-attestation-request.v3` challenge to authenticated

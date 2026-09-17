@@ -32,7 +32,7 @@ import {
 } from "./phala-production-resident-io.mjs";
 import {
   syntheticReleaseAuthorityStagesFixture,
-} from "./release-authority-stages.fixture.mjs";
+} from "./release-authority-current-stages.fixture.mjs";
 
 function privateRoot(t) {
   const root = fs.realpathSync.native(

@@ -1,0 +1,108 @@
+{
+  "surface": "arena_candidate_browser_encryption_contract",
+  "schema_version": 1,
+  "product_status": "modeled",
+  "execution_assurance": "projection_only_no_hardened_executor",
+  "protocol": {
+    "algorithm": "X25519-HKDF-SHA256-AES-256-GCM",
+    "encoding": "base64url-nopad",
+    "x25519_public_key_bytes": 32,
+    "hkdf": {
+      "hash": "SHA-256",
+      "length_bytes": 32,
+      "salt": "SHA-256(canonical_aad_bytes)",
+      "info_utf8": "dnai-wikigen/arena-candidate-ingress/v1"
+    },
+    "aes_gcm": {
+      "key_bits": 256,
+      "nonce_bytes": 12,
+      "tag_bytes": 16,
+      "additional_authenticated_data": "canonical_aad_bytes"
+    }
+  },
+  "encoding_rules": {
+    "binary_fields": "RFC4648 base64url without equals padding",
+    "canonical_json": "UTF-8 JSON; lexicographically sorted keys; comma and colon separators; ensure_ascii=true; allow_nan=false; no whitespace"
+  },
+  "aad": {
+    "service": "dnai-wikigen",
+    "context": "arena_candidate_ingress",
+    "schema_version": 1,
+    "exact_fields": [
+      "service",
+      "context",
+      "schema_version",
+      "challenge_id",
+      "challenge_version",
+      "challenge_manifest_hash",
+      "submission_manifest_hash",
+      "candidate_commitment",
+      "identity",
+      "idempotency_key_hash",
+      "key_id",
+      "attestation_report_data_sha256",
+      "registry_authorization_sha256"
+    ],
+    "hash_formulas": {
+      "challenge_manifest_hash": "lowercase 64-hex value from the exact challenge manifest",
+      "submission_manifest_hash": "sha256: + SHA-256(canonical JSON of the exact submission manifest)",
+      "candidate_commitment": "sha256: + SHA-256(raw candidate bytes)",
+      "identity.wallet_address_hash": "SHA-256(utf8('arena_public_wallet') || 0x00 || canonical JSON(normalized lowercase wallet address)) as 64 hex",
+      "identity.project_id_hash": "SHA-256(utf8('arena_public_project') || 0x00 || canonical JSON(project id)) as 64 hex",
+      "idempotency_key_hash": "sha256: + SHA-256(canonical JSON of challenge_id, challenge_version, public identity hashes, and raw Idempotency-Key)",
+      "key_id": "sha256: + SHA-256(raw 32-byte recipient public key)",
+      "attestation_report_data_sha256": "sha256: + SHA-256(raw 32-byte attestation report_data)",
+      "registry_authorization_sha256": "sha256: + SHA-256(domain separator || canonical JSON of the exact proposed finalized-block registry snapshot); the API independently re-reads that snapshot before persistence"
+    },
+    "identity_derivation": {
+      "wallet_address": "authenticated EVM address normalized to lowercase",
+      "project_id": "personal- + first 32 lowercase hex characters of SHA-256(utf8('arena-personal-project:') || utf8(normalized wallet address))"
+    }
+  },
+  "recipient": {
+    "encryption_public_key": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
+    "key_id": "sha256:aaa8fff703b50b2297f4f6e13508f72420d96fd01ebb84cb074449caaef64041",
+    "report_context": "arena",
+    "report_data": "547f9dc53ff63308863384e30462af2f5a7fec064f21d41309c9a50cd913654c",
+    "attestation_report_data_sha256": "sha256:4be27ebd9f45b86d00689cb48249afabaa8e0c20e6441052b90f32fe8faf8263",
+    "report_data_contract": {
+      "hash": "SHA-256",
+      "canonical_json": {
+        "context": "arena",
+        "encryption_public_key": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
+        "key_id": "sha256:aaa8fff703b50b2297f4f6e13508f72420d96fd01ebb84cb074449caaef64041",
+        "protocol": "arena_candidate_ingress_v1",
+        "service": "dnai-wikigen"
+      }
+    }
+  },
+  "limits": {
+    "max_aad_bytes": 4096,
+    "max_ciphertext_bytes_including_gcm_tag": 65536,
+    "max_plaintext_bytes_from_cipher_limit": 65520,
+    "max_envelopes_per_store": 10000,
+    "idempotency_key_max_bytes": 128
+  },
+  "submission_gate": {
+    "fresh_cvm_attestation_required": true,
+    "independent_quote_and_measurement_verification_required": true,
+    "matching_current_recipient_key_required": true,
+    "matching_report_data_binding_required": true,
+    "api_verified_field_is_not_a_policy_verdict": true,
+    "server_generated_sealed_reference": true,
+    "plaintext_candidate_accepted": false,
+    "hostile_code_execution_enabled": false
+  },
+  "envelope_exact_fields": [
+    "schema_version",
+    "algorithm",
+    "encoding",
+    "key_id",
+    "attestation_report_data",
+    "aad",
+    "ephemeral_public_key",
+    "nonce",
+    "ciphertext"
+  ],
+  "raw_secret_egress": false
+}

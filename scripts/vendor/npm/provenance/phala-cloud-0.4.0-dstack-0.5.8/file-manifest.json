@@ -1,0 +1,160 @@
+{
+  "coverage": "all_regular_files_recursively_below_this_directory_except_file-manifest.json",
+  "files": [
+    {
+      "byte_length": 5200,
+      "path": "README.md",
+      "sha256": "sha256:ba2e1216603f388757a428daf364d379b4f13eb415a047d0195974deac9cf56d"
+    },
+    {
+      "byte_length": 674,
+      "path": "acquisition.json",
+      "sha256": "sha256:580fc4b4f21efd6e6da7e30524d862c546af15a7ad2e70ecb4a0549ce12c4639"
+    },
+    {
+      "byte_length": 6347,
+      "path": "assemble-audit-inputs.mjs",
+      "sha256": "sha256:b83c462e93453f5ae1907aef2814f8ce6d48ce7f02533b22e0bec9b17c797f89"
+    },
+    {
+      "byte_length": 5855,
+      "path": "helpers/verify-negative-controls.mjs",
+      "sha256": "sha256:ccbc62142a4756526dfdddcbf5bd0f4d8cada778bc2112ee150de9776ac84aea"
+    },
+    {
+      "byte_length": 15889,
+      "path": "helpers/verify-public-registry.mjs",
+      "sha256": "sha256:4b1e7ffc7cf9b9d49d1b37e09221b49a73d035bb61f7a44b9dc6b49aaa0688c8"
+    },
+    {
+      "byte_length": 4334,
+      "path": "negative-control-results.json",
+      "sha256": "sha256:94c06cf63070d3ea9b43c7207672bf126251328960ad5d861c5ce8a1b16c1040"
+    },
+    {
+      "byte_length": 3882,
+      "path": "network-requests.json",
+      "sha256": "sha256:8a510102bb774679ec603bdd49375bd136cca3d98a56850b9e3329bd62d52d9e"
+    },
+    {
+      "byte_length": 5630,
+      "path": "raw/10-%2F15.root.json.response",
+      "sha256": "sha256:73747011d0857ada15479a16c4cae0f3ed03aac698b523b97e1de314ac9d9ca8"
+    },
+    {
+      "byte_length": 127,
+      "path": "raw/11-%2F16.root.json.response",
+      "sha256": "sha256:bde9c2949e64d059c18d8f93566a64dafc6d2e8e259a70322fb804831dfd0b5b"
+    },
+    {
+      "byte_length": 449,
+      "path": "raw/12-%2Ftimestamp.json.response",
+      "sha256": "sha256:0511494ca9cdfe308a1b48b58a55091008d15eebba4e319634ed03f08246049c"
+    },
+    {
+      "byte_length": 1760,
+      "path": "raw/13-%2F165.snapshot.json.response",
+      "sha256": "sha256:8f784ab614ec62bfdd5f568eb2a2e3011668449ba235ed4eb7befa99f8469933"
+    },
+    {
+      "byte_length": 4942,
+      "path": "raw/14-%2F14.targets.json.response",
+      "sha256": "sha256:6a697f7f8908c8ab26c11786ecb490b54acec97fa8c802e399f065f8a0cc1acd"
+    },
+    {
+      "byte_length": 6787,
+      "path": "raw/15-%2Ftargets%2F6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66.trusted_root.json.response",
+      "sha256": "sha256:6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66"
+    },
+    {
+      "byte_length": 5730,
+      "path": "raw/8-%2F13.root.json.response",
+      "sha256": "sha256:39277f1fbd482f84d924b6cb77748f62ab0f031b3b5b9b29e681dae056c32250"
+    },
+    {
+      "byte_length": 5490,
+      "path": "raw/9-%2F14.root.json.response",
+      "sha256": "sha256:c8c41ec13f06ccabf5b48541ee2550098b4c7b5349e1d180390c29a7d5c2642c"
+    },
+    {
+      "byte_length": 15231,
+      "path": "raw/phala-cloud-0.4.0.attestations.json",
+      "sha256": "sha256:f79bbc94df2ef8b44558bcbdad8a8a68e9113964edaa2359e9fb95fbada5d989"
+    },
+    {
+      "byte_length": 3209,
+      "path": "raw/phala-cloud-0.4.0.metadata.json",
+      "sha256": "sha256:5c75505850de3bbc7555c90101697cfb652ad3ee3a867afd627e01e3cb8355a2"
+    },
+    {
+      "byte_length": 15121,
+      "path": "raw/phala-dstack-sdk-0.5.8.attestations.json",
+      "sha256": "sha256:b83d6081d432932555ee8c38a0b40a85b2cb14a5084b1cb846ef0011c548e4c0"
+    },
+    {
+      "byte_length": 3390,
+      "path": "raw/phala-dstack-sdk-0.5.8.metadata.json",
+      "sha256": "sha256:b08b25f45299a38e58fd41fe1e550ae53c892ea0d7a5a116f7b82e4dec20fa51"
+    },
+    {
+      "byte_length": 580,
+      "path": "raw/registry-keys.json",
+      "sha256": "sha256:faf23d8753d5bb79df250f10391ac89b63ecf7743e48487a544a99c847f9c8df"
+    },
+    {
+      "byte_length": 5413,
+      "path": "trust-seed/root-12.json",
+      "sha256": "sha256:5fe1e509a47277183a004745942c0a116379297da9f1cca529774320f1a5dfab"
+    },
+    {
+      "byte_length": 16226,
+      "path": "trust-seed/sigstore-tuf-3.1.1-seeds.json",
+      "sha256": "sha256:c56b8197671679123d26b9ec70bf6411e8f04d10c58cb9581a2b1238254ba71b"
+    },
+    {
+      "byte_length": 5630,
+      "path": "tuf-final/root.json",
+      "sha256": "sha256:73747011d0857ada15479a16c4cae0f3ed03aac698b523b97e1de314ac9d9ca8"
+    },
+    {
+      "byte_length": 1760,
+      "path": "tuf-final/snapshot.json",
+      "sha256": "sha256:8f784ab614ec62bfdd5f568eb2a2e3011668449ba235ed4eb7befa99f8469933"
+    },
+    {
+      "byte_length": 4942,
+      "path": "tuf-final/targets.json",
+      "sha256": "sha256:6a697f7f8908c8ab26c11786ecb490b54acec97fa8c802e399f065f8a0cc1acd"
+    },
+    {
+      "byte_length": 6787,
+      "path": "tuf-final/targets/trusted_root.json",
+      "sha256": "sha256:6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66"
+    },
+    {
+      "byte_length": 449,
+      "path": "tuf-final/timestamp.json",
+      "sha256": "sha256:0511494ca9cdfe308a1b48b58a55091008d15eebba4e319634ed03f08246049c"
+    },
+    {
+      "byte_length": 1142,
+      "path": "tuf-verification-observation.json",
+      "sha256": "sha256:b4fa0b3250867a87c24d513b50eb6245cc186360c3b41e98d5bc6f78d9866070"
+    },
+    {
+      "byte_length": 3452,
+      "path": "upstream-registry-evidence.json",
+      "sha256": "sha256:3dd3e06788205f3042bb51176e526c040e3314bcb635c8dd5b3119d403a147f2"
+    },
+    {
+      "byte_length": 816,
+      "path": "verification-inputs.json",
+      "sha256": "sha256:c32db62ca172e50d00401eaa631b82775927002e729197bdf9e53d841e00d48f"
+    }
+  ],
+  "network_during_assembly": false,
+  "observed_at": "2026-09-16T20:32:14.193Z",
+  "schema": "dnai.phala-sdk-upstream-audit-input-manifest.v1",
+  "source_observation": "observation-OCGkma",
+  "truth_status": "reviewed_source_evidence_not_runtime_reverification"
+}

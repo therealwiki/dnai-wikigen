@@ -421,8 +421,13 @@ policy before encrypting. The API's `verified` field remains `false` even when
 a quote is present because quote retrieval alone is not full Intel TDX policy
 verification.
 
-The submission body deliberately has no source, code, prompt, artifact,
-caller-supplied object reference, URL, or raw candidate field:
+The submission body has exactly `candidate_commitment`, `manifest`,
+`registry_authorization`, and `envelope`. It deliberately has no source, code,
+prompt, artifact, caller-supplied object reference, or raw candidate field.
+`registry_authorization` is the exact finalized-block snapshot proposed by the
+client. The API independently verifies it before initializing either durable
+store; the proposal is not browser-issued authority. The example below uses
+placeholder public deployment values, not a runnable or authorized release:
 
 ```json
 {
@@ -435,6 +440,34 @@ caller-supplied object reference, URL, or raw candidate field:
     "entrypoint": "process",
     "source_bytes": 512,
     "mode": "leaderboard"
+  },
+  "registry_authorization": {
+    "schema_version": 1,
+    "verification_model": "single_rpc_reported_finalized_pinned_block",
+    "chain_id": 84532,
+    "block_number": "<decimal finalized block number>",
+    "block_hash": "0x<64 lowercase hex>",
+    "block_timestamp": "<decimal finalized block timestamp>",
+    "registry_address": "0x<40 lowercase hex>",
+    "registry_runtime_code_hash": "0x<64 lowercase hex>",
+    "approved_challenge_set_sha256": "sha256:<64 lowercase hex>",
+    "catalog_challenge_id": "synthetic-bio-assay-qc",
+    "catalog_challenge_version": "1.0.0",
+    "catalog_manifest_hash": "<64 lowercase hex>",
+    "registry_challenge_id": "<decimal registry challenge id>",
+    "registry_version": 1,
+    "controller_address": "0x<40 lowercase hex>",
+    "pending_controller_address": "0x0000000000000000000000000000000000000000",
+    "metadata_uri": "ipfs://<reviewed public metadata>",
+    "metadata_hash": "0x<64 lowercase hex>",
+    "sealed_artifact_commitment": "0x<64 lowercase hex>",
+    "evaluator_commitment": "0x<64 lowercase hex>",
+    "release_policy_commitment": "0x<64 lowercase hex>",
+    "registry_paused": false,
+    "challenge_paused": false,
+    "lifecycle": 1,
+    "configuration_frozen": true,
+    "latest_version": 1
   },
   "envelope": {
     "schema_version": 1,
@@ -460,18 +493,44 @@ ciphertext byte counts, the reference, and the object ID. The public submission
 manifest likewise omits `source_bytes`. Its public manifest hash is computed
 from the allowlisted non-size metadata plus `private_size_egress=false`, so an
 observer cannot brute-force the exact source length from that hash. If queue
-persistence fails after a new ciphertext write, the ingress write is rolled
-back. An exact replay never rewrites the ciphertext file.
+persistence fails after a new ciphertext write, the API attempts rollback and
+reports a bounded failure if cleanup cannot finish. An exact replay of an
+active, retained submission never rewrites its ciphertext file.
+
+Submission ingress holds the existing Arena state `flock` through its durable
+idempotency/lifecycle check, ciphertext persistence, queue submission, and any
+rollback. A terminal or non-retained submission returns `409` before ingress;
+this remains true after restart and after its ciphertext/index entry is gone.
+Cancellation and expiry use the same lock, so they cannot interleave between
+the lifecycle check and ciphertext persistence. Lock order is Arena state then
+ingress; worker/cleanup paths release ingress operations before acquiring
+Arena state.
+
+If a fresh queue write fails and its rollback also stops with an
+`unlink_pending` ingress record, an exact retry can recover that orphan. The
+API supplies an internal, lifetime- and thread-bound queue guard; no HTTP flag
+can authorize recovery. While holding the same queue lock, the guard verifies
+the exact challenge, identity, and retry-key commitment and proves that neither
+a queue idempotency record nor a queued sealed reference owns the ciphertext.
+The ingress store retains the original pending request reservation throughout
+unlinking and rewriting, then atomically retains the identical record. A
+changed envelope remains a conflict. Failed recovery returns a bounded `503`
+without freeing the key; a successful recovery remains eligible for rollback
+if its subsequent queue write fails. This exception never reopens terminal or
+otherwise queue-owned ciphertext.
 
 The successful submission response has exactly the top-level fields
-`surface`, `created`, `idempotent_replay`, `candidate_ingress`, `submission`,
+`surface`, `created`, `idempotent_replay`, `registry_ingress_boundary`,
+`candidate_ingress`, `submission`,
 `raw_candidate_accepted`, `encrypted_reference_egress`, and
 `raw_secret_egress`. `candidate_ingress` has exactly `surface`,
 `schema_version`, `blob_sha256`, `ciphertext_sha256`, `key_id`, `created`,
 `idempotent_replay`, `sealed_reference_public`,
 `plaintext_candidate_accepted`, `product_status`, `execution_assurance`, and
 `raw_secret_egress`, and `private_size_egress`. No exact private size, sealed
-reference, or object ID is in either public object.
+reference, or object ID is in either public object. `registry_ingress_boundary`
+reports the proxy's exact finalized-block check. It explicitly does not claim
+worker execution authority, independent RPC quorum, or a consensus proof.
 
 The decoded ciphertext limit is exactly 65,536 bytes including the 16-byte
 AES-GCM tag, so the global plaintext ceiling is 65,520 bytes. The versioned BIO
@@ -528,13 +587,20 @@ object is exactly:
   },
   "idempotency_key_hash": "sha256:<canonical challenge, identity, and raw retry key>",
   "key_id": "sha256:<raw 32-byte Arena public key>",
-  "attestation_report_data_sha256": "sha256:<raw 32-byte report_data>"
+  "attestation_report_data_sha256": "sha256:<raw 32-byte report_data>",
+  "registry_authorization_sha256": "sha256:<domain-separated exact registry snapshot>"
 }
 ```
 
 `submission_manifest_hash` is `"sha256:" + SHA256(canonical JSON of the exact
-seven-field submission manifest)`. The two public identity hashes reuse the
-Arena store's domain separation:
+seven-field submission manifest)`. `registry_authorization_sha256` commits
+the exact proposed snapshot using the registry-admission domain separator and
+canonical JSON; the API independently reconstructs that commitment before
+persistence. The encryption contract advertises nine exact hash-formula keys,
+including this registry binding. A shared public fixture is parsed by default
+browser tests and checked against the real Python contract generator by the
+default backend suite, so protocol drift fails CI on both sides.
+The two public identity hashes reuse the Arena store's domain separation:
 
 ```text
 wallet hash  = SHA256(utf8("arena_public_wallet") || 0x00 || canonical_json(lowercase_wallet))
@@ -612,14 +678,17 @@ The raw `Idempotency-Key` is never persisted. Both stores record only bounded
 hashes. The candidate-ingress request hash covers the exact AAD binding and
 complete encryption envelope; the queue request hash covers the server-created
 sealed reference, bounded manifest, and retained ciphertext receipt
-commitments. Replaying an identical request returns the original
-ciphertext/submission with `created=false` and performs no blob rewrite.
+commitments. Replaying an identical active, retained submission returns the
+original ciphertext/submission with `created=false` and performs no blob
+rewrite. Terminal submissions reject candidate ingress with HTTP 409. Exact
+orphan recovery after an interrupted queue rollback is a new queue attempt,
+not a replay of a previously accepted submission.
 Reusing the key for a different commitment, manifest, identity, recipient,
 AAD, nonce, ephemeral key, ciphertext, or receipt commitment returns HTTP 409.
 
 Arena queue state is an allowlisted JSON document written through a
 same-directory temporary file, `fsync`, atomic `os.replace`, and
-parent-directory `fsync`. Ciphertext blobs are write-once `0600` files with an
+parent-directory `fsync`. Retained ciphertext blobs are write-once `0600` files with an
 atomic `0600` index. The local recipient key is a distinct restart-stable
 32-byte `0600` file; in dstack it is derived only from
 `tinker/arena_candidate_ingress`. Writes use copy-on-write state: a failed
@@ -707,8 +776,11 @@ Ingress unlink is a crash-retry protocol:
 
 A crash before step 2 leaves a pending record plus file. A crash after step 2
 leaves a pending record plus an absent entry. Either state is safe to retry;
-the latter finalizes with `directory_entry_absent`. Reads and ingress
-idempotency replays reject `unlink_pending`. Blob opens and unlinks use
+the latter finalizes with `directory_entry_absent`. Reads and ordinary ingress
+idempotency replays reject `unlink_pending`. Only the exact, unowned orphan
+recovery described above may recreate a pending envelope under a live queue
+guard. An empty partial blob is tolerated only while pending so recovery can
+unlink it; it is never a valid retained or readable envelope. Blob opens and unlinks use
 validated object IDs, directory-relative operations, `O_NOFOLLOW` where
 available, regular-file/mode checks, and a non-symlinked directory descriptor.
 Path traversal, symlink substitution, unindexed files, or broadened modes fail

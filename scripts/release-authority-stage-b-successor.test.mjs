@@ -33,10 +33,10 @@ import {
   phalaArenaWorkerPresenceActivationProofSha256,
   phalaCombinedArenaComputeActivationVerificationSha256,
   phalaPostMeasurementActivationExecutionReceiptSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   syntheticReleaseAuthorityStagesFixture,
-} from "./release-authority-stages.fixture.mjs";
+} from "./release-authority-current-stages.fixture.mjs";
 
 const SUCCESSOR_SIGNED_AT = "2026-07-21T12:10:01.000Z";
 const SUCCESSOR_CHECKED_AT = Date.parse("2026-07-21T12:10:02.000Z");

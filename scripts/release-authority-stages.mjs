@@ -91,6 +91,7 @@ import {
   computeWorkloadActivationObservationSha256,
   computeWorkloadBrowserBindingSha256,
   normalizeComputeWorkloadActivationObservation,
+  normalizeComputeWorkloadActivationObservationHistoricalReplay,
   normalizeComputeWorkloadBrowserBinding,
   projectComputeWorkloadBrowserBindingFromHistoricalObservation,
 } from "./compute-workload-activation-observation-core.mjs";
@@ -101,7 +102,10 @@ import {
 import {
   normalizePhalaPostMeasurementActivationExecutionReceipt,
   phalaPostMeasurementActivationExecutionReceiptSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
+import {
+  PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA,
+} from "./phala-seven-cvm-launch-completion-core.mjs";
 import {
   ROYALTY_AUTHORITY_TIMELOCK_SECONDS,
   ROYALTY_RELEASE_EXECUTION_MODES,
@@ -1740,13 +1744,21 @@ export function assertHistoricalLiveActivationComputeWorkloadObservationBinding(
   frontendBuildCandidateReceipt,
   serializedEnv,
 } = {}) {
-  const observation = historicallyVerifiedObservation;
-  const browserBinding =
-    projectComputeWorkloadBrowserBindingFromHistoricalObservation(observation);
+  const replay =
+    normalizeComputeWorkloadActivationObservationHistoricalReplay(
+      historicallyVerifiedObservation,
+    );
   const authority = normalizeLiveActivationAuthority(
     liveActivationAuthority,
     liveActivationOptions,
   );
+  if (replay.authorized_at * 1_000
+      !== Date.parse(authority.review.signed_at)) {
+    fail("historical compute-workload O replay time differs from signed C");
+  }
+  const observation = replay.observation;
+  const browserBinding =
+    projectComputeWorkloadBrowserBindingFromHistoricalObservation(replay);
   const buildReceipt = normalizeFrontendBuildCandidateReceipt(
     frontendBuildCandidateReceipt,
   );
@@ -1777,6 +1789,8 @@ export function assertHistoricalLiveActivationComputeWorkloadObservationBinding(
     || post.frontend_build_sha256 !== buildReceipt.frontend_build_sha256
     || buildReceipt.compute_workload_activation_observation_sha256
       !== observationSha256
+    || buildReceipt.post_measurement_activation_execution_receipt_sha256
+      !== activationExecutionReceiptSha256
     || buildReceipt.release_env_sha256 !== releaseEnvSha256
     || buildReceipt.release_sha !== authority.release_sha
     || buildReceipt.ceremony_authorization_sha256
@@ -2017,6 +2031,63 @@ export function projectLiveActivationFrontendBinding(value, options) {
     frontend_release_env_sha256:
       liveActivation.post_ceremony_evidence.frontend_release_env_sha256,
   });
+}
+
+/**
+ * Bind signed current C to the independently authenticated recorded launch.
+ * The main-runtime final state is deliberately newer than historical L and is
+ * therefore authorized only by the standalone post-restart activation receipt.
+ * Every other domain remains pinned to L's machine-verifier evidence.
+ */
+export function assertLiveActivationFinalCvmsMatchAuthenticatedLaunch({
+  liveActivationAuthority,
+  liveActivationOptions,
+  authenticatedLaunchReceipt,
+  activationExecutionReceipt,
+} = {}) {
+  const liveActivation = normalizeLiveActivationAuthority(
+    liveActivationAuthority,
+    liveActivationOptions,
+  );
+  const receipt = normalizePhalaPostMeasurementActivationExecutionReceipt(
+    activationExecutionReceipt,
+  );
+  const embeddedReceipt = liveActivation.post_ceremony_evidence
+    .post_measurement_activation_execution_receipt;
+  if (phalaPostMeasurementActivationExecutionReceiptSha256(receipt)
+      !== liveActivation.post_ceremony_evidence
+        .post_measurement_activation_execution_receipt_sha256
+    || JSON.stringify(receipt) !== JSON.stringify(embeddedReceipt)) {
+    fail("signed C does not carry the exact authenticated standalone activation receipt");
+  }
+  if (authenticatedLaunchReceipt?.schema
+      !== PHALA_SEVEN_CVM_LAUNCH_COMPLETION_RECEIPT_SCHEMA
+    || !Array.isArray(authenticatedLaunchReceipt.domains)
+    || authenticatedLaunchReceipt.domains.length !== CVM_LAUNCH_DOMAINS.length) {
+    fail("authenticated current L must carry the exact seven-CVM launch receipt");
+  }
+  const finalCvms = liveActivation.post_ceremony_evidence.final_cvms;
+  for (let index = 0; index < CVM_LAUNCH_DOMAINS.length; index += 1) {
+    const expectedDomain = CVM_LAUNCH_DOMAINS[index];
+    const launchDomain = authenticatedLaunchReceipt.domains[index];
+    const finalCvm = finalCvms[index];
+    const expectedEvidenceSha256 = expectedDomain === "main_runtime_cvm"
+      ? receipt.post_restart_evidence.get_cvm_attestation_observation_sha256
+      : launchDomain?.machine_evidence_sha256;
+    if (launchDomain?.domain !== expectedDomain
+      || finalCvm.cvm_key !== expectedDomain
+      || finalCvm.app_id !== launchDomain.app_id
+      || finalCvm.cvm_id !== launchDomain.cvm_id
+      || finalCvm.compose_hash_sha256
+        !== `sha256:${launchDomain.committed_compose_hash}`
+      || finalCvm.tee_identity !== launchDomain.tee_identity
+      || finalCvm.attestation_evidence_sha256 !== expectedEvidenceSha256) {
+      fail(
+        `signed C final ${expectedDomain} drifted from authenticated current L/receipt evidence`,
+      );
+    }
+  }
+  return true;
 }
 
 export function liveActivationFrontendBindingSha256(value) {

@@ -31,7 +31,7 @@ import {
   PHALA_ARENA_WORKER_HEARTBEAT_SCHEMA,
   PHALA_ARENA_WORKER_PRESENCE_ACTIVATION_PROOF_SCHEMA,
   PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   phalaArenaWorkerPresenceEndpointCommitmentSha256,
 } from "./phala-post-measurement-activation-receipt.mjs";
@@ -147,6 +147,8 @@ function reviewedProjectionFixture(directory, { delegateUrl } = {}) {
       2_000 + index;
     descriptor.app_compose_candidate.expected_compose_hash =
       (index + 1).toString(16).repeat(64);
+    descriptor.app_compose_candidate.pre_transform_compose_hash =
+      (index + 8).toString(16).repeat(64);
   });
   const launchDigest = cvmLaunchIntentCoreDigest(launch);
   rebindKnownVectorV4AuthorityFixture(authority, {

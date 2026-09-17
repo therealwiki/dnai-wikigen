@@ -7,6 +7,7 @@ import {
 } from "./phala-production-environment-authority.mjs";
 import {
   assertCompletedPhalaProductionExecutorRuntimeResult,
+  readPhalaProductionExecutorRuntimeDependencies,
 } from "./phala-production-executor-runtime.mjs";
 import {
   assertFreshBrandedPhalaPostMeasurementActivationPlan,
@@ -23,6 +24,7 @@ import {
 } from "./release-authority-stages.mjs";
 import {
   authenticatedPhalaSdkObservationSha256,
+  bindPinnedPhalaCommittedEnvironmentKeyLookup,
   createPinnedPhalaProductionSdkAdapter,
   phalaAuthenticatedSdkRequestSemanticsSha256,
   pinnedPhalaProductionSdkAdapterIdentitySha256,
@@ -30,6 +32,13 @@ import {
   resolvePinnedPhalaPackageIdentity,
   verifyImmediatePinnedLegacyEnvironmentKeyRefetch,
 } from "./phala-production-sdk-adapter.mjs";
+import {
+  assertVerifiedProductionCvmPostureReceipt,
+  verifyProductionCvmPostureObservation,
+} from "./phala-production-posture-receipt.mjs";
+import {
+  projectProductionCvmPostureReadback,
+} from "./phala-production-posture-core.mjs";
 import {
   collectProductionFinalizedReadiness,
 } from "./phala-production-finalized-readiness.mjs";
@@ -76,13 +85,13 @@ import {
 } from "./arena-worker-activation-verification.mjs";
 
 export const PHALA_POST_MEASUREMENT_ACTIVATION_SESSION_SCHEMA =
-  "dnai.phala-post-measurement-activation-session.v2";
+  "dnai.phala-post-measurement-activation-session.v3";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_SESSION_STATUS =
   "combined_profile_patch_restart_authenticated_phala_attestation_observed_and_arena_presence_verified_pending_compute_recipient_activation";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_SESSION_TRUTH =
   "private_live_operator_session_with_reviewed_arena_presence_not_serializable_authority_execution_receipt_or_live_traffic";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_COMPLETION_RESULT_SCHEMA =
-  "dnai.phala-post-measurement-activation-completion-result.v2";
+  "dnai.phala-post-measurement-activation-completion-result.v3";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_COMPLETION_RESULT_STATUS =
   "main_runtime_arena_and_compute_activation_observed_not_live_traffic";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_COMPLETION_RESULT_TRUTH =
@@ -306,7 +315,8 @@ function mainCommit(state) {
 }
 
 function observationStateEntry(observation, adapter, method, callSequence) {
-  const domain = method === "getCurrentUser" ? null : "main_runtime_cvm";
+  const domain = ["getCurrentUser", "getWorkspace"].includes(method)
+    ? null : "main_runtime_cvm";
   if (observation.call_sequence !== callSequence) {
     throw new Error("post-measurement SDK observation sequence drifted");
   }
@@ -327,8 +337,47 @@ function observationResponse(observation, adapter, method) {
   return readAuthenticatedPhalaSdkObservationResponse(observation, {
     adapter,
     method,
-    domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+    domain: ["getCurrentUser", "getWorkspace"].includes(method)
+      ? null : "main_runtime_cvm",
   });
+}
+
+function bindFreshPostMeasurementCommittedPosture({
+  launch, adapter, prePatchCvmInfo, plan, targetAuthority,
+}) {
+  const dependencies = readPhalaProductionExecutorRuntimeDependencies(launch);
+  const original = assertVerifiedProductionCvmPostureReceipt(
+    dependencies.production_posture_receipts.find(
+      ({ domain }) => domain === "main_runtime_cvm",
+    ),
+  );
+  if (original.app_id !== plan.target.app_id
+    || original.cvm_id !== plan.target.cvm_id
+    || original.compose_hash !== plan.target.compose_hash
+    || !original.prepared_binding || !original.environment_public_key) {
+    throw new Error("post-measurement committed posture differs from launch authority");
+  }
+  const raw = observationResponse(prePatchCvmInfo, adapter, "getCvmInfo");
+  const posture = verifyProductionCvmPostureObservation({
+    domain: "main_runtime_cvm",
+    cvmId: original.cvm_id,
+    cvmInfo: projectProductionCvmPostureReadback(raw, original.cvm_id),
+    expected: {
+      appId: original.app_id,
+      composeHash: original.compose_hash,
+      instanceType: original.instance_type,
+      diskSize: original.disk_size,
+      kmsProjection: Object.fromEntries([
+        "contract", "replicas", "eligible_placements", "gateways",
+      ].map((key) => [key, targetAuthority.kms[key]])),
+      preparedBinding: original.prepared_binding,
+      environmentPublicKey: original.environment_public_key,
+    },
+  });
+  bindPinnedPhalaCommittedEnvironmentKeyLookup({
+    adapter, cvmInfoObservation: prePatchCvmInfo, postureReceipt: posture,
+  });
+  return posture;
 }
 
 function assertPatchAccepted(response) {
@@ -625,6 +674,25 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
       "authenticated Phala account observation",
       () => adapter.getCurrentUser(),
     );
+    const workspace = await awaitUnderInitialActivationEvidenceLease(
+      activationAuthority,
+      "authenticated active-billing Phala workspace observation",
+      () => adapter.getWorkspace(),
+    );
+    if (observationResponse(workspace, adapter, "getWorkspace").billing_status !== "active") {
+      throw new Error("active workspace billing is required before activation mutation");
+    }
+    const prePatchCvmInfo = await awaitUnderInitialActivationEvidenceLease(
+      activationAuthority,
+      "pre-PATCH committed CVM info observation",
+      () => adapter.getCvmInfo({
+        domain: "main_runtime_cvm",
+        cvmId: plan.target.cvm_id,
+      }),
+    );
+    const prePatchPostureReceipt = bindFreshPostMeasurementCommittedPosture({
+      launch, adapter, prePatchCvmInfo, plan, targetAuthority: parsed.targetAuthority,
+    });
     const firstEnvironmentKey = await awaitUnderInitialActivationEvidenceLease(
       activationAuthority,
       "first environment-encryption key observation",
@@ -666,17 +734,19 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
       type: "pre_patch_reads_observed",
       observations: [
         observationStateEntry(account, adapter, "getCurrentUser", 1),
+        observationStateEntry(workspace, adapter, "getWorkspace", 2),
+        observationStateEntry(prePatchCvmInfo, adapter, "getCvmInfo", 3),
         observationStateEntry(
           firstEnvironmentKey,
           adapter,
           "getAppEnvEncryptPubKey",
-          2,
+          4,
         ),
         observationStateEntry(
           refetchedEnvironmentKey,
           adapter,
           "getAppEnvEncryptPubKey",
-          3,
+          5,
         ),
       ],
     });
@@ -775,7 +845,7 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
         patchObservation,
         adapter,
         "updateCvmEnvs",
-        4,
+        6,
       ),
     });
     journal = persistActivationJournalUnderInitialEvidenceLease({
@@ -844,7 +914,7 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
         restartObservation,
         adapter,
         "restartCvm",
-        5,
+        7,
       ),
     });
     journal = persistActivationJournalUnderInitialEvidenceLease({
@@ -887,13 +957,13 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
           postRestartInfo,
           adapter,
           "getCvmInfo",
-          6,
+          8,
         ),
         observationStateEntry(
           postRestartAttestation,
           adapter,
           "getCvmAttestation",
-          7,
+          9,
         ),
       ],
     });
@@ -912,7 +982,7 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
           reviewedFinalAuthorityRuntimeProjection,
           postMeasurementActivationPlan: plan,
           postRestartAttestationObservedAt:
-            state.sdk_observations[6].observed_at,
+            state.sdk_observations[8].observed_at,
         }),
       );
     const arenaWorkerPresence = assertVerifiedArenaWorkerActivationProof(
@@ -943,9 +1013,12 @@ export async function beginProductionPhalaPostMeasurementActivation(input = {}) 
       ceremonyAuthorizationDependencies: parsed.ceremonyAuthorizationDependencies,
       privateEnvironmentAssemblyReceipt: assemblyReceipt,
       privateEncryptedUpdate,
+      prePatchPostureReceipt,
       adapter,
       observations: {
         getCurrentUser: account,
+        getWorkspace: workspace,
+        prePatchCvmInfo,
         firstEnvironmentKey,
         refetchedEnvironmentKey,
         patch: patchObservation,
@@ -1130,7 +1203,7 @@ export async function completeProductionPhalaPostMeasurementActivation(input = {
       "after one-use Compute recipient challenge consumption",
     );
     if (activation.authenticated_at
-        < Math.floor(Date.parse(state.sdk_observations[6].observed_at) / 1_000)
+        < Math.floor(Date.parse(state.sdk_observations[8].observed_at) / 1_000)
       || activation.authenticated_at < arenaWorkerPresence.verified_at
       || activation.verified_at < arenaWorkerPresence.verified_at) {
       throw new Error(

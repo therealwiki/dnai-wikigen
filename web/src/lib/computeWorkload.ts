@@ -15,6 +15,7 @@ const MAX_SFT_EXAMPLES = 256;
 const SEALED_MAGIC = hexBytes("444e4149574c3100");
 const SEALED_HEADER_BYTES = 44;
 const WORKLOAD_COMMITMENT_DOMAIN = encoder.encode("dnai-wikigen/compute-workload/v1\0");
+const RECIPIENT_ACTIVATION_COMMITMENT_DOMAIN = encoder.encode("dnai-wikigen/compute-workload-recipient-activation/v4\0");
 const RECIPIENT_RELEASE_COMMITMENT_DOMAIN = encoder.encode("dnai-wikigen/compute-workload-recipient-release/v2\0");
 const RECIPIENT_ATTESTATION_DOMAIN = encoder.encode("dnai-wikigen/compute-workload-recipient-attestation/v1\0");
 const PROJECT_COMMITMENT_DOMAIN = encoder.encode("dnai-wikigen/compute-workload-project/v1\0");
@@ -125,7 +126,7 @@ export interface ComputeWorkloadRecipientAttestation {
 }
 
 export interface ComputeWorkloadRecipientActivation {
-  schema: "dnai.compute.workload-recipient-activation.v3";
+  schema: "dnai.compute.workload-recipient-activation.v4";
   chain_id: 84_532;
   domain: "main_runtime_cvm";
   profile: "compute_workload";
@@ -697,7 +698,7 @@ function parseActivation(value: unknown): ComputeWorkloadRecipientActivation {
     "authenticated_verdict",
   ], "Compute workload recipient activation");
   return {
-    schema: exactValue(activation.schema, "dnai.compute.workload-recipient-activation.v3", "activation schema"),
+    schema: exactValue(activation.schema, "dnai.compute.workload-recipient-activation.v4", "activation schema"),
     chain_id: exactValue(activation.chain_id, 84_532, "activation chain id"),
     domain: exactValue(activation.domain, "main_runtime_cvm", "activation domain"),
     profile: exactValue(activation.profile, "compute_workload", "activation profile"),
@@ -907,7 +908,15 @@ export async function computeIndependentQvlVerdictDigest(verdict: IndependentQvl
 export async function computeWorkloadActivationCommitment(
   activation: ComputeWorkloadRecipientActivation,
 ): Promise<string> {
-  return sha256Commitment(canonicalBytes(activation as unknown as Json));
+  // Authenticate the fresh signed verdict separately, then bind encryption to
+  // the independently rederived identity rather than that proof's changing bytes.
+  return sha256Commitment(
+    RECIPIENT_ACTIVATION_COMMITMENT_DOMAIN,
+    canonicalBytes({
+      schema: "dnai.compute.workload-recipient-activation.v4",
+      recipient_release_commitment: await computeWorkloadRecipientReleaseCommitment(activation),
+    }),
+  );
 }
 
 export async function computeWorkloadRecipientReleaseCommitment(

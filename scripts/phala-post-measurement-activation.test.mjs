@@ -23,7 +23,7 @@ import {
 } from "./phala-post-measurement-activation.mjs";
 import {
   phalaSevenCvmReleaseVerificationAuthoritySha256,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 import {
   syntheticPhalaSevenCvmReleaseDescriptorsFixture,
 } from "./phala-seven-cvm-release-verification-authority.fixture.mjs";
@@ -31,7 +31,7 @@ import {
   CURRENT_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as
     syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture,
-} from "./current-cvm-authority-v4.fixture.mjs";
+} from "./current-cvm-authority-v5.fixture.mjs";
 import {
   phalaQvlMeasurementPolicySha256,
 } from "./phala-seven-cvm-measurement-policy.mjs";
@@ -150,7 +150,7 @@ function planFixture() {
       arena_worker_presence_evidence_classification:
         PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
       arena_runtime_authenticated_worker_presence_required: true,
-      compute_workload_recipient_activation_v3_required: true,
+      compute_workload_recipient_activation_v4_required: true,
       independent_tdx_verdict_v4_required: true,
       pre_injection_attestation_sufficient: false,
     },
@@ -176,7 +176,7 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
   assert.equal(canonicalPhalaPostMeasurementActivationPlanText(plan).endsWith("\n"), true);
   assert.equal(
     phalaPostMeasurementActivationPlanSha256(plan),
-    "sha256:966f88ed1b0b3a1475a8238f90f83de6f72ca693e61c8e27120a6afa9d5f0ebc",
+    "sha256:99da51f8e1073b758755b8ee2a4c82bc987bca61110beaca681cb70bb7d26499",
   );
   const runtimeAuthority =
     plan.release_verification_authority.cvm_descriptor_runtime_authority;
@@ -215,6 +215,8 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
     plan.target.cvm_id);
   assert.equal(plan.environment_update.allowed_environment_keys_mutated, false);
   assert.equal(plan.post_restart_evidence.pre_injection_attestation_sufficient, false);
+  assert.equal(plan.post_restart_evidence.compute_workload_recipient_activation_v4_required, true);
+  assert.equal(Object.hasOwn(plan.post_restart_evidence, "compute_workload_recipient_activation_v3_required"), false);
   assert.deepEqual(plan.profile_activation, {
     profile_names: ["arena-runtime", "compute-execution"],
     compose_profiles_value: "arena-runtime,compute-execution",

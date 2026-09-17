@@ -228,7 +228,15 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
   const { sources, externalImports } = staticImportClosure(entrypoint);
   const entrypointSource = sources.get(entrypoint);
   const basenames = new Set([...sources.keys()].map((file) => path.basename(file)));
-  assert.equal(sources.size, 54, "dual current/historical DCAP closure file count drifted");
+  // The contract-KMS/wire-compose migration adds four pure authorities and
+  // replaces the descriptor-v2 file reader with its explicit v3 counterpart.
+  const reviewedPureAdditions = [
+    "cvm-descriptor-runtime-authority-v3-core.mjs",
+    "phala-app-compose-wire-core.mjs",
+    "phala-contract-kms-core.mjs",
+    "phala-seven-cvm-release-verification-authority-v5-core.mjs",
+  ];
+  assert.equal(sources.size, 58, "dual current/historical DCAP closure file count drifted");
   assert.match(
     entrypointSource,
     /TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256[\s\S]*?main\.machine_evidence_sha256/,
@@ -257,14 +265,22 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
     "phala-sdk-runtime-capsule.mjs",
     "release-manifest-descriptor-historical-core.mjs",
     "cvm-descriptor-runtime-authority-v1-policy.mjs",
+    "cvm-descriptor-runtime-authority-v3.mjs",
     "cvm-release-descriptor-set-v3.mjs",
     "release-authority-historical-core.mjs",
     "compute-workload-activation-observation-core.mjs",
     "frontend-release-historical-core.mjs",
     "external-five-historical-evidence-core.mjs",
     "exact-model-a-dependency-graph.mjs",
+    ...reviewedPureAdditions,
   ]) {
     assert.equal(basenames.has(required), true, `historical closure omits ${required}`);
+  }
+  for (const basename of reviewedPureAdditions) {
+    const source = sources.get(fileURLToPath(new URL(`./${basename}`, import.meta.url)));
+    assert.doesNotMatch(source,
+      /["']node:(?:child_process|fs(?:\/promises)?|net|http|https)["']/,
+      `${basename} must remain a pure authority without process, file or network I/O`);
   }
   for (const forbidden of [
     "phala-seven-cvm-launch-completion.mjs",

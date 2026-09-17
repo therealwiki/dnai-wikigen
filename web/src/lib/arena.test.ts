@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { keccak256, type Address, type Hex } from "viem";
 import { deployment } from "../config";
+import { publicClient } from "./contract";
+import encryptionContractFixtureSource from "./fixtures/arena-candidate-encryption-contract.v1.json?raw";
 import {
   ARENA_SAFE_IR_STARTER_FILENAME,
   ARENA_QUEUE_REASONS,
@@ -25,6 +27,7 @@ import {
   fetchArenaQueue,
   parseArenaCatalog,
   parseArenaChallengeRegistryBindings,
+  parseArenaEncryptionContract,
   parseArenaLeaderboard,
   parseArenaCiphertextErasure,
   parseArenaOwnerCancellation,
@@ -32,6 +35,7 @@ import {
   parseArenaQueue,
   parseArenaSubmissionResult,
   parseArenaWorkerCapability,
+  prepareArenaSubmission,
   readBoundedArenaResponseText,
   retryArenaCiphertextErasure,
   validateArenaSafeIrCandidateBytes,
@@ -289,7 +293,167 @@ function registryOptions(reader: ArenaChallengeRegistryReader = registryReader()
   };
 }
 
+function encryptionContractFixture() {
+  // The default Python test regenerates this exact public fixture from
+  // arena_candidate_browser_contract, so backend schema drift fails its suite.
+  return JSON.parse(encryptionContractFixtureSource) as Record<string, unknown> & {
+    aad: { exact_fields: string[]; hash_formulas: Record<string, string> };
+    recipient: ReturnType<typeof parseArenaEncryptionContract>["recipient"];
+  };
+}
+
 describe("Arena browser boundary", () => {
+  it("accepts the shared current Python encryption contract including registry-bound AAD", () => {
+    const contract = encryptionContractFixture();
+    expect(contract.aad.hash_formulas).toHaveProperty("registry_authorization_sha256");
+    expect(contract.aad.exact_fields).toContain("registry_authorization_sha256");
+    expect(parseArenaEncryptionContract(contract)).toEqual({
+      recipient: contract.recipient,
+      limits: contract.limits,
+    });
+  });
+
+  it.each(["missing", "additional"] as const)("rejects a %s encryption-contract hash formula", (change) => {
+    const contract = encryptionContractFixture();
+    if (change === "missing") delete contract.aad.hash_formulas.registry_authorization_sha256;
+    else contract.aad.hash_formulas.unreviewed_authority = "unsupported";
+    expect(() => parseArenaEncryptionContract(contract)).toThrow(/Arena AAD hash formulas fields do not match/);
+  });
+
+  it.each(["missing", "additional"] as const)("rejects a %s encryption-contract AAD field", (change) => {
+    const contract = encryptionContractFixture();
+    if (change === "missing") contract.aad.exact_fields.pop();
+    else contract.aad.exact_fields.push("unreviewed_authority");
+    expect(() => parseArenaEncryptionContract(contract)).toThrow(/Arena AAD fields does not match/);
+  });
+
+  it("prepares ciphertext from the shared contract with the exact registry snapshot digest in its AAD", async () => {
+    const contract = encryptionContractFixture();
+    const safeIrChallenge: ArenaChallengeManifest = {
+      ...challenge,
+      challenge_id: "dnaseq-variant-qc-safe-ir",
+      slug: "dnaseq-variant-qc-safe-ir-season-01",
+      environment: "synthetic_dnaseq_variant_qc",
+      candidate: {
+        kind: "json_dnaseq_variant_qc_program",
+        runtime: "dnai-safe-ir-v1",
+        entrypoint: "select_variant_evidence",
+        max_source_bytes: 4096,
+      },
+      evaluation: { ...challenge.evaluation, metric: "variant_quality_z_prime" },
+    };
+    const safeIrBindings = {
+      [`${safeIrChallenge.challenge_id}@${safeIrChallenge.version}`]:
+        parseArenaChallengeRegistryBindings(registryBindings)[`${challenge.challenge_id}@${challenge.version}`],
+    };
+    const source = arenaSafeIrStarterCandidateBytes();
+    validateArenaSafeIrCandidateBytes(source);
+    // All quote and registry evidence below is synthetic and nonauthorizing.
+    // This exercises the browser path, not TDX verification or live execution.
+    const quoteBytes = new Uint8Array(632).fill(1);
+    const quote = Array.from(quoteBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const quotePin = await candidateCommitment(quoteBytes);
+    const settings = {
+      delegateUrl: "https://delegate.test",
+      arenaSubmissionEnabled: true,
+      arenaVerifiedQuoteSha256: quotePin,
+      composeHash: "1".repeat(64),
+      appId: "arena-fixture",
+      osImageHash: "2".repeat(64),
+      challengeRegistryAddress: registryAddress,
+      challengeRegistryCodeHash: registryCodeHash,
+      arenaChallengeRegistryBindingsJson: JSON.stringify(safeIrBindings),
+      arenaApprovedChallengeSetSha256: arenaReleaseApprovedChallengeSetSha256(safeIrBindings),
+    };
+    const originalSettings = {
+      delegateUrl: deployment.delegateUrl,
+      arenaSubmissionEnabled: deployment.arenaSubmissionEnabled,
+      arenaVerifiedQuoteSha256: deployment.arenaVerifiedQuoteSha256,
+      composeHash: deployment.composeHash,
+      appId: deployment.appId,
+      osImageHash: deployment.osImageHash,
+      challengeRegistryAddress: deployment.challengeRegistryAddress,
+      challengeRegistryCodeHash: deployment.challengeRegistryCodeHash,
+      arenaChallengeRegistryBindingsJson: deployment.arenaChallengeRegistryBindingsJson,
+      arenaApprovedChallengeSetSha256: deployment.arenaApprovedChallengeSetSha256,
+    };
+    for (const [key, value] of Object.entries(settings)) {
+      Object.defineProperty(deployment, key, { value, configurable: true });
+    }
+    const chainRead = vi.spyOn(publicClient, "getChainId").mockResolvedValue(84532);
+    const blockRead = vi.spyOn(publicClient, "getBlock").mockImplementation((async () => ({
+      number: 12_345n,
+      hash: finalizedBlockHash,
+      timestamp: 1_700_000_000n,
+    })) as typeof publicClient.getBlock);
+    const codeRead = vi.spyOn(publicClient, "getBytecode").mockResolvedValue(runtimeBytecode);
+    const contractRead = vi.spyOn(publicClient, "readContract").mockImplementation((async (request: { functionName: string }) => {
+      switch (request.functionName) {
+        case "registryPaused": return false;
+        case "challengeExists": return true;
+        case "getChallenge": return registryChallenge;
+        case "getVersion": return registryVersion;
+        default: throw new Error("Unexpected registry read");
+      }
+    }) as typeof publicClient.readContract);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://delegate.test/arena/candidate-encryption-contract") {
+        return new Response(JSON.stringify(contract));
+      }
+      if (url === "https://delegate.test/attestation?context=arena") {
+        return new Response(JSON.stringify({
+          mode: "tdx",
+          quote,
+          encryption_public_key: contract.recipient.encryption_public_key,
+          report_context: "arena",
+          report_data: contract.recipient.report_data,
+          quote_report_data: contract.recipient.report_data + "0".repeat(64),
+          app_id: settings.appId,
+          compose_hash: settings.composeHash,
+          os_image_hash: settings.osImageHash,
+          verified: false,
+        }));
+      }
+      throw new Error("Unexpected network request");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const prepared = await prepareArenaSubmission({
+        source,
+        challenge: safeIrChallenge,
+        walletAddress: `0x${"ab".repeat(20)}`,
+        idempotencyKey: "shared-contract-regression",
+      });
+      const aad = JSON.parse(atob(prepared.payload.envelope.aad.replaceAll("-", "+").replaceAll("_", "/")));
+      expect(Object.keys(aad).sort()).toEqual([...contract.aad.exact_fields].sort());
+      expect(aad.registry_authorization_sha256).toBe(
+        await arenaChallengeRegistryAuthorizationSha256(prepared.payload.registry_authorization),
+      );
+      expect(aad.registry_authorization_sha256).not.toBe(
+        await arenaChallengeRegistryAuthorizationSha256({
+          ...prepared.payload.registry_authorization,
+          block_number: "12346",
+        }),
+      );
+      expect(prepared.registryBrowserPreflight.proxyIndependentlyVerified).toBe(false);
+      expect(prepared.registryBrowserPreflight.workerAuthorized).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(blockRead).toHaveBeenCalledWith({ blockTag: "finalized", includeTransactions: false });
+      expect(prepared.challengeId).toBe("dnaseq-variant-qc-safe-ir");
+      expect(prepared.payload.manifest.runtime).toBe("dnai-safe-ir-v1");
+      expect(prepared.payload.envelope.ciphertext).not.toContain("positive_pipeline");
+    } finally {
+      chainRead.mockRestore();
+      blockRead.mockRestore();
+      codeRead.mockRestore();
+      contractRead.mockRestore();
+      for (const [key, value] of Object.entries(originalSettings)) {
+        Object.defineProperty(deployment, key, { value, configurable: true });
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("matches the release-approved challenge-set cross-runtime digest vector", () => {
     const bindings = parseArenaChallengeRegistryBindings(JSON.stringify({
       "dnaseq-variant-qc-safe-ir@1.0.0": {

@@ -16,44 +16,47 @@ import {
 import {
   PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
 } from "./phala-sdk-runtime-capsule.mjs";
+import { normalizePhalaContractKmsProjection } from "./phala-contract-kms-core.mjs";
+import { assertCanonicalPlainDataGraph } from "./canonical-authority-graph.mjs";
 
 export const PHALA_COMPATIBILITY_PROBE_PLAN_SCHEMA =
-  "dnai.phala-compatibility-probe-plan.v1";
+  "dnai.phala-compatibility-probe-plan.v2";
 export const PHALA_COMPATIBILITY_RECEIPT_SCHEMA =
-  "dnai.phala-compatibility-receipt.v1";
+  "dnai.phala-compatibility-receipt.v2";
 export const PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA =
-  "dnai.phala-production-target-authority.v2";
+  "dnai.phala-production-target-authority.v3";
 export const PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA =
-  "dnai.phala-sdk-wire-transform-staging-receipt.v3";
+  "dnai.phala-sdk-wire-transform-staging-receipt.v4";
 export const PHALA_PRODUCTION_TARGET_AUTHORITY_DOMAIN =
-  "dnai-wikigen/phala-production-target-authority/v2\0";
+  "dnai-wikigen/phala-production-target-authority/v3\0";
 export const PHALA_COMPATIBILITY_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-compatibility-receipt/v1\0";
+  "dnai-wikigen/phala-compatibility-receipt/v2\0";
 export const PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-sdk-wire-transform-staging-receipt/v3\0";
+  "dnai-wikigen/phala-sdk-wire-transform-staging-receipt/v4\0";
 export const PHALA_PROVISION_REQUEST_TARGET_SHA256 =
   "sha256:08c22056de45a714d43276269d96d9ff5198a3e97c4b3a3626ca6307fdd76bd6";
 export const PHALA_PRODUCTION_TARGET_REVIEW_INPUT_DOMAIN =
-  "dnai-wikigen/phala-production-target-review-input/v1\0";
-export const PHALA_CLOUD_SDK_VERSION = "0.2.10";
+  "dnai-wikigen/phala-production-target-review-input/v2\0";
+export const PHALA_CLOUD_SDK_VERSION = "0.4.0";
 export const PHALA_DSTACK_SDK_VERSION = "0.5.8";
 export const PHALA_CLI_PACKAGE_VERSION = "1.1.19";
 export const PHALA_API_CANDIDATE_VERSIONS = Object.freeze([
   "2026-01-21",
-  "2026-05-22",
+  "2026-06-23",
 ]);
 export const PHALA_READ_ONLY_COMPATIBILITY_CALLS = Object.freeze([
   "getCurrentUser",
+  "getWorkspace",
   "getCvmCreateResources",
-  "getKmsList",
-  "getKmsInfo",
+  "listKmsContracts",
+  "getKmsContract",
+  "listKmsContractNodes",
   "getOsImages",
 ]);
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const BARE_SHA256 = /^(?!0{64}$)[0-9a-f]{64}$/;
-const APP_ID = /^(?!0{40}$)[0-9a-f]{40}$/;
 const COMPRESSED_K256 = /^0x0[23][0-9a-f]{64}$/;
 const ISO_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/;
@@ -339,6 +342,7 @@ export function createPhalaCompatibilityProbePlan() {
 }
 
 export function normalizePhalaCompatibilityReceipt(value) {
+  assertCanonicalPlainDataGraph(value, { label: "Phala compatibility receipt" });
   const parsed = exactRecord(value, [
     "schema",
     "truth_status",
@@ -405,9 +409,13 @@ export function normalizePhalaCompatibilityReceipt(value) {
     "workspace_id",
     "account_subject_sha256",
     "authenticated",
+    "billing_status",
   ], "compatibility workspace");
   if (workspace.authenticated !== true) {
     throw new Error("compatibility workspace is not authenticated");
+  }
+  if (!["active", "suspended", "abandoned"].includes(workspace.billing_status)) {
+    throw new Error("compatibility workspace requires an explicit known billing_status");
   }
   const sdk = exactRecord(
     parsed.sdk_identity,
@@ -418,24 +426,14 @@ export function normalizePhalaCompatibilityReceipt(value) {
       !== JSON.stringify(sortedObject(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY))) {
     throw new Error("compatibility SDK identity differs from the reviewed runtime capsule");
   }
-  const kms = exactRecord(parsed.kms, [
-    "id",
-    "slug",
-    "url",
-    "version",
-    "chain_id",
-    "kms_contract_address",
-    "gateway_app_id",
-    "catalog_match_count",
-  ], "compatibility KMS");
-  if (kms.slug !== "phala" || kms.chain_id !== null
-    || kms.kms_contract_address !== null || kms.catalog_match_count !== 1) {
-    throw new Error("compatibility KMS is not the unique centralized Phala KMS");
-  }
-  if (kms.gateway_app_id !== null && (typeof kms.gateway_app_id !== "string"
-      || !APP_ID.test(kms.gateway_app_id.replace(/^0x/, "")))) {
-    throw new Error("compatibility KMS gateway app id is invalid");
-  }
+  const osImage = normalizeOsEntry(parsed.os_image, "compatibility OS image");
+  const kms = normalizePhalaContractKmsProjection(parsed.kms, {
+    osImage,
+    resourceTargets: Object.fromEntries(CVM_LAUNCH_DOMAINS.map((domain) => [domain, {
+      ...PHALA_CVM_RESOURCE_TARGETS[domain],
+      gateway_required: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
+    }])),
+  });
   const quota = exactRecord(parsed.quota, [
     "max_instances",
     "max_disk_gb",
@@ -462,19 +460,11 @@ export function normalizePhalaCompatibilityReceipt(value) {
         "account_subject_sha256",
       ),
       authenticated: true,
+      billing_status: workspace.billing_status,
     },
     sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
-    kms: {
-      id: exactIdentifier(kms.id, "kms.id"),
-      slug: "phala",
-      url: exactHttpsUrl(kms.url, "kms.url"),
-      version: nonempty(kms.version, "kms.version", 64),
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: kms.gateway_app_id,
-      catalog_match_count: 1,
-    },
-    os_image: normalizeOsEntry(parsed.os_image, "compatibility OS image"),
+    kms: structuredClone(kms),
+    os_image: osImage,
     resource_catalog: resourceCatalog,
     quota: {
       max_instances: safePositiveInteger(quota.max_instances, "quota.max_instances", 10_000),
@@ -486,6 +476,14 @@ export function normalizePhalaCompatibilityReceipt(value) {
   };
   assertSecretFree(normalized, "compatibility receipt");
   return normalized;
+}
+
+// Compatibility may record a known non-active billing state, but such an
+// observation can never authorize review-input creation or a prepare/commit.
+export function assertPhalaCompatibilityActiveBilling(compatibility) {
+  if (compatibility?.workspace?.billing_status !== "active") {
+    throw new Error("Phala compatibility workspace billing_status must explicitly be active");
+  }
 }
 
 export function phalaCompatibilityReceiptDigest(value) {
@@ -601,7 +599,9 @@ function normalizeComposeProfiles(value) {
 export function normalizePhalaSdkWireTransformStagingReceipt(value, {
   compatibilityReceipt,
 } = {}) {
+  assertCanonicalPlainDataGraph(value, { label: "Phala SDK wire-transform staging receipt" });
   const compatibility = normalizePhalaCompatibilityReceipt(compatibilityReceipt);
+  assertPhalaCompatibilityActiveBilling(compatibility);
   const parsed = exactRecord(value, [
     "schema",
     "truth_status",
@@ -841,8 +841,10 @@ export function normalizePhalaProductionTargetAuthority(value, {
   compatibilityReceipt,
   sdkWireTransformStagingReceipt,
 } = {}) {
+  assertCanonicalPlainDataGraph(value, { label: "Phala production target authority" });
   assertPhalaProductionTargetCollaborationLaunchGatePolicy();
   const compatibility = normalizePhalaCompatibilityReceipt(compatibilityReceipt);
+  assertPhalaCompatibilityActiveBilling(compatibility);
   const staging = normalizePhalaSdkWireTransformStagingReceipt(
     sdkWireTransformStagingReceipt,
     { compatibilityReceipt: compatibility },
@@ -918,28 +920,27 @@ export function normalizePhalaProductionTargetAuthority(value, {
     throw new Error("target SDK identity differs from the compatibility receipt");
   }
   const kms = exactRecord(parsed.kms, [
-    "id",
-    "slug",
-    "url",
-    "version",
-    "chain_id",
-    "kms_contract_address",
-    "gateway_app_id",
+    "contract",
+    "replicas",
+    "eligible_placements",
+    "gateways",
     "env_encrypt_signer_k256",
     "signer_provenance_sha256",
     "valid_from",
     "valid_until",
   ], "target KMS");
   for (const field of [
-    "id", "slug", "url", "version", "chain_id", "kms_contract_address", "gateway_app_id",
+    "contract", "replicas", "eligible_placements", "gateways",
   ]) {
-    if (kms[field] !== compatibility.kms[field]) {
+    if (JSON.stringify(sortedObject(kms[field]))
+      !== JSON.stringify(sortedObject(compatibility.kms[field]))) {
       throw new Error(`target KMS ${field} differs from the authenticated catalog`);
     }
   }
   if (typeof kms.env_encrypt_signer_k256 !== "string"
-    || !COMPRESSED_K256.test(kms.env_encrypt_signer_k256)) {
-    throw new Error("target KMS signer must be an independently pinned compressed k256 key");
+    || !COMPRESSED_K256.test(kms.env_encrypt_signer_k256)
+    || kms.env_encrypt_signer_k256 !== compatibility.kms.contract.k256_pubkey) {
+    throw new Error("target KMS signer must independently pin the exact authenticated contract k256 key");
   }
   const signerValidFrom = canonicalTimestamp(kms.valid_from, "target KMS valid_from");
   const signerValidUntil = canonicalTimestamp(kms.valid_until, "target KMS valid_until");
@@ -1002,13 +1003,7 @@ export function normalizePhalaProductionTargetAuthority(value, {
     },
     sdk_identity: { ...sdk },
     kms: {
-      id: kms.id,
-      slug: "phala",
-      url: kms.url,
-      version: kms.version,
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: kms.gateway_app_id,
+      ...structuredClone(compatibility.kms),
       env_encrypt_signer_k256: kms.env_encrypt_signer_k256,
       signer_provenance_sha256: exactSha256(
         kms.signer_provenance_sha256,

@@ -28,6 +28,11 @@ test("pure Stage-C authority excludes fresh O receipt provenance", async () => {
     freshBinding,
     /export function assertLiveActivationComputeWorkloadObservationBinding/,
   );
+  assert.match(
+    freshBinding,
+    /buildReceipt\.post_measurement_activation_execution_receipt_sha256\s*!==\s*activationExecutionReceiptSha256/,
+    "fresh C/O binding must compare D v4 with the independently matched activation receipt",
+  );
   const pure = await import(stagesUrl);
   const production = await import(freshBindingUrl);
   assert.equal(

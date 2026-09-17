@@ -1,0 +1,138 @@
+{
+  "observed_at": "2026-09-16T20:33:04.871Z",
+  "status": "PASS",
+  "network_attempts": 0,
+  "positive_attestation_controls": [
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "original_verified": true
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "original_verified": true
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "original_verified": true
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "original_verified": true
+    }
+  ],
+  "negative_controls": [
+    {
+      "package": "@phala/cloud@0.4.0",
+      "mutation": "one_tarball_byte_changed",
+      "rejected": true
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "mutation": "registry_signature_bound_version_changed",
+      "rejected": true
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "mutation": "dsse_signature_byte_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "tlog entry signature mismatch"
+      }
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "mutation": "signed_subject_digest_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "DSSE payload hash mismatch"
+      }
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "mutation": "dsse_signature_byte_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "tlog entry signature mismatch"
+      }
+    },
+    {
+      "package": "@phala/cloud@0.4.0",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "mutation": "signed_subject_digest_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "DSSE payload hash mismatch"
+      }
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "mutation": "one_tarball_byte_changed",
+      "rejected": true
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "mutation": "registry_signature_bound_version_changed",
+      "rejected": true
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "mutation": "dsse_signature_byte_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "tlog entry signature mismatch"
+      }
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      "mutation": "signed_subject_digest_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "DSSE payload hash mismatch"
+      }
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "mutation": "dsse_signature_byte_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "tlog entry signature mismatch"
+      }
+    },
+    {
+      "package": "@phala/dstack-sdk@0.5.8",
+      "predicate_type": "https://slsa.dev/provenance/v1",
+      "mutation": "signed_subject_digest_changed",
+      "rejected": true,
+      "rejection": {
+        "name": "VerificationError",
+        "code": "TLOG_BODY_ERROR",
+        "message": "DSSE payload hash mismatch"
+      }
+    }
+  ],
+  "scope": "Cryptographic tamper rejection for freshly downloaded package bytes and exact saved npm publish/SLSA bundles; not Phala compatibility or deployment authority."
+}

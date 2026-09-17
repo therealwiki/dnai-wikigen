@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import { link, open, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { phalaAppComposeExpectedRuntimeHash } from "./phala-app-compose-wire-core.mjs";
 
 import {
   bareSha256,
@@ -2211,13 +2212,13 @@ export async function buildCvmLaunchIntentBundleFromFiles({
       docker_compose_file_sha256: file.digest,
       docker_compose_file_byte_length: file.bytes.length,
     };
-    appComposeCandidate.expected_compose_hash = phalaDstackComposeHash(
-      createPhalaDstackComposeHashInput(
-        appComposeCandidate,
-        file.text,
-        policy.exact_allowed_environment_keys,
-      ),
+    const appCompose = createPhalaDstackComposeHashInput(
+      appComposeCandidate,
+      file.text,
+      policy.exact_allowed_environment_keys,
     );
+    appComposeCandidate.pre_transform_compose_hash = phalaDstackComposeHash(appCompose);
+    appComposeCandidate.expected_compose_hash = phalaAppComposeExpectedRuntimeHash(appCompose);
     descriptors.push({
       trust_domain: domain,
       descriptor_file: policy.descriptor_file,

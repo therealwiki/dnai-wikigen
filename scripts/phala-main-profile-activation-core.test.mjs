@@ -14,6 +14,7 @@ import {
   PHALA_LIVE_DEAL_PROFILE_ACTIVATION_GATE_TRUTH,
   accountGenesisActivationSigningMessage,
   buildPhalaAccountGenesisCompletion,
+  createPhalaLiveDealProfileActivationGate,
   normalizePhalaAccountGenesisActivationAuthority,
   normalizePhalaAccountGenesisCompletion,
   normalizePhalaLiveDealProfileActivationGate,
@@ -23,6 +24,9 @@ import {
 import {
   syntheticPhalaAccountGenesisFixture,
 } from "./phala-main-profile-activation.fixture.mjs";
+import {
+  syntheticReleaseAuthorityStagesFixture,
+} from "./release-authority-current-stages.fixture.mjs";
 
 function clone(value) {
   return structuredClone(value);
@@ -177,6 +181,47 @@ test("bounded account-genesis completion binds all five create-only artifacts", 
       expected: fixture.completionExpected,
     }),
     /^sha256:[0-9a-f]{64}$/,
+  );
+});
+
+test("live deal gate consumes only the current receipt-v4 authority", async () => {
+  const accountGenesis = syntheticPhalaAccountGenesisFixture();
+  const stages = await syntheticReleaseAuthorityStagesFixture();
+  const receipt = stages.stageTwo.post_ceremony_evidence
+    .post_measurement_activation_execution_receipt;
+  const receiptSha256 = stages.stageTwo.post_ceremony_evidence
+    .post_measurement_activation_execution_receipt_sha256;
+  const target = {
+    domain: receipt.target.domain,
+    app_id: receipt.target.app_id,
+    cvm_id: receipt.target.cvm_id,
+    compose_hash: receipt.target.compose_hash,
+    os_image_hash: receipt.target.os_image_hash,
+  };
+  const args = {
+    accountGenesisCompletion: accountGenesis.completion,
+    accountGenesisExpected: accountGenesis.completionExpected,
+    diligenceReleaseGate: {},
+    liveActivationAuthoritySha256: `sha256:${"a".repeat(64)}`,
+    nonliveActivationExecutionReceipt: receipt,
+    nonliveActivationExecutionReceiptSha256: receiptSha256,
+    releaseSha: receipt.release_sha,
+    target,
+  };
+  assert.throws(
+    () => createPhalaLiveDealProfileActivationGate(args),
+    /locally replayed completed Diligence release gate is required/,
+  );
+
+  const historicalReceipt = structuredClone(receipt);
+  historicalReceipt.schema =
+    "dnai.phala-post-measurement-activation-execution-receipt.v3";
+  assert.throws(
+    () => createPhalaLiveDealProfileActivationGate({
+      ...args,
+      nonliveActivationExecutionReceipt: historicalReceipt,
+    }),
+    /post-measurement activation execution truth boundary is invalid/,
   );
 });
 

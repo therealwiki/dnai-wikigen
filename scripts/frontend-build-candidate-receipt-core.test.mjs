@@ -16,7 +16,7 @@ function pin(byte) {
 
 function receipt() {
   return {
-    schema: "dnai.frontend-build-candidate.v3",
+    schema: "dnai.frontend-build-candidate.v4",
     status: "pre_live_activation_candidate",
     truth_status: "pre_live_activation_candidate_not_deploy_authority",
     release_sha: "1".repeat(40),
@@ -27,6 +27,7 @@ function receipt() {
     runtime_authority_dependency_sha256: pin(4),
     royalty_release_history_sha256: pin(5),
     royalty_release_history_receipt_sha256: pin(6),
+    post_measurement_activation_execution_receipt_sha256: pin(11),
     compute_workload_activation_observation_sha256: pin(7),
     frontend_build_sha256: pin(8),
     release_inputs_sha256: pin(9),
@@ -41,8 +42,19 @@ test("pure current-D receipt parser remains byte-compatible with the web produce
   assert.equal(pureReceiptSha256(value), webReceiptSha256(value));
   assert.equal(
     pureReceiptSha256(value),
-    "sha256:b5ec10a412cb57df8f298737acf06fed5e2524e658b28663e9f94596c0740d14",
+    "sha256:cbbdf74e1c4307a8ee29f333dbed510858cac0a785ff72581d111e88a66d81ce",
   );
+});
+
+test("current-D v4 parser rejects v3, omitted activation receipt, and changed activation roots", () => {
+  const old = { ...receipt(), schema: "dnai.frontend-build-candidate.v3" };
+  assert.throws(() => normalizePureReceipt(old), /truth label/);
+  const missing = receipt();
+  delete missing.post_measurement_activation_execution_receipt_sha256;
+  assert.throws(() => normalizePureReceipt(missing), /exact schema/);
+  const changed = { ...receipt(), post_measurement_activation_execution_receipt_sha256: pin(12) };
+  assert.notEqual(pureReceiptSha256(changed), pureReceiptSha256(receipt()));
+  assert.equal(pureReceiptSha256(changed), webReceiptSha256(changed));
 });
 
 test("pure current-D receipt parser rejects accessors and zero authority pins", () => {

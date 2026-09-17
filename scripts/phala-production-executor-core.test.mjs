@@ -34,6 +34,11 @@ import {
   verifyPinnedLegacyEnvironmentKey,
 } from "./phala-production-sdk-adapter.mjs";
 import { PHALA_OS_IMAGE_CATALOG_ENTRY } from "./cvm-launch-intent-core.mjs";
+import {
+  createSyntheticPhalaContractKmsFixture,
+  createSyntheticPhalaContractKmsProjection,
+  SYNTHETIC_PHALA_KMS_CONTRACT_ID,
+} from "./phala-contract-kms-test-fixture.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 const mutationTime = (seconds) => new Date(Date.UTC(2026, 6, 21, 12, 0, seconds))
@@ -103,7 +108,7 @@ test("explicit AppCompose and provision request contain no mutable SDK defaults"
     activeEnvironmentKeys: ["A", "B"],
     appId: "1".repeat(40),
     nonce: 42,
-    kmsId: "kms-production-1",
+    kmsContractId: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
   });
   assert.equal(request.instance_type, "tdx.large");
   assert.equal(request.disk_size, 40);
@@ -117,11 +122,11 @@ test("explicit AppCompose and provision request contain no mutable SDK defaults"
   const identity = resolvePinnedPhalaPackageIdentity();
   assert.equal(
     identity.cloud.module_sha256,
-    "sha256:ad67b0bda91dd37566dac18030aac8c267e5b88b931f12e37614e537b465729f",
+    "sha256:84573a8a86ace5da9264ef9e5c619bb2799da5ea0f12cdae5025d1fd5b4c7689",
   );
   assert.equal(
     identity.cloud.npm_dist_integrity_sha512,
-    "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+    "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
   );
   assert.match(identity.dstack.compose_hash_module_sha256, /^sha256:[0-9a-f]{64}$/);
   const compatibilityIdentity = projectPinnedSdkCompatibilityIdentity(identity);
@@ -164,7 +169,7 @@ test("pinned cloud SDK wire projection models its exact destructive compatibilit
     activeEnvironmentKeys: ["A", "B"],
     appId: "1".repeat(40),
     nonce: 42,
-    kmsId: "kms-production-1",
+    kmsContractId: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
   });
   const wire = projectPinnedProvisionWireBody(request);
   assert.equal(request.compose_file.tproxy_enabled, false);
@@ -189,31 +194,36 @@ test("pinned cloud SDK wire projection models its exact destructive compatibilit
 });
 
 test("prepare observation binds app, compose, KMS, resource, OS, and returned key", () => {
-  const observed = assertPreparedCvmObservation({
+  const graph = createSyntheticPhalaContractKmsFixture();
+  const request = {
     response: {
       app_id: "1".repeat(40),
       compose_hash: "2".repeat(64),
-      kms_id: "kms-production-1",
+      kms_contract_id: graph.contract.id,
+      kms_id: graph.contractNodes.items[0].id,
+      kms_info: { ...graph.resources.kms_nodes[0] },
       instance_type: "tdx.large",
       os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
-      node_id: 7,
-      device_id: "device-7",
+      node_id: 21,
+      device_id: "1".repeat(64),
       app_env_encrypt_pubkey: "3".repeat(64),
     },
+    domain: "main_runtime_cvm",
+    rawPlacement: { node_id: 7, teepod_id: 21 },
     appId: "1".repeat(40),
     expectedComposeHash: "2".repeat(64),
-    expectedKmsId: "kms-production-1",
+    expectedKmsProjection: createSyntheticPhalaContractKmsProjection(),
     expectedInstanceType: "tdx.large",
-  });
+  };
+  const observed = assertPreparedCvmObservation(request);
   assert.equal(observed.node_id, 7);
+  assert.equal(observed.teepod_id, 21);
+  assert.equal(observed.kms_contract_id, graph.contract.id);
   assert.equal(observed.prepared_public_key, "3".repeat(64));
 
   assert.throws(() => assertPreparedCvmObservation({
-    response: { ...observed, os_image_hash: "4".repeat(64) },
-    appId: "1".repeat(40),
-    expectedComposeHash: "2".repeat(64),
-    expectedKmsId: "kms-production-1",
-    expectedInstanceType: "tdx.large",
+    ...request,
+    response: { ...request.response, os_image_hash: "4".repeat(64) },
   }), /reviewed request and catalogs/);
 });
 
@@ -571,22 +581,29 @@ test("executor events and commit metadata cannot carry secret values", () => {
   assert.deepEqual(buildExactCommitMetadata({
     appId: "1".repeat(40),
     composeHash: "2".repeat(64),
-    kmsId: "kms-production-1",
+    kmsContractId: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
     environmentKeys: ["A", "B"],
   }), {
     app_id: "1".repeat(40),
     compose_hash: "2".repeat(64),
-    kms_id: "kms-production-1",
+    kms_contract_id: SYNTHETIC_PHALA_KMS_CONTRACT_ID,
     env_keys: ["A", "B"],
   });
 });
 
 test("postcommit posture requires the exact private KMS, OS, resource, and hash facts", () => {
+  const kmsProjection = createSyntheticPhalaContractKmsProjection();
+  const preparedBinding = {
+    kms_contract_id: kmsProjection.contract.id, kms_id: kmsProjection.replicas[0].id,
+    kms_url: kmsProjection.replicas[0].url, node_id: 7, teepod_id: 21,
+    device_id: "1".repeat(64), gateway_app_id: `0x${"1".repeat(40)}`,
+  };
   const info = {
     app_id: "1".repeat(40),
     compose_hash: "2".repeat(64),
     kms_type: "phala",
-    kms_info: { id: "kms-production-1" },
+    kms_info: { rpc_endpoint: preparedBinding.kms_url, encrypted_env_pubkey: "3".repeat(64) },
+    node_info: { id: 7, device_ids: [{ device_id: "1".repeat(64), enabled: true, algorithm_version: "v3.0.0" }] },
     os: { is_dev: false, os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash },
     resource: { instance_type: "tdx.large", disk_in_gb: 40 },
     listed: false,
@@ -594,20 +611,19 @@ test("postcommit posture requires the exact private KMS, OS, resource, and hash 
     public_sysinfo: false,
     public_tcbinfo: false,
   };
-  assert.equal(assertProductionCvmPosture(info, {
+  const expected = {
+    domain: "main_runtime_cvm",
     appId: "1".repeat(40),
     composeHash: "2".repeat(64),
-    kmsId: "kms-production-1",
+    kmsProjection,
+    preparedBinding,
+    environmentPublicKey: "3".repeat(64),
     instanceType: "tdx.large",
     diskSize: 40,
-  }), info);
-  assert.throws(() => assertProductionCvmPosture({ ...info, public_tcbinfo: true }, {
-    appId: "1".repeat(40),
-    composeHash: "2".repeat(64),
-    kmsId: "kms-production-1",
-    instanceType: "tdx.large",
-    diskSize: 40,
-  }), /private production posture/);
+  };
+  assert.equal(assertProductionCvmPosture(info, expected), info);
+  assert.throws(() => assertProductionCvmPosture({ ...info, public_tcbinfo: true }, expected),
+    /private production posture/);
 });
 
 test("SDK process and transport guards reject environment, origin, retry, and redirect drift", () => {

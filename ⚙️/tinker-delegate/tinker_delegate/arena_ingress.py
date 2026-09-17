@@ -75,6 +75,7 @@ from tinker_delegate import dstack_utils
 from tinker_delegate.arena_store import (
     EXECUTION_ASSURANCE,
     PRODUCT_STATUS,
+    ArenaSubmissionIngressGuard,
     ArenaStoreError,
     ChallengeManifest,
     SubmissionIdentity,
@@ -1390,11 +1391,14 @@ class ArenaCandidateIngressStore:
         *,
         binding: ArenaCandidateBinding,
         envelope: ArenaCandidateEnvelope,
+        queue_guard: ArenaSubmissionIngressGuard | None = None,
     ) -> ArenaIngressResult:
         if not isinstance(binding, ArenaCandidateBinding):
             raise ArenaIngressError("Arena candidate binding is required")
         if not isinstance(envelope, ArenaCandidateEnvelope):
             raise ArenaIngressError("Arena candidate envelope is required")
+        if queue_guard is not None and type(queue_guard) is not ArenaSubmissionIngressGuard:
+            raise ArenaIngressError("Arena ingress recovery guard is invalid")
         _verify_envelope_binding(binding, envelope)
         payload = {
             "surface": "arena_candidate_ciphertext_envelope",
@@ -1442,9 +1446,34 @@ class ArenaCandidateIngressStore:
                         "Arena Idempotency-Key was already used for a different envelope"
                     )
                 if existing.storage_state != "retained":
-                    raise ArenaIngressConflict(
-                        "Arena ciphertext lifecycle no longer accepts ingress replay"
+                    if existing.storage_state != "unlink_pending" or queue_guard is None:
+                        raise ArenaIngressConflict(
+                            "Arena ciphertext lifecycle no longer accepts ingress replay"
+                        )
+                    queue_guard.authorize_orphan_recovery(
+                        challenge_id=binding.challenge_id,
+                        challenge_version=binding.challenge_version,
+                        identity_hashes=binding.identity,
+                        idempotency_key_hash=binding.idempotency_key_hash,
+                        sealed_reference=existing.sealed_reference,
                     )
+                    if {**existing.__dict__, "storage_state": "retained"} != record.__dict__:
+                        raise ArenaIngressCorruptError("Arena orphan recovery metadata differs from the exact envelope")
+                    # Keep the original request reservation pending throughout
+                    # recovery. Removing it before recreation would let a crash
+                    # release this retry key to a different envelope.
+                    try:
+                        self._unlink_blob_entry(existing.object_id)
+                        self._write_new_blob(self.blob_dir / f"{object_id}.json", encoded)
+                        recovered_records = dict(self._records)
+                        recovered_records[binding.idempotency_key_hash] = record
+                        self._persist_index(recovered_records)
+                    except (ArenaIngressError, OSError) as exc:
+                        raise ArenaIngressErasureRetryable(
+                            "Arena exact orphan recovery requires a bounded retry"
+                        ) from exc
+                    self._records = recovered_records
+                    return self._result(record, created=True)
                 self._verify_blob(existing)
                 return self._result(existing, created=False)
             if len(self._records) >= self.max_envelopes:
@@ -1898,7 +1927,10 @@ class ArenaCandidateIngressStore:
                 raise ArenaIngressCorruptError(
                     "Arena candidate envelope must have mode 0600"
                 )
-            if metadata.st_size <= 0 or metadata.st_size > MAX_BLOB_FILE_BYTES:
+            # A pending rollback/recovery can leave an empty partial write.
+            # It is never readable as retained ciphertext, but must remain
+            # removable by exact guarded recovery or terminal cleanup.
+            if (metadata.st_size <= 0 and record.storage_state == "retained") or metadata.st_size > MAX_BLOB_FILE_BYTES:
                 raise ArenaIngressCorruptError(
                     "Arena candidate envelope is empty or oversized"
                 )
@@ -2093,6 +2125,7 @@ class ArenaCandidateIngressService:
         idempotency_key: str,
         registry_authorization_sha256: str,
         envelope: ArenaCandidateEnvelope | Mapping[str, Any],
+        queue_guard: ArenaSubmissionIngressGuard | None = None,
     ) -> ArenaIngressResult:
         parsed = (
             envelope
@@ -2129,7 +2162,7 @@ class ArenaCandidateIngressService:
                 "Arena ciphertext length must equal source_bytes plus the GCM tag"
             )
         _verify_envelope_binding(binding, parsed)
-        return self.store.put(binding=binding, envelope=parsed)
+        return self.store.put(binding=binding, envelope=parsed, queue_guard=queue_guard)
 
 
 def build_arena_candidate_ingress(

@@ -329,7 +329,7 @@ test("historical D replay preserves its v2 closure while current builds use the 
   );
   assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS.length, 19);
   assert.equal(__historicalFrontendReleaseCoreTest.EXTERNAL_FILES.length, 52);
-  assert.equal(CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.length, 32);
+  assert.equal(CLOUDFLARE_EXTERNAL_BUILD_ENTRYPOINTS.length, 36);
   const historicalEntrypointPaths =
     __historicalFrontendReleaseCoreTest.EXTERNAL_ENTRYPOINTS
       .map(({ path }) => path);
@@ -351,15 +351,19 @@ test("historical D replay preserves its v2 closure while current builds use the 
       "deployments/phala-sdk-runtime-capsule-authority.json",
       "deployments/phala-sdk-upstream-registry-evidence.json",
       "docs/compute-console-api.md",
+      "scripts/current-model-a-input-recipe-core.mjs",
+      "scripts/cvm-launch-intent-core.mjs",
       "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
       "scripts/execution-policy-release-core-v3-historical.mjs",
+      "scripts/phala-post-measurement-activation-receipt-v4-core.mjs",
+      "scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs",
       "scripts/release-authority-current-c-v6-core.mjs",
       "scripts/royalty-release-authority-core.mjs",
       "scripts/royalty-release-history-receipt-core.mjs",
-      "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+      "scripts/vendor/npm/phala-cloud-0.4.0.tgz",
       "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
-      "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
-      "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
+      "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
     ],
   );
   const historicalPaths = __historicalFrontendReleaseCoreTest.EXTERNAL_FILES
@@ -379,16 +383,22 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "deployments/phala-sdk-runtime-capsule-authority.json",
     "deployments/phala-sdk-upstream-registry-evidence.json",
     "docs/compute-console-api.md",
+    "scripts/current-model-a-input-recipe-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
-    "scripts/cvm-descriptor-runtime-authority-v2.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v3-core.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v3.mjs",
     "scripts/cvm-release-descriptor-set-constants-v3.mjs",
     "scripts/cvm-release-descriptor-set-v3.mjs",
     "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
     "scripts/execution-policy-release-core-v3-historical.mjs",
     "scripts/frontend-build-candidate-receipt-core.mjs",
+    "scripts/phala-app-compose-wire-core.mjs",
+    "scripts/phala-contract-kms-core.mjs",
+    "scripts/phala-post-measurement-activation-receipt-v4-core.mjs",
     "scripts/phala-sdk-runtime-capsule.mjs",
     "scripts/phala-seven-cvm-release-verification-authority-v4-core.mjs",
+    "scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs",
     "scripts/release-authority-current-c-v6-core.mjs",
     "scripts/release-authority-stages.mjs",
     "scripts/release-ceremony-authorization.mjs",
@@ -396,10 +406,10 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "scripts/royalty-release-authority-core.mjs",
     "scripts/royalty-release-history-receipt-core.mjs",
     "scripts/tinker-account-binding-core.mjs",
-    "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+    "scripts/vendor/npm/phala-cloud-0.4.0.tgz",
     "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz",
-    "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
-    "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+    "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
+    "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
   ]);
   assert.equal(
     historicalPaths.includes(
@@ -643,6 +653,7 @@ test("recursive historical-core import closure is acyclic and capability-free", 
     "scripts/canonical-authority-graph.mjs",
     "scripts/cvm-launch-intent-core.mjs",
     "scripts/execution-policy-release-core-v3-historical.mjs",
+    "scripts/phala-app-compose-wire-core.mjs",
     "scripts/phala-post-measurement-activation-receipt-core.mjs",
     "scripts/phala-production-execution-policy.mjs",
     "scripts/phala-seven-cvm-measurement-policy.mjs",

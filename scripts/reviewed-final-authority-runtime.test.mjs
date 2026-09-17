@@ -168,6 +168,8 @@ function fixture(directory, { expired = false } = {}) {
     descriptor.app_compose_candidate.docker_compose_file_byte_length = 2_000 + index;
     descriptor.app_compose_candidate.expected_compose_hash =
       (index + 1).toString(16).repeat(64);
+    descriptor.app_compose_candidate.pre_transform_compose_hash =
+      (index + 8).toString(16).repeat(64);
   });
   const launchDigest = cvmLaunchIntentCoreDigest(launch);
   rebindReleaseAuthority(authority, {

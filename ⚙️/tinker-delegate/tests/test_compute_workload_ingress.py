@@ -29,6 +29,7 @@ from tinker_delegate.compute_workload_ingress import (
     WORKLOAD_INGRESS_ALGORITHM,
     WORKLOAD_INGRESS_ENCODING,
     WORKLOAD_RECIPIENT_ACTIVATION_SCHEMA,
+    WORKLOAD_RECIPIENT_ACTIVATION_DOMAIN,
     WORKLOAD_RECIPIENT_RELEASE_DOMAIN,
     ComputeWorkloadEnvelope,
     ComputeWorkloadBinding,
@@ -426,7 +427,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
             {"valid": True, "raw_workload_egress": False},
         )
 
-    def test_activation_v3_and_release_v2_have_exact_frozen_wire_preimages(self):
+    def test_activation_v4_and_release_v2_have_exact_frozen_wire_preimages(self):
         public = self.activation.to_dict()
         self.assertEqual(
             set(public),
@@ -463,7 +464,14 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         self.assertEqual(public["schema"], WORKLOAD_RECIPIENT_ACTIVATION_SCHEMA)
         self.assertEqual(
             self.activation.commitment,
-            "sha256:31c88697625a861b15b7b910df2c9c506fa8966087db86fc4be1edf75d2f8df0",
+            "sha256:" + hashlib.sha256(
+                WORKLOAD_RECIPIENT_ACTIVATION_DOMAIN + _canonical({
+                    "schema": "dnai.compute.workload-recipient-activation.v4",
+                    "recipient_release_commitment": (
+                        "sha256:f7b362241093cc99c89194f44cbe5ce96e10cd937f4554d531bbf89c418b2ac9"
+                    ),
+                })
+            ).hexdigest(),
         )
 
         verdict = self.activation.authenticated_verdict
@@ -779,11 +787,11 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         )
         self.assertEqual(
             created.workload_id,
-            "wrk_bec902dfeda679768ed7628905f77acb",
+            "wrk_11a4b7c791bb50b3a8361424c2772b7f",
         )
         self.assertEqual(
             created.execution_binding_commitment,
-            "sha256:abc93fa6b83c41d70c8396c270a049f0e8136b9207b3aeb4450c8aa17979ca90",
+            "sha256:1c825857dc66ddf065be4d63eb80253a15e4ba2d9993491f425c68e9739a65ca",
         )
         stored = self.store.get_for_project(
             created.workload_id,
@@ -805,7 +813,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
             ),
             {
                 "schema": "dnai.compute.workload-execution-binding.v1",
-                "workload_id": "wrk_bec902dfeda679768ed7628905f77acb",
+                "workload_id": "wrk_11a4b7c791bb50b3a8361424c2772b7f",
                 "project_commitment": (
                     "sha256:915388e06e578d85b26e541f8a683be78a0fa4909070b93ac348d08cb378e09e"
                 ),
@@ -814,7 +822,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
                     "sha256:cb76f94d6517afa92a9fbbda4726ae0157f9a2c34504d0acce9b99948148c6d7"
                 ),
                 "aad_sha256": (
-                    "sha256:6083d52180ab3fcf8a44cbaf833529e6908e4af524fa0f40ccf6a85efafa3831"
+                    "sha256:333a1318c0d407e0d508b7ff96dfa2496d78f262f6ed385b2919f324e4bcfe9d"
                 ),
                 "manifest_commitment": (
                     "sha256:045b0ec3e637d9ebf9751f21d89269ac742d2f3d7b60dff8a14e4217e9bfaa8c"
@@ -883,7 +891,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(
             claim.commitment,
-            "sha256:af1fe4b3d1eeaae8f9273993989c4d54ff2afd373389786673db39a34792a953",
+            "sha256:3d143000d508ce06290341425b1ec77bd60209ed63645a7e3b821b075e1f2766",
         )
         replay, changed = self.service.claim_for_dispatch(
             created.workload_id,
@@ -1204,7 +1212,8 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         _, _, _, _, created = self.ingest()
         upload_activation_commitment = self.activation.commitment
         refreshed = _authenticated_activation(self.recipient, sequence=1)
-        self.assertNotEqual(refreshed.commitment, upload_activation_commitment)
+        self.assertEqual(refreshed.commitment, upload_activation_commitment)
+        self.assertNotEqual(refreshed.verdict_digest, self.activation.verdict_digest)
         self.assertEqual(
             refreshed.recipient_release_commitment,
             self.activation.recipient_release_commitment,

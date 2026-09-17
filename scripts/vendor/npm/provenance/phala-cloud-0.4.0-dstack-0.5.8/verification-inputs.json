@@ -1,0 +1,13 @@
+{
+  "helper": {
+    "path": "/Users/wikios/Projects/dnai-wikigen/outputs/release-tools/phala-sdk-0.4.0/registry/verify-public-registry.mjs",
+    "sha256": "sha256:4b1e7ffc7cf9b9d49d1b37e09221b49a73d035bb61f7a44b9dc6b49aaa0688c8"
+  },
+  "installed_tuf_seed_sha256": "sha256:c56b8197671679123d26b9ec70bf6411e8f04d10c58cb9581a2b1238254ba71b",
+  "node": {
+    "realpath": "/opt/homebrew/Cellar/node/24.9.0/bin/node",
+    "sha256": "sha256:3e7673f6552cffd3f9eaa3bcb910198a4d0786e99bb861d24eb81cc3fce563e7",
+    "version": "v24.9.0"
+  },
+  "trust_limit": "Bootstraps from the official locally installed npm Sigstore TUF seed and cryptographically verifies fresh signed root rotations, timestamp, snapshot, targets and trust-root bytes. Does not establish future revocation state or reproducible bundle-build authority."
+}

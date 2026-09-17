@@ -538,6 +538,7 @@ test("historical authority core has an acyclic, side-effect-free local import cl
     [
       "canonical-authority-graph.mjs",
       "cvm-launch-intent-core.mjs",
+      "phala-app-compose-wire-core.mjs",
       "phala-post-measurement-activation-receipt-core.mjs",
       "phala-production-execution-policy.mjs",
       "phala-seven-cvm-measurement-policy.mjs",

@@ -23,6 +23,7 @@ import {
   FRONTEND_BUILD_CANDIDATE_SCHEMA,
   FRONTEND_BUILD_CANDIDATE_STATUS,
   FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS,
+  normalizeFrontendBuildCandidateReceipt,
 } from "./frontend-build-candidate-core.mjs";
 import {
   royaltyReleasePolicyCommitment,
@@ -33,6 +34,7 @@ const AUTHORITY_BINDING = Object.freeze({
   deploymentIntentSha256: `sha256:${"a1".repeat(32)}`,
   reviewerAuthorityGenesisAcceptanceSha256: `sha256:${"a2".repeat(32)}`,
   ceremonyAuthorizationSha256: `sha256:${"a3".repeat(32)}`,
+  postMeasurementActivationExecutionReceiptSha256: `sha256:${"ab".repeat(32)}`,
   computeWorkloadActivationObservationSha256: `sha256:${"a8".repeat(32)}`,
   computeWorkloadBrowserBindingSha256: `sha256:${"a9".repeat(32)}`,
   liveActivationAuthoritySha256: `sha256:${"a4".repeat(32)}`,
@@ -600,6 +602,11 @@ test("live release requires the in-process semantic receipt and its exact env di
     ceremony_authorization_sha256: AUTHORITY_BINDING.ceremonyAuthorizationSha256,
     runtime_authority_dependency_sha256:
       AUTHORITY_BINDING.runtimeAuthorityDependencySha256,
+    royalty_release_history_sha256: LIVE_ENV.VITE_ROYALTY_RELEASE_HISTORY_SHA256,
+    royalty_release_history_receipt_sha256:
+      LIVE_ENV.VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256,
+    post_measurement_activation_execution_receipt_sha256:
+      AUTHORITY_BINDING.postMeasurementActivationExecutionReceiptSha256,
     compute_workload_activation_observation_sha256:
       AUTHORITY_BINDING.computeWorkloadActivationObservationSha256,
     frontend_build_sha256: AUTHORITY_BINDING.frontendBuildSha256,
@@ -607,6 +614,10 @@ test("live release requires the in-process semantic receipt and its exact env di
     release_env_sha256: receiptFor().release_env_sha256,
     raw_secret_egress: false,
   };
+  // Prove this is a valid current D; rejection below must be because D does
+  // not confer final deployment authority, not because its receipt is stale.
+  assert.deepEqual(normalizeFrontendBuildCandidateReceipt(candidateReceipt),
+    candidateReceipt);
   const legacyReceipt = {
     schema: "dnai.semantic-release-validation.v2",
     status: "semantic_release_authority_validated",
