@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Prove the DiligenceRoom on-chain compose-approval gate against real Anvil.
 
-This isolates the gate cleanly without needing dstack, a real verifier
-signature, or any raw private keys. It uses Anvil's unlocked default accounts
-(``cast --unlocked --from``), enables ``composeApprovalRequired``, and drives
-``submitResult`` on a funded deal whose only failing precondition is the gate:
+This is a local-mode, synthetic proof, not a production admission or TEE proof.
+It uses Anvil's unlocked default accounts (``cast --unlocked --from``), stages
+and freezes separate result/QVL signer bindings through their real timelocks,
+enables ``composeApprovalRequired``, and drives the current nine-argument
+``submitResult`` on a funded deal:
 
 1. Gate ON, compose UNAPPROVED  -> ``submitResult`` reverts ComposeHashNotApproved.
 2. developer proposes the compose hash, waits the fixed two-day on-chain
@@ -14,8 +15,14 @@ signature, or any raw private keys. It uses Anvil's unlocked default accounts
 4. developer ``revokeComposeHash(compose)`` -> back to ComposeHashNotApproved.
 
 The revert reason moving past the gate (1->3) and back (4) proves the gate admits
-exactly governance-approved measurements. It prints a bounded JSON summary and
-never accepts or prints raw private keys.
+exactly governance-approved measurements in this isolated local configuration.
+Production mode deliberately fails earlier with AttestationBindingNotReady
+when its exact one-compose admission set is missing or revoked; weakening that
+outer guard to obtain this local proof would be incorrect. The setup mirrors
+contracts/test/DiligenceRoom.t.sol's local setUp and compose-gate tests.
+
+No dstack, genuine QVL evidence, valid result signature, external RPC, or raw
+private key is used. The bounded JSON summary preserves those truth boundaries.
 """
 
 from __future__ import annotations
@@ -24,10 +31,10 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from eth_hash.auto import keccak
 
@@ -39,15 +46,25 @@ CONTRACTS_DIR = TINKER_DIR / "contracts"
 DEVELOPER = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"  # deploys -> developer
 SELLER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 VERIFIER = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+ATTESTATION_VERIFIER = "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc"
 TEE = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
 BUYER = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"
+ZERO_ADDRESS = "0x" + "00" * 20
+LOCAL_CHAIN_ID = 31337
 
 ARTIFACT_HASH = "0x" + "ab" * 32
 COMPOSE_HASH = "0x" + "e5" * 32
+ATTESTATION_RELEASE_POLICY_HASH = "0x" + "c4" * 32
+ATTESTATION_EVIDENCE_HASH = "0x" + "d8" * 32
+EVALUATOR_POLICY_COMMITMENT = "0x" + "a9" * 32
 DUMMY_SIG = "0x" + "11" * 65
+SUBMIT_RESULT_SIGNATURE = "submitResult(uint256,uint8,uint256,bytes32,uint256,bytes32,uint256,bytes,bytes)"
 
 COMPOSE_NOT_APPROVED_SELECTOR = "0x" + keccak(b"ComposeHashNotApproved()")[:4].hex()
 INVALID_AUTHORIZATION_SELECTOR = "0x" + keccak(b"InvalidResultAuthorization()")[:4].hex()
+EARLY_ADMISSION_SELECTOR = "0x" + keccak(b"AdmissionActivationTooEarly(uint256)")[:4].hex()
+EARLY_RESULT_BINDING_SELECTOR = "0x" + keccak(b"ResultVerifierActivationTooEarly(uint256)")[:4].hex()
+EARLY_ATTESTATION_BINDING_SELECTOR = "0x" + keccak(b"AttestationBindingActivationTooEarly(uint256)")[:4].hex()
 
 
 def main() -> int:
@@ -56,22 +73,38 @@ def main() -> int:
     anvil = _start_anvil(port)
     try:
         _wait_for_rpc(rpc_url)
+        _assert_local_chain(rpc_url)
         contract = _deploy(rpc_url)
-
+        _configure_authorization_bindings(rpc_url, contract)
+        admission_delay = _read_uint(rpc_url, contract, "ADMISSION_TIMELOCK_DELAY()(uint256)")
+        if admission_delay != 172800:
+            raise RuntimeError("compose admission timelock differs from the reviewed two-day policy")
         _send(rpc_url, DEVELOPER, contract, "setComposeApprovalRequired(bool)", ["true"])
-        expiry = _create_deal(rpc_url, contract)
+        _require_readback(rpc_url, contract, "composeApprovalRequired()(bool)", "true")
+        _create_deal(rpc_url, contract)
         _fund_deal(rpc_url, contract)
-        auth_expiry = _block_timestamp(rpc_url) + 3600
 
-        unapproved = _submit_revert_reason(rpc_url, contract, auth_expiry)
+        unapproved = _submit_revert_reason(rpc_url, contract)
         _send(rpc_url, DEVELOPER, contract, "proposeComposeHash(bytes32)", [COMPOSE_HASH])
-        _run(["cast", "rpc", "evm_increaseTime", "172800", "--rpc-url", rpc_url])
-        _run(["cast", "rpc", "evm_mine", "--rpc-url", rpc_url])
+        pending = _read_uint(rpc_url, contract, "pendingComposeActivations(bytes32)(uint256)", [COMPOSE_HASH])
+        if pending != _block_timestamp(rpc_url) + admission_delay:
+            raise RuntimeError("compose proposal did not establish the exact on-chain admission delay")
+        early = _call_revert_reason(rpc_url, DEVELOPER, contract, "activateComposeHash(bytes32)", [COMPOSE_HASH])
+        _require_selector(early, EARLY_ADMISSION_SELECTOR)
+        _require_readback(rpc_url, contract, "pendingComposeCount()(uint256)", "1")
+        _require_readback(rpc_url, contract, "approvedComposeCount()(uint256)", "0")
+        _advance_to(rpc_url, pending)
+        _require_selector(_submit_revert_reason(rpc_url, contract), COMPOSE_NOT_APPROVED_SELECTOR)
         _send(rpc_url, DEVELOPER, contract, "activateComposeHash(bytes32)", [COMPOSE_HASH])
-        auth_expiry = _block_timestamp(rpc_url) + 3600
-        approved = _submit_revert_reason(rpc_url, contract, auth_expiry)
+        _require_readback(rpc_url, contract, "approvedComposeHashes(bytes32)(bool)", "true", [COMPOSE_HASH])
+        _require_readback(rpc_url, contract, "pendingComposeCount()(uint256)", "0")
+        _require_readback(rpc_url, contract, "approvedComposeCount()(uint256)", "1")
+        _require_readback(rpc_url, contract, "pendingComposeActivations(bytes32)(uint256)", "0", [COMPOSE_HASH])
+        approved = _submit_revert_reason(rpc_url, contract)
         _send(rpc_url, DEVELOPER, contract, "revokeComposeHash(bytes32)", [COMPOSE_HASH])
-        revoked = _submit_revert_reason(rpc_url, contract, auth_expiry)
+        _require_readback(rpc_url, contract, "approvedComposeHashes(bytes32)(bool)", "false", [COMPOSE_HASH])
+        _require_readback(rpc_url, contract, "approvedComposeCount()(uint256)", "0")
+        revoked = _submit_revert_reason(rpc_url, contract)
 
         ok = (
             _is_selector(unapproved, COMPOSE_NOT_APPROVED_SELECTOR)
@@ -80,9 +113,18 @@ def main() -> int:
         )
         summary = {
             "proof": "diligence_room_compose_approval_gate_anvil",
+            "proof_scope": "local_mode_synthetic_compose_gate_only",
+            "chain_id": LOCAL_CHAIN_ID,
             "contract_address": contract,
+            "production_release": False,
+            "production_e2e": False,
+            "genuine_attestation_evidence": False,
+            "authorization_bindings_frozen": True,
+            "authorization_binding_timelocks_checked": True,
             "gate_required": True,
-            "admission_timelock_seconds": 172800,
+            "admission_timelock_seconds": admission_delay,
+            "early_compose_activation_rejected": True,
+            "elapsed_timelock_alone_does_not_admit": True,
             "revert_when_unapproved": _classify(unapproved),
             "revert_when_approved": _classify(approved),
             "revert_after_revoke": _classify(revoked),
@@ -104,7 +146,7 @@ def _deploy(rpc_url: str) -> str:
     output = _run_json([
         "forge", "create", "src/DiligenceRoom.sol:DiligenceRoom",
         "--rpc-url", rpc_url, "--unlocked", "--from", DEVELOPER,
-        "--broadcast", "--json", "--constructor-args", VERIFIER,
+        "--broadcast", "--json", "--constructor-args", "false", ZERO_ADDRESS,
     ], cwd=CONTRACTS_DIR)
     address = output.get("deployedTo") or output.get("contractAddress")
     if not address:
@@ -112,8 +154,44 @@ def _deploy(rpc_url: str) -> str:
     return str(address)
 
 
+def _configure_authorization_bindings(rpc_url: str, contract: str) -> None:
+    _require_readback(rpc_url, contract, "productionRelease()(bool)", "false")
+    _require_readback(rpc_url, contract, "releaseGovernanceController()(address)", ZERO_ADDRESS)
+    _require_readback(rpc_url, contract, "developer()(address)", DEVELOPER)
+    delay = _read_uint(rpc_url, contract, "ATTESTATION_BINDING_TIMELOCK_DELAY()(uint256)")
+    if delay != 172800:
+        raise RuntimeError("authorization binding timelock differs from the reviewed two-day policy")
+    _send(rpc_url, DEVELOPER, contract, "proposeResultVerifier(address)", [VERIFIER])
+    result_at = _read_uint(rpc_url, contract, "pendingResultVerifierActivatesAt()(uint256)")
+    if result_at != _block_timestamp(rpc_url) + delay:
+        raise RuntimeError("result signer proposal did not establish the exact on-chain delay")
+    _send(rpc_url, DEVELOPER, contract, "proposeAttestationBinding(address,bytes32)",
+          [ATTESTATION_VERIFIER, ATTESTATION_RELEASE_POLICY_HASH])
+    attestation_at = _read_uint(rpc_url, contract, "pendingAttestationBindingActivatesAt()(uint256)")
+    if attestation_at != _block_timestamp(rpc_url) + delay:
+        raise RuntimeError("attestation signer proposal did not establish the exact on-chain delay")
+    _require_selector(_call_revert_reason(rpc_url, DEVELOPER, contract, "activateResultVerifier()", []),
+                      EARLY_RESULT_BINDING_SELECTOR)
+    _require_selector(_call_revert_reason(rpc_url, DEVELOPER, contract, "activateAttestationBinding()", []),
+                      EARLY_ATTESTATION_BINDING_SELECTOR)
+    _advance_to(rpc_url, max(result_at, attestation_at))
+    _send(rpc_url, DEVELOPER, contract, "activateResultVerifier()", [])
+    _send(rpc_url, DEVELOPER, contract, "freezeResultVerifier()", [])
+    _send(rpc_url, DEVELOPER, contract, "activateAttestationBinding()", [])
+    _send(rpc_url, DEVELOPER, contract, "freezeAttestationBinding()", [])
+    for signature, expected in (
+        ("resultVerifier()(address)", VERIFIER),
+        ("attestationVerifier()(address)", ATTESTATION_VERIFIER),
+        ("attestationReleasePolicyHash()(bytes32)", ATTESTATION_RELEASE_POLICY_HASH),
+        ("resultVerifierFrozen()(bool)", "true"),
+        ("attestationBindingFrozen()(bool)", "true"),
+    ):
+        _require_readback(rpc_url, contract, signature, expected)
+
+
 def _create_deal(rpc_url: str, contract: str) -> int:
-    expiry = int(time.time()) + (3 * 24 * 60 * 60)
+    # The local chain has already advanced through the signer admission window.
+    expiry = _block_timestamp(rpc_url) + (3 * 24 * 60 * 60)
     _send(
         rpc_url, SELLER, contract,
         "createDeal(uint256,uint256,bytes32,address)",
@@ -123,7 +201,29 @@ def _create_deal(rpc_url: str, contract: str) -> int:
 
 
 def _fund_deal(rpc_url: str, contract: str) -> None:
-    _send(rpc_url, BUYER, contract, "fundDeal(uint256)", ["0"], value="1ether")
+    _send(rpc_url, BUYER, contract, "fundDeal(uint256,bytes32)",
+          ["0", EVALUATOR_POLICY_COMMITMENT], value="1ether")
+
+
+def _advance_to(rpc_url: str, timestamp: int) -> None:
+    if timestamp <= _block_timestamp(rpc_url):
+        raise RuntimeError("expected a pending on-chain timelock")
+    _run(["cast", "rpc", "evm_setNextBlockTimestamp", str(timestamp), "--rpc-url", rpc_url])
+    _run(["cast", "rpc", "evm_mine", "--rpc-url", rpc_url])
+
+
+def _read(rpc_url: str, contract: str, signature: str, args: list[str] | None = None) -> str:
+    return _run(["cast", "call", contract, signature, *(args or []), "--rpc-url", rpc_url]).strip()
+
+
+def _read_uint(rpc_url: str, contract: str, signature: str, args: list[str] | None = None) -> int:
+    return int(_read(rpc_url, contract, signature, args).split()[0])
+
+
+def _require_readback(rpc_url: str, contract: str, signature: str, expected: str,
+                      args: list[str] | None = None) -> None:
+    if _read(rpc_url, contract, signature, args).lower() != expected.lower():
+        raise RuntimeError(f"unexpected on-chain readback for {signature}")
 
 
 def _block_timestamp(rpc_url: str) -> int:
@@ -132,20 +232,23 @@ def _block_timestamp(rpc_url: str) -> int:
     return int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
 
 
-def _submit_revert_reason(rpc_url: str, contract: str, auth_expiry: int) -> str:
-    """cast call submitResult from the TEE account; return the revert output."""
-    args = [
-        "cast", "call", contract,
-        "submitResult(uint256,uint8,uint256,bytes32,uint256,bytes)",
-        "0", "3", "1000000000000000", COMPOSE_HASH, str(auth_expiry), DUMMY_SIG,
-        "--from", TEE, "--rpc-url", rpc_url,
-    ]
+def _submit_revert_reason(rpc_url: str, contract: str) -> str:
+    """Use fresh bounded leases and synthetic evidence; neither signature is valid."""
+    now = _block_timestamp(rpc_url)
+    return _call_revert_reason(rpc_url, TEE, contract, SUBMIT_RESULT_SIGNATURE, [
+        "0", "3", "1000000000000000", COMPOSE_HASH, str(now + 300),
+        ATTESTATION_EVIDENCE_HASH, str(now + 240), DUMMY_SIG, DUMMY_SIG,
+    ])
+
+
+def _call_revert_reason(rpc_url: str, sender: str, contract: str, signature: str, values: list[str]) -> str:
+    args = ["cast", "call", contract, signature, *values, "--from", sender, "--rpc-url", rpc_url]
     result = subprocess.run(
         args, cwd=CONTRACTS_DIR, env=_clean_env(), check=False,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if result.returncode == 0:
-        raise RuntimeError(f"submitResult unexpectedly succeeded: {result.stdout}")
+        raise RuntimeError(f"{signature} unexpectedly succeeded")
     return (result.stdout + "\n" + result.stderr).strip()
 
 
@@ -157,8 +260,16 @@ def _is_selector(revert_output: str, selector: str) -> bool:
     names = {
         COMPOSE_NOT_APPROVED_SELECTOR: "composehashnotapproved",
         INVALID_AUTHORIZATION_SELECTOR: "invalidresultauthorization",
+        EARLY_ADMISSION_SELECTOR: "admissionactivationtooearly",
+        EARLY_RESULT_BINDING_SELECTOR: "resultverifieractivationtooearly",
+        EARLY_ATTESTATION_BINDING_SELECTOR: "attestationbindingactivationtooearly",
     }
     return names.get(selector, "\0") in text
+
+
+def _require_selector(revert_output: str, selector: str) -> None:
+    if not _is_selector(revert_output, selector):
+        raise RuntimeError(f"expected local contract error {selector}, got {revert_output}")
 
 
 def _classify(revert_output: str) -> str:
@@ -179,9 +290,19 @@ def _send(rpc_url: str, sender: str, to: str, sig: str, args: list[str], *, valu
 
 def _start_anvil(port: int) -> subprocess.Popen:
     return subprocess.Popen(
-        ["anvil", "--port", str(port), "--chain-id", "31337"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT, text=True,
+        ["anvil", "--host", "127.0.0.1", "--port", str(port), "--chain-id", str(LOCAL_CHAIN_ID)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=ROOT, env=_clean_env(), text=True,
     )
+
+
+def _assert_local_chain(rpc_url: str) -> None:
+    endpoint = urlsplit(rpc_url)
+    if (endpoint.scheme != "http" or endpoint.hostname != "127.0.0.1"
+            or endpoint.username is not None or endpoint.password is not None
+            or endpoint.port is None or endpoint.path or endpoint.query or endpoint.fragment):
+        raise RuntimeError("proof requires its own loopback-only Anvil RPC")
+    if int(_run(["cast", "chain-id", "--rpc-url", rpc_url]).strip()) != LOCAL_CHAIN_ID:
+        raise RuntimeError("proof requires disposable local chain 31337")
 
 
 def _free_port() -> int:
