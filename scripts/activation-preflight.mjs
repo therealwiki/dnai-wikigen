@@ -53,15 +53,15 @@ import {
   parseEnvText,
 } from "./activation-preflight-core.mjs";
 import {
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
 } from "../web/scripts/build-release-env.mjs";
 
 export const SEMANTIC_VALIDATOR_INPUT_FLAGS =
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS;
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS;
 export {
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
 };
 import {
   describeAuthorityReviewSubjectText,
@@ -421,7 +421,7 @@ function usage() {
     "  --diligence-phase-4-review-envelope FILE  Phase-4 final-authority review",
     "  Live activation also requires RELEASE_CEREMONY_LEDGER_PATH,",
     "  RELEASE_CEREMONY_LEDGER_EVIDENCE_ROOT, and RELEASE_CEREMONY_LOCK_ROOT.",
-    "  Live activation additionally requires every current exact-38 semantic-validator input flag.",
+    "  Live activation additionally requires every current exact-39 input, including the standalone post-measurement activation execution receipt.",
     "  A single current review cannot replace the four phase-specific envelopes.",
     "  --artifact-evidence FILE         Independent diligence deployment evidence",
     "  --arena-evidence FILE            Independent Arena deployment evidence",
@@ -4343,6 +4343,8 @@ export function resolveEvidencePaths(
     liveActivationAuthority: "LIVE_ACTIVATION_AUTHORITY_PATH",
     royaltyReleaseHistoryReceipt:
       "ROYALTY_RELEASE_HISTORY_RECEIPT_PATH",
+    postMeasurementActivationExecutionReceipt:
+      "PHALA_POST_MEASUREMENT_ACTIVATION_EXECUTION_RECEIPT_PATH",
     computeWorkloadActivationObservation:
       "COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PATH",
     frontendBuildCandidateReceipt:
@@ -5467,7 +5469,7 @@ async function collectSnapshotWithRetainedEvidence(args) {
     } else if (args.authorityStage === "release_ceremony") {
       // The release-ceremony stage precedes O, D, and separately signed C.
       // Bind only the current artifacts this preflight actually interprets;
-      // Current exact-38 is reserved for live activation and must not make a
+      // Current exact-39 is reserved for live activation and must not make a
       // pre-mutation ceremony depend on its own future outputs.
       readinessStableBindings.push(
         { path: evidencePaths.release, initial: releaseCandidate, options: { json: true } },

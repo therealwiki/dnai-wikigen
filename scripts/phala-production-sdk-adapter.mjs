@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   CVM_LAUNCH_DOMAINS,
+  CVM_LAUNCH_DESCRIPTOR_POLICY,
   PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY,
   PHALA_CONTROL_PLANE_AUTHORITY,
   PHALA_CVM_RESOURCE_TARGETS,
@@ -13,12 +14,21 @@ import {
   PHALA_OS_IMAGE_CATALOG_ENTRY,
 } from "./cvm-launch-intent-core.mjs";
 import {
+  buildPhalaContractKmsProjection,
+  normalizePhalaKmsContract,
+  assertPhalaWorkspaceActiveBilling,
+} from "./phala-contract-kms-core.mjs";
+import { projectPhalaAppComposeWire } from "./phala-app-compose-wire-core.mjs";
+import { assertProductionCvmPosture } from "./phala-production-posture-core.mjs";
+import { assertVerifiedProductionCvmPostureReceipt } from "./phala-production-posture-receipt.mjs";
+import {
   PHALA_PRODUCTION_EXECUTION_BLOCKER_CODES,
   PHALA_PRODUCTION_EXECUTION_POLICY,
 } from "./phala-production-execution-policy.mjs";
 import {
   PHALA_EXECUTION_ORDER,
   assertImmediateSignedEnvironmentKeyRefetch,
+  assertPreparedCvmObservation,
   assertRecoveredSignedEnvironmentKey,
   dstackCanonicalComposeHash,
   normalizeSignedEnvironmentKeyResponse,
@@ -58,9 +68,9 @@ import {
 export const PHALA_PINNED_PACKAGE_IDENTITY_SCHEMA =
   "dnai.phala-pinned-sdk-runtime-capsule-identity.v2";
 export const PHALA_PINNED_CLOUD_NPM_DIST_INTEGRITY =
-  "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==";
+  "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==";
 export const PHALA_PINNED_CLOUD_NPM_DIST_SHASUM =
-  "ed23f01ef54220b996092301283b5a2b7790f4cf";
+  "03edbbb7b9955498b11146377c6e47d99000da8b";
 export const PHALA_PINNED_CLIENT_TRANSPORT = Object.freeze({
   timeout_ms: 20_000,
   retry: 0,
@@ -81,6 +91,8 @@ export const PHALA_AUTHENTICATED_SDK_OBSERVATION_DOMAIN =
 export const PHALA_AUTHENTICATED_SDK_REQUEST_DOMAIN =
   "dnai-wikigen/phala-authenticated-sdk-request/v1\0";
 export const PHALA_PRODUCTION_MUTATION_METHODS = Object.freeze([
+  // Despite its GET transport, this action reserves identifiers remotely.
+  "nextAppIds",
   "provisionCvm",
   "commitCvmProvision",
   "updateCvmEnvs",
@@ -93,13 +105,24 @@ export const PHALA_PRODUCTION_READ_ONLY_METHODS = Object.freeze([
   "getOsImages",
   "getKmsList",
   "getKmsInfo",
-  "nextAppIds",
+  "getKmsContract",
+  "listKmsContracts",
+  "listKmsContractNodes",
+  "getWorkspace",
   "getAppEnvEncryptPubKey",
   "getCvmInfo",
   "getCvmAttestation",
 ]);
 export const PHALA_SDK_ACTION_REQUEST_POLICY_DOMAIN =
   "dnai-wikigen/phala-sdk-action-request-policy/v1\0";
+const PHALA_SDK_ACTION_VERSION_OVERRIDES = Object.freeze({
+  getAppEnvEncryptPubKey: "2026-05-22",
+  getKmsInfo: "2026-05-22",
+  getKmsList: "2026-05-22",
+  getKmsContract: "2026-06-23",
+  listKmsContracts: "2026-06-23",
+  listKmsContractNodes: "2026-06-23",
+});
 export const PHALA_SDK_ACTION_REQUEST_POLICY = Object.freeze([
   Object.freeze({ action: "commitCvmProvision", http_method: "POST", request_target: "/api/v1/cvms", body_policy: "exact_projected_action_argument" }),
   Object.freeze({ action: "getAppEnvEncryptPubKey", http_method: "GET", request_target: "/api/v1/kms/{kms}/pubkey/{app_id}", body_policy: "absent" }),
@@ -108,14 +131,21 @@ export const PHALA_SDK_ACTION_REQUEST_POLICY = Object.freeze([
   Object.freeze({ action: "getCvmInfo", http_method: "GET", request_target: "/api/v1/cvms/{sdk_normalized_cvm_id}", body_policy: "absent" }),
   Object.freeze({ action: "getCvmList", http_method: "GET", request_target: "/api/v1/cvms/paginated?page=1&page_size=100", body_policy: "absent" }),
   Object.freeze({ action: "getCurrentUser", http_method: "GET", request_target: "/api/v1/auth/me", body_policy: "absent" }),
+  Object.freeze({ action: "getKmsContract", http_method: "GET", request_target: "/api/v1/kms/{slug}", body_policy: "absent" }),
   Object.freeze({ action: "getKmsInfo", http_method: "GET", request_target: "/api/v1/kms/{kms_id}", body_policy: "absent" }),
   Object.freeze({ action: "getKmsList", http_method: "GET", request_target: "/api/v1/kms?page=1&page_size=100&is_onchain=false", body_policy: "absent" }),
   Object.freeze({ action: "getOsImages", http_method: "GET", request_target: "/api/v1/os-images?page=1&page_size=100&is_dev=false", body_policy: "absent" }),
+  Object.freeze({ action: "getWorkspace", http_method: "GET", request_target: "/api/v1/workspaces/{workspace_slug}", body_policy: "absent" }),
+  Object.freeze({ action: "listKmsContractNodes", http_method: "GET", request_target: "/api/v1/kms/{slug}/nodes", body_policy: "absent" }),
+  Object.freeze({ action: "listKmsContracts", http_method: "GET", request_target: "/api/v1/kms?page=1&page_size=100&is_onchain=false", body_policy: "absent" }),
   Object.freeze({ action: "nextAppIds", http_method: "GET", request_target: "/api/v1/kms/phala/next_app_id?counts=7", body_policy: "absent" }),
   Object.freeze({ action: "provisionCvm", http_method: "POST", request_target: "/api/v1/cvms/provision", body_policy: "exact_reviewed_gateway_transform" }),
   Object.freeze({ action: "restartCvm", http_method: "POST", request_target: "/api/v1/cvms/{sdk_normalized_cvm_id}/restart", body_policy: "exact_force_false" }),
   Object.freeze({ action: "updateCvmEnvs", http_method: "PATCH", request_target: "/api/v1/cvms/{sdk_normalized_cvm_id}/envs", body_policy: "exact_encrypted_env_only" }),
-]);
+].map((entry) => Object.freeze({
+  ...entry,
+  api_version_header: PHALA_SDK_ACTION_VERSION_OVERRIDES[entry.action] ?? null,
+})));
 
 const MAX_MANIFEST_BYTES = 65_536;
 const MAX_CREDENTIAL_BYTES = 65_536;
@@ -137,6 +167,10 @@ const REQUIRED_CLOUD_ACTION_EXPORTS = Object.freeze([
   "getOsImages",
   "getKmsList",
   "getKmsInfo",
+  "getKmsContract",
+  "listKmsContracts",
+  "listKmsContractNodes",
+  "getWorkspace",
   "nextAppIds",
   "provisionCvm",
   "getAppEnvEncryptPubKey",
@@ -236,7 +270,7 @@ export function assertPinnedPhalaClientTransport(value) {
     || value.baseURL !== PHALA_ORIGIN
     || value.timeout !== PHALA_PINNED_CLIENT_TRANSPORT.timeout_ms
     || value.retry !== 0 || value.redirect !== "error"
-    || !["2026-01-21", "2026-05-22"].includes(value.version)) {
+    || !PHALA_API_CANDIDATE_VERSIONS.includes(value.version)) {
     throw new Error("Phala client transport is not exact, no-redirect, and no-retry");
   }
   return Object.freeze({ ...value });
@@ -610,13 +644,18 @@ export function projectPinnedProvisionWireBody(request) {
     "image",
     "compose_file",
     "listed",
-    "kms_id",
+    "kms",
+    "kms_contract_id",
     "key_provider_mode",
     "skip_gateway",
     "env_keys",
     "nonce",
     "app_id",
   ], "pre-transform provision request");
+  if (parsed.kms !== "PHALA" || typeof parsed.kms_contract_id !== "string"
+    || !/^kc_[A-Za-z0-9]{1,128}$/.test(parsed.kms_contract_id)) {
+    throw new Error("provision request must bind the exact reviewed Phala KMS contract");
+  }
   const compose = exactRecord(
     parsed.compose_file,
     PHALA_DSTACK_APP_COMPOSE_HASH_INPUT_KEYS,
@@ -630,8 +669,7 @@ export function projectPinnedProvisionWireBody(request) {
       .provision_transform.additional_transform_allowed !== false) {
     throw new Error("provision request does not enter the exact pinned SDK transform branch");
   }
-  const wireCompose = structuredClone(compose);
-  delete wireCompose.tproxy_enabled;
+  const wireCompose = projectPhalaAppComposeWire(compose);
   return {
     ...structuredClone(parsed),
     compose_file: wireCompose,
@@ -878,6 +916,25 @@ function appendExactQuery(requestPath, options) {
   return `${url.pathname.slice("/api/v1".length)}${url.search}`;
 }
 
+/** The SDK may override only the exact version reviewed for this action. */
+export function assertPinnedSdkActionVersionHeaders({ action, headers } = {}) {
+  if (!REQUIRED_CLOUD_ACTION_EXPORTS.includes(action)) {
+    throw new Error("SDK action is outside the reviewed request policy");
+  }
+  const expected = PHALA_SDK_ACTION_VERSION_OVERRIDES[action] ?? null;
+  if (expected === null) {
+    if (headers !== undefined) {
+      throw new Error("SDK action headers are outside its reviewed policy");
+    }
+    return null;
+  }
+  const parsed = exactRecord(headers, ["X-Phala-Version"], "pinned SDK version headers");
+  if (parsed["X-Phala-Version"] !== expected) {
+    throw new Error("SDK action version header is outside its reviewed policy");
+  }
+  return expected;
+}
+
 function projectPinnedJsonWireBody(value) {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
@@ -957,16 +1014,17 @@ export function projectPinnedSdkActionRequest(action, actionArguments = []) {
       httpMethod = "GET";
       pathAndQuery = "/api/v1/teepods/cvm-create-resources";
       break;
-    case "getKmsList": {
+    case "getKmsList":
+    case "listKmsContracts": {
       const [request] = exactActionArguments(actionArguments, 1, action);
       const parsed = exactRecord(
         request,
         ["page", "page_size", "is_onchain"],
-        "getKmsList request",
+        `${action} request`,
       );
       if (parsed.page !== 1 || parsed.page_size !== 100
         || parsed.is_onchain !== false) {
-        throw new Error("getKmsList request differs from the reviewed fixed query");
+        throw new Error(`${action} request differs from the reviewed fixed query`);
       }
       httpMethod = "GET";
       pathAndQuery = "/api/v1/kms?page=1&page_size=100&is_onchain=false";
@@ -980,6 +1038,25 @@ export function projectPinnedSdkActionRequest(action, actionArguments = []) {
         parsed.kms_id,
         "getKmsInfo kms_id",
       )}`;
+      break;
+    }
+    case "getKmsContract":
+    case "listKmsContractNodes": {
+      const [request] = exactActionArguments(actionArguments, 1, action);
+      const parsed = exactRecord(request, ["slug"], `${action} request`);
+      const slug = exactRequestPathSegment(parsed.slug, `${action} slug`);
+      if (!/^kc_[A-Za-z0-9]+$/.test(slug)
+        && !(action === "getKmsContract" && slug === "phala")) {
+        throw new Error(`${action} requires an exact contract ID or the reviewed discovery alias`);
+      }
+      httpMethod = "GET";
+      pathAndQuery = `/api/v1/kms/${slug}${action === "listKmsContractNodes" ? "/nodes" : ""}`;
+      break;
+    }
+    case "getWorkspace": {
+      const [slug] = exactActionArguments(actionArguments, 1, action);
+      httpMethod = "GET";
+      pathAndQuery = `/api/v1/workspaces/${exactRequestPathSegment(slug, "workspace slug")}`;
       break;
     }
     case "getOsImages": {
@@ -1079,6 +1156,7 @@ export function projectPinnedSdkActionRequest(action, actionArguments = []) {
     http_method: httpMethod,
     path_and_query: pathAndQuery,
     body,
+    api_version_header: PHALA_SDK_ACTION_VERSION_OVERRIDES[action] ?? null,
   });
 }
 
@@ -1088,6 +1166,7 @@ export function assertPinnedSdkActionRequestMatches({
   httpMethod,
   pathAndQuery,
   body,
+  headers,
 } = {}) {
   const expected = projectPinnedSdkActionRequest(action, actionArguments);
   const observed = {
@@ -1095,6 +1174,7 @@ export function assertPinnedSdkActionRequestMatches({
     http_method: httpMethod,
     path_and_query: pathAndQuery,
     body: body ?? null,
+    api_version_header: assertPinnedSdkActionVersionHeaders({ action, headers }),
   };
   if (canonicalCompact(expected) !== canonicalCompact(observed)) {
     throw new Error("SDK action emitted a method, target, query, or body outside its reviewed policy");
@@ -1125,6 +1205,45 @@ function parseBoundedJsonResponse(bytes) {
   }
   assertBoundedJsonGraph(value, { label: "pinned Phala HTTPS response" });
   return value;
+}
+
+/**
+ * Check fields that SDK defaults/transforms would otherwise erase. This is a
+ * transport fact only, not active-workspace or placement authorization.
+ */
+export function projectPinnedSdkRawIdentityFields(action, response) {
+  if (action === "getWorkspace") {
+    if (!isRecord(response) || !Object.hasOwn(response, "billing_status")
+      || !["active", "suspended", "abandoned"].includes(response.billing_status)) {
+      throw new Error("workspace response must explicitly report a known billing_status before SDK parsing");
+    }
+    return Object.freeze({ billing_status: response.billing_status });
+  }
+  if (action === "provisionCvm") {
+    if (!isRecord(response)) throw new Error("prepare response must be an object");
+    const placement = {};
+    for (const field of ["node_id", "teepod_id"]) {
+      // Preserve absence distinctly. The SDK aliases teepod_id to node_id.
+      if (!Object.hasOwn(response, field)) continue;
+      if (response[field] !== null && (!Number.isSafeInteger(response[field]) || response[field] < 1)) {
+        throw new Error(`prepare raw ${field} is not a positive canonical identity or explicit null`);
+      }
+      placement[field] = response[field];
+    }
+    return Object.freeze(placement);
+  }
+  if (action === "getCvmInfo") {
+    if (!isRecord(response)) throw new Error("CVM response must be an object");
+    const posture = {};
+    for (const field of ["listed", "public_logs", "public_sysinfo", "public_tcbinfo"]) {
+      if (!Object.hasOwn(response, field) || typeof response[field] !== "boolean") {
+        throw new Error(`CVM response must explicitly report ${field} before SDK parsing`);
+      }
+      posture[field] = response[field];
+    }
+    return Object.freeze(posture);
+  }
+  return null;
 }
 
 function performPinnedHttpsRequest({
@@ -1218,6 +1337,7 @@ function performPinnedHttpsRequest({
         resolve(Object.freeze({
           response: parsed,
           capture: Object.freeze({
+            api_version: apiVersion,
             http_method: httpMethod,
             request_target_sha256: domainDigest(
               "dnai-wikigen/phala-authenticated-sdk-request-target/v1\0",
@@ -1266,7 +1386,7 @@ function createPinnedSdkActionClient({
   let requestStarted = false;
   let expectedRequest = null;
 
-  async function perform(httpMethod, requestPath, body) {
+  async function perform(httpMethod, requestPath, body, headers) {
     if (!invocationOpen || requestStarted || capture !== null
       || expectedRequest === null) {
       throw new Error("pinned SDK action emitted more than one HTTP request");
@@ -1279,6 +1399,7 @@ function createPinnedSdkActionClient({
       httpMethod,
       pathAndQuery: rawPathAndQuery,
       body,
+      headers,
     });
     const url = exactRequestUrl(requestPath);
     if (`${url.pathname}${url.search}` !== rawPathAndQuery) {
@@ -1289,19 +1410,29 @@ function createPinnedSdkActionClient({
       setTimeoutIntrinsic,
       clearTimeoutIntrinsic,
       apiKey,
-      apiVersion,
+      apiVersion: PHALA_SDK_ACTION_VERSION_OVERRIDES[expectedRequest.action] ?? apiVersion,
       httpMethod,
       requestPath,
       body,
     });
-    capture = result.capture;
+    const rawIdentityFields = projectPinnedSdkRawIdentityFields(
+      expectedRequest.action, result.response,
+    );
+    capture = Object.freeze({ ...result.capture, raw_identity_fields: rawIdentityFields });
     return result.response;
   }
 
   const client = Object.freeze({
     config: Object.freeze({ version: apiVersion }),
     async get(requestPath, options) {
-      return perform("GET", appendExactQuery(requestPath, options));
+      if (options !== undefined && (!isRecord(options)
+        || Object.keys(options).some((key) => !["params", "headers"].includes(key)))) {
+        throw new Error("pinned SDK GET options are outside the reviewed policy");
+      }
+      const queryOptions = options && Object.hasOwn(options, "params")
+        ? { params: options.params } : undefined;
+      return perform("GET", appendExactQuery(requestPath, queryOptions), undefined,
+        options?.headers);
     },
     async post(requestPath, body, options) {
       if (options !== undefined) {
@@ -1396,17 +1527,28 @@ async function invokePreProvisionSdkAction(state, method, actionArguments = []) 
 }
 
 function exactUniqueCentralizedKms(kmsList) {
-  if (!isRecord(kmsList) || !Array.isArray(kmsList.items)) {
+  if (!isRecord(kmsList) || !Array.isArray(kmsList.items)
+    || kmsList.items.length < 1 || kmsList.items.length > 100
+    || kmsList.total !== kmsList.items.length || kmsList.page !== 1
+    || kmsList.page_size !== 100 || kmsList.pages !== 1) {
     throw new Error("authenticated Phala KMS catalog is invalid");
   }
   const matches = kmsList.items.filter((entry) => isRecord(entry)
     && entry.slug === "phala"
-    && entry.chain_id === null
-    && entry.kms_contract_address === null);
-  if (matches.length !== 1) {
+    && entry.chain_id === 0
+    && entry.contract_address === "phala");
+  if (matches.length !== 1
+    || kmsList.items.filter((entry) => entry?.id === matches[0].id).length !== 1) {
     throw new Error("authenticated Phala KMS catalog is not uniquely centralized");
   }
-  return matches[0];
+  return normalizePhalaKmsContract(matches[0]);
+}
+
+function reviewedCompatibilityResourceTargets() {
+  return Object.fromEntries(CVM_LAUNCH_DOMAINS.map((domain) => [domain, {
+    ...PHALA_CVM_RESOURCE_TARGETS[domain],
+    gateway_required: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
+  }]));
 }
 
 function exactSelectedOsImage(osImages) {
@@ -1481,22 +1623,32 @@ function validateCompatibilityCandidateData(credential, data) {
     credential,
     data.getCurrentUser?.response,
   );
-  const kmsCatalog = exactUniqueCentralizedKms(data.getKmsList?.response);
-  const kmsInfo = data.getKmsInfo?.response;
-  for (const key of [
-    "id", "slug", "url", "version", "chain_id", "kms_contract_address", "gateway_app_id",
-  ]) {
-    if (kmsInfo?.[key] !== kmsCatalog[key]) {
-      throw new Error("authenticated Phala KMS detail differs from its catalog entry");
-    }
+  const workspace = data.getWorkspace?.response;
+  if (workspace?.id !== subject.workspace.id || workspace?.slug !== subject.workspace.slug
+    || workspace?.billing_status !== data.getWorkspace?.capture.raw_identity_fields?.billing_status
+    || !["active", "suspended", "abandoned"].includes(workspace?.billing_status)) {
+    throw new Error("explicit workspace billing observation differs from the authenticated account");
   }
+  const kmsCatalog = exactUniqueCentralizedKms(data.listKmsContracts?.response);
+  const kmsContract = normalizePhalaKmsContract(data.getKmsContract?.response);
+  if (canonicalCompact(kmsContract) !== canonicalCompact(kmsCatalog)) {
+    throw new Error("authenticated Phala KMS contract detail differs from its catalog entry");
+  }
+  const osImage = exactSelectedOsImage(data.getOsImages?.response);
   return Object.freeze({
     subject,
-    kms_info: kmsInfo,
+    billing_status: workspace.billing_status,
+    kms: buildPhalaContractKmsProjection({
+      contract: kmsContract,
+      contractNodes: data.listKmsContractNodes?.response,
+      resources: data.getCvmCreateResources?.response,
+      osImage,
+      resourceTargets: reviewedCompatibilityResourceTargets(),
+    }),
     resource: projectCompatibilityResourceAuthority(
       data.getCvmCreateResources?.response,
     ),
-    os_image: exactSelectedOsImage(data.getOsImages?.response),
+    os_image: osImage,
   });
 }
 
@@ -1544,16 +1696,22 @@ export async function observePinnedPhalaCompatibility() {
       }
     };
     await invoke("getCurrentUser");
+    const account = data.getCurrentUser?.response;
+    if (account?.workspace?.slug) await invoke("getWorkspace", [account.workspace.slug]);
     await invoke("getCvmCreateResources");
-    await invoke("getKmsList", [{ page: 1, page_size: 100, is_onchain: false }]);
+    await invoke("listKmsContracts", [{ page: 1, page_size: 100, is_onchain: false }]);
     let kmsId;
     try {
-      kmsId = exactUniqueCentralizedKms(data.getKmsList?.response).id;
+      kmsId = exactUniqueCentralizedKms(data.listKmsContracts?.response).id;
     } catch {
       // Still complete the fixed read-only action plan without borrowing state
       // from a different candidate-version observation.
     }
-    await invoke("getKmsInfo", [{ kms_id: String(kmsId ?? "phala") }]);
+    await invoke("getKmsContract", [{ slug: kmsId ?? "phala" }]);
+    const contractId = data.getKmsContract?.response?.id;
+    if (typeof contractId === "string") {
+      await invoke("listKmsContractNodes", [{ slug: contractId }]);
+    }
     await invoke("getOsImages", [{ page: 1, page_size: 100, is_dev: false }]);
     let accountValid = false;
     try {
@@ -1598,7 +1756,6 @@ export async function observePinnedPhalaCompatibility() {
     throw new Error("reviewed Phala API compatibility observation is unavailable");
   }
   const subject = selectedProjection.subject;
-  const kmsInfo = selectedProjection.kms_info;
   const resource = selectedProjection.resource;
   const checkedAtMs = Math.floor(runtime.now() / 1_000) * 1_000;
   const checkedAt = new Date(checkedAtMs).toISOString().replace(".000Z", "Z");
@@ -1619,18 +1776,10 @@ export async function observePinnedPhalaCompatibility() {
       account_subject_sha256:
         phalaAuthenticatedAccountSubjectSha256(selectedData.getCurrentUser.response),
       authenticated: true,
+      billing_status: selectedProjection.billing_status,
     },
     sdk_identity: sdkIdentity,
-    kms: {
-      id: String(kmsInfo.id),
-      slug: kmsInfo.slug,
-      url: kmsInfo.url,
-      version: kmsInfo.version,
-      chain_id: kmsInfo.chain_id,
-      kms_contract_address: kmsInfo.kms_contract_address,
-      gateway_app_id: kmsInfo.gateway_app_id,
-      catalog_match_count: 1,
-    },
+    kms: selectedProjection.kms,
     os_image: selectedProjection.os_image,
     resource_catalog: resource.resource_catalog,
     quota: resource.quota,
@@ -2018,6 +2167,17 @@ export async function createPinnedPhalaPreProvisionStagingSession({
             !== compatibility.workspace.account_subject_sha256) {
           throw new Error("staging account differs from authenticated compatibility");
         }
+        activeAction = "getWorkspace";
+        appendStagingJournalRecord(journal, "before_getWorkspace", { method: activeAction });
+        const workspace = await invokePreProvisionSdkAction(state, "getWorkspace", [subject.workspace.slug]);
+        assertPhalaWorkspaceActiveBilling({ workspace: workspace.response, authenticatedSubject: subject });
+        appendStagingJournalRecord(journal, "after_getWorkspace", {
+          method: activeAction,
+          http_method: workspace.capture.http_method,
+          request_target_sha256: workspace.capture.request_target_sha256,
+          request_semantics_sha256: workspace.capture.request_semantics_sha256,
+          response_sha256: workspace.capture.raw_response_sha256,
+        });
         activeAction = "getCvmList";
         appendStagingJournalRecord(journal, "before_getCvmList", {
           method: "getCvmList",
@@ -2171,6 +2331,13 @@ export async function createPinnedPhalaPreProvisionStagingSession({
             || response?.os_image_hash !== PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash) {
             throw new Error("staging provision response differs from exact wire projection");
           }
+          assertPreparedCvmObservation({
+            response, rawPlacement: observed.capture.raw_identity_fields, domain,
+            appId: invocation.request.app_id,
+            expectedComposeHash: projection.expected_post_transform_compose_hash,
+            expectedKmsProjection: compatibility.kms,
+            expectedInstanceType: invocation.request.instance_type,
+          });
           const domainEvidence = Object.freeze({
             domain,
             http_method: observed.capture.http_method,
@@ -2323,7 +2490,7 @@ function normalizeProvisionInvocation(value, target) {
     || request.disk_size !== resource.disk_size
     || request.image !== target.os_image.name
     || request.listed !== false
-    || request.kms_id !== target.kms.id
+    || request.kms !== "PHALA" || request.kms_contract_id !== target.kms.contract.id
     || request.key_provider_mode !== "kms"
     || request.skip_gateway !== profile.skip_gateway
     || compose.name !== profile.name
@@ -2355,14 +2522,14 @@ function normalizeCommitInvocation(value, target) {
   const request = exactRecord(parsed.request, [
     "app_id",
     "compose_hash",
-    "kms_id",
+    "kms_contract_id",
     "env_keys",
     "encrypted_env",
   ], "commitCvmProvision request");
   const appId = exactAppId(request.app_id, "commit app id");
   if (typeof request.compose_hash !== "string"
     || !/^(?!0{64}$)[0-9a-f]{64}$/.test(request.compose_hash)
-    || request.kms_id !== target.kms.id) {
+    || request.kms_contract_id !== target.kms.contract.id) {
     throw new Error(`${domain} commit metadata differs from exact target authority`);
   }
   const environmentKeys = exactSortedEnvironmentKeys(request.env_keys, "commit env_keys");
@@ -2378,7 +2545,7 @@ function normalizeCommitInvocation(value, target) {
     request: {
       app_id: appId,
       compose_hash: request.compose_hash,
-      kms_id: target.kms.id,
+      kms_contract_id: target.kms.contract.id,
       env_keys: environmentKeys,
       encrypted_env: request.encrypted_env,
     },
@@ -2465,7 +2632,7 @@ function makeObservation(state, method, domain, capture, response, observedAt) {
     call_sequence: callSequence,
     observed_at: observedAt,
     api_origin: PHALA_ORIGIN,
-    api_version: state.target.api.version,
+    api_version: capture.api_version,
     workspace_id: state.target.workspace.workspace_id,
     adapter_identity_sha256: state.identity_sha256,
     target_authority_sha256: state.identity.production_target_authority_sha256,
@@ -2488,6 +2655,7 @@ function makeObservation(state, method, domain, capture, response, observedAt) {
     adapter: state.adapter,
     call_sequence: callSequence,
     response: structuredClone(response),
+    raw_identity_fields: structuredClone(capture.raw_identity_fields),
   }));
   state.next_call_sequence = callSequence + 1;
   return observation;
@@ -2512,12 +2680,18 @@ async function invokeSdkAction(state, {
   if (method !== "getCurrentUser" && state.workspace_verified !== true) {
     throw new Error("getCurrentUser must authenticate the reviewed workspace before any other call");
   }
+  if (PHALA_PRODUCTION_MUTATION_METHODS.includes(method) && state.billing_verified !== true) {
+    throw new Error("explicit active workspace billing must be verified before any Phala mutation or reservation");
+  }
   const action = state.actions[method];
   if (typeof action !== "function") throw new Error("pinned SDK action is unavailable");
   state.in_flight = true;
   state.transport.begin(method, actionArguments);
   try {
-    if (method === "getCurrentUser") state.workspace_verified = false;
+    if (method === "getCurrentUser") {
+      state.workspace_verified = false;
+      state.billing_verified = false;
+    }
     const response = await action(state.transport.client, ...actionArguments);
     assertBoundedJsonGraph(response, { label: `${method} SDK response` });
     const capture = state.transport.finish();
@@ -2526,7 +2700,7 @@ async function invokeSdkAction(state, {
         !== expectedPostTransformBodySha256) {
       throw new Error("captured SDK post-transform body differs from exact local projection");
     }
-    if (beforeObservation) beforeObservation(response);
+    if (beforeObservation) beforeObservation(response, capture);
     assertAdapterAuthorityFresh(state);
     const observedAt = canonicalInternalTimestamp(state.now());
     const observation = makeObservation(
@@ -2607,6 +2781,52 @@ export function readAuthenticatedPhalaSdkObservationResponse(value, options) {
   return structuredClone(AUTHENTICATED_OBSERVATIONS.get(observation).response);
 }
 
+export function readAuthenticatedPhalaSdkObservationRawIdentityFields(value, options) {
+  const observation = assertAuthenticatedPhalaSdkObservation(value, options);
+  return structuredClone(AUTHENTICATED_OBSERVATIONS.get(observation).raw_identity_fields);
+}
+
+/** Restore only a read-only replica lookup after current authenticated readback.
+ * A serialized receipt alone cannot restore authority. Its caller must have
+ * reverified the historical launch lineage and reconstructed current posture;
+ * this boundary additionally checks the actual branded SDK response itself.
+ */
+export function bindPinnedPhalaCommittedEnvironmentKeyLookup({
+  adapter, cvmInfoObservation, postureReceipt,
+} = {}) {
+  const state = PRODUCTION_ADAPTERS.get(adapter);
+  if (!state) throw new Error("committed key lookup requires a pinned Phala adapter");
+  const posture = assertVerifiedProductionCvmPostureReceipt(postureReceipt);
+  if (!posture.prepared_binding || !posture.environment_public_key) {
+    throw new Error("committed key lookup requires durable contract-KMS prepare authority");
+  }
+  const raw = readAuthenticatedPhalaSdkObservationResponse(cvmInfoObservation, {
+    adapter, method: "getCvmInfo", domain: posture.domain,
+  });
+  if (String(raw.id) !== posture.cvm_id) {
+    throw new Error("committed key lookup CVM differs from authenticated readback");
+  }
+  const kmsProjection = Object.fromEntries([
+    "contract", "replicas", "eligible_placements", "gateways",
+  ].map((key) => [key, state.target.kms[key]]));
+  assertProductionCvmPosture(raw, {
+    domain: posture.domain, appId: posture.app_id, composeHash: posture.compose_hash,
+    instanceType: posture.instance_type, diskSize: posture.disk_size,
+    kmsProjection, preparedBinding: posture.prepared_binding,
+    environmentPublicKey: posture.environment_public_key,
+  });
+  const binding = {
+    app_id: posture.app_id, compose_hash: posture.compose_hash,
+    ...posture.prepared_binding,
+  };
+  const previous = state.prepared_by_domain.get(posture.domain);
+  if (previous && Object.keys(binding).some((key) => previous[key] !== binding[key])) {
+    throw new Error("committed key lookup conflicts with the existing prepared binding");
+  }
+  state.prepared_by_domain.set(posture.domain, Object.freeze(binding));
+  return adapter;
+}
+
 /**
  * Creates the only mutation-capable Phala adapter. The constructor has no
  * credential, client, transport, callback, origin, version, or clock inputs.
@@ -2683,7 +2903,17 @@ async function createPinnedPhalaSdkAdapter(value, {
       return invokeSdkAction(state, {
         method: "getCurrentUser",
         beforeObservation(response) {
-          validateAuthenticatedAccount(response, state);
+          state.authenticated_subject = validateAuthenticatedAccount(response, state);
+        },
+      });
+    },
+    async getWorkspace() {
+      return invokeSdkAction(state, {
+        method: "getWorkspace",
+        actionArguments: [credential.workspace.slug],
+        beforeObservation(response) {
+          assertPhalaWorkspaceActiveBilling({ workspace: response, authenticatedSubject: state.authenticated_subject });
+          state.billing_verified = true;
         },
       });
     },
@@ -2702,10 +2932,29 @@ async function createPinnedPhalaSdkAdapter(value, {
         actionArguments: [{ page: 1, page_size: 100, is_onchain: false }],
       });
     },
-    async getKmsInfo() {
+    async getKmsInfo(invocation) {
+      const { kmsId } = exactRecord(invocation, ["kmsId"], "KMS replica detail invocation");
+      if (target.kms.replicas.filter((entry) => entry.id === kmsId).length !== 1) {
+        throw new Error("KMS replica detail requires an exact reviewed member");
+      }
       return invokeSdkAction(state, {
         method: "getKmsInfo",
-        actionArguments: [{ kms_id: target.kms.id }],
+        actionArguments: [{ kms_id: kmsId }],
+      });
+    },
+    async listKmsContracts() {
+      return invokeSdkAction(state, {
+        method: "listKmsContracts", actionArguments: [{ page: 1, page_size: 100, is_onchain: false }],
+      });
+    },
+    async getKmsContract() {
+      return invokeSdkAction(state, {
+        method: "getKmsContract", actionArguments: [{ slug: target.kms.contract.id }],
+      });
+    },
+    async listKmsContractNodes() {
+      return invokeSdkAction(state, {
+        method: "listKmsContractNodes", actionArguments: [{ slug: target.kms.contract.id }],
       });
     },
     async nextAppIds() {
@@ -2716,12 +2965,29 @@ async function createPinnedPhalaSdkAdapter(value, {
     },
     async provisionCvm(invocation) {
       const normalized = normalizeProvisionInvocation(invocation, target);
+      if (state.prepared_by_domain.has(normalized.domain)) {
+        throw new Error("domain already has a validated prepare; automatic repetition is forbidden");
+      }
       return invokeSdkAction(state, {
         method: "provisionCvm",
         domain: normalized.domain,
         actionArguments: [normalized.request],
         expectedPostTransformBodySha256:
           phalaSdkJsonBodySemanticDigest(normalized.wireBody),
+        beforeObservation(response, capture) {
+          const projection = projectPinnedProvisionWireEvidence(normalized.request);
+          const prepared = assertPreparedCvmObservation({
+            response, rawPlacement: capture.raw_identity_fields, domain: normalized.domain,
+            appId: normalized.request.app_id,
+            expectedComposeHash: projection.expected_post_transform_compose_hash,
+            expectedKmsProjection: {
+              contract: target.kms.contract, replicas: target.kms.replicas,
+              eligible_placements: target.kms.eligible_placements, gateways: target.kms.gateways,
+            },
+            expectedInstanceType: normalized.request.instance_type,
+          });
+          state.prepared_by_domain.set(normalized.domain, prepared);
+        },
       });
     },
     async getAppEnvEncryptPubKey(invocation) {
@@ -2732,14 +2998,24 @@ async function createPinnedPhalaSdkAdapter(value, {
         "getAppEnvEncryptPubKey invocation");
       const domain = exactDomain(parsed.domain, "environment key domain");
       const appId = exactAppId(parsed.appId, "environment key app id");
+      const prepared = state.prepared_by_domain.get(domain);
+      if (!prepared || prepared.app_id !== appId) {
+        throw new Error("environment key lookup requires a validated prepared or committed replica binding");
+      }
       return invokeSdkAction(state, {
         method: "getAppEnvEncryptPubKey",
         domain,
-        actionArguments: [{ kms: target.kms.id, app_id: appId }],
+        actionArguments: [{ kms: prepared.kms_id, app_id: appId }],
       });
     },
     async commitCvmProvision(invocation) {
       const normalized = normalizeCommitInvocation(invocation, target);
+      const prepared = state.prepared_by_domain.get(normalized.domain);
+      if (!prepared || normalized.request.app_id !== prepared.app_id
+        || normalized.request.compose_hash !== prepared.compose_hash
+        || normalized.request.kms_contract_id !== prepared.kms_contract_id) {
+        throw new Error("commit requires the exact validated prepare binding");
+      }
       return invokeSdkAction(state, {
         method: "commitCvmProvision",
         domain: normalized.domain,
@@ -2807,6 +3083,9 @@ async function createPinnedPhalaSdkAdapter(value, {
     credential,
     transport,
     workspace_verified: false,
+    billing_verified: false,
+    authenticated_subject: null,
+    prepared_by_domain: new Map(),
     in_flight: false,
     next_call_sequence: 1,
     historical_continuity_read_only: historicalContinuityReadOnly,

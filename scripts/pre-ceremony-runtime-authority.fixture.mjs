@@ -178,7 +178,7 @@ export function syntheticPostMeasurementActivationPlanFixture({
       arena_worker_presence_evidence_classification:
         PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
       arena_runtime_authenticated_worker_presence_required: true,
-      compute_workload_recipient_activation_v3_required: true,
+      compute_workload_recipient_activation_v4_required: true,
       independent_tdx_verdict_v4_required: true,
       pre_injection_attestation_sufficient: false,
     },

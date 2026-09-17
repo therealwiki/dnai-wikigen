@@ -63,12 +63,30 @@ measurement-policy, profile, policy, challenge, evaluated identity, and
 timestamps. It also carries the separately reviewed exact 900-second
 activation-evidence lease. The lease begins only after the in-window appraisal,
 may outlive the already consumed challenge, and is policy-bounded activation
-authority—not renewed challenge freshness. Post-restart Compute recipient
-activation is exact schema `dnai.compute.workload-recipient-activation.v3`
-with an explicit recipient-evidence lease of at most 300 seconds. Its stable
-recipient-release commitment deliberately remains
-`dnai.compute.workload-recipient-release.v2`; activation v1, active verdict v3,
-and release-commitment v1 are rejected. This correction does not change the
+authority—not renewed challenge freshness.
+
+Stable-commitment correction, 2026-09-16: post-restart Compute recipient
+activation is exact schema `dnai.compute.workload-recipient-activation.v4`
+with an explicit recipient-evidence lease of at most 300 seconds. The activation
+commitment is `SHA256(domain || canonical_json(payload))`, with domain bytes
+`b"dnai-wikigen/compute-workload-recipient-activation/v4\0"` and exactly this
+payload: `{ "schema": "dnai.compute.workload-recipient-activation.v4",
+"recipient_release_commitment": <independently rederived stable v2 identity> }`.
+The stable identity deliberately remains
+`dnai.compute.workload-recipient-release.v2`. It binds the recipient key and
+exact public attestation, release authority, deployment intent, ceremony nonce,
+measurement policies, runtime evidence, and the attested Compute vault address,
+runtime code hash, and fresh deployment receipt, together with the remaining
+release-lineage and verifier bindings.
+
+Refreshing the proof for that same recipient and release changes the signed
+verdict digest, but not the v4 activation commitment or stable v2 identity. The
+full activation still carries the fresh signed verdict, challenge, and bounded
+lease. Every admission independently authenticates the current proof and
+revocation state; a matching stable digest never substitutes for these checks.
+Exact-schema v3 clients reject v4, and current consumers reject v3 without a
+compatibility fallback. Earlier activation schemas, active verdict v3, and
+release-commitment v1 remain rejected. This correction does not change the
 deployment-status statement below.
 
 No part of this decision is a deployment claim. The current working tree has

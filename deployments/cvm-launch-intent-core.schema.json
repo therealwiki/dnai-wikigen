@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wikigen.me/schemas/cvm-launch-intent-core.v3.json",
+  "$id": "https://wikigen.me/schemas/cvm-launch-intent-core.v4.json",
   "title": "dnai-wikigen pre-Phala CVM launch intent core",
-  "description": "Secret-value-free reviewed launch gate created only after the fresh Base Sepolia suite and before any Phala CVM provision or commit. Version 3 binds an exact seven-CVM topology plus fail-closed public-value, AppCompose candidate, resource-target, API-origin, workspace-target, logging, compose-hash, and sealed production-execution policies; it is not runtime-value authority or deployment evidence. The contract receipt digest excludes renewable review and CVM history. Descriptor SHA-256 fields bind raw files and are not platform-observed compose hashes.",
+  "description": "Secret-value-free reviewed launch gate created after the fresh Base Sepolia suite and before Phala provision or commit. Version 4 separately binds raw descriptor bytes, pre-transform AppCompose audit hashes, and exact post-transform expected runtime compose hashes. The pinned SDK transform and authenticated staging server equality remain mandatory; no server defaults or runtime evidence are inferred from local hashes.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -27,7 +27,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "dnai.cvm-launch-intent-core.v3"
+      "const": "dnai.cvm-launch-intent-core.v4"
     },
     "truth_status": {
       "const": "value_free_pre_phala_launch_gate_specification_not_runtime_value_authority_cvm_deployment_tdx_quote_or_runtime_measurement"
@@ -152,7 +152,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -745,7 +745,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -807,7 +808,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -816,6 +818,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -859,7 +869,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -1044,7 +1054,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -1106,7 +1117,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -1115,6 +1127,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -1158,7 +1178,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -1343,7 +1363,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -1405,7 +1426,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -1414,6 +1436,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -1457,7 +1487,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -1642,7 +1672,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -1704,7 +1735,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -1713,6 +1745,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -1756,7 +1796,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -1941,7 +1981,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -2003,7 +2044,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -2012,6 +2054,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -2055,7 +2105,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -2240,7 +2290,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -2302,7 +2353,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -2311,6 +2363,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -2354,7 +2414,7 @@
               "const": {
                 "platform": "phala_cloud",
                 "phala_cli_version": "v1.1.19+d2300dd",
-                "phala_cloud_sdk_version": "0.2.10",
+                "phala_cloud_sdk_version": "0.4.0",
                 "phala_os_image": "dstack-0.5.9",
                 "phala_os_image_hash": "bd369a8c2f9edb2b52dad48ac8e0b32dde5f1337c423a506b48d07403a7d8033",
                 "phala_os_image_catalog_entry": {
@@ -2570,7 +2630,8 @@
                 "docker_compose_file_byte_length",
                 "expected_compose_hash",
                 "tproxy_enabled",
-                "provision_wire_transform_source"
+                "provision_wire_transform_source",
+                "pre_transform_compose_hash"
               ],
               "properties": {
                 "authority_status": {
@@ -2632,7 +2693,8 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "not": {
                     "const": "0000000000000000000000000000000000000000000000000000000000000000"
-                  }
+                  },
+                  "description": "Expected runtime hash of the exact SDK post-transform compose_file; requires authenticated staging server equality."
                 },
                 "tproxy_enabled": {
                   "type": "boolean",
@@ -2641,6 +2703,14 @@
                 "provision_wire_transform_source": {
                   "type": "string",
                   "const": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY"
+                },
+                "pre_transform_compose_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "not": {
+                    "const": "0000000000000000000000000000000000000000000000000000000000000000"
+                  },
+                  "description": "Distinct pre-transform candidate hash for audit only; never runtime compose identity."
                 }
               }
             }
@@ -2661,6 +2731,19 @@
         "algorithm": "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
         "output_pattern": "^[0-9a-f]{64}$",
         "descriptor_bytes_semantics": "exact_stable_read_raw_descriptor_bytes",
+        "compose_hash_semantics": {
+          "schema": "dnai.phala-app-compose-wire-hash-semantics.v1",
+          "sdk_package": "@phala/cloud",
+          "sdk_version": "0.4.0",
+          "transform_function": "handleGatewayCompatibility",
+          "transform_rule": "both_gateway_and_tproxy_boolean_delete_only_tproxy_enabled",
+          "pre_transform_hash": "audit_only_not_runtime_compose_identity",
+          "runtime_hash_input": "exact_post_transform_compose_file",
+          "hash_algorithm": "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
+          "hash_normalize": false,
+          "server_defaults_assumed": false,
+          "authenticated_staging_server_hash_equality_required": true
+        },
         "prepare_response_policy": "all_seven_prepare_compose_hashes_must_equal_their_exact_local_expected_hash_before_first_commit",
         "staging_server_semantics_evidence_status": "required_not_implemented"
       },
@@ -2670,7 +2753,7 @@
       "type": "object",
       "const": {
         "api_origin": "https://cloud-api.phala.network/api/v1",
-        "api_version": "2026-01-21",
+        "api_version": "2026-06-23",
         "redirects_allowed": false,
         "origin_drift_allowed": false,
         "phala_cloud_api_prefix_environment_override_allowed": false,
@@ -2710,9 +2793,9 @@
         "status": "reviewed_transform_and_staging_capture_required_not_present",
         "package": {
           "name": "@phala/cloud",
-          "version": "0.2.10",
+          "version": "0.4.0",
           "registry_origin": "https://registry.npmjs.org",
-          "npm_dist_integrity_sha512": "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+          "npm_dist_integrity_sha512": "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
           "installed_integrity_source": "stable_nofollow_package_manifest_and_exact_dist_index_mjs_bytes",
           "installed_manifest_sha256": null,
           "installed_esm_module_sha256": null
@@ -2748,14 +2831,15 @@
         "request_extra_fields_allowed": false,
         "listed": false,
         "image": "dstack-0.5.9",
-        "kms_id": null,
+        "kms": "PHALA",
+        "kms_contract_id": null,
         "key_provider_mode": "kms",
         "compose_file_source": "descriptor.app_compose_candidate",
         "name_source": "descriptor.app_compose_candidate.name",
         "resource_source": "descriptor.launch_settings.cvm_resource_target",
         "env_keys_source": "descriptor.exact_allowed_environment_keys",
         "unresolved_fields": [
-          "kms_id",
+          "kms_contract_id",
           "nonce",
           "app_id",
           "exact_request_sha256"

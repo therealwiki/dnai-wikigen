@@ -18,6 +18,12 @@ import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   phalaSevenCvmReleaseVerificationAuthoritySha256 as
     currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    historicalV4ReleaseAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
@@ -50,6 +56,12 @@ export const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_REPLAY_TRUTH =
   "persisted_observation_signature_and_caller_authenticated_signed_c_lineage_replayed_at_recorded_time_without_current_freshness_or_authority";
 export const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_AUTHORITY_DOMAIN =
   "dnai-wikigen/compute-workload-activation-observation-historical-authority/v2\0";
+export const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA =
+  "dnai.compute-workload-activation-observation-prebuild-replay.v1";
+export const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_TRUTH =
+  "persisted_observation_signature_and_caller_supplied_independent_activation_lineage_replayed_at_recorded_completion_without_signed_c_authorization_current_freshness_or_live_authority";
+export const COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_AUTHORITY_DOMAIN =
+  "dnai-wikigen/compute-workload-activation-observation-prebuild-authority/v1\0";
 
 export const COMPUTE_WORKLOAD_BROWSER_ENV_KEYS = Object.freeze([
   "VITE_ENABLE_COMPUTE_WORKLOAD_UPLOAD",
@@ -143,6 +155,10 @@ function versionedReleaseVerificationAuthoritySha256(value) {
   if (descriptor.value
       === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  if (descriptor.value
+      === HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA) {
+    return historicalV4ReleaseAuthoritySha256(value);
   }
   if (descriptor.value
       === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
@@ -907,16 +923,22 @@ function historicalObservationAuthoritySha256({
   );
 }
 
-function reconstructHistoricalObservationReplay({
+// Shared verification facts have no signed-C or prebuild meaning until the
+// context-specific caller constructs its explicitly labeled result. Neither
+// caller may derive expected authority or the recorded instant from O itself.
+function replayObservationAtRecordedTime({
   persistedObservation,
   expectedAuthority,
-  authorizedAt,
+  recordedAt,
+  context,
 }) {
   const observation = normalizeComputeWorkloadActivationObservation(
     persistedObservation,
   );
   const authority = normalizeHistoricalObservationExpectations(expectedAuthority);
-  second(authorizedAt, "historical compute-workload O signed-C time");
+  second(recordedAt, context === "historical"
+    ? "historical compute-workload O signed-C time"
+    : "prebuild compute-workload O activation-completion time");
   const lineage = observation.lineage;
   const main = observation.main_runtime;
   const qvl = observation.compute_workload_qvl;
@@ -978,10 +1000,12 @@ function reconstructHistoricalObservationReplay({
       !== authority.recipientEvidenceLeaseExpiresAt
     || observation.terminal_evidence_lease_expires_at
       !== authority.terminalEvidenceLeaseExpiresAt
-    || authorizedAt < observation.verification.verified_at
-    || authorizedAt >= observation.terminal_evidence_lease_expires_at
+    || recordedAt < observation.verification.verified_at
+    || recordedAt >= observation.terminal_evidence_lease_expires_at
   ) {
-    fail("persisted compute-workload O differs from signed-C historical authority");
+    fail(context === "historical"
+      ? "persisted compute-workload O differs from signed-C historical authority"
+      : "persisted compute-workload O differs from independent prebuild activation authority or completion time");
   }
 
   const verdict = observation.source_activation.authenticated_verdict;
@@ -1018,6 +1042,20 @@ function reconstructHistoricalObservationReplay({
   ) {
     fail("persisted compute-workload O signature or transcript digest is invalid");
   }
+  return { observation, authority, signingDigest, verdictArtifactSha256,
+    rawTranscriptSha256, signatureReceipt };
+}
+
+function reconstructHistoricalObservationReplay({
+  persistedObservation,
+  expectedAuthority,
+  authorizedAt,
+}) {
+  const { observation, authority, signingDigest, verdictArtifactSha256,
+    rawTranscriptSha256, signatureReceipt } = replayObservationAtRecordedTime({
+    persistedObservation, expectedAuthority, recordedAt: authorizedAt,
+    context: "historical",
+  });
   return deepFreezeCanonicalPlainDataGraph({
     schema:
       COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_HISTORICAL_REPLAY_SCHEMA,
@@ -1114,6 +1152,109 @@ export function normalizeComputeWorkloadActivationObservationHistoricalReplay(
   });
   if (canonicalText(parsed) !== canonicalText(reconstructed)) {
     fail("historical compute-workload O replay result differs from reconstruction");
+  }
+  return reconstructed;
+}
+
+function reconstructPrebuildObservationReplay({
+  persistedObservation,
+  expectedAuthority,
+  completedAt,
+}) {
+  const { observation, authority, signingDigest, verdictArtifactSha256,
+    rawTranscriptSha256, signatureReceipt } = replayObservationAtRecordedTime({
+    persistedObservation, expectedAuthority, recordedAt: completedAt,
+    context: "prebuild",
+  });
+  return deepFreezeCanonicalPlainDataGraph({
+    schema: COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA,
+    truth_status: COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_TRUTH,
+    observation,
+    observation_sha256: computeWorkloadActivationObservationSha256(observation),
+    expected_authority: authority,
+    expected_authority_sha256: domainSha256(
+      COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_AUTHORITY_DOMAIN,
+      { completed_at: completedAt, expected_authority: authority },
+    ),
+    completed_at: completedAt,
+    qvl_verdict_signing_digest: signingDigest,
+    qvl_verdict_artifact_sha256: verdictArtifactSha256,
+    qvl_verdict_signature_sha256: signatureReceipt.signature_sha256,
+    raw_transcript_sha256: rawTranscriptSha256,
+    signature_message_mode: "eip191_personal_sign_raw_bytes32",
+    independent_signature_replay_verifier: INDEPENDENT_EIP191_REPLAY_VERIFIER,
+    independent_signature_replay_performed: true,
+    original_pinned_cast_verifier_reexecuted: false,
+    signed_c_authorization_verified: false,
+    current_clock_consulted: false,
+    freshness_renewed: false,
+    production_brand_minted: false,
+    deploy_authorized: false,
+    live_traffic_authorized: false,
+  }, { label: "prebuild compute-workload activation replay result" });
+}
+
+/**
+ * Replay O at the independently validated activation receipt's completion
+ * instant, before C exists. The caller must derive every expected field from
+ * its other verified release artifacts, never copy those fields or the time
+ * from O. This pure API verifies signatures, exact lineage, and the original
+ * evidence leases; it cannot authenticate the caller's source artifacts.
+ * Its serializable result is not signed-C evidence, a fresh production brand,
+ * deployment authority, or a renewal of either evidence lease. Actual signed
+ * C requires a separate historical replay with independently derived expected
+ * authority at the genuine C signing instant.
+ */
+export function assertPrebuildVerifiedComputeWorkloadActivationObservation(
+  input = {},
+) {
+  const parsed = exactRecord(input, [
+    "completedAtMs", "expected", "persistedObservation",
+  ], "prebuild compute-workload O replay input");
+  if (!Number.isSafeInteger(parsed.completedAtMs)
+    || parsed.completedAtMs < 1 || parsed.completedAtMs % 1_000 !== 0) {
+    fail("prebuild compute-workload O requires the exact activation-completion second");
+  }
+  return reconstructPrebuildObservationReplay({
+    persistedObservation: parsed.persistedObservation,
+    expectedAuthority: parsed.expected,
+    completedAt: parsed.completedAtMs / 1_000,
+  });
+}
+
+export function normalizeComputeWorkloadActivationObservationPrebuildReplay(value) {
+  const parsed = exactRecord(value, [
+    "completed_at", "current_clock_consulted", "deploy_authorized",
+    "expected_authority", "expected_authority_sha256", "freshness_renewed",
+    "independent_signature_replay_performed", "independent_signature_replay_verifier",
+    "live_traffic_authorized", "observation", "observation_sha256",
+    "original_pinned_cast_verifier_reexecuted", "production_brand_minted",
+    "qvl_verdict_artifact_sha256", "qvl_verdict_signature_sha256",
+    "qvl_verdict_signing_digest", "raw_transcript_sha256", "schema",
+    "signature_message_mode", "signed_c_authorization_verified", "truth_status",
+  ], "prebuild compute-workload O replay result");
+  if (parsed.schema !== COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_SCHEMA
+    || parsed.truth_status !== COMPUTE_WORKLOAD_ACTIVATION_OBSERVATION_PREBUILD_REPLAY_TRUTH
+    || parsed.signature_message_mode !== "eip191_personal_sign_raw_bytes32"
+    || parsed.independent_signature_replay_performed !== true
+    || parsed.original_pinned_cast_verifier_reexecuted !== false
+    || parsed.signed_c_authorization_verified !== false
+    || parsed.current_clock_consulted !== false
+    || parsed.freshness_renewed !== false
+    || parsed.production_brand_minted !== false
+    || parsed.deploy_authorized !== false
+    || parsed.live_traffic_authorized !== false
+    || JSON.stringify(parsed.independent_signature_replay_verifier)
+      !== JSON.stringify(INDEPENDENT_EIP191_REPLAY_VERIFIER)) {
+    fail("prebuild compute-workload O replay truth boundary is invalid");
+  }
+  const reconstructed = reconstructPrebuildObservationReplay({
+    persistedObservation: parsed.observation,
+    expectedAuthority: parsed.expected_authority,
+    completedAt: parsed.completed_at,
+  });
+  if (canonicalText(parsed) !== canonicalText(reconstructed)) {
+    fail("prebuild compute-workload O replay result differs from reconstruction");
   }
   return reconstructed;
 }
@@ -1292,6 +1433,20 @@ export function projectComputeWorkloadBrowserBindingFromHistoricalObservation(va
 export function projectComputeWorkloadBrowserEnvFromHistoricalObservation(value) {
   return projectComputeWorkloadBrowserEnvFromBinding(
     projectComputeWorkloadBrowserBindingFromHistoricalObservation(value),
+  );
+}
+
+export function projectComputeWorkloadBrowserBindingFromPrebuildObservation(value) {
+  const replay = normalizeComputeWorkloadActivationObservationPrebuildReplay(value);
+  return deepFreezeCanonicalPlainDataGraph(
+    projectNormalizedComputeWorkloadBrowserBinding(replay.observation),
+    { label: "prebuild compute-workload browser binding" },
+  );
+}
+
+export function projectComputeWorkloadBrowserEnvFromPrebuildObservation(value) {
+  return projectComputeWorkloadBrowserEnvFromBinding(
+    projectComputeWorkloadBrowserBindingFromPrebuildObservation(value),
   );
 }
 

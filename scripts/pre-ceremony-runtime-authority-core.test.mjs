@@ -173,6 +173,14 @@ test("R v4 commits activation-plan v4 and the complete combined future policy v4
     FUTURE_WORKLOAD_ACTIVATION_AUTHORIZATION_TRANSCRIPT_POLICY_SCHEMA,
     "dnai.future-workload-activation-authorization-transcript-policy.v4",
   );
+  assert.equal(
+    authority.future_activation_authorization_transcript_policy.source_activation_schema,
+    "dnai.compute.workload-recipient-activation.v4",
+  );
+  assert.equal(
+    authority.future_activation_authorization_transcript_policy.activation_execution_receipt_schema,
+    "dnai.phala-post-measurement-activation-execution-receipt.v4",
+  );
   assert.deepEqual(
     authority.future_activation_authorization_transcript_policy
       .required_main_runtime_profile_activation,
@@ -281,6 +289,14 @@ test("R v4 rejects policy downgrade, profile drift, authority drift, and activat
     (value) => {
       value.future_activation_authorization_transcript_policy.schema =
         "dnai.future-workload-activation-authorization-transcript-policy.v1";
+    },
+    (value) => {
+      value.future_activation_authorization_transcript_policy.source_activation_schema =
+        "dnai.compute.workload-recipient-activation.v3";
+    },
+    (value) => {
+      value.future_activation_authorization_transcript_policy.activation_execution_receipt_schema =
+        "dnai.phala-post-measurement-activation-execution-receipt.v3";
     },
     (value) => {
       value.future_activation_authorization_transcript_policy

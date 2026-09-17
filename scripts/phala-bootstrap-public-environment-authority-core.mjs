@@ -19,6 +19,7 @@ const BOOTSTRAP_AUTHORITY_DOMAIN =
 const SHA40 = /^(?!0{40}$)[0-9a-f]{40}$/;
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const BARE_SHA256 = /^(?!0{64}$)[0-9a-f]{64}$/;
+const BYTES32 = /^0x(?!0{64}$)[0-9a-f]{64}$/;
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const ISO_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const CVM_IDENTIFIER = /^[a-z0-9][a-z0-9._:-]{7,127}$/;
@@ -132,7 +133,13 @@ function exactPublicValueMap(value, expectedKeys, label) {
       && !BARE_SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero bare lowercase hash`);
     }
-    if (key.endsWith("_SHA256") && !SHA256.test(item)) {
+    const computeWorkloadBytes32 =
+      key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256"
+      || key === "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH";
+    if (computeWorkloadBytes32 && !BYTES32.test(item)) {
+      throw new Error(`${label}.${key} must be a nonzero canonical bytes32`);
+    }
+    if (!computeWorkloadBytes32 && key.endsWith("_SHA256") && !SHA256.test(item)) {
       throw new Error(`${label}.${key} must be a nonzero canonical SHA-256 digest`);
     }
     if (key.endsWith("_EPOCH")) {

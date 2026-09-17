@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import {
+  CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS,
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+} from "../../scripts/current-model-a-input-recipe-core.mjs";
 
 import {
   exactDistinctPublicHttpsEndpoints,
@@ -12,19 +16,19 @@ import {
 } from "./cloudflare-external-build-closure-core.mjs";
 
 export const FRONTEND_BUILD_CANDIDATE_SCHEMA =
-  "dnai.frontend-build-candidate.v3";
+  "dnai.frontend-build-candidate.v4";
 export const FRONTEND_BUILD_CANDIDATE_STATUS =
   "pre_live_activation_candidate";
 export const FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS =
   "pre_live_activation_candidate_not_deploy_authority";
 export const FRONTEND_BUILD_CANDIDATE_DOMAIN =
-  "dnai-wikigen/frontend-build-candidate/v3\0";
+  "dnai-wikigen/frontend-build-candidate/v4\0";
 export const FRONTEND_BUILD_INPUT_MANIFEST_SCHEMA =
-  "dnai.frontend-build-candidate-input-manifest.v3";
+  "dnai.frontend-build-candidate-input-manifest.v4";
 export const FRONTEND_BUILD_INPUT_MANIFEST_DOMAIN =
-  "dnai-wikigen/frontend-build-candidate-input-manifest/v3\0";
+  "dnai-wikigen/frontend-build-candidate-input-manifest/v4\0";
 export const FRONTEND_BUILD_INPUT_MANIFEST_TRUTH_STATUS =
-  "deterministic_pre_D_inputs_including_independent_H_excluding_signed_C_D_and_dist_not_deploy_authority";
+  "deterministic_pre_D_inputs_including_independent_H_and_standalone_activation_receipt_excluding_signed_C_D_and_dist_not_deploy_authority";
 
 export const FRONTEND_BUILD_LIVE_CANDIDATE_PROJECTION =
   "live_candidate_prebuild_projection_v1";
@@ -36,49 +40,11 @@ export const FRONTEND_BUILD_RAW_INPUT_PROJECTION =
 // Every other exact validator input is committed by its stable raw bytes. The
 // final validator independently projects --release back to its canonical
 // prebuild form and reproduces the first entry.
-export const FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS = Object.freeze([
-  "--release",
-  "--release-core",
-  "--runtime-authority-dependency",
-  "--deployment-intent",
-  "--contract-receipt",
-  "--reviewer-authority-genesis",
-  "--reviewer-authority-genesis-acceptance",
-  "--bootstrap-authority",
-  "--bootstrap-authorization",
-  "--bootstrap-authorization-receipt",
-  "--seven-cvm-launch-completion-receipt",
-  "--main-runtime-qvl-challenge",
-  "--main-runtime-independent-tdx-verdict",
-  "--diligence-qvl-identity-request",
-  "--diligence-qvl-identity-response",
-  "--arena-qvl-identity-request",
-  "--arena-qvl-identity-response",
-  "--anchor-writer-qvl-identity-request",
-  "--anchor-writer-qvl-identity-response",
-  "--compute-workload-qvl-identity-request",
-  "--compute-workload-qvl-identity-response",
-  "--compute-metering-qvl-identity-request",
-  "--compute-metering-qvl-identity-response",
-  "--independent-metering-qvl-challenge",
-  "--independent-metering-independent-tdx-verdict",
-  "--image-release-sigstore-verification-receipt",
-  "--cvm-descriptor-set-receipt",
-  "--phala-executor-final-state",
-  "--ceremony-authorization",
-  "--ledger",
-  "--artifact-evidence",
-  "--arena-evidence",
-  "--anchor-writer-evidence",
-  "--email-oracle-evidence",
-  "--royalty-release-history-receipt",
-  "--compute-workload-activation-observation",
-]);
+export const FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS =
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS;
 
-export const FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS = Object.freeze([
-  "--live-activation-authority",
-  "--frontend-build-candidate-receipt",
-]);
+export const FRONTEND_BUILD_EXCLUDED_CYCLIC_INPUT_FLAGS =
+  CURRENT_MODEL_A_EXCLUDED_CYCLIC_INPUT_FLAGS;
 export const FRONTEND_BUILD_RAW_PRIVATE_INPUT_FLAGS = Object.freeze(
   FRONTEND_BUILD_PRE_D_PRIVATE_INPUT_FLAGS.filter((flag) => flag !== "--release"),
 );
@@ -99,6 +65,7 @@ export const FRONTEND_BUILD_SEMANTIC_LINEAGE_FIELDS = Object.freeze([
   "ceremony_authorization_sha256",
   "royalty_release_history_sha256",
   "royalty_release_history_receipt_sha256",
+  "post_measurement_activation_execution_receipt_sha256",
   "compute_workload_activation_observation_sha256",
 ]);
 
@@ -123,7 +90,7 @@ const ADDRESS = /^0x[0-9a-f]{40}$/;
 const ZERO_SHA256 = `sha256:${"0".repeat(64)}`;
 const MAX_ENV_BYTES = 128 * 1024;
 const FORBIDDEN_POST_BUILD_AUTHORITY_INPUT =
-  /(?:live[-_]activation[-_]authority|semantic[-_]live[-_]activation|frontend[-_]build[-_]candidate[-_]receipt|compute[-_]workload[-_]activation[-_]observation)/i;
+  /(?:live[-_]activation[-_]authority|semantic[-_]live[-_]activation|frontend[-_]build[-_]candidate[-_]receipt|post[-_]measurement[-_]activation[-_]execution[-_]receipt|compute[-_]workload[-_]activation[-_]observation)/i;
 
 function fail(message) {
   throw new TypeError(message);
@@ -510,6 +477,7 @@ export function createFrontendBuildCandidateReceipt({
   reviewerAuthorityGenesisAcceptanceSha256,
   ceremonyAuthorizationSha256,
   runtimeAuthorityDependencySha256,
+  postMeasurementActivationExecutionReceiptSha256,
   computeWorkloadActivationObservationSha256,
   frontendBuildSha256,
   inputManifest,
@@ -518,6 +486,10 @@ export function createFrontendBuildCandidateReceipt({
     fail("frontend build candidate requires a full lowercase release SHA");
   }
   const normalizedInputManifest = normalizeFrontendBuildInputManifest(inputManifest);
+  const activationReceiptSha256 = sha256(
+    postMeasurementActivationExecutionReceiptSha256,
+    "frontend build post-measurement activation execution receipt digest",
+  );
   const observationSha256 = sha256(
     computeWorkloadActivationObservationSha256,
     "frontend build compute-workload activation observation digest",
@@ -549,9 +521,11 @@ export function createFrontendBuildCandidateReceipt({
     || normalizedInputManifest.semantic_lineage.runtime_authority_dependency_sha256
       !== runtimeAuthority
     || normalizedInputManifest.semantic_lineage
+      .post_measurement_activation_execution_receipt_sha256 !== activationReceiptSha256
+    || normalizedInputManifest.semantic_lineage
       .compute_workload_activation_observation_sha256 !== observationSha256
     || normalizedInputManifest.projected_env_sha256 !== projectedEnvSha256) {
-    fail("frontend build input manifest does not exact-bind the release, L-R-B-O lineage, and projected environment");
+    fail("frontend build input manifest does not exact-bind the release, L-R-B-activation-O lineage, and projected environment");
   }
   return normalizeFrontendBuildCandidateReceipt({
     schema: FRONTEND_BUILD_CANDIDATE_SCHEMA,
@@ -568,6 +542,7 @@ export function createFrontendBuildCandidateReceipt({
       normalizedInputManifest.royalty_release_history.history_sha256,
     royalty_release_history_receipt_sha256:
       normalizedInputManifest.royalty_release_history.receipt_sha256,
+    post_measurement_activation_execution_receipt_sha256: activationReceiptSha256,
     compute_workload_activation_observation_sha256: observationSha256,
     frontend_build_sha256: sha256(
       frontendBuildSha256,
@@ -584,6 +559,7 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     "ceremony_authorization_sha256", "chain_id",
     "compute_workload_activation_observation_sha256", "deployment_intent_sha256",
     "frontend_build_sha256", "raw_secret_egress", "release_env_sha256", "release_inputs_sha256",
+    "post_measurement_activation_execution_receipt_sha256",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256", "royalty_release_history_receipt_sha256",
     "royalty_release_history_sha256",
     "runtime_authority_dependency_sha256", "schema", "status", "truth_status",
@@ -627,6 +603,10 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     royalty_release_history_receipt_sha256: sha256(
       parsed.royalty_release_history_receipt_sha256,
       "frontend build Royalty H receipt digest",
+    ),
+    post_measurement_activation_execution_receipt_sha256: sha256(
+      parsed.post_measurement_activation_execution_receipt_sha256,
+      "frontend build post-measurement activation execution receipt digest",
     ),
     compute_workload_activation_observation_sha256: sha256(
       parsed.compute_workload_activation_observation_sha256,
@@ -675,6 +655,8 @@ export function assertFrontendBuildCandidateLineage({
       binding.reviewerAuthorityGenesisAcceptanceSha256,
     ceremonyAuthorizationSha256: binding.ceremonyAuthorizationSha256,
     runtimeAuthorityDependencySha256: binding.runtimeAuthorityDependencySha256,
+    postMeasurementActivationExecutionReceiptSha256:
+      binding.postMeasurementActivationExecutionReceiptSha256,
     computeWorkloadActivationObservationSha256:
       binding.computeWorkloadActivationObservationSha256,
     frontendBuildSha256: binding.frontendBuildSha256,

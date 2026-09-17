@@ -13,7 +13,14 @@ import {
 } from "./phala-executor-state-core.mjs";
 import {
   PHALA_EXECUTION_ORDER,
+  normalizeProductionCvmPreparedBinding,
+  normalizeProductionCvmEnvironmentPublicKey,
 } from "./phala-production-posture-core.mjs";
+import {
+  PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA,
+  normalizeProductionCvmPostureVerificationReceipt,
+  productionCvmPostureVerificationReceiptSha256,
+} from "./phala-production-posture-receipt.mjs";
 import {
   normalizePhalaNonLiveBootstrapAuthorizationReceipt,
   phalaNonLiveBootstrapAuthorizationReceiptSha256,
@@ -26,9 +33,9 @@ import {
 } from "./phala-seven-cvm-launch-completion-core.mjs";
 
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_SCHEMA =
-  "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v2";
+  "dnai.phala-completed-seven-cvm-launch-continuity-receipt.v3";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_DOMAIN =
-  "dnai-wikigen/phala-completed-seven-cvm-launch-continuity-receipt/v2\0";
+  "dnai-wikigen/phala-completed-seven-cvm-launch-continuity-receipt/v3\0";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_STATUS =
   "recorded_time_dcap_replayed_and_current_authenticated_read_only_exact_seven_cvm_continuity_reconciled";
 export const PHALA_COMPLETED_LAUNCH_CONTINUITY_RECEIPT_TRUTH =
@@ -64,12 +71,14 @@ const CURRENT_DOMAIN_FIELDS = Object.freeze([
   "environment_key_call_sequence",
   "environment_key_observation_sha256",
   "environment_key_observed_at",
+  "environment_public_key",
   "environment_public_key_sha256",
   "instance_type",
   "kms_id",
   "kms_type",
   "listed",
   "os_image_hash",
+  "prepared_binding",
   "production_posture_verification_receipt_sha256",
   "public_logs",
   "public_sysinfo",
@@ -267,7 +276,7 @@ function normalizeCurrentAccount(value, startedMs, completedMs) {
   };
 }
 
-function normalizeCurrentDomain(value, domain, index, historical, stateBinding,
+function normalizeCurrentDomain(value, domain, index, historical, historicalPosture, stateBinding,
   startedMs, completedMs) {
   const parsed = exactRecord(
     value,
@@ -294,12 +303,19 @@ function normalizeCurrentDomain(value, domain, index, historical, stateBinding,
     || milliseconds[1] < milliseconds[0] || milliseconds[2] < milliseconds[1]) {
     throw new TypeError(`${domain} current observations are outside or reorder the continuity window`);
   }
+  const preparedBinding = normalizeProductionCvmPreparedBinding(parsed.prepared_binding);
+  const environmentPublicKey = normalizeProductionCvmEnvironmentPublicKey(parsed.environment_public_key);
+  if (environmentPublicKey !== parsed.environment_public_key) {
+    throw new TypeError(`${domain} current environment public key must use canonical bare hex`);
+  }
   const normalized = {
     domain,
     app_id: appId(parsed.app_id, `${domain} current app ID`),
     cvm_id: identifier(parsed.cvm_id, `${domain} current CVM ID`),
     compose_hash: bareSha256(parsed.compose_hash, `${domain} current compose hash`),
     kms_id: identifier(parsed.kms_id, `${domain} current KMS ID`),
+    prepared_binding: preparedBinding,
+    environment_public_key: environmentPublicKey,
     instance_type: typeof parsed.instance_type === "string"
       && INSTANCE_TYPE.test(parsed.instance_type)
       ? parsed.instance_type
@@ -366,6 +382,16 @@ function normalizeCurrentDomain(value, domain, index, historical, stateBinding,
     || normalized.public_tcbinfo !== false) {
     throw new TypeError(`${domain} current private production posture is invalid`);
   }
+  if (normalized.kms_id !== preparedBinding.kms_id
+    || canonicalText(preparedBinding) !== canonicalText(historicalPosture.prepared_binding)
+    || environmentPublicKey !== historicalPosture.environment_public_key) {
+    throw new TypeError(`${domain} current prepared binding or environment public key drifted from historical v2 posture`);
+  }
+  const environmentPublicKeySha256 = `sha256:${createHash("sha256")
+    .update(Buffer.from(environmentPublicKey, "hex")).digest("hex")}`;
+  if (normalized.environment_public_key_sha256 !== environmentPublicKeySha256) {
+    throw new TypeError(`${domain} current environment public key bytes do not match their SHA-256`);
+  }
   for (const [currentField, historicalField] of [
     ["app_id", "app_id"],
     ["cvm_id", "cvm_id"],
@@ -385,6 +411,41 @@ function normalizeCurrentDomain(value, domain, index, historical, stateBinding,
     throw new TypeError(`${domain} current signed environment key drifted from the completed journal`);
   }
   return normalized;
+}
+
+function normalizeHistoricalPostures(value, launchByDomain) {
+  if (!Array.isArray(value) || value.length !== PHALA_EXECUTION_ORDER.length) {
+    throw new TypeError("continuity requires exactly seven actual historical v2 posture receipts");
+  }
+  const byDomain = new Map(value.map((receipt) => [receipt?.domain, receipt]));
+  if (byDomain.size !== PHALA_EXECUTION_ORDER.length
+    || PHALA_EXECUTION_ORDER.some((domain) => !byDomain.has(domain))) {
+    throw new TypeError("historical v2 posture receipts omit or duplicate a domain");
+  }
+  return new Map(PHALA_EXECUTION_ORDER.map((domain) => {
+    const receipt = byDomain.get(domain);
+    if (receipt?.schema !== PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA) {
+      throw new TypeError(`${domain} continuity requires historical v2 posture with retained prepare evidence`);
+    }
+    const historical = launchByDomain.get(domain);
+    const expectedAuthority = {
+      domain,
+      app_id: historical.app_id,
+      cvm_id: historical.cvm_id,
+      compose_hash: historical.committed_compose_hash,
+      kms_id: historical.kms_id,
+      instance_type: historical.instance_type,
+      disk_size: historical.disk_size,
+      prepared_binding: receipt.prepared_binding,
+      environment_public_key: receipt.environment_public_key,
+    };
+    const normalized = normalizeProductionCvmPostureVerificationReceipt(receipt, { expectedAuthority });
+    if (productionCvmPostureVerificationReceiptSha256(normalized, { expectedAuthority })
+      !== historical.production_posture_verification_receipt_sha256) {
+      throw new TypeError(`${domain} historical v2 posture digest differs from immutable historical L`);
+    }
+    return [domain, normalized];
+  }));
 }
 
 function normalizeHistoricalEvidence(value, launch, launchSha256) {
@@ -468,6 +529,7 @@ export function createPhalaCompletedLaunchContinuityReceipt(input = {}) {
     "currentAccount",
     "currentDomains",
     "historicalEvidenceReconstruction",
+    "historicalPostureReceipts",
     "launchCompletionReceipt",
     "launchCompletionReceiptSha256",
     "launchCompletionRawFileSha256",
@@ -484,6 +546,10 @@ export function createPhalaCompletedLaunchContinuityReceipt(input = {}) {
   const { state, stateSha256 } = exactCompletedJournal(parsed.completedJournal);
   const { launch, byDomain: launchByDomain } = exactLaunchShape(
     parsed.launchCompletionReceipt,
+  );
+  const historicalPostureByDomain = normalizeHistoricalPostures(
+    parsed.historicalPostureReceipts,
+    launchByDomain,
   );
   const launchSha256 = sha256(
     parsed.launchCompletionReceiptSha256,
@@ -551,6 +617,7 @@ export function createPhalaCompletedLaunchContinuityReceipt(input = {}) {
       domain,
       index,
       launchByDomain.get(domain),
+      historicalPostureByDomain.get(domain),
       signedKeyByDomain.get(domain),
       startedMs,
       completedMs,
@@ -660,10 +727,10 @@ export function normalizePhalaCompletedLaunchContinuityReceipt(value) {
     }
     // Standalone normalization is a security boundary too: a caller must not
     // be able to edit a sequence, timestamp, resource, privacy flag,
-    // observation digest, or key binding and legitimize it by recomputing the
-    // outer receipt digest. Reuse the creation-time field validator against a
-    // self-identical historical projection; the original L comparison remains
-    // the stronger check performed by the creator.
+    // observation digest, or malformed key binding and legitimize it by
+    // recomputing the outer receipt digest. Reuse creation-time shape/hash
+    // validation against self-identical historical fields. Only the creator
+    // checks those fields against actual v2 receipts bound by immutable L.
     return normalizeCurrentDomain(
       raw,
       domain,
@@ -676,6 +743,10 @@ export function normalizePhalaCompletedLaunchContinuityReceipt(value) {
         instance_type: raw.instance_type,
         disk_size: raw.disk_size,
         os_image_hash: raw.os_image_hash,
+      },
+      {
+        prepared_binding: raw.prepared_binding,
+        environment_public_key: raw.environment_public_key,
       },
       {
         binding_sha256: raw.environment_key_binding_sha256,

@@ -28,6 +28,10 @@ import {
   serializeEnv,
   validateDeploymentEvidence,
 } from "./release-env-core.mjs";
+import {
+  LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA as BINDING_LIVE_AUTHORITY_SCHEMA,
+  PRE_LIVE_ACTIVATION_AUTHORITY_EVIDENCE_SCHEMA as BINDING_PREBUILD_AUTHORITY_SCHEMA,
+} from "./execution-policy-release-core-binding.mjs";
 
 const NOW = 2_000_000;
 const PRIMARY_RPC_URL = "https://sepolia.base.org";
@@ -2257,6 +2261,8 @@ async function buildWithTrusted(
     trustedVerifierAddresses,
     authorityBinding: input.authorityBinding,
     candidateAuthorityStage: input.candidateAuthorityStage ?? "live",
+    prebuildComputeWorkloadActivationObservationReplay:
+      input.prebuildComputeWorkloadActivationObservationReplay,
     historicalComputeWorkloadActivationObservation:
       input.historicalComputeWorkloadActivationObservation,
   });
@@ -2431,7 +2437,7 @@ test("Tinker customer and collaboration browser gates project independently from
   }
 });
 
-test("Compute workload upload cannot project browser pins without authenticated historical O replay", async () => {
+test("Compute workload upload cannot project browser pins without stage-specific O replay", async () => {
   const input = await fixture();
   input.candidate.requested_features.compute_workload_upload = true;
   await assert.rejects(
@@ -2443,6 +2449,14 @@ test("Compute workload upload cannot project browser pins without authenticated 
     build(input),
     /historical compute-workload O replay result must contain exactly the frozen fields/,
   );
+  input.prebuildComputeWorkloadActivationObservationReplay = {};
+  await assert.rejects(build(input), /exactly one stage-specific observation replay/);
+  delete input.historicalComputeWorkloadActivationObservation;
+  input.candidate = projectLiveReleaseCandidateToPrebuild(input.candidate);
+  input.candidateAuthorityStage = "prebuild";
+  await assert.rejects(build(input), /prebuild compute-workload O replay result/);
+  delete input.prebuildComputeWorkloadActivationObservationReplay;
+  await assert.rejects(build(input), /prebuild requires only a revalidated prebuild observation replay/);
 });
 
 test("browser RPC release bindings are public, exact, independently hosted, and candidate-bound", async () => {
@@ -2615,6 +2629,12 @@ test("the nonauthorizing prebuild candidate is the live candidate minus only sig
     input.candidate,
   );
   assert.deepEqual(normalizePreLiveActivationReleaseCandidate(projected), projected);
+  // Contract test for the real full-candidate normalizer -> current binding
+  // schema boundary. Separate root tests exercise core/R/H binding; this does
+  // not claim that this full candidate matches that independent root fixture.
+  const normalizedPrebuild = normalizeReleaseCandidate(projected, { authorityStage: "prebuild" });
+  assert.equal(normalizedPrebuild.operator_policy.schema, BINDING_PREBUILD_AUTHORITY_SCHEMA);
+  assert.notEqual(normalizedPrebuild.operator_policy.schema, BINDING_LIVE_AUTHORITY_SCHEMA);
   assert.equal(
     canonicalLiveReleaseCandidatePrebuildProjectionText(input.candidate),
     canonicalPreLiveActivationReleaseCandidateText(projected),
@@ -2691,34 +2711,34 @@ test("signed live activation exact-binds all seven candidate CVM identities", as
   const input = await fixture();
   const candidate = normalizeReleaseCandidate(input.candidate);
   const descriptors = [
-    ["main_runtime", candidate.cvm, candidate.cvm.tee_identity],
+    ["main_runtime_cvm", candidate.cvm, candidate.cvm.tee_identity],
     [
-      "diligence_qvl",
+      "diligence_qvl_cvm",
       candidate.trust_domains.diligence_qvl,
       candidate.trust_domains.diligence_qvl.identity.verifier_address,
     ],
     [
-      "arena_qvl",
+      "arena_qvl_cvm",
       candidate.trust_domains.arena_qvl,
       candidate.trust_domains.arena_qvl.identity.verifier_address,
     ],
     [
-      "anchor_writer_qvl",
+      "anchor_writer_qvl_cvm",
       candidate.trust_domains.anchor_writer_qvl,
       candidate.trust_domains.anchor_writer_qvl.identity.verifier_address,
     ],
     [
-      "compute_metering_qvl",
-      candidate.trust_domains.compute_metering_qvl,
-      candidate.trust_domains.compute_metering_qvl.identity.verifier_address,
-    ],
-    [
-      "compute_workload_qvl",
+      "compute_workload_qvl_cvm",
       candidate.trust_domains.compute_workload_qvl,
       candidate.trust_domains.compute_workload_qvl.identity.verifier_address,
     ],
     [
-      "independent_metering",
+      "compute_metering_qvl_cvm",
+      candidate.trust_domains.compute_metering_qvl,
+      candidate.trust_domains.compute_metering_qvl.identity.verifier_address,
+    ],
+    [
+      "independent_metering_cvm",
       candidate.trust_domains.compute_metering,
       candidate.trust_domains.compute_metering.identity.metering_verifier,
     ],
@@ -2761,6 +2781,16 @@ test("signed live activation exact-binds all seven candidate CVM identities", as
   assert.throws(
     () => assertLiveActivationFinalCvmsMatchCandidate(sharedEvidence, candidate),
     /distinct attestation evidence/,
+  );
+
+  const nonMainTopologyDrift = structuredClone(binding);
+  nonMainTopologyDrift.final_cvms[4] = {
+    ...nonMainTopologyDrift.final_cvms[5],
+    cvm_key: "compute_workload_qvl_cvm",
+  };
+  assert.throws(
+    () => assertLiveActivationFinalCvmsMatchCandidate(nonMainTopologyDrift, candidate),
+    /compute_workload_qvl_cvm identity does not match/,
   );
 });
 

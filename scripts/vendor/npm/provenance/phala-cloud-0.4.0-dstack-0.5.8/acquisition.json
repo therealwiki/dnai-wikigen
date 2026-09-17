@@ -1,0 +1,16 @@
+[
+  {
+    "byte_length": 200385,
+    "name": "@phala/cloud",
+    "tarball_path": "/Users/wikios/Projects/dnai-wikigen/outputs/release-tools/phala-sdk-0.4.0/registry/observation-OCGkma/phala-cloud-0.4.0.tgz",
+    "tarball_sha256": "sha256:bc5a14bc10a0e8aff7b57ff96c64ab8388f5892052e6adc11a09eb8a59bc976e",
+    "version": "0.4.0"
+  },
+  {
+    "byte_length": 22796,
+    "name": "@phala/dstack-sdk",
+    "tarball_path": "/Users/wikios/Projects/dnai-wikigen/outputs/release-tools/phala-sdk-0.4.0/registry/observation-OCGkma/phala-dstack-sdk-0.5.8.tgz",
+    "tarball_sha256": "sha256:a78a0ffcc429c22c939b9c92b05406881c56220927a3462cc70de9d6c1d5d15c",
+    "version": "0.5.8"
+  }
+]

@@ -104,6 +104,8 @@ function publicValue(key, digit = "a") {
   }
   if (key === "TINKER_WALLET_AUTH_DOMAIN") return "www.wikigen.me";
   if (key === "TINKER_WALLET_AUTH_URI") return "https://www.wikigen.me";
+  if (key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256"
+    || key === "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH") return `0x${bare(digit)}`;
   if (key.endsWith("_ADDRESS")) return address(digit);
   if (key.endsWith("_APP_ID")) return app(digit);
   if (key.endsWith("_COMPOSE_HASH") || key.endsWith("_OS_IMAGE_HASH")) {
@@ -386,6 +388,37 @@ test("bootstrap public authority is strict, canonical, and imports canonical key
     () => normalizeBootstrapPublicEnvironmentAuthority(causalCycle),
     /exactly the reviewed fields/,
   );
+});
+
+test("Compute runtime receipt and QVL policy pins are bytes32 while artifact lineage remains SHA-256", () => {
+  const bootstrap = bootstrapAuthority();
+  const receiptKey = "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256";
+  const policyKey = "TINKER_COMPUTE_WORKLOAD_QVL_RELEASE_POLICY_HASH";
+  const receiptWord = `0x${bootstrap.fresh_contract_deployment_receipt_sha256.slice(7)}`;
+  bootstrap.domains[0].values[receiptKey] = receiptWord;
+  assert.equal(normalizeBootstrapPublicEnvironmentAuthority(bootstrap).domains[0].values[receiptKey], receiptWord);
+  assert.match(bootstrap.fresh_contract_deployment_receipt_sha256, /^sha256:/);
+  const deferred = deferredAuthority();
+  assert.match(normalizeDeferredPublicEnvironmentAuthority(deferred).domains[0].values[policyKey], /^0x[0-9a-f]{64}$/);
+
+  for (const [authority, normalize, key] of [
+    [bootstrap, normalizeBootstrapPublicEnvironmentAuthority, receiptKey],
+    [deferred, normalizeDeferredPublicEnvironmentAuthority, policyKey],
+  ]) {
+    for (const invalid of [sha("a"), bare("a"), `0x${"0".repeat(64)}`, `0x${"AB".repeat(32)}`, `0x${"a".repeat(63)}`, " " + `0x${bare("a")}`]) {
+      const drifted = structuredClone(authority);
+      drifted.domains[0].values[key] = invalid;
+      assert.throws(() => normalize(drifted), /canonical bytes32/, `${key}: ${invalid}`);
+    }
+  }
+  for (const [authority, normalize, key] of [
+    [bootstrap, normalizeBootstrapPublicEnvironmentAuthority, "TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256"],
+    [deferred, normalizeDeferredPublicEnvironmentAuthority, "TINKER_COMPUTE_WORKLOAD_RELEASE_AUTHORITY_SHA256"],
+  ]) {
+    const drifted = structuredClone(authority);
+    drifted.domains[0].values[key] = `0x${bare("a")}`;
+    assert.throws(() => normalize(drifted), /canonical SHA-256/, key);
+  }
 });
 
 test("provisioning projector derives exact values from all seven observations and rejects drift", () => {

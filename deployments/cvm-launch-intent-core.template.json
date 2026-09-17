@@ -1,6 +1,19 @@
 {
   "compose_hash_authority": {
     "algorithm": "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
+    "compose_hash_semantics": {
+      "authenticated_staging_server_hash_equality_required": true,
+      "hash_algorithm": "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
+      "hash_normalize": false,
+      "pre_transform_hash": "audit_only_not_runtime_compose_identity",
+      "runtime_hash_input": "exact_post_transform_compose_file",
+      "schema": "dnai.phala-app-compose-wire-hash-semantics.v1",
+      "sdk_package": "@phala/cloud",
+      "sdk_version": "0.4.0",
+      "server_defaults_assumed": false,
+      "transform_function": "handleGatewayCompatibility",
+      "transform_rule": "both_gateway_and_tproxy_boolean_delete_only_tproxy_enabled"
+    },
     "descriptor_bytes_semantics": "exact_stable_read_raw_descriptor_bytes",
     "export_name": "getComposeHash",
     "import_path": "@phala/dstack-sdk/get-compose-hash",
@@ -28,6 +41,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-main-runtime",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -247,7 +261,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -609,6 +623,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-diligence-attestation-qvl",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -665,7 +680,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -782,6 +797,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-arena-attestation-qvl",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -838,7 +854,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -955,6 +971,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-anchor-writer-attestation-qvl",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -1011,7 +1028,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -1128,6 +1145,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-compute-workload-attestation-qvl",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -1184,7 +1202,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -1301,6 +1319,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-compute-metering-attestation-qvl",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -1357,7 +1376,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -1474,6 +1493,7 @@
         "kms_enabled": true,
         "manifest_version": 2,
         "name": "dnai-independent-compute-metering",
+        "pre_transform_compose_hash": null,
         "provision_wire_transform_source": "PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY",
         "public_logs": false,
         "public_sysinfo": false,
@@ -1542,7 +1562,7 @@
         ],
         "initially_enabled_profiles": [],
         "phala_cli_version": "v1.1.19+d2300dd",
-        "phala_cloud_sdk_version": "0.2.10",
+        "phala_cloud_sdk_version": "0.4.0",
         "phala_os_image": "dstack-0.5.9",
         "phala_os_image_catalog_entry": {
           "is_dev": false,
@@ -1694,9 +1714,9 @@
       "installed_integrity_source": "stable_nofollow_package_manifest_and_exact_dist_index_mjs_bytes",
       "installed_manifest_sha256": null,
       "name": "@phala/cloud",
-      "npm_dist_integrity_sha512": "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+      "npm_dist_integrity_sha512": "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
       "registry_origin": "https://registry.npmjs.org",
-      "version": "0.2.10"
+      "version": "0.4.0"
     },
     "provision_transform": {
       "additional_transform_allowed": false,
@@ -1717,7 +1737,7 @@
   "phala_control_plane_authority": {
     "adapter_status": "required_not_implemented",
     "api_origin": "https://cloud-api.phala.network/api/v1",
-    "api_version": "2026-01-21",
+    "api_version": "2026-06-23",
     "default_discovery_allowed": false,
     "origin_drift_allowed": false,
     "phala_cloud_api_prefix_environment_override_allowed": false,
@@ -1765,7 +1785,8 @@
     "env_keys_source": "descriptor.exact_allowed_environment_keys",
     "image": "dstack-0.5.9",
     "key_provider_mode": "kms",
-    "kms_id": null,
+    "kms": "PHALA",
+    "kms_contract_id": null,
     "listed": false,
     "name_source": "descriptor.app_compose_candidate.name",
     "request_defaults_allowed": false,
@@ -1773,7 +1794,7 @@
     "resource_source": "descriptor.launch_settings.cvm_resource_target",
     "status": "dynamic_authorities_pending_non_executable",
     "unresolved_fields": [
-      "kms_id",
+      "kms_contract_id",
       "nonce",
       "app_id",
       "exact_request_sha256"
@@ -1797,7 +1818,7 @@
     "workspace_id_present": false
   },
   "release_sha": null,
-  "schema": "dnai.cvm-launch-intent-core.v3",
+  "schema": "dnai.cvm-launch-intent-core.v4",
   "sealed_production_execution_policy": {
     "availability": true,
     "blocker_codes": [],

@@ -349,7 +349,7 @@ Each descriptor records the exact diagnostic Phala CLI identity
 `v1.1.19+d2300dd`, but fresh CLI deployment is forbidden: that CLI's
 `--prepare-only` does not provide the required uncommitted fresh-CVM boundary.
 The reviewed seven-CVM design is implemented by the repository's guarded
-`@phala/cloud` `0.2.10` production executor as the exact sequence named
+`@phala/cloud` `0.4.0` production executor as the exact sequence named
 `provisionCvm_validate_all_seven_then_commitCvmProvision`. It prepares all
 seven applications without starting them, validates every
 predicted/returned app ID, independently authenticated environment public key,
@@ -373,21 +373,29 @@ the exact stable-read descriptor bytes and allowed-environment keys. It
 explicitly sets manifest version 2, `docker-compose`, PHALA KMS, gateway on,
 deprecated tproxy off, secure time on, `ext4`, and public log/sysinfo/TCB flags
 off. Request-level `listed: false` is excluded from the hashed AppCompose.
-Expected compose hashes use only `@phala/dstack-sdk/get-compose-hash` version
-`0.5.8`, normalization disabled, and bare lowercase SHA-256 output. The exact
-hashed object has thirteen reviewed fields and excludes request-only `listed`,
+Both compose hashes use `@phala/dstack-sdk/get-compose-hash` version
+`0.5.8`, normalization disabled, and bare lowercase SHA-256 output. Launch-intent
+v4 keeps the thirteen-field candidate's `pre_transform_compose_hash` for audit
+only. Its `expected_compose_hash` is the distinct twelve-field post-transform
+runtime hash. Both exclude request-only `listed`,
 image, resource, placement, KMS-ID, nonce, and app-ID fields. No internal Cloud
 SDK serializer is a fallback.
 
 The logical reviewed AppCompose deliberately sets `gateway_enabled: true` and
 `tproxy_enabled: false`; it is not claimed to be byte-equal to the SDK wire
-body. The pinned `@phala/cloud` `0.2.10` package has npm integrity
-`sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==`.
+body. The pinned `@phala/cloud` `0.4.0` package has npm integrity
+`sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==`.
 Its `ProvisionCvmRequestSchema.parse` step is followed by
 `handleGatewayCompatibility`, which deletes
 `compose_file.tproxy_enabled` when both gateway and tproxy fields are boolean.
 The exact expected wire body therefore keeps gateway enabled and has no
-`compose_file.tproxy_enabled` member. The launch core binds that one transform,
+`compose_file.tproxy_enabled` member. A shared strict projector supplies this
+same hash input to staging and production. Descriptor-runtime authority v3
+retains both hashes and explicitly binds `app_compose_hash` to the expected
+post-transform runtime value; release authority v5 requires exact equality with
+the observed platform value. Historical descriptor v1/v2 and release v3/v4 keep
+their original meanings and cannot become current authorization by relabeling.
+The launch core binds that one transform,
 forbids any additional transform, and accepts no pre-transform, expected-wire,
 captured-wire, server, or staging-receipt digest as launch evidence. A later
 compatibility receipt must bind stable installed package/module bytes, capture
@@ -395,8 +403,11 @@ the canonical actual POST body immediately before send, prove it equals the
 independently expected post-transform body, record the authenticated staging
 result, and bind the server-observed compose-hash proof. All seven returned
 prepare hashes must still match before any commit. There is no logical-to-wire
-byte-equality claim: the staging and server evidence must prove that the
-transformed wire body preserves gateway on and tproxy off.
+byte-equality claim or assumed server default: authenticated staging must prove
+the server hash equals this exact expected wire hash. Any mismatch stops the
+workflow; accepting either hash or copying an unexpected server hash into the
+reviewed authority is forbidden. MRTD/RTMR policies and QVL comparisons to the
+actual dstack compose hash remain unchanged.
 
 Resource values are reviewed candidates, not catalog observations: the main
 runtime targets `tdx.large` with 40 GB, and each support CVM targets `tdx.small`

@@ -1,0 +1,21 @@
+{
+  "name": "dnai-phala-sdk-040-candidate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated migration candidate, not an active release authority",
+  "scripts": {
+    "build": "node build-candidate.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "@phala/cloud": "0.4.0",
+    "@phala/dstack-sdk": "0.5.8",
+    "viem": "2.55.4",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

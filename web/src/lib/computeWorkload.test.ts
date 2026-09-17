@@ -151,7 +151,7 @@ async function fixture(): Promise<{
     activationProjection,
   );
   const activation: ComputeWorkloadRecipientActivation = {
-    schema: "dnai.compute.workload-recipient-activation.v3",
+    schema: "dnai.compute.workload-recipient-activation.v4",
     ...activationProjection,
     quote_hash: QUOTE_HASH,
     verdict_digest: verdictDigest,
@@ -487,10 +487,10 @@ describe("Compute sealed workload browser wire", () => {
     await expect(authenticateComputeWorkloadEncryptionContract(forged, trust, NOW)).rejects.toThrow(/signature/i);
   });
 
-  it("accepts only verdict v4 and activation v3 with every exact lineage and lease field", async () => {
+  it("accepts only verdict v4 and activation v4 with every exact lineage and lease field", async () => {
     const { raw } = await fixture();
     expect(parseComputeWorkloadEncryptionContract(raw).activation).toMatchObject({
-      schema: "dnai.compute.workload-recipient-activation.v3",
+      schema: "dnai.compute.workload-recipient-activation.v4",
       chain_id: 84_532,
       domain: "main_runtime_cvm",
       profile: "compute_workload",
@@ -513,6 +513,7 @@ describe("Compute sealed workload browser wire", () => {
     for (const schema of [
       "dnai.compute.workload-recipient-activation.v1",
       "dnai.compute.workload-recipient-activation.v2",
+      "dnai.compute.workload-recipient-activation.v3",
     ]) {
       const downgraded = structuredClone(raw) as unknown as {
         activation: { schema: string };
@@ -530,6 +531,95 @@ describe("Compute sealed workload browser wire", () => {
       };
       downgraded.activation.authenticated_verdict.schema = schema;
       expect(() => parseComputeWorkloadEncryptionContract(downgraded)).toThrow(/verdict schema/i);
+    }
+  });
+
+  it("keeps independently derived activation v4 stable across fresh signed same-recipient challenges", async () => {
+    const { raw, trust } = await fixture();
+    const refreshed = structuredClone(raw);
+    const activation = refreshed.activation;
+    const verdict = activation.authenticated_verdict;
+    verdict.challenge_id = `0x${"81".repeat(32)}`;
+    verdict.challenge_digest = `0x${"82".repeat(32)}`;
+    verdict.quote_hash = activation.quote_hash = `0x${"83".repeat(32)}`;
+    verdict.challenge_issued_at += 1;
+    verdict.challenge_expires_at += 1;
+    verdict.issued_at = activation.issued_at += 1;
+    verdict.activation_evidence_lease_expires_at = activation.recipient_evidence_lease_expires_at += 1;
+    verdict.expires_at = activation.expires_at += 1;
+    refreshed.recipient.activation_expires_at += 1;
+    activation.authenticated_at += 1;
+    activation.verdict_digest = await computeIndependentQvlVerdictDigest(verdict);
+    verdict.verifier_signature = (await privateKeyToAccount(`0x${"75".repeat(32)}`).signMessage({
+      message: { raw: activation.verdict_digest },
+    })).toLowerCase() as Hex;
+
+    expect(activation.verdict_digest).not.toBe(raw.activation.verdict_digest);
+    const independentlyDerivedRelease = await computeWorkloadRecipientReleaseCommitment(activation);
+    expect(independentlyDerivedRelease).toBe(raw.recipient.recipient_release_commitment);
+    const stableBytes = new TextEncoder().encode(
+      "dnai-wikigen/compute-workload-recipient-activation/v4\0" + canonicalAsciiJson({
+        schema: "dnai.compute.workload-recipient-activation.v4",
+        recipient_release_commitment: independentlyDerivedRelease,
+      }),
+    );
+    const expected = `sha256:${bytesHex(new Uint8Array(await crypto.subtle.digest("SHA-256", stableBytes)))}`;
+    expect(await computeWorkloadActivationCommitment(activation)).toBe(expected);
+    expect(expected).toBe(raw.recipient.activation_commitment);
+    await expect(authenticateComputeWorkloadEncryptionContract(refreshed, trust, NOW + 1)).resolves.toBeDefined();
+
+    // The hash helper independently projects identity: a self-advertised hash
+    // cannot become authority even when both public hash aliases are changed.
+    activation.recipient_release_commitment = `sha256:${"ee".repeat(32)}`;
+    refreshed.recipient.recipient_release_commitment = activation.recipient_release_commitment;
+    expect(await computeWorkloadActivationCommitment(activation)).toBe(expected);
+    await expect(authenticateComputeWorkloadEncryptionContract(refreshed, trust, NOW + 1)).rejects.toThrow(/release policy/i);
+  });
+
+  it("rejects revoked fresh proof even though its stable activation binding is unchanged", async () => {
+    const { raw, trust } = await fixture();
+    await expect(authenticateComputeWorkloadEncryptionContract(raw, {
+      ...trust, revokedQuoteHashes: [raw.activation.quote_hash],
+    }, NOW)).rejects.toThrow(/release policy/i);
+    expect(await computeWorkloadActivationCommitment(raw.activation)).toBe(raw.recipient.activation_commitment);
+  });
+
+  it("binds every recipient release, key, ceremony epoch, and policy authority in the v4 commitment", async () => {
+    const { raw, trust } = await fixture();
+    const replacements = {
+      cvm_id: "changed-main-runtime-cvm",
+      deployment_intent_sha256: `sha256:${"91".repeat(32)}`,
+      release_authority_sha256: `sha256:${"92".repeat(32)}`,
+      ceremony_nonce: `0x${"93".repeat(32)}`,
+      measurement_policy_set_sha256: `sha256:${"94".repeat(32)}`,
+      measurement_policy_sha256: `sha256:${"95".repeat(32)}`,
+      main_runtime_evidence_sha256: `sha256:${"96".repeat(32)}`,
+      recipient_key_id: `sha256:${"97".repeat(32)}`,
+      report_data: `0x${"98".repeat(32)}`,
+      compose_hash: `0x${"99".repeat(32)}`,
+      app_id: "9a".repeat(20),
+      os_image_hash: "9b".repeat(32),
+      release_policy_hash: `0x${"9c".repeat(32)}`,
+      verifier_address: `0x${"9d".repeat(20)}`,
+    };
+    for (const [field, value] of Object.entries(replacements)) {
+      const changed = structuredClone(raw);
+      Object.assign(changed.activation, { [field]: value });
+      changed.activation.recipient_release_commitment = await computeWorkloadRecipientReleaseCommitment(changed.activation);
+      changed.recipient.recipient_release_commitment = changed.activation.recipient_release_commitment;
+      changed.recipient.activation_commitment = await computeWorkloadActivationCommitment(changed.activation);
+      expect(changed.recipient.activation_commitment, field).not.toBe(raw.recipient.activation_commitment);
+      await expect(authenticateComputeWorkloadEncryptionContract(changed, trust, NOW), field).rejects.toThrow(/release policy/i);
+    }
+    for (const [field, value] of Object.entries({
+      encryption_public_key: "ad".repeat(32),
+      compute_vault_runtime_code_hash: `0x${"ae".repeat(32)}`,
+      fresh_contract_deployment_receipt_sha256: `0x${"af".repeat(32)}`,
+    })) {
+      const changed = structuredClone(raw);
+      Object.assign(changed.activation.recipient_attestation, { [field]: value });
+      expect(await computeWorkloadActivationCommitment(changed.activation), field).not.toBe(raw.recipient.activation_commitment);
+      await expect(authenticateComputeWorkloadEncryptionContract(changed, trust, NOW), field).rejects.toThrow(/recipient|release policy/i);
     }
   });
 

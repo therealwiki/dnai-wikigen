@@ -6,13 +6,13 @@ import {
 } from "./canonical-authority-graph.mjs";
 
 export const FRONTEND_BUILD_CANDIDATE_SCHEMA =
-  "dnai.frontend-build-candidate.v3";
+  "dnai.frontend-build-candidate.v4";
 export const FRONTEND_BUILD_CANDIDATE_STATUS =
   "pre_live_activation_candidate";
 export const FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS =
   "pre_live_activation_candidate_not_deploy_authority";
 export const FRONTEND_BUILD_CANDIDATE_DOMAIN =
-  "dnai-wikigen/frontend-build-candidate/v3\0";
+  "dnai-wikigen/frontend-build-candidate/v4\0";
 
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -53,6 +53,7 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     "ceremony_authorization_sha256", "chain_id",
     "compute_workload_activation_observation_sha256",
     "deployment_intent_sha256", "frontend_build_sha256",
+    "post_measurement_activation_execution_receipt_sha256",
     "raw_secret_egress", "release_env_sha256", "release_inputs_sha256",
     "release_sha", "reviewer_authority_genesis_acceptance_sha256",
     "royalty_release_history_receipt_sha256",
@@ -96,6 +97,10 @@ export function normalizeFrontendBuildCandidateReceipt(value) {
     royalty_release_history_receipt_sha256: sha256(
       parsed.royalty_release_history_receipt_sha256,
       "frontend build Royalty H receipt digest",
+    ),
+    post_measurement_activation_execution_receipt_sha256: sha256(
+      parsed.post_measurement_activation_execution_receipt_sha256,
+      "frontend build post-measurement activation execution receipt digest",
     ),
     compute_workload_activation_observation_sha256: sha256(
       parsed.compute_workload_activation_observation_sha256,

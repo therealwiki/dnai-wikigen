@@ -1980,8 +1980,26 @@ class ReleaseComposeTest(unittest.TestCase):
                 + completed.stderr.decode("utf-8", errors="replace"),
             )
             launch = json.loads(launch_path.read_text(encoding="utf-8"))
-            self.assertEqual(launch["schema"], "dnai.cvm-launch-intent-core.v3")
+            self.assertEqual(launch["schema"], "dnai.cvm-launch-intent-core.v4")
             self.assertEqual(len(launch["descriptors"]), 7)
+            wire_semantics = launch["compose_hash_authority"]["compose_hash_semantics"]
+            self.assertEqual(wire_semantics["sdk_version"], "0.4.0")
+            self.assertEqual(
+                wire_semantics["runtime_hash_input"],
+                "exact_post_transform_compose_file",
+            )
+            self.assertIs(
+                wire_semantics["authenticated_staging_server_hash_equality_required"],
+                True,
+            )
+            for descriptor in launch["descriptors"]:
+                candidate = descriptor["app_compose_candidate"]
+                self.assertRegex(candidate["expected_compose_hash"], r"^[0-9a-f]{64}$")
+                self.assertRegex(candidate["pre_transform_compose_hash"], r"^[0-9a-f]{64}$")
+                self.assertNotEqual(
+                    candidate["expected_compose_hash"],
+                    candidate["pre_transform_compose_hash"],
+                )
             self.assertTrue(receipt_path.is_file())
 
     def test_rendered_topology_is_accepted_by_activation_preflight(self):

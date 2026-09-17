@@ -26,6 +26,7 @@ import {
   PHALA_COMPATIBILITY_RECEIPT_SCHEMA,
   PHALA_PRODUCTION_TARGET_AUTHORITY_SCHEMA,
   PHALA_SDK_WIRE_TRANSFORM_STAGING_RECEIPT_SCHEMA,
+  assertPhalaCompatibilityActiveBilling,
   assertSecretFreePhalaAuthorityArtifact,
   normalizePhalaCompatibilityReceipt,
   normalizePhalaProductionTargetAuthority,
@@ -165,17 +166,23 @@ export function createPhalaProductionTargetReviewInput({
   cvmLaunchIntentSha256,
   reviewEnvelopeSha256,
   reviewEvidenceSha256,
+  kmsContractId,
+  kmsCaPubkey,
   kmsSignerK256,
   kmsSignerProvenanceSha256,
   kmsSignerValidFrom,
   kmsSignerValidUntil,
 } = {}) {
   const compatibility = normalizePhalaCompatibilityReceipt(compatibilityReceipt);
+  assertPhalaCompatibilityActiveBilling(compatibility);
   if (typeof releaseSha !== "string" || !SHA40.test(releaseSha)) {
     throw new Error("target input release SHA is invalid");
   }
-  if (typeof kmsSignerK256 !== "string" || !COMPRESSED_K256.test(kmsSignerK256)) {
-    throw new Error("target input KMS signer is not a compressed k256 key");
+  if (typeof kmsSignerK256 !== "string" || !COMPRESSED_K256.test(kmsSignerK256)
+    || kmsSignerK256 !== compatibility.kms.contract.k256_pubkey
+    || kmsContractId !== compatibility.kms.contract.id
+    || kmsCaPubkey !== compatibility.kms.contract.ca_pubkey) {
+    throw new Error("target input requires independently reviewed exact KMS contract, CA key, and k256 signer");
   }
   const validFrom = exactTimestamp(kmsSignerValidFrom, "KMS signer valid_from");
   const validUntil = exactTimestamp(kmsSignerValidUntil, "KMS signer valid_until");
@@ -204,7 +211,6 @@ export function createPhalaProductionTargetReviewInput({
     sdk_identity: projection.sdk_identity,
     kms: {
       ...structuredClone(compatibility.kms),
-      catalog_match_count: undefined,
       env_encrypt_signer_k256: kmsSignerK256,
       signer_provenance_sha256: exactSha256(
         kmsSignerProvenanceSha256,
@@ -217,7 +223,6 @@ export function createPhalaProductionTargetReviewInput({
     resource_targets: projection.resource_targets,
     app_compose_profiles: projection.app_compose_profiles,
   };
-  delete value.kms.catalog_match_count;
   return normalizePhalaProductionTargetReviewInput(value, {
     compatibilityReceipt: compatibility,
   });
@@ -227,6 +232,7 @@ export function normalizePhalaProductionTargetReviewInput(value, {
   compatibilityReceipt,
 } = {}) {
   const compatibility = normalizePhalaCompatibilityReceipt(compatibilityReceipt);
+  assertPhalaCompatibilityActiveBilling(compatibility);
   const parsed = exactRecord(value, TARGET_INPUT_FIELDS, "Phala target review input");
   if (typeof parsed.release_sha !== "string" || !SHA40.test(parsed.release_sha)
     || parsed.compatibility_receipt_sha256
@@ -247,19 +253,20 @@ export function normalizePhalaProductionTargetReviewInput(value, {
     }
   }
   const kms = exactRecord(parsed.kms, [
-    "id", "slug", "url", "version", "chain_id", "kms_contract_address",
-    "gateway_app_id", "env_encrypt_signer_k256", "signer_provenance_sha256",
+    "contract", "replicas", "eligible_placements", "gateways",
+    "env_encrypt_signer_k256", "signer_provenance_sha256",
     "valid_from", "valid_until",
   ], "Phala target review input KMS");
   for (const field of [
-    "id", "slug", "url", "version", "chain_id", "kms_contract_address", "gateway_app_id",
+    "contract", "replicas", "eligible_placements", "gateways",
   ]) {
-    if (kms[field] !== compatibility.kms[field]) {
+    if (JSON.stringify(sorted(kms[field])) !== JSON.stringify(sorted(compatibility.kms[field]))) {
       throw new Error("Phala target review input KMS catalog binding drifted");
     }
   }
-  if (!COMPRESSED_K256.test(kms.env_encrypt_signer_k256)) {
-    throw new Error("Phala target review input KMS signer is invalid");
+  if (!COMPRESSED_K256.test(kms.env_encrypt_signer_k256)
+    || kms.env_encrypt_signer_k256 !== compatibility.kms.contract.k256_pubkey) {
+    throw new Error("Phala target review input KMS signer must equal the authenticated contract k256 key");
   }
   exactSha256(kms.signer_provenance_sha256, "target review input signer provenance");
   const validFrom = exactTimestamp(kms.valid_from, "target review input signer valid_from");
@@ -320,7 +327,7 @@ export async function capturePhalaSdkWireTransformStagingReceipt({
         activeEnvironmentKeys: material.allowed_environment_keys,
         appId: reservations[index].app_id,
         nonce: reservations[index].nonce,
-        kmsId: target.kms.id,
+        kmsContractId: target.kms.contract.id,
       }),
     };
   });

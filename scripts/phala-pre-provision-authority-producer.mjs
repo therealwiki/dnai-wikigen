@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { normalizePhalaKmsContract } from "./phala-contract-kms-core.mjs";
+import { assertCanonicalPlainDataGraph } from "./canonical-authority-graph.mjs";
 
 import {
   canonicalCvmLaunchIntentCoreArtifactText,
@@ -17,7 +19,7 @@ import {
 import {
   createFreshCvmDescriptorRuntimeAuthority,
   readFreshCvmDescriptorRuntimeMaterials,
-} from "./cvm-descriptor-runtime-authority-v2.mjs";
+} from "./cvm-descriptor-runtime-authority-v3.mjs";
 import {
   validateCanonicalGeneratedCvmDescriptorSet,
 } from "./cvm-release-descriptor-set-v3.mjs";
@@ -142,6 +144,7 @@ export const PHALA_PRE_PROVISION_AUTHORITY_PRODUCER_USAGE = `Usage:
     --out /absolute/private/phala-compatibility-receipt.json
 
   node scripts/phala-pre-provision-authority-producer.mjs init-kms-signer-provenance \\
+    --kms-contract-id kc_REVIEWED --ca-pubkey DER_SPKI_HEX \\
     --env-encrypt-signer-k256 0x02... \\
     --valid-from UTC_SECOND --valid-until UTC_SECOND \\
     --out /absolute/private/kms-signer-provenance.json
@@ -246,7 +249,8 @@ const BOOTSTRAP_SOURCE_FLAGS = Object.freeze([
 const COMMAND_FLAGS = Object.freeze({
   "observe-compatibility": ["--out"],
   "init-kms-signer-provenance": [
-    "--env-encrypt-signer-k256", "--valid-from", "--valid-until", "--out",
+    "--kms-contract-id", "--ca-pubkey", "--env-encrypt-signer-k256",
+    "--valid-from", "--valid-until", "--out",
   ],
   "init-target-input": [
     "--compatibility", ...TARGET_SOURCE_FLAGS, "--out",
@@ -476,7 +480,8 @@ export function readValidatedTargetReviewDependencies(values) {
 }
 
 export function normalizeKmsSignerProvenance(value) {
-  const keys = ["env_encrypt_signer_k256", "valid_from", "valid_until"];
+  assertCanonicalPlainDataGraph(value, { label: "KMS signer provenance" });
+  const keys = ["kms_contract_id", "ca_pubkey", "env_encrypt_signer_k256", "valid_from", "valid_until"];
   if (!value || typeof value !== "object" || Array.isArray(value)
     || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(keys.sort())
     || typeof value.env_encrypt_signer_k256 !== "string"
@@ -493,8 +498,24 @@ export function normalizeKmsSignerProvenance(value) {
       !== value.valid_until
     || Date.parse(value.valid_until) <= Date.parse(value.valid_from)) {
     throw new Error(
-      "KMS signer provenance must contain only the reviewed public key and canonical validity interval",
+      "KMS signer provenance must contain only the reviewed contract identity, public keys, and canonical validity interval",
     );
+  }
+  // Reuse encoding validation only: this does not establish that the operator's
+  // supplied public roots are authoritative. Fresh compatibility must match them.
+  const keysOnly = normalizePhalaKmsContract({
+    id: value.kms_contract_id,
+    slug: "phala",
+    label: null,
+    contract_address: "phala",
+    chain_id: 0,
+    k256_pubkey: value.env_encrypt_signer_k256,
+    ca_pubkey: value.ca_pubkey,
+    node_count: 1,
+  });
+  if (keysOnly.ca_pubkey !== value.ca_pubkey
+    || keysOnly.k256_pubkey !== value.env_encrypt_signer_k256) {
+    throw new Error("KMS signer provenance public keys must use canonical encodings");
   }
   assertSecretFreePhalaAuthorityArtifact(value, "KMS signer provenance");
   return structuredClone(value);
@@ -523,6 +544,8 @@ export function recomputePhalaProductionTargetReviewInput(values, compatibility)
     cvmLaunchIntentSha256: reviewed.launch_sha256,
     reviewEnvelopeSha256: reviewed.review_envelope_sha256,
     reviewEvidenceSha256: reviewed.review_evidence_sha256,
+    kmsContractId: signer.value.kms_contract_id,
+    kmsCaPubkey: signer.value.ca_pubkey,
     kmsSignerK256: signer.value.env_encrypt_signer_k256,
     kmsSignerProvenanceSha256: signer.sha256,
     kmsSignerValidFrom: signer.value.valid_from,
@@ -859,6 +882,8 @@ async function execute(parsed) {
     text = canonicalPhalaCompatibilityReceiptText(artifact);
   } else if (parsed.command === "init-kms-signer-provenance") {
     artifact = normalizeKmsSignerProvenance({
+      kms_contract_id: values["--kms-contract-id"],
+      ca_pubkey: values["--ca-pubkey"],
       env_encrypt_signer_k256: values["--env-encrypt-signer-k256"],
       valid_from: values["--valid-from"],
       valid_until: values["--valid-until"],

@@ -4,9 +4,22 @@
     "esbuild_version": "0.28.1",
     "format": "esm",
     "platform": "node",
+    "recipe": {
+      "output_status": "local_clean_install_rebuild_verified_not_independent_cross_host_build_attestation",
+      "package_lock_path": "scripts/vendor/phala-sdk-capsule-build/package-lock.json",
+      "package_lock_sha256": "sha256:2435ff5099df0aede0360898591cff8fee5b28ee00cf9d8c93ecf16a98a2c460",
+      "package_manifest_path": "scripts/vendor/phala-sdk-capsule-build/package.json",
+      "package_manifest_sha256": "sha256:c7dd4b8ff3f3eca39bee81403a0ba70abf9292bf7660eafcd405352abf84550d",
+      "path": "scripts/vendor/phala-sdk-capsule-build/build-candidate.mjs",
+      "sha256": "sha256:df27060ce80e0fc9f8aa01b4e36573ced276bb74ac618590a59e9b9de4a2eed5"
+    },
     "resolved_input_graph_count": 1280,
-    "review_build_metafile_input_aggregate_sha256": "sha256:95c6a67ae36aa99b57663fcab9e9b5722ae9fb7e4eca190d948c8ad14a9fd59a",
     "review_build_metafile_status": "review_working_record_not_independently_reproducible_authority_or_runtime_closure_pin",
+    "review_build_record": {
+      "path": "scripts/vendor/phala-sdk-capsule-build/review-build-record.json",
+      "sha256": "sha256:e9d948f747c13204acd1d7ebfbf0979a7534b261b6df04438f559beddef78496",
+      "truth_status": "local_rebuild_observation_not_runtime_closure_or_cross_host_build_authority"
+    },
     "stubbed_sdk_owned_io_imports": [
       "debug",
       "mitt",
@@ -20,7 +33,7 @@
       "crypto",
       "node:crypto"
     ],
-    "byte_length": 454408,
+    "byte_length": 454936,
     "dynamic_imports_allowed": false,
     "exports": [
       "commitCvmProvision",
@@ -32,9 +45,13 @@
       "getCvmCreateResources",
       "getCvmInfo",
       "getCvmList",
+      "getKmsContract",
       "getKmsInfo",
       "getKmsList",
       "getOsImages",
+      "getWorkspace",
+      "listKmsContractNodes",
+      "listKmsContracts",
       "nextAppIds",
       "provisionCvm",
       "restartCvm",
@@ -43,21 +60,21 @@
       "verifyEnvEncryptPublicKeyLegacy"
     ],
     "format": "single_esm_data_url_module",
-    "path": "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
-    "sha256": "sha256:55249c4d189dea6aad95cdefd3e0310f4dfadbcc1f5d7e11ced1ddda5200d457"
+    "path": "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
+    "sha256": "sha256:05ea7afcbf02ff779fc85a50765a95d2007286ec0dc6f686ef2e2636d45f34c0"
   },
   "legal_notice": {
-    "byte_length": 15414,
+    "byte_length": 28135,
     "components": [
       "@noble/curves@1.9.7",
       "@noble/hashes@1.8.0",
-      "@phala/cloud@0.2.10",
+      "@phala/cloud@0.4.0",
       "@phala/dstack-sdk@0.5.8",
       "viem@2.55.4",
       "zod@3.25.76"
     ],
-    "path": "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
-    "sha256": "sha256:e0db15fc6e8e94df1c13d0cc483b57d6ad695c1506797da0d0bc4be4f60d0210"
+    "path": "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
+    "sha256": "sha256:47d8d6cae4719c8b6703d27e02ce507eaef1eba5c080c583e2a8367a132ed335"
   },
   "network_boundary": {
     "all_http_io_requires_injected_exact_request_client": true,
@@ -86,13 +103,18 @@
     "version": "v24.9.0"
   },
   "registry_evidence": {
+    "audit_inputs": {
+      "path": "scripts/vendor/npm/provenance/phala-cloud-0.4.0-dstack-0.5.8/file-manifest.json",
+      "sha256": "sha256:a297531e00a45cb6c8259c781797665c42c94a05247a1dc6c5b4164f6da8e2c0",
+      "truth_status": "reviewed_source_evidence_not_runtime_reverification"
+    },
     "path": "deployments/phala-sdk-upstream-registry-evidence.json",
-    "sha256": "sha256:847b1831fd971204e45bb2da03b00e3761d78d2495f9ff8ae83365c94a7a10c2",
+    "sha256": "sha256:3dd3e06788205f3042bb51176e526c040e3314bcb635c8dd5b3119d403a147f2",
     "truth_status": "fresh_public_npm_registry_https_bytes_signature_and_attestation_verification_not_future_revocation_or_reproducible_bundle_build_authority"
   },
   "request_policy": {
-    "action_count": 14,
-    "sha256": "sha256:c2fe6c0baf65972bb1b6326a535123cb187bc36a0680b5183d1568a89879c495"
+    "action_count": 18,
+    "sha256": "sha256:9a5ab5cd0e64c9a47b5d87ebae7bd0a16a028d1f1b55b3500734b68b657b380f"
   },
   "schema": "dnai.phala-sdk-runtime-capsule-authority.v1",
   "source_packages": {
@@ -109,14 +131,14 @@
       "verify_module_sha256": "sha256:da23da4169d0ff2e7281a25be7fe151c829a17899ad53f8cc7b11076775eeed2"
     },
     "phala_cloud": {
-      "module_sha256": "sha256:ad67b0bda91dd37566dac18030aac8c267e5b88b931f12e37614e537b465729f",
-      "npm_dist_integrity_sha512": "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
-      "npm_dist_shasum": "ed23f01ef54220b996092301283b5a2b7790f4cf",
-      "package_manifest_sha256": "sha256:0ac15a2c4f80b3ba8ff6c7f45cdfbcdff22075967458ebd4af988be85ef804c7",
+      "module_sha256": "sha256:84573a8a86ace5da9264ef9e5c619bb2799da5ea0f12cdae5025d1fd5b4c7689",
+      "npm_dist_integrity_sha512": "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
+      "npm_dist_shasum": "03edbbb7b9955498b11146377c6e47d99000da8b",
+      "package_manifest_sha256": "sha256:228716a4cd3c1ba0c20dfd64be358de71517874a27917dae3acfb7ab472bef14",
       "package_name": "@phala/cloud",
-      "package_version": "0.2.10",
-      "tarball_path": "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
-      "tarball_sha256": "sha256:5e7b91e84bc0aa4a3273c205c96103a7cdbdcb577ce0e0e740e54789e8e4f1b7"
+      "package_version": "0.4.0",
+      "tarball_path": "scripts/vendor/npm/phala-cloud-0.4.0.tgz",
+      "tarball_sha256": "sha256:bc5a14bc10a0e8aff7b57ff96c64ab8388f5892052e6adc11a09eb8a59bc976e"
     }
   },
   "truth_status": "reviewed_static_data_url_sdk_runtime_capsule_exact_bytes_and_source_tarball_integrity_not_node_binary_provenance_network_or_launch_authority"

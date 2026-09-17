@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tinker_delegate import compute_tinker_provider as provider
 from tinker_delegate.compute_tinker_provider import (
     ComputeProviderStatusStore,
     TinkerComputeProviderAdapter,
@@ -14,6 +15,7 @@ from tinker_delegate.compute_tinker_provider import (
     _canonical_data_file_path,
     compute_provider_public_capability,
     compute_provider_static_capability,
+    validate_compute_provider_public_release,
 )
 from tinker_delegate.compute_runtime import (
     ComputeDispatchIntent,
@@ -78,6 +80,151 @@ class _RecordingIngress:
 
     def release_after_usage_checkpoint(self, workload_id, **kwargs):
         self.release_calls.append((workload_id, kwargs))
+
+
+class ComputeProviderPublicReleasePinFormatTest(unittest.TestCase):
+    """Unit format checks with explicit local platform/SDK prerequisites only.
+
+    These fixtures are not attestation evidence or integrated provider
+    activation. The real release validator, environment policy, path checks,
+    and pin checks run unchanged; no worker secrets or provider API are used.
+    """
+
+    @contextmanager
+    def _local_prerequisites(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "TINKER_TELEMETRY": "0",
+                    "HF_HUB_OFFLINE": "1",
+                    "TRANSFORMERS_OFFLINE": "1",
+                },
+                clear=True,
+            ),
+            patch.object(provider.dstack_utils, "is_dstack_enabled", return_value=True) as dstack,
+            patch.object(provider.dstack_utils, "is_dstack_simulator", return_value=False) as simulator,
+            patch.object(
+                provider.importlib.metadata,
+                "version",
+                return_value=provider.PINNED_TINKER_SDK_VERSION,
+            ) as sdk_version,
+            patch.object(
+                provider,
+                "installed_tinker_sdk_source_sha256",
+                return_value=provider.PINNED_TINKER_SDK_SOURCE_SHA256,
+            ) as sdk_source,
+        ):
+            yield SimpleNamespace(
+                dstack=dstack,
+                simulator=simulator,
+                sdk_version=sdk_version,
+                sdk_source=sdk_source,
+            )
+
+    @staticmethod
+    def _settings(**overrides):
+        values = {
+            "compute_provider_execution_enabled": True,
+            "compute_provider_adapter_id": provider.PROVIDER_ADAPTER_ID,
+            "compute_provider_sdk_version": provider.PINNED_TINKER_SDK_VERSION,
+            "compute_provider_sdk_source_sha256": provider.PINNED_TINKER_SDK_SOURCE_SHA256,
+            "compute_provider_request_contract_sha256": provider.PINNED_TINKER_REQUEST_CONTRACT_SHA256,
+            "compute_provider_base_url_sha256": provider.PINNED_TINKER_BASE_URL_SHA256,
+            "compute_provider_tokenizer_path": PINNED_QWEN3_TOKENIZER_PATH,
+            "compute_provider_tokenizer_release_sha256": PINNED_QWEN3_TOKENIZER_RELEASE_SHA256,
+            "compute_provider_status_path": "/data/provider-status.json",
+            "api_key_store_path": "/data/tinker-api-key.enc",
+            "client_config_store_path": "/data/tinker-client-config.enc",
+            "compute_workload_ingress_store_path": "/data/workloads",
+            "compute_dispatch_store_path": "/data/compute-dispatch.json",
+            "compute_vault_address": "0x" + "11" * 20,
+            "compute_vault_runtime_code_hash": "0x" + "22" * 32,
+            "compute_vault_compose_hash": "0x" + "33" * 32,
+            "compute_metering_policy_set_hash": "0x" + "44" * 32,
+            "compute_workload_fresh_deployment_receipt_sha256": "0x" + "a5" * 32,
+            "compute_workload_qvl_release_policy_hash": "0x" + "b6" * 32,
+            "compute_workload_deployment_intent_sha256": "sha256:" + "71" * 32,
+            "compute_workload_release_authority_sha256": "sha256:" + "72" * 32,
+            "compute_workload_measurement_policy_set_sha256": "sha256:" + "73" * 32,
+            "compute_workload_qvl_measurement_policy_sha256": "sha256:" + "74" * 32,
+            "compute_workload_main_runtime_evidence_sha256": "sha256:" + "75" * 32,
+            "compute_workload_qvl_url": "https://compute-qvl.example/verify",
+            "compute_workload_qvl_verifier_address": "0x" + "88" * 20,
+            "compute_workload_cvm_id": "app_compute_format_fixture",
+            "compute_workload_ceremony_nonce": "0x" + "99" * 32,
+        }
+        values.update(overrides)
+        return Settings(**values)
+
+    def test_canonical_bytes32_receipt_and_qvl_policy_pass_public_pin_validation(self):
+        with self._local_prerequisites():
+            settings = self._settings()
+            binding = validate_compute_provider_public_release(settings)
+            capability = compute_provider_static_capability(settings)
+
+        self.assertEqual(binding["vault_address"], settings.compute_vault_address)
+        self.assertEqual(
+            binding["workload_release_authority_sha256"],
+            settings.compute_workload_release_authority_sha256,
+        )
+        self.assertTrue(capability["release_configured"])
+        self.assertFalse(capability["provider_dispatch"])
+        self.assertEqual(capability["reason"], "fresh_provider_runtime_heartbeat_required")
+
+    def test_bytes32_pins_reject_sha256_prefix_zero_and_noncanonical_values(self):
+        for field in (
+            "compute_workload_fresh_deployment_receipt_sha256",
+            "compute_workload_qvl_release_policy_hash",
+        ):
+            for value in (
+                "sha256:" + "ab" * 32,
+                "0x" + "00" * 32,
+                "ab" * 32,
+                "0x" + "AB" * 32,
+                "0X" + "ab" * 32,
+                "0x" + "ab" * 31,
+                "0x" + "ab" * 33,
+                " 0x" + "ab" * 32,
+                "0x" + "ab" * 32 + "\n",
+                "",
+            ):
+                with self.subTest(field=field, value=value), self._local_prerequisites():
+                    with self.assertRaisesRegex(
+                        TinkerProviderReleaseError, "workload release pin is invalid"
+                    ):
+                        validate_compute_provider_public_release(
+                            self._settings(**{field: value})
+                        )
+
+    def test_other_lineage_pins_remain_strict_nonzero_sha256_values(self):
+        for field in (
+            "compute_workload_deployment_intent_sha256",
+            "compute_workload_release_authority_sha256",
+            "compute_workload_measurement_policy_set_sha256",
+            "compute_workload_qvl_measurement_policy_sha256",
+            "compute_workload_main_runtime_evidence_sha256",
+        ):
+            for value in ("0x" + "ab" * 32, "sha256:" + "00" * 32):
+                with self.subTest(field=field, value=value), self._local_prerequisites():
+                    with self.assertRaisesRegex(
+                        TinkerProviderReleaseError, "workload release pin is invalid"
+                    ):
+                        validate_compute_provider_public_release(
+                            self._settings(**{field: value})
+                        )
+
+    def test_valid_pin_formats_do_not_waive_real_cvm_or_sdk_guards(self):
+        for prerequisite, value, error in (
+            ("dstack", False, "real dstack CVM is required"),
+            ("simulator", True, "real dstack CVM is required"),
+            ("sdk_version", "0.0.0", "Tinker SDK version drift"),
+            ("sdk_source", "sha256:" + "ab" * 32, "Tinker SDK source drift"),
+        ):
+            with self.subTest(prerequisite=prerequisite), self._local_prerequisites() as fixtures:
+                getattr(fixtures, prerequisite).return_value = value
+                with self.assertRaisesRegex(TinkerProviderReleaseError, error):
+                    validate_compute_provider_public_release(self._settings())
 
 
 class ComputeTinkerProviderCapabilityTest(unittest.TestCase):

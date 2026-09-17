@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
+import {
+  PHALA_APP_COMPOSE_PRE_TRANSFORM_KEYS,
+  PHALA_APP_COMPOSE_WIRE_HASH_SEMANTICS,
+} from "./phala-app-compose-wire-core.mjs";
 
 import {
   PHALA_PRODUCTION_EXECUTION_POLICY,
 } from "./phala-production-execution-policy.mjs";
 
-export const CVM_LAUNCH_INTENT_CORE_SCHEMA = "dnai.cvm-launch-intent-core.v3";
+export const CVM_LAUNCH_INTENT_CORE_SCHEMA = "dnai.cvm-launch-intent-core.v4";
 export const CVM_LAUNCH_INTENT_RECEIPT_SCHEMA =
-  "dnai.cvm-launch-intent-validation-receipt.v3";
+  "dnai.cvm-launch-intent-validation-receipt.v4";
 export const CVM_LAUNCH_INTENT_DOMAIN =
-  "dnai-wikigen/cvm-launch-intent-core/v3\0";
+  "dnai-wikigen/cvm-launch-intent-core/v4\0";
 export const CVM_LAUNCH_ENVIRONMENT_KEYS_DOMAIN =
   "dnai-wikigen/cvm-launch-intent-environment-keys/v1\0";
 export const CVM_LAUNCH_OS_IMAGE_CATALOG_ENTRY_DOMAIN =
@@ -185,7 +189,7 @@ export const PHALA_OS_IMAGE_CATALOG_ENTRY = Object.freeze({
 
 export const PHALA_CONTROL_PLANE_AUTHORITY = Object.freeze({
   api_origin: "https://cloud-api.phala.network/api/v1",
-  api_version: "2026-01-21",
+  api_version: "2026-06-23",
   redirects_allowed: false,
   origin_drift_allowed: false,
   phala_cloud_api_prefix_environment_override_allowed: false,
@@ -224,6 +228,7 @@ export const PHALA_DSTACK_COMPOSE_HASH_AUTHORITY = Object.freeze({
     "recursive_lexical_key_sort_compact_json_utf8_sha256_bare_lowercase_hex",
   output_pattern: "^[0-9a-f]{64}$",
   descriptor_bytes_semantics: "exact_stable_read_raw_descriptor_bytes",
+  compose_hash_semantics: PHALA_APP_COMPOSE_WIRE_HASH_SEMANTICS,
   prepare_response_policy:
     "all_seven_prepare_compose_hashes_must_equal_their_exact_local_expected_hash_before_first_commit",
   staging_server_semantics_evidence_status: "required_not_implemented",
@@ -233,10 +238,10 @@ export const PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY = Object.freeze({
   status: "reviewed_transform_and_staging_capture_required_not_present",
   package: Object.freeze({
     name: "@phala/cloud",
-    version: "0.2.10",
+    version: "0.4.0",
     registry_origin: "https://registry.npmjs.org",
     npm_dist_integrity_sha512:
-      "sha512-eQXJxbBlJ8xA4e+MmB3AZd9jgdbO3tFh+qu7KL6CS5Ta64LNKlrV3vdke3oUvB22xbc/qqKQ6dIkJx5pTdY7gA==",
+      "sha512-Fp8C/dTXZgG/wcAGU1lOcShPciqd0dFwgDeLXZDUTG/uOcNMl+P4yOzS+KYR84GUI8+f68VcoMLAg/RInC2ygQ==",
     installed_integrity_source:
       "stable_nofollow_package_manifest_and_exact_dist_index_mjs_bytes",
     installed_manifest_sha256: null,
@@ -266,21 +271,7 @@ export const PHALA_CLOUD_SDK_WIRE_TRANSFORM_AUTHORITY = Object.freeze({
   ]),
 });
 
-export const PHALA_DSTACK_APP_COMPOSE_HASH_INPUT_KEYS = Object.freeze([
-  "name",
-  "manifest_version",
-  "runner",
-  "docker_compose_file",
-  "kms_enabled",
-  "gateway_enabled",
-  "secure_time",
-  "storage_fs",
-  "tproxy_enabled",
-  "public_logs",
-  "public_sysinfo",
-  "public_tcbinfo",
-  "allowed_envs",
-]);
+export const PHALA_DSTACK_APP_COMPOSE_HASH_INPUT_KEYS = PHALA_APP_COMPOSE_PRE_TRANSFORM_KEYS;
 
 export const PHALA_CVM_RESOURCE_TARGETS = Object.freeze(Object.fromEntries(
   CVM_LAUNCH_DOMAINS.map((domain) => [domain, Object.freeze({
@@ -301,14 +292,15 @@ export const PHALA_PROVISION_REQUEST_AUTHORITY = Object.freeze({
   request_extra_fields_allowed: false,
   listed: false,
   image: PHALA_OS_IMAGE_CATALOG_ENTRY.name,
-  kms_id: null,
+  kms: "PHALA",
+  kms_contract_id: null,
   key_provider_mode: "kms",
   compose_file_source: "descriptor.app_compose_candidate",
   name_source: "descriptor.app_compose_candidate.name",
   resource_source: "descriptor.launch_settings.cvm_resource_target",
   env_keys_source: "descriptor.exact_allowed_environment_keys",
   unresolved_fields: Object.freeze([
-    "kms_id",
+    "kms_contract_id",
     "nonce",
     "app_id",
     "exact_request_sha256",
@@ -874,6 +866,7 @@ function appComposeCandidateAuthority(domain, environment) {
     docker_compose_file_sha256: null,
     docker_compose_file_byte_length: null,
     expected_compose_hash: null,
+    pre_transform_compose_hash: null,
   };
 }
 
@@ -941,7 +934,7 @@ function launchSettings(domain) {
   return {
     platform: "phala_cloud",
     phala_cli_version: "v1.1.19+d2300dd",
-    phala_cloud_sdk_version: "0.2.10",
+    phala_cloud_sdk_version: "0.4.0",
     phala_os_image: PHALA_OS_IMAGE_CATALOG_ENTRY.name,
     phala_os_image_hash: PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
     phala_os_image_catalog_entry: { ...PHALA_OS_IMAGE_CATALOG_ENTRY },
@@ -1465,6 +1458,7 @@ function normalizedAppComposeCandidate(value, expected, descriptorSha256, label)
     "docker_compose_file_sha256",
     "docker_compose_file_byte_length",
     "expected_compose_hash",
+    "pre_transform_compose_hash",
   ], label);
   for (const key of [
     "authority_status",
@@ -1505,11 +1499,18 @@ function normalizedAppComposeCandidate(value, expected, descriptorSha256, label)
     || parsed.expected_compose_hash === "0".repeat(64)) {
     throw new Error(`${label}.expected_compose_hash must be nonzero bare lowercase SHA-256`);
   }
+  if (typeof parsed.pre_transform_compose_hash !== "string"
+    || !BARE_SHA256.test(parsed.pre_transform_compose_hash)
+    || parsed.pre_transform_compose_hash === "0".repeat(64)
+    || parsed.pre_transform_compose_hash === parsed.expected_compose_hash) {
+    throw new Error(`${label}.pre_transform_compose_hash must be a distinct nonzero audit hash`);
+  }
   return {
     ...structuredClone(expected),
     docker_compose_file_sha256: composeFileSha256,
     docker_compose_file_byte_length: parsed.docker_compose_file_byte_length,
     expected_compose_hash: parsed.expected_compose_hash,
+    pre_transform_compose_hash: parsed.pre_transform_compose_hash,
   };
 }
 
@@ -1737,6 +1738,11 @@ function sortedObject(value) {
   );
 }
 
+/**
+ * Exact pre-transform candidate/audit hash, retained for historical authority.
+ * Current runtime identity uses phalaAppComposeExpectedRuntimeHash from the
+ * shared wire projector and still requires authenticated staging equality.
+ */
 export function phalaDstackComposeHash(appCompose) {
   const parsed = exactRecord(
     appCompose,

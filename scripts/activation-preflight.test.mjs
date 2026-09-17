@@ -52,8 +52,8 @@ import {
   EXECUTION_POLICY_ANCHOR_TYPEHASH,
   EXECUTION_POLICY_DECISION_ANCHORED_EVENT,
   EXECUTION_POLICY_RELEASE_MARKER_RESOURCE_HASH,
-  CURRENT_FRONTEND_EXACT38_INPUT_FLAGS,
-  CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
+  CURRENT_FRONTEND_EXACT39_INPUT_FLAGS,
+  CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
   SEMANTIC_VALIDATOR_INPUT_FLAGS,
   assertReadOnlyInvocation,
   collectExecutionPolicyReleaseMarkerEvidence,
@@ -224,7 +224,7 @@ const semanticPathKey = (flag) => flag.slice(2).replace(
   /-([a-z])/g,
   (_match, letter) => letter.toUpperCase(),
 );
-function semanticPaths(directory = "/tmp/dnai-preflight-exact38") {
+function semanticPaths(directory = "/tmp/dnai-preflight-exact39") {
   return Object.fromEntries(SEMANTIC_VALIDATOR_INPUT_FLAGS.map((flag) => [
     semanticPathKey(flag),
     path.join(directory, `${flag.slice(2)}.json`),
@@ -3164,7 +3164,7 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   assert.doesNotThrow(() => assertReadOnlyInvocation("gh", ["auth", "status"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("phala", ["status"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("phala", [
-    "status", "--json", "--api-version", "2026-01-21",
+    "status", "--json", "--api-version", "2026-06-23",
   ]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("wrangler", ["whoami", "--json"]));
   assert.doesNotThrow(() => assertReadOnlyInvocation("cast", [
@@ -3216,6 +3216,9 @@ test("read-only command allowlist rejects deploy, broadcast, login, and keystore
   );
   assert.throws(() => assertReadOnlyInvocation("phala", ["deploy"]), /unsafe|allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", ["login"]), /unsafe|allowlist/);
+  assert.throws(() => assertReadOnlyInvocation("phala", [
+    "status", "--json", "--api-version", "2026-01-21",
+  ]), /allowlist/);
   assert.throws(() => assertReadOnlyInvocation("phala", [
     "status", "--json", "--api-version", "2025-10-28",
   ]), /allowlist/);
@@ -3391,7 +3394,7 @@ test("tool presence and Phala identity are bounded without executing a hanging C
 const phalaAuthenticationResponse = () => ({
   success: true,
   apiUrl: "https://cloud-api.phala.network/api/v1",
-  apiVersion: "2026-01-21",
+  apiVersion: "2026-06-23",
   username: "test-operator",
   team_name: "Test workspace",
   profile: "test-profile",
@@ -3412,7 +3415,7 @@ test("Phala CLI auth requires structured identity from the fixed control plane",
   );
   assert.equal(result, true);
   assert.equal(invocation.command, "phala");
-  assert.deepEqual(invocation.args, ["status", "--json", "--api-version", "2026-01-21"]);
+  assert.deepEqual(invocation.args, ["status", "--json", "--api-version", "2026-06-23"]);
   assert.equal(Number.isSafeInteger(invocation.options.timeout), true);
   assert.equal(invocation.options.timeout > 0 && invocation.options.timeout <= 60_000, true);
   assert.deepEqual(invocation.options.env, {
@@ -4419,8 +4422,8 @@ test("semantic release validation uses one exact check-only allowlisted invocati
   const paths = semanticPaths();
   const args = semanticValidatorArgs(paths);
   assert.doesNotThrow(() => assertReadOnlyInvocation(process.execPath, args));
-  assert.equal(CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS.length, 36);
-  assert.equal(CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.length, 38);
+  assert.equal(CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS.length, 37);
+  assert.equal(CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.length, 39);
   assert.equal(EXACT35_MODEL_A_INPUT_FLAGS.length, 35);
   assert.equal(EXACT37_MODEL_A_INPUT_FLAGS.length, 37);
   assert.equal(
@@ -4430,19 +4433,27 @@ test("semantic release validation uses one exact check-only allowlisted invocati
     false,
   );
   assert.equal(SEMANTIC_VALIDATOR_INPUT_FLAGS,
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS);
-  assert.equal(args.length, 78);
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS);
+  assert.equal(args.length, 80);
   assert.equal(
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.indexOf(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
       "--royalty-release-history-receipt",
     ),
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.indexOf(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
+      "--compute-workload-activation-observation",
+    ) - 2,
+  );
+  assert.equal(
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
+      "--post-measurement-activation-execution-receipt",
+    ),
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.indexOf(
       "--compute-workload-activation-observation",
     ) - 1,
   );
   assert.deepEqual(
-    CURRENT_FRONTEND_PRE_D_EXACT36_INPUT_FLAGS,
-    CURRENT_FRONTEND_EXACT38_INPUT_FLAGS.filter((flag) => ![
+    CURRENT_FRONTEND_PRE_D_EXACT37_INPUT_FLAGS,
+    CURRENT_FRONTEND_EXACT39_INPUT_FLAGS.filter((flag) => ![
       "--live-activation-authority",
       "--frontend-build-candidate-receipt",
     ].includes(flag)),

@@ -36,6 +36,7 @@ import {
   FRONTEND_BUILD_CANDIDATE_SCHEMA,
   FRONTEND_BUILD_CANDIDATE_STATUS,
   FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS,
+  normalizeFrontendBuildCandidateReceipt,
 } from "./frontend-build-candidate-core.mjs";
 import {
   royaltyReleasePolicyCommitment,
@@ -55,6 +56,7 @@ const LIVE_AUTHORITY_BINDING = Object.freeze({
   deploymentIntentSha256: `sha256:${"a1".repeat(32)}`,
   reviewerAuthorityGenesisAcceptanceSha256: `sha256:${"a2".repeat(32)}`,
   ceremonyAuthorizationSha256: `sha256:${"a3".repeat(32)}`,
+  postMeasurementActivationExecutionReceiptSha256: `sha256:${"aa".repeat(32)}`,
   computeWorkloadActivationObservationSha256: `sha256:${"a8".repeat(32)}`,
   computeWorkloadBrowserBindingSha256: `sha256:${"a9".repeat(32)}`,
   liveActivationAuthoritySha256: `sha256:${"a4".repeat(32)}`,
@@ -954,7 +956,7 @@ test("live immutable Git materialization has no working-tree fallback and fails 
   assert.equal(wranglerCalls, 0);
 });
 
-test("current O-derived D without signed C reaches neither build authority nor Wrangler", async () => {
+test("current standalone-activation-and-O-derived D without signed C reaches neither build authority nor Wrangler", async () => {
   const events = [];
   let wranglerCalls = 0;
   await assert.rejects(
@@ -963,6 +965,8 @@ test("current O-derived D without signed C reaches neither build authority nor W
       releaseArguments: [
         "--release",
         "/tmp/release.json",
+        "--post-measurement-activation-execution-receipt",
+        "/tmp/private-post-measurement-activation-execution-receipt.json",
         "--compute-workload-activation-observation",
         "/tmp/private-compute-workload-activation-observation.json",
       ],
@@ -980,7 +984,7 @@ test("current O-derived D without signed C reaches neither build authority nor W
       }),
       validateRelease: async () => {
         events.push("validate-live");
-        return {
+        return normalizeFrontendBuildCandidateReceipt({
           schema: FRONTEND_BUILD_CANDIDATE_SCHEMA,
           status: FRONTEND_BUILD_CANDIDATE_STATUS,
           truth_status: FRONTEND_BUILD_CANDIDATE_TRUTH_STATUS,
@@ -994,13 +998,19 @@ test("current O-derived D without signed C reaches neither build authority nor W
             LIVE_AUTHORITY_BINDING.ceremonyAuthorizationSha256,
           runtime_authority_dependency_sha256:
             LIVE_AUTHORITY_BINDING.runtimeAuthorityDependencySha256,
+          royalty_release_history_sha256:
+            LIVE_ENV.VITE_ROYALTY_RELEASE_HISTORY_SHA256,
+          royalty_release_history_receipt_sha256:
+            LIVE_ENV.VITE_ROYALTY_RELEASE_HISTORY_RECEIPT_SHA256,
+          post_measurement_activation_execution_receipt_sha256:
+            LIVE_AUTHORITY_BINDING.postMeasurementActivationExecutionReceiptSha256,
           compute_workload_activation_observation_sha256:
             LIVE_AUTHORITY_BINDING.computeWorkloadActivationObservationSha256,
           frontend_build_sha256: LIVE_AUTHORITY_BINDING.frontendBuildSha256,
           release_inputs_sha256: LIVE_AUTHORITY_BINDING.releaseInputsSha256,
           release_env_sha256: `sha256:${"c1".repeat(32)}`,
           raw_secret_egress: false,
-        };
+        });
       },
       build: async () => { events.push("build"); },
       auditBuild: async () => { events.push("audit-build"); },

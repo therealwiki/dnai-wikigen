@@ -381,8 +381,20 @@ Compute to one post-measurement activation plan and signed Stage B.
 The source-built production activation coordinator keeps the completed
 seven-CVM evidence, reviewed final authority, deferred environment authority,
 plan, and signer exchange in one process; public JSON receipts cannot be loaded
-elsewhere as mutation authority. It patches the encrypted environment, restarts
-the exact main CVM, records an authenticated Phala attestation observation,
+elsewhere as mutation authority. Its current authenticated SDK sequence is
+exactly nine calls: account, workspace, pre-PATCH CVM info, first environment
+key, immediate key refetch, encrypted-environment PATCH, restart, post-restart
+CVM info, and attestation. Active workspace billing and the exact authenticated
+account/workspace are required before mutation. The pre-PATCH readback must
+reverify the original prepared contract-KMS binding, environment public key,
+placement, measurements, and privacy posture before either key lookup. The
+current durable journal/state/session use v3, and the execution receipt uses
+v4; historical seven-call journal v2 and receipt v3 are not relabeled as
+current evidence. Pending mutation attempts remain durable and require
+reconciliation, never automatic replay.
+
+The coordinator patches the encrypted environment, restarts the exact main
+CVM, records an authenticated Phala attestation observation,
 and verifies the release-bound Arena worker-capability v2 presence proof. Only
 then can it consume the lease-valid, appraisal-bound Compute-workload recipient
 activation. The underlying independent QVL verdict uses the active v4 schema
@@ -391,13 +403,34 @@ challenge-v2 expired (challenge lifetime at most 120 seconds), then began the
 separately reviewed exact 900-second activation-evidence lease. That lease may
 outlive the consumed challenge and never renews challenge freshness. The
 post-restart outer activation is schema
-`dnai.compute.workload-recipient-activation.v3`, carries an explicit recipient
+`dnai.compute.workload-recipient-activation.v4`, carries an explicit recipient
 evidence lease of at most 300 seconds, and preserves the stable
 `dnai.compute.workload-recipient-release.v2` commitment. Its authenticated and
 verified times must not predate the Arena proof. The Phala observation and
 Arena heartbeat are not independent Intel TDX/DCAP verification. The durable
 completion artifacts explicitly authorize no live traffic, and no fresh
 project-owned production run has completed.
+
+The v4 activation commitment is
+`SHA256(b"dnai-wikigen/compute-workload-recipient-activation/v4\0" || canonical_json(payload))`.
+Its payload has exactly two fields: `schema` is
+`dnai.compute.workload-recipient-activation.v4`, and
+`recipient_release_commitment` is the independently rederived stable v2 release
+identity, not a trusted copy from the response. That identity binds the key and
+exact public recipient attestation, release authority and deployment intent,
+ceremony nonce, measurement policies, main-runtime evidence, and the attested
+vault address, runtime code hash, and fresh deployment receipt, as well as the
+remaining release and verifier context. A new valid proof for the same identity
+changes the verdict digest without changing either stable commitment.
+
+This separates proof freshness from the immutable upload commitment; it does
+not remove proof checks. The full activation still contains the fresh signed
+verdict, challenge, and lease, and every admission independently authenticates
+that current proof and checks revocation. An unchanged digest cannot extend an
+expired lease or restore a revoked recipient. Exact-schema v3 clients fail
+closed on v4, and v4 consumers reject v3 with no fallback. See the
+[ingress commitment definition](../⚙️/tinker-delegate/docs/COMPUTE-WORKLOAD-INGRESS.md#recipient-activation-boundary)
+for the canonical payload.
 
 The locally tested resident driver keeps this entire authority chain in one
 process from one exact owned canonical mode-`0600` request through non-live

@@ -33,6 +33,11 @@ import {
     normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
   phalaSevenCvmReleaseVerificationAuthoritySha256 as
     currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as HISTORICAL_V4_RELEASE_SCHEMA,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as normalizeHistoricalV4ReleaseAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as historicalV4ReleaseAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
@@ -162,6 +167,11 @@ function normalizeVersionedReleaseVerificationAuthority(value) {
       sha256:
         currentPhalaSevenCvmReleaseVerificationAuthoritySha256(authority),
     });
+  }
+  if (descriptor.value
+      === HISTORICAL_V4_RELEASE_SCHEMA) {
+    const authority = normalizeHistoricalV4ReleaseAuthority(value);
+    return Object.freeze({ authority, sha256: historicalV4ReleaseAuthoritySha256(authority) });
   }
   if (descriptor.value
       === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {

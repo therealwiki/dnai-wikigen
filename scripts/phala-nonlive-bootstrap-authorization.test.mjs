@@ -85,6 +85,10 @@ import {
   PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
 } from "./phala-sdk-runtime-capsule.mjs";
 import {
+  createSyntheticPhalaContractKmsProjection,
+  SYNTHETIC_PHALA_K256,
+} from "./phala-contract-kms-test-fixture.mjs";
+import {
   canonicalArtifactSha256,
   canonicalArtifactText,
   createDraftDeploymentIntentCore,
@@ -137,6 +141,7 @@ function canonicalFileIdentity(text) {
 }
 
 function publicValue(key) {
+  if (key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256") return `0x${bare("a")}`;
   if (key === "TINKER_WALLET_AUTH_DOMAIN") return "www.wikigen.me";
   if (key === "TINKER_WALLET_AUTH_URI") return "https://www.wikigen.me";
   if (key.endsWith("_ADDRESS")) return address("a");
@@ -222,18 +227,10 @@ function compatibilityFixture() {
       workspace_id: "workspace-production-1",
       account_subject_sha256: sha("1"),
       authenticated: true,
+      billing_status: "active",
     },
     sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
-    kms: {
-      id: "kms-production-1",
-      slug: "phala",
-      url: "https://kms.phala.network/",
-      version: "0.5.8",
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: "1".repeat(40),
-      catalog_match_count: 1,
-    },
+    kms: createSyntheticPhalaContractKmsProjection(),
     os_image: { ...PHALA_OS_IMAGE_CATALOG_ENTRY },
     resource_catalog: [
       {
@@ -342,14 +339,8 @@ function targetFixture(compatibilityReceipt, stagingReceipt) {
     },
     sdk_identity: structuredClone(compatibilityReceipt.sdk_identity),
     kms: {
-      id: compatibilityReceipt.kms.id,
-      slug: compatibilityReceipt.kms.slug,
-      url: compatibilityReceipt.kms.url,
-      version: compatibilityReceipt.kms.version,
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: compatibilityReceipt.kms.gateway_app_id,
-      env_encrypt_signer_k256: `0x02${"9".repeat(64)}`,
+      ...structuredClone(compatibilityReceipt.kms),
+      env_encrypt_signer_k256: SYNTHETIC_PHALA_K256,
       signer_provenance_sha256: sha("a"),
       valid_from: "2026-07-21T00:00:00Z",
       valid_until: "2026-08-21T00:00:00Z",
@@ -369,9 +360,9 @@ function targetFixture(compatibilityReceipt, stagingReceipt) {
         manifest_version: 2,
         runner: "docker-compose",
         kms_enabled: true,
-        gateway_enabled: true,
+        gateway_enabled: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
         tproxy_enabled: false,
-        skip_gateway: false,
+        skip_gateway: !CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
         storage_fs: "ext4",
         secure_time: true,
         public_logs: false,
@@ -1242,6 +1233,27 @@ test("stable canonical files bind the branded receipt and reject aliases or rewr
       fixture.bootstrap.sdk_wire_transform_staging_receipt_sha256,
     );
     assert.equal(
+      checked.target_authority_evidence.kmsContractId,
+      target.kms.contract.id,
+    );
+    assert.equal(
+      checked.target_authority_evidence.kmsCaPubkey,
+      target.kms.contract.ca_pubkey,
+    );
+    assert.equal(
+      checked.target_authority_evidence.kmsSignerK256,
+      target.kms.contract.k256_pubkey,
+    );
+    assert.equal(Object.hasOwn(checked.target_authority_evidence, "kmsId"), false);
+    assert.deepEqual(
+      checked.target_authority_evidence.productionTargetAuthority,
+      target,
+    );
+    assert.equal(
+      Object.isFrozen(checked.target_authority_evidence.productionTargetAuthority.kms.contract),
+      true,
+    );
+    assert.equal(
       bootstrapPublicEnvironmentAuthorityDigest(
         checked.bootstrap_public_environment_authority,
       ),
@@ -1285,6 +1297,46 @@ test("stable canonical files bind the branded receipt and reject aliases or rewr
       requireReleaseManifestSigstoreValidation: true,
     }), /Sigstore receipt/);
   }
+  await t.test("fresh target evidence rejects billing and contract drift", () => {
+    const recheck = (paths) => readReverifyAndCheckpointPhalaNonLiveBootstrapAuthorization({
+      ...targetAuthorityPaths,
+      ...paths,
+      authorizationPath,
+      bootstrapAuthorityPath: bootstrapPath,
+      deploymentIntentPath,
+      reviewerAuthorityGenesisPath,
+      reviewerAuthorityGenesisAcceptancePath,
+      checkpoint: "before_each_prepare",
+      nowMs: Date.parse("2026-07-21T10:05:00Z"),
+      expectedBatchId: BATCH_ID,
+      expectedAuthorizationId: fixture.authorization.authorization_id,
+      expectedTargetAuthoritySha256: fixture.bootstrap.production_target_authority_sha256,
+      expectedStagingReceiptSha256: fixture.bootstrap.sdk_wire_transform_staging_receipt_sha256,
+    });
+    for (const status of ["suspended", "abandoned", "missing"]) {
+      const changed = JSON.parse(fs.readFileSync(compatibilityReceiptPath, "utf8"));
+      if (status === "missing") delete changed.workspace.billing_status;
+      else changed.workspace.billing_status = status;
+      const changedPath = path.join(directory, `compatibility-billing-${status}.json`);
+      // Parsed canonical bytes retain sorted key order after value replacement
+      // or deletion, so rejection must come from semantic billing validation.
+      fs.writeFileSync(changedPath, `${JSON.stringify(changed, null, 2)}\n`, { mode: 0o400 });
+      assert.throws(() => recheck({ compatibilityReceiptPath: changedPath }),
+        /billing_status|compatibility workspace/, status);
+    }
+    for (const [label, mutate] of [
+      ["contract-id", (kms) => { kms.contract.id = "kc_Substitute"; }],
+      ["ca-root", (kms) => { kms.contract.ca_pubkey += "00"; }],
+      ["k256-root", (kms) => { kms.contract.k256_pubkey = SYNTHETIC_PHALA_K256.replace("0x02", "0x03"); }],
+      ["replica", (kms) => { kms.replicas[0].url = "https://substitute.phala.network/"; }],
+    ]) {
+      const changed = JSON.parse(fs.readFileSync(productionTargetAuthorityPath, "utf8"));
+      mutate(changed.kms);
+      const changedPath = path.join(directory, `target-kms-${label}.json`);
+      fs.writeFileSync(changedPath, `${JSON.stringify(changed, null, 2)}\n`, { mode: 0o400 });
+      assert.throws(() => recheck({ productionTargetAuthorityPath: changedPath }), /target KMS/, label);
+    }
+  });
   const driftedTarget = { ...structuredClone(target), cvm_launch_intent_sha256: sha("d") };
   const driftedTargetPath = path.join(directory, "target-drifted.json");
   assert.throws(() => canonicalPhalaProductionTargetAuthorityText(driftedTarget, {

@@ -2680,7 +2680,7 @@ export function buildPreflightReport(snapshot) {
     currentReviewValid ? "pass" : "fail",
     currentReviewValid
       ? liveActivation
-        ? "The current exact-38 validator authenticated the exact signed-C dependency chain, independent Royalty H receipt, deterministic D lineage, and current reviewer-status window while replaying the frozen historical exact-37 boundary."
+        ? "The current exact-39 validator authenticated signed C, the independent Royalty H and activation receipts, deterministic D lineage, and the current reviewer-status window against recorded launch evidence."
         : releaseCeremony
           ? "The fresh seven-CVM authority validator authenticated the exact signed-B ceremony subject."
           : `The current ${expectedReviewSubjectKind} artifact is source- and dependency-bound for this non-live stage.`
@@ -2688,7 +2688,7 @@ export function buildPreflightReport(snapshot) {
         ? "The signed-C authority, reviewer-status window, or exact B/R/L/O/D dependency chain is invalid."
         : "The current stage authority artifact is invalid, file-unbound, or names the wrong dependency subject.",
     liveActivation
-      ? "Provide the exact signed C and all current exact-38 dependencies, including independent H and deterministic D; renewable review-envelope files are retired."
+      ? "Provide the exact signed C and all current exact-39 dependencies, including independent H, the standalone activation receipt, and deterministic D; renewable review-envelope files are retired."
       : "Provide the current canonical stage authority artifact for the exact subject.",
   ));
 
@@ -2698,13 +2698,13 @@ export function buildPreflightReport(snapshot) {
     currentStageEvidenceValid ? "pass" : "fail",
     currentStageEvidenceValid
       ? liveActivation
-        ? "Signed C and the current exact-38 receipt bind independent Royalty H, deterministic D, and the hash-only public release evidence without raw transcript egress."
+        ? "Signed C and the current exact-39 receipt bind independent Royalty H, deterministic D, and the hash-only public release evidence without raw transcript egress."
         : "The current stage evidence bytes match the digest declared by its stage signature."
       : liveActivation
-        ? "The current exact-38 signed-C evidence receipt is missing, malformed, or does not match this release."
+        ? "The current exact-39 signed-C evidence receipt is missing, malformed, or does not match this release."
         : "The current stage evidence is missing, malformed, or does not match its transitive authority.",
     liveActivation
-      ? "Run the current exact-38 check-only validator with all current artifacts; the frozen exact-37 replay remains historical evidence only."
+      ? "Run the current exact-39 check-only validator with all current artifacts; the frozen exact-37 replay remains historical evidence only."
       : "Provide the exact bounded evidence declared by the current stage signature.",
   ));
 
@@ -3410,13 +3410,13 @@ export function buildPreflightReport(snapshot) {
       : canonicalSevenCvmAuthorityValidated
         ? authorityStage === "release_ceremony"
           ? "The shared validator authenticated fresh v3 release lineage, exact measurement policies, descriptor/posture authority, durable replay state, and all seven machine proofs."
-          : "The current exact-38 validator authenticated signed C with exact B/R/L/H/O/D dependencies while replaying the durable private exact-14 and frozen exact-37 historical boundaries; it did not renew expired machine evidence."
+          : "The current exact-39 validator authenticated signed C with exact B/R/L/H/O/D and standalone activation-receipt dependencies while replaying the durable private exact-14 launch evidence; it did not renew expired machine evidence."
         : "Canonical seven-CVM release authority validation is unavailable or does not match this exact release lineage.",
     preMeasuredAuthority
       ? "Deploy the reviewed topology, then invoke the shared v3 verifier and ceremony authority validator."
       : authorityStage === "release_ceremony"
         ? "Provide the fresh canonical seven-CVM validator result; legacy v1/v2 probes and unpinned quote helpers are never accepted."
-        : "Provide the current exact-38 signed-C dependency validation result; do not remint R/L, rewrite frozen exact-37 history, or rerun expired challenge freshness.",
+        : "Provide the current exact-39 signed-C dependency validation result; do not remint R/L, rewrite frozen exact-37 history, or rerun expired challenge freshness.",
   ));
   checks.push(check(
     "evidence.anchor_writer_mode",

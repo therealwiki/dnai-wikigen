@@ -10,6 +10,11 @@ import {
   CVM_LAUNCH_DOMAINS,
 } from "./cvm-launch-intent-core.mjs";
 import {
+  assertPhalaWorkspaceActiveBilling,
+  normalizePhalaKmsContract,
+  normalizePhalaKmsContractNodes,
+} from "./phala-contract-kms-core.mjs";
+import {
   PHALA_EXACT_SDK_CALL_SEQUENCE,
   assertProductionFinalizedPhalaMutationGate,
   normalizeCompletedPhalaExecutorState,
@@ -35,13 +40,16 @@ import {
   authenticatedPhalaSdkObservationSha256,
   pinnedPhalaProductionSdkAdapterIdentitySha256,
   projectPinnedPhalaProductionSdkAdapterIdentity,
+  readAuthenticatedPhalaSdkObservationRawIdentityFields,
   readAuthenticatedPhalaSdkObservationResponse,
 } from "./phala-production-sdk-adapter.mjs";
 
+// v1 recorded 48 calls and a replica-oriented global catalog. Do not reinterpret
+// that historical evidence as the 50-call workspace/contract-KMS ceremony.
 export const PHALA_PRODUCTION_EXECUTION_REPLAY_SCHEMA =
-  "dnai.phala-production-execution-replay.v1";
+  "dnai.phala-production-execution-replay.v2";
 export const PHALA_PRODUCTION_EXECUTION_REPLAY_DOMAIN =
-  "dnai-wikigen/phala-production-execution-replay/v1\0";
+  "dnai-wikigen/phala-production-execution-replay/v2\0";
 export const PHALA_TERMINAL_RECOVERY_JOURNAL_REPLAY_DOMAIN =
   "dnai-wikigen/phala-terminal-recovery-journal-replay/v1\0";
 
@@ -50,7 +58,6 @@ const SDK_REQUEST_DOMAIN =
 const SHA256 = /^sha256:(?!0{64}$)[0-9a-f]{64}$/;
 const RELEASE_SHA = /^(?!0{40}$)[0-9a-f]{40}$/;
 const APP_ID = /^(?!0{40}$)[0-9a-f]{40}$/;
-const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const ISO_SECOND = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const MAX_REPLAY_BYTES = 512 * 1024;
 const DURABLY_PERSISTED_REPLAYS = new WeakMap();
@@ -59,13 +66,27 @@ const PHALA_EXECUTION_ORDER = Object.freeze([
   "main_runtime_cvm",
 ]);
 
-const GLOBAL_OBSERVATION_KEYS = Object.freeze([
-  "getCurrentUser",
-  "getCvmCreateResources",
-  "getOsImages",
-  "getKmsList",
-  "getKmsInfo",
-  "nextAppIds",
+const GLOBAL_OBSERVATION_SCHEDULE = Object.freeze([
+  ["authenticate_workspace", "getCurrentUser", null],
+  ["review_workspace_billing", "getWorkspace", null],
+  ["review_resources", "getCvmCreateResources", null],
+  ["review_kms_contract_catalog", "listKmsContracts", null],
+  ["review_kms_contract_identity", "getKmsContract", null],
+  ["review_kms_contract_nodes", "listKmsContractNodes", null],
+  ["review_os_images", "getOsImages", null],
+  ["reserve_app_ids", "nextAppIds", null],
+].map((entry) => Object.freeze(entry)));
+const GLOBAL_OBSERVATION_KEYS = Object.freeze(
+  GLOBAL_OBSERVATION_SCHEDULE.map(([, method]) => method),
+);
+const REPLAY_CALL_SEQUENCE_CONTRACT = Object.freeze([
+  ...GLOBAL_OBSERVATION_KEYS,
+  "provisionCvm:supporting-six-then-main",
+  "getAppEnvEncryptPubKey:first-pass-all-seven",
+  "getAppEnvEncryptPubKey:immediate-refetch-before-each-commit",
+  "commitCvmProvision:supporting-six-then-main",
+  "getCvmInfo:all-seven",
+  "getCvmAttestation:all-seven",
 ]);
 
 const OBSERVATION_INPUT_KEYS = Object.freeze([
@@ -187,13 +208,6 @@ function timestamp(value, label) {
   return value;
 }
 
-function exactIdentifier(value, label) {
-  if (typeof value !== "string" || !IDENTIFIER.test(value)) {
-    throw new Error(`${label} must be a canonical bounded identifier`);
-  }
-  return value;
-}
-
 function canonicalInternalTimestamp() {
   const now = Date.now();
   if (!Number.isFinite(now)) throw new Error("production replay clock is unavailable");
@@ -210,14 +224,7 @@ function sdkRequestSemanticsSha256(httpMethod, pathAndQuery, body = null) {
 }
 
 function expectedSdkSchedule() {
-  const calls = [
-    ["authenticate_workspace", "getCurrentUser", null],
-    ["review_resources", "getCvmCreateResources", null],
-    ["review_os_images", "getOsImages", null],
-    ["review_kms_catalog", "getKmsList", null],
-    ["review_kms_identity", "getKmsInfo", null],
-    ["reserve_app_ids", "nextAppIds", null],
-  ];
+  const calls = [...GLOBAL_OBSERVATION_SCHEDULE];
   for (const domain of PHALA_EXECUTION_ORDER) {
     calls.push(["provision", "provisionCvm", domain]);
   }
@@ -324,7 +331,9 @@ export function normalizeProductionExecutionReplayReceipt(value) {
       !== "digests_only_no_requests_responses_ciphertext_or_secrets"
     || receipt.live_traffic_authorized !== false
     || canonicalCompact(receipt.call_sequence_contract)
-      !== canonicalCompact(PHALA_EXACT_SDK_CALL_SEQUENCE)
+      !== canonicalCompact(REPLAY_CALL_SEQUENCE_CONTRACT)
+    || canonicalCompact(PHALA_EXACT_SDK_CALL_SEQUENCE)
+      !== canonicalCompact(REPLAY_CALL_SEQUENCE_CONTRACT)
     || receipt.sdk_call_count
       !== PHALA_EXACT_AUTHENTICATED_SDK_REPLAY_SCHEDULE.length
     || !Array.isArray(receipt.sdk_calls)
@@ -578,6 +587,84 @@ function assertExpectedGetRequest(observation, pathAndQuery, label) {
   }
 }
 
+/** Pure response consistency checks only; these never authenticate or authorize input. */
+export function projectProductionReplayGlobalResponseBindings(value) {
+  assertCanonicalPlainDataGraph(value, { label: "production replay global responses" });
+  const input = exactRecord(value, [
+    "currentUser", "workspace", "rawWorkspaceIdentity",
+    "kmsCatalog", "kmsContract", "kmsContractNodes",
+  ], "production replay global responses");
+  const rawWorkspaceIdentity = exactRecord(
+    input.rawWorkspaceIdentity,
+    ["billing_status"],
+    "production replay raw workspace identity",
+  );
+  if (rawWorkspaceIdentity.billing_status !== "active"
+    || input.workspace?.billing_status !== rawWorkspaceIdentity.billing_status) {
+    throw new Error("production replay requires explicit raw active workspace billing");
+  }
+  const workspace = assertPhalaWorkspaceActiveBilling({
+    workspace: input.workspace,
+    authenticatedSubject: input.currentUser,
+  });
+  const contract = normalizePhalaKmsContract(input.kmsContract);
+  const catalog = input.kmsCatalog;
+  if (!isRecord(catalog) || !Array.isArray(catalog.items)
+    || catalog.items.length < 1 || catalog.items.length > 100
+    || catalog.total !== catalog.items.length || catalog.page !== 1
+    || catalog.page_size !== 100 || catalog.pages !== 1) {
+    throw new Error("production replay KMS contract catalog must be complete");
+  }
+  const centralized = catalog.items.filter((entry) => isRecord(entry)
+    && entry.slug === "phala" && entry.chain_id === 0
+    && entry.contract_address === "phala");
+  if (centralized.length !== 1
+    || catalog.items.filter((entry) => entry?.id === contract.id).length !== 1
+    || canonicalCompact(normalizePhalaKmsContract(centralized[0]))
+      !== canonicalCompact(contract)) {
+    throw new Error("production replay KMS contract detail differs from its unique catalog identity");
+  }
+  const replicas = normalizePhalaKmsContractNodes(input.kmsContractNodes, { contract });
+  return deepFreezeCanonicalPlainDataGraph({ workspace, contract, replicas }, {
+    label: "production replay global response bindings",
+  });
+}
+
+/** The caller must separately require a branded prepare that validated the reviewed placement graph. */
+export function productionReplayPreparedReplicaId({ response, contract, replicas } = {}) {
+  assertCanonicalPlainDataGraph({ response, contract, replicas }, {
+    label: "production replay prepared replica binding",
+  });
+  const normalizedContract = normalizePhalaKmsContract(contract);
+  const inventory = normalizePhalaKmsContractNodes({
+    items: replicas,
+    total: Array.isArray(replicas) ? replicas.length : null,
+  }, { contract: normalizedContract });
+  const info = response?.kms_info;
+  if (!isRecord(response) || response.kms_contract_id !== normalizedContract.id
+    || !isRecord(info) || info.id !== response.kms_id
+    || info.chain_id !== null
+    || (info.kms_contract_address !== null && info.kms_contract_address !== "")
+    || (Object.hasOwn(info, "kms_type") && info.kms_type !== "phala")
+    || (Object.hasOwn(info, "kms_contract_id")
+      && info.kms_contract_id !== normalizedContract.id)
+    || inventory.filter((entry) => entry.id === response.kms_id).length !== 1) {
+    throw new Error("production replay prepared replica must belong to the exact authenticated contract");
+  }
+  const observedInventory = normalizePhalaKmsContractNodes({
+    items: inventory.map((entry) => entry.id === response.kms_id
+      ? { ...info, kms_type: "phala" } : entry),
+    total: inventory.length,
+  }, { contract: normalizedContract });
+  if (canonicalCompact(observedInventory) !== canonicalCompact(inventory)
+    || (info.k256_pubkey != null
+      && normalizePhalaKmsContract({ ...normalizedContract, k256_pubkey: info.k256_pubkey })
+        .k256_pubkey !== normalizedContract.k256_pubkey)) {
+    throw new Error("production replay prepared replica or root key differs from its authenticated inventory");
+  }
+  return response.kms_id;
+}
+
 function terminalJournalSha256(journal) {
   return domainDigest(PHALA_TERMINAL_RECOVERY_JOURNAL_REPLAY_DOMAIN, journal);
 }
@@ -638,24 +725,38 @@ function validateProductionReplayContext(raw) {
   };
 
   const globals = {};
-  const globalPhases = [
-    "authenticate_workspace",
-    "review_resources",
-    "review_os_images",
-    "review_kms_catalog",
-    "review_kms_identity",
-    "reserve_app_ids",
-  ];
-  for (let index = 0; index < GLOBAL_OBSERVATION_KEYS.length; index += 1) {
-    const method = GLOBAL_OBSERVATION_KEYS[index];
+  for (const [phase, method] of GLOBAL_OBSERVATION_SCHEDULE) {
     globals[method] = observe(
       observations.globals[method],
       method,
       null,
-      globalPhases[index],
+      phase,
     );
   }
+  const globalResponse = (method) => readAuthenticatedPhalaSdkObservationResponse(
+    observations.globals[method],
+    { adapter: context.adapter, method, domain: null },
+  );
+  const globalBindings = projectProductionReplayGlobalResponseBindings({
+    currentUser: globalResponse("getCurrentUser"),
+    workspace: globalResponse("getWorkspace"),
+    rawWorkspaceIdentity: readAuthenticatedPhalaSdkObservationRawIdentityFields(
+      observations.globals.getWorkspace,
+      { adapter: context.adapter, method: "getWorkspace", domain: null },
+    ),
+    kmsCatalog: globalResponse("listKmsContracts"),
+    kmsContract: globalResponse("getKmsContract"),
+    kmsContractNodes: globalResponse("listKmsContractNodes"),
+  });
+  if (globalBindings.workspace.workspace_id !== identity.workspace_id) {
+    throw new Error("production replay workspace differs from the exact adapter identity");
+  }
   assertExpectedGetRequest(globals.getCurrentUser, "/api/v1/auth/me", "getCurrentUser");
+  assertExpectedGetRequest(
+    globals.getWorkspace,
+    `/api/v1/workspaces/${globalBindings.workspace.workspace_slug}`,
+    "getWorkspace",
+  );
   assertExpectedGetRequest(
     globals.getCvmCreateResources,
     "/api/v1/teepods/cvm-create-resources",
@@ -667,9 +768,19 @@ function validateProductionReplayContext(raw) {
     "getOsImages",
   );
   assertExpectedGetRequest(
-    globals.getKmsList,
+    globals.listKmsContracts,
     "/api/v1/kms?page=1&page_size=100&is_onchain=false",
-    "getKmsList",
+    "listKmsContracts",
+  );
+  assertExpectedGetRequest(
+    globals.getKmsContract,
+    `/api/v1/kms/${globalBindings.contract.id}`,
+    "getKmsContract",
+  );
+  assertExpectedGetRequest(
+    globals.listKmsContractNodes,
+    `/api/v1/kms/${globalBindings.contract.id}/nodes`,
+    "listKmsContractNodes",
   );
   assertExpectedGetRequest(
     globals.nextAppIds,
@@ -703,7 +814,7 @@ function validateProductionReplayContext(raw) {
   }
 
   const provisions = [];
-  let kmsId = null;
+  const preparedKmsIds = [];
   for (let index = 0; index < PHALA_EXECUTION_ORDER.length; index += 1) {
     const domain = PHALA_EXECUTION_ORDER[index];
     const observation = observe(
@@ -729,25 +840,13 @@ function validateProductionReplayContext(raw) {
       || responseAppId !== normalizedState.reservations[index].app_id) {
       throw new Error(`${domain} provision response differs from reserved app id`);
     }
-    if (response?.kms_id != null && response?.kms_info?.id != null
-      && response.kms_id !== response.kms_info.id) {
-      throw new Error(`${domain} provision response contains conflicting KMS identities`);
-    }
-    const returnedKmsId = exactIdentifier(
-      response?.kms_id ?? response?.kms_info?.id,
-      `${domain} provision KMS id`,
-    );
-    if (kmsId !== null && returnedKmsId !== kmsId) {
-      throw new Error("seven provision responses do not use one exact private KMS");
-    }
-    kmsId = returnedKmsId;
+    preparedKmsIds.push(productionReplayPreparedReplicaId({
+      response,
+      contract: globalBindings.contract,
+      replicas: globalBindings.replicas,
+    }));
     provisions.push(observation);
   }
-  assertExpectedGetRequest(
-    globals.getKmsInfo,
-    `/api/v1/kms/${kmsId}`,
-    "getKmsInfo",
-  );
 
   const firstKeys = [];
   for (let index = 0; index < PHALA_EXECUTION_ORDER.length; index += 1) {
@@ -765,6 +864,7 @@ function validateProductionReplayContext(raw) {
   for (let index = 0; index < PHALA_EXECUTION_ORDER.length; index += 1) {
     const domain = PHALA_EXECUTION_ORDER[index];
     const appId = normalizedState.reservations[index].app_id;
+    const kmsId = preparedKmsIds[index];
     const first = firstKeys[index];
     assertExpectedGetRequest(
       first,

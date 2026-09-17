@@ -16,6 +16,7 @@ import {
 } from "./phala-production-executor-core.mjs";
 import {
   PHALA_EXACT_AUTHENTICATED_SDK_REPLAY_SCHEDULE,
+  PHALA_PRODUCTION_EXECUTION_REPLAY_DOMAIN,
   PHALA_PRODUCTION_EXECUTION_REPLAY_SCHEMA,
   assertDurablyPersistedProductionExecutionReplay,
   canonicalProductionExecutionReplayReceiptText,
@@ -23,7 +24,12 @@ import {
   normalizeProductionExecutionReplayReceipt,
   productionExecutionReplayReceiptPath,
   productionExecutionReplayReceiptSha256,
+  productionReplayPreparedReplicaId,
+  projectProductionReplayGlobalResponseBindings,
 } from "./phala-production-execution-replay.mjs";
+import {
+  createSyntheticPhalaContractKmsFixture,
+} from "./phala-contract-kms-test-fixture.mjs";
 import {
   closePhalaPinnedPrivateDirectory,
   pinPhalaPrivateDirectory,
@@ -170,13 +176,28 @@ function completedState() {
   return normalizeCompletedPhalaExecutorState(state);
 }
 
-test("digest-only replay receipt fixes all 48 calls and fourteen mutation gates", () => {
+test("v2 digest-only replay fixes eight exact globals, all 50 calls, and fourteen mutation gates", () => {
   const fixture = receiptFixture();
   const normalized = normalizeProductionExecutionReplayReceipt(fixture);
-  assert.equal(normalized.sdk_call_count, 48);
+  assert.equal(PHALA_PRODUCTION_EXECUTION_REPLAY_SCHEMA, "dnai.phala-production-execution-replay.v2");
+  assert.equal(PHALA_PRODUCTION_EXECUTION_REPLAY_DOMAIN, "dnai-wikigen/phala-production-execution-replay/v2\0");
+  assert.equal(normalized.sdk_call_count, 50);
   assert.equal(normalized.mutation_gate_count, 14);
   assert.deepEqual(
-    normalized.sdk_calls.slice(20, 24).map(({ phase, domain }) => [phase, domain]),
+    normalized.sdk_calls.slice(0, 8).map(({ method, domain }) => [method, domain]),
+    [
+      ["getCurrentUser", null],
+      ["getWorkspace", null],
+      ["getCvmCreateResources", null],
+      ["listKmsContracts", null],
+      ["getKmsContract", null],
+      ["listKmsContractNodes", null],
+      ["getOsImages", null],
+      ["nextAppIds", null],
+    ],
+  );
+  assert.deepEqual(
+    normalized.sdk_calls.slice(22, 26).map(({ phase, domain }) => [phase, domain]),
     [
       ["immediate_environment_key_refetch", PHALA_EXECUTION_ORDER[0]],
       ["commit", PHALA_EXECUTION_ORDER[0]],
@@ -187,6 +208,129 @@ test("digest-only replay receipt fixes all 48 calls and fourteen mutation gates"
   assert.equal(new Set(normalized.sdk_calls.map(({ observed_at }) => observed_at)).size, 1);
   assert.match(productionExecutionReplayReceiptSha256(normalized), SHA256_PATTERN);
   assert.equal(canonicalProductionExecutionReplayReceiptText(fixture).endsWith("\n"), true);
+});
+
+test("v1 replay evidence is neither silently accepted nor upgraded by changing its label", () => {
+  const historical = receiptFixture();
+  historical.schema = "dnai.phala-production-execution-replay.v1";
+  assert.throws(() => normalizeProductionExecutionReplayReceipt(historical), /invalid fixed semantics/);
+  const legacyMethods = new Map([
+    ["listKmsContracts", "getKmsList"],
+    ["getKmsContract", "getKmsInfo"],
+  ]);
+  historical.sdk_calls = historical.sdk_calls
+    .filter(({ method }) => !["getWorkspace", "listKmsContractNodes"].includes(method))
+    .map((call, index) => ({
+      ...call, call_sequence: index + 1, method: legacyMethods.get(call.method) ?? call.method,
+    }));
+  historical.sdk_call_count = historical.sdk_calls.length;
+  assert.equal(historical.sdk_call_count, 48);
+  historical.schema = PHALA_PRODUCTION_EXECUTION_REPLAY_SCHEMA;
+  assert.throws(() => normalizeProductionExecutionReplayReceipt(historical), /invalid fixed semantics/);
+
+  const current = receiptFixture();
+  current.sdk_calls[3].method = "getKmsList";
+  assert.throws(() => normalizeProductionExecutionReplayReceipt(current), /exact authenticated call order/);
+});
+
+function globalResponseFixture() {
+  const kms = createSyntheticPhalaContractKmsFixture();
+  const workspace = { id: "workspace-replay-1", slug: "dnai-replay", billing_status: "active" };
+  return {
+    currentUser: { workspace: { id: workspace.id, slug: workspace.slug } },
+    workspace,
+    rawWorkspaceIdentity: { billing_status: "active" },
+    kmsCatalog: { items: [structuredClone(kms.contract)], total: 1, page: 1, page_size: 100, pages: 1 },
+    kmsContract: kms.contract,
+    kmsContractNodes: kms.contractNodes,
+  };
+}
+
+test("replay global response checks require raw active billing and one complete contract inventory", () => {
+  const input = globalResponseFixture();
+  const bindings = projectProductionReplayGlobalResponseBindings(input);
+  assert.deepEqual(bindings.workspace, {
+    workspace_id: input.workspace.id,
+    workspace_slug: input.workspace.slug,
+    billing_status: "active",
+  });
+  assert.equal(bindings.contract.id, input.kmsContract.id);
+  assert.equal(bindings.replicas.length, 2);
+  assert.ok(Object.isFrozen(bindings) && Object.isFrozen(bindings.replicas));
+
+  const mutations = [
+    ["missing raw billing", (value) => { value.rawWorkspaceIdentity = {}; }],
+    ["unavailable raw capture", (value) => { value.rawWorkspaceIdentity = null; }],
+    ["SDK-defaulted active billing", (value) => { value.rawWorkspaceIdentity.billing_status = "suspended"; }],
+    ["missing parsed billing", (value) => { delete value.workspace.billing_status; }],
+    ["different workspace", (value) => { value.workspace.id = "workspace-other"; }],
+    ["different workspace slug", (value) => { value.workspace.slug = "other-workspace"; }],
+    ["incomplete catalog", (value) => { value.kmsCatalog.total = 2; }],
+    ["different contract root", (value) => { value.kmsContract.k256_pubkey = `03${value.kmsContract.k256_pubkey.slice(2)}`; }],
+    ["duplicate centralized contract", (value) => {
+      value.kmsCatalog.items.push(structuredClone(value.kmsCatalog.items[0]));
+      value.kmsCatalog.total = 2;
+    }],
+    ["incomplete contract nodes", (value) => { value.kmsContractNodes.items.pop(); }],
+    ["wrong contract node count", (value) => {
+      value.kmsContract.node_count = 3;
+      value.kmsCatalog.items[0].node_count = 3;
+    }],
+    ["duplicate replica", (value) => { value.kmsContractNodes.items[1] = structuredClone(value.kmsContractNodes.items[0]); }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const invalid = globalResponseFixture();
+    mutate(invalid);
+    assert.throws(() => projectProductionReplayGlobalResponseBindings(invalid), undefined, label);
+  }
+});
+
+function preparedReplicaFixture(bindings, index) {
+  const replica = bindings.replicas[index];
+  return {
+    response: {
+      kms_contract_id: bindings.contract.id,
+      kms_id: replica.id,
+      kms_info: {
+        ...replica,
+        chain_id: null,
+        kms_contract_address: null,
+        kms_contract_id: bindings.contract.id,
+        k256_pubkey: bindings.contract.k256_pubkey,
+      },
+    },
+    contract: structuredClone(bindings.contract),
+    replicas: structuredClone(bindings.replicas),
+  };
+}
+
+test("each domain can select its own exact contract replica but cannot substitute identity or root", () => {
+  const bindings = projectProductionReplayGlobalResponseBindings(globalResponseFixture());
+  const selected = PHALA_EXECUTION_ORDER.map((_, index) => (
+    productionReplayPreparedReplicaId(preparedReplicaFixture(bindings, index % 2))
+  ));
+  assert.equal(new Set(selected).size, 2);
+  assert.deepEqual(selected, PHALA_EXECUTION_ORDER.map((_, index) => bindings.replicas[index % 2].id));
+  const mutations = [
+    ["different contract", (value) => { value.response.kms_contract_id = "kc_Other"; }],
+    ["unknown replica", (value) => {
+      value.response.kms_id = "kms_Other";
+      value.response.kms_info.id = "kms_Other";
+    }],
+    ["conflicting replica id", (value) => { value.response.kms_info.id = bindings.replicas[1].id; }],
+    ["different replica URL", (value) => { value.response.kms_info.url = "https://different.phala.network/"; }],
+    ["different replica version", (value) => { value.response.kms_info.version = "different-version"; }],
+    ["different contract root", (value) => {
+      value.response.kms_info.k256_pubkey = `0x03${value.contract.k256_pubkey.slice(4)}`;
+    }],
+    ["noncentralized replica", (value) => { value.response.kms_info.chain_id = 84532; }],
+    ["different embedded contract", (value) => { value.response.kms_info.kms_contract_id = "kc_Other"; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const invalid = preparedReplicaFixture(bindings, 0);
+    mutate(invalid);
+    assert.throws(() => productionReplayPreparedReplicaId(invalid), undefined, label);
+  }
 });
 
 test("execution replay requires real calendar seconds and accepts a leap-day month boundary", () => {

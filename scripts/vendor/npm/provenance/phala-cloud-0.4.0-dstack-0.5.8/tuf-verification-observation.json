@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "root.json": {
+      "byte_length": 5630,
+      "expires": "2026-11-20T13:58:18Z",
+      "sha256": "sha256:73747011d0857ada15479a16c4cae0f3ed03aac698b523b97e1de314ac9d9ca8",
+      "version": 15
+    },
+    "snapshot.json": {
+      "byte_length": 1760,
+      "expires": "2036-05-15T08:09:16Z",
+      "sha256": "sha256:8f784ab614ec62bfdd5f568eb2a2e3011668449ba235ed4eb7befa99f8469933",
+      "version": 165
+    },
+    "targets.json": {
+      "byte_length": 4942,
+      "expires": "2036-05-09T09:00:52Z",
+      "sha256": "sha256:6a697f7f8908c8ab26c11786ecb490b54acec97fa8c802e399f065f8a0cc1acd",
+      "version": 14
+    },
+    "timestamp.json": {
+      "byte_length": 449,
+      "expires": "2026-09-23T19:23:52Z",
+      "sha256": "sha256:0511494ca9cdfe308a1b48b58a55091008d15eebba4e319634ed03f08246049c",
+      "version": 785
+    }
+  },
+  "observed_at": "2026-09-16T20:32:15.753Z",
+  "origin": "https://tuf-repo-cdn.sigstore.dev",
+  "signed_update_verified_by": "@sigstore/tuf@3.1.1",
+  "trusted_root": {
+    "byte_length": 6787,
+    "sha256": "sha256:6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66"
+  }
+}

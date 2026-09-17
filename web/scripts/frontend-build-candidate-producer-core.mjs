@@ -76,6 +76,7 @@ const RECEIPT_AUTHORITY_BINDING_FIELDS = Object.freeze([
   "ceremonyAuthorizationSha256",
   "computeWorkloadActivationObservationSha256",
   "deploymentIntentSha256",
+  "postMeasurementActivationExecutionReceiptSha256",
   "reviewerAuthorityGenesisAcceptanceSha256",
   "runtimeAuthorityDependencySha256",
 ]);
@@ -283,9 +284,9 @@ function defaultBuild({ env, webDir: isolatedWebDir, sandbox }) {
 }
 
 /**
- * Produce nonauthorizing D from a current exact-36 semantic projection. The
- * projection independently authenticates H, strips it before historical
- * exact-35 replay, and carries its raw/history/receipt commitments forward.
+ * Produce nonauthorizing D from a current exact-37 semantic projection. The
+ * projection independently authenticates H and the standalone activation
+ * receipt before C, and carries their raw and semantic commitments forward.
  * This runner has no upload callback and never invokes Wrangler.
  */
 export async function runFrontendBuildCandidateProduction({
@@ -311,7 +312,7 @@ export async function runFrontendBuildCandidateProduction({
   buildHostEnv = process.env,
 } = {}) {
   if (typeof loadSemanticProjection !== "function") {
-    throw new Error("frontend candidate producer requires the current exact-36 semantic validator");
+    throw new Error("frontend candidate producer requires the current exact-37 semantic validator");
   }
   const releaseRuntimeProof = normalizePinnedReleaseRuntimeProof(
     assertReleaseRuntime(),

@@ -14,6 +14,7 @@ import {
   phalaAccountGenesisCompletionSha256,
 } from "./phala-main-profile-activation-core.mjs";
 import {
+  createProductionPhalaMainProfileMutator,
   executePhalaAccountGenesisProfileSequenceWithTestAdapter,
   executePhalaLiveDealProfileTransitionWithTestAdapter,
   executeProductionPhalaAccountGenesisProfileSequence,
@@ -21,6 +22,19 @@ import {
 import {
   syntheticPhalaAccountGenesisFixture,
 } from "./phala-main-profile-activation.fixture.mjs";
+
+test("main profile mutator requires provenance-replayed launch before reading credentials", async () => {
+  for (const launchRuntimeResult of [undefined, {}, {
+    schema: "dnai.phala-production-executor-runtime-result.v3",
+    posture_receipts: [],
+  }]) {
+    await assert.rejects(createProductionPhalaMainProfileMutator({
+      recordMutationAttempt: async () => {},
+      recordMutationObservation: async () => {},
+      launchRuntimeResult,
+    }), /completed locally replayed production executor result is required/);
+  }
+});
 
 function clone(value) {
   return structuredClone(value);

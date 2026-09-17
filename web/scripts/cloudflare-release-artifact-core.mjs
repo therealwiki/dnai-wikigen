@@ -12,6 +12,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  CURRENT_MODEL_A_LIVE_INPUT_FLAGS,
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS,
+} from "../../scripts/current-model-a-input-recipe-core.mjs";
 import { renderProductionHeadersForEnv } from "./security-headers-core.mjs";
 
 const MAX_BUILD_FILES = 4_096;
@@ -43,56 +47,13 @@ const FORBIDDEN_PRIVATE_RELEASE_FLAGS = new Set([
   // the final upload gate.
   "--six-cvm-launch-completion-receipt",
 ]);
-const REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS = Object.freeze([
-  "--release",
-  "--release-core",
-  "--runtime-authority-dependency",
-  "--deployment-intent",
-  "--contract-receipt",
-  "--reviewer-authority-genesis",
-  "--reviewer-authority-genesis-acceptance",
-  "--bootstrap-authority",
-  "--bootstrap-authorization",
-  "--bootstrap-authorization-receipt",
-  "--seven-cvm-launch-completion-receipt",
-  "--main-runtime-qvl-challenge",
-  "--main-runtime-independent-tdx-verdict",
-  "--diligence-qvl-identity-request",
-  "--diligence-qvl-identity-response",
-  "--arena-qvl-identity-request",
-  "--arena-qvl-identity-response",
-  "--anchor-writer-qvl-identity-request",
-  "--anchor-writer-qvl-identity-response",
-  "--compute-workload-qvl-identity-request",
-  "--compute-workload-qvl-identity-response",
-  "--compute-metering-qvl-identity-request",
-  "--compute-metering-qvl-identity-response",
-  "--independent-metering-qvl-challenge",
-  "--independent-metering-independent-tdx-verdict",
-  "--image-release-sigstore-verification-receipt",
-  "--cvm-descriptor-set-receipt",
-  "--phala-executor-final-state",
-  "--ceremony-authorization",
-  "--ledger",
-  "--artifact-evidence",
-  "--arena-evidence",
-  "--anchor-writer-evidence",
-  "--email-oracle-evidence",
-  "--live-activation-authority",
-  "--royalty-release-history-receipt",
-  "--compute-workload-activation-observation",
-  "--frontend-build-candidate-receipt",
-]);
+const REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS = CURRENT_MODEL_A_LIVE_INPUT_FLAGS;
 const SORTED_REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS = Object.freeze(
   [...REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS]
     .sort((left, right) => left.localeCompare(right, "en")),
 );
-export const REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS = Object.freeze(
-  REQUIRED_LIVE_PRIVATE_RELEASE_FLAGS.filter((flag) => !new Set([
-    "--live-activation-authority",
-    "--frontend-build-candidate-receipt",
-  ]).has(flag)),
-);
+export const REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS =
+  CURRENT_MODEL_A_PREBUILD_INPUT_FLAGS;
 const SORTED_REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS = Object.freeze(
   [...REQUIRED_PRIVATE_FRONTEND_CANDIDATE_FLAGS]
     .sort((left, right) => left.localeCompare(right, "en")),

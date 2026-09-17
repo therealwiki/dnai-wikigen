@@ -33,6 +33,10 @@ import {
 import {
   PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY,
 } from "./phala-sdk-runtime-capsule.mjs";
+import {
+  createSyntheticPhalaContractKmsProjection,
+  SYNTHETIC_PHALA_K256,
+} from "./phala-contract-kms-test-fixture.mjs";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
 
@@ -57,18 +61,10 @@ function compatibilityFixture() {
       workspace_id: "workspace-production-1",
       account_subject_sha256: digest("1"),
       authenticated: true,
+      billing_status: "active",
     },
     sdk_identity: structuredClone(PHALA_REVIEWED_SDK_COMPATIBILITY_IDENTITY),
-    kms: {
-      id: "kms-production-1",
-      slug: "phala",
-      url: "https://kms.phala.network/",
-      version: "0.5.8",
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: "1".repeat(40),
-      catalog_match_count: 1,
-    },
+    kms: createSyntheticPhalaContractKmsProjection(),
     os_image: { ...PHALA_OS_IMAGE_CATALOG_ENTRY },
     resource_catalog: [
       {
@@ -109,9 +105,9 @@ function targetReviewProjectionFixture(compatibilityReceipt = compatibilityFixtu
       manifest_version: 2,
       runner: "docker-compose",
       kms_enabled: true,
-      gateway_enabled: true,
+      gateway_enabled: CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
       tproxy_enabled: false,
-      skip_gateway: false,
+      skip_gateway: !CVM_LAUNCH_DESCRIPTOR_POLICY[domain].app_compose_candidate.gateway_enabled,
       storage_fs: "ext4",
       secure_time: true,
       public_logs: false,
@@ -139,14 +135,8 @@ function targetReviewProjectionFixture(compatibilityReceipt = compatibilityFixtu
     },
     sdk_identity: structuredClone(compatibilityReceipt.sdk_identity),
     kms: {
-      id: compatibilityReceipt.kms.id,
-      slug: compatibilityReceipt.kms.slug,
-      url: compatibilityReceipt.kms.url,
-      version: compatibilityReceipt.kms.version,
-      chain_id: null,
-      kms_contract_address: null,
-      gateway_app_id: compatibilityReceipt.kms.gateway_app_id,
-      env_encrypt_signer_k256: `0x02${"9".repeat(64)}`,
+      ...structuredClone(compatibilityReceipt.kms),
+      env_encrypt_signer_k256: SYNTHETIC_PHALA_K256,
       signer_provenance_sha256: digest("a"),
       valid_from: "2026-07-21T00:00:00Z",
       valid_until: "2026-08-21T00:00:00Z",
@@ -251,7 +241,7 @@ test("compatibility plan is exact, read-only, and secret-free", () => {
 test("compatibility receipt requires both probes and one reviewed exact version", () => {
   const receipt = compatibilityFixture();
   const normalized = normalizePhalaCompatibilityReceipt(receipt);
-  assert.equal(normalized.selected_api_version, "2026-01-21");
+  assert.equal(normalized.selected_api_version, "2026-06-23");
   assert.equal(normalized.workspace.authenticated, true);
   assert.match(phalaCompatibilityReceiptDigest(receipt), /^sha256:[0-9a-f]{64}$/);
   assert.equal(
@@ -259,10 +249,10 @@ test("compatibility receipt requires both probes and one reviewed exact version"
     canonicalPhalaCompatibilityReceiptText(normalized),
   );
 
-  const newestByAssumption = structuredClone(receipt);
-  newestByAssumption.selected_api_version = "2026-05-22";
+  const oldVersion = structuredClone(receipt);
+  oldVersion.selected_api_version = "2026-01-21";
   assert.throws(
-    () => normalizePhalaCompatibilityReceipt(newestByAssumption),
+    () => normalizePhalaCompatibilityReceipt(oldVersion),
     /selected API version|read-only compatibility/,
   );
 
@@ -394,7 +384,7 @@ test("target authority binds origin, account, KMS signer, OS, quota, resources, 
   });
   assert.equal(normalized.api.retry, 0);
   assert.equal(normalized.api.redirect, "error");
-  assert.equal(normalized.kms.env_encrypt_signer_k256, `0x02${"9".repeat(64)}`);
+  assert.equal(normalized.kms.env_encrypt_signer_k256, SYNTHETIC_PHALA_K256);
   assert.equal(
     Object.values(normalized.resource_targets).reduce(
       (total, resource) => total + resource.disk_size,
@@ -450,6 +440,87 @@ test("staging target-review binding cannot be replayed onto changed target linea
     }),
     /staging-bound review input/,
   );
+});
+
+test("old node-authority compatibility, target, and staging schemas are rejected", () => {
+  const compatibility = compatibilityFixture();
+  const staging = stagingFixture(compatibility);
+  const target = targetFixture(compatibility, staging);
+  assert.throws(() => normalizePhalaCompatibilityReceipt({
+    ...compatibility, schema: "dnai.phala-compatibility-receipt.v1",
+  }), /schema/);
+  assert.throws(() => normalizePhalaSdkWireTransformStagingReceipt({
+    ...staging, schema: "dnai.phala-sdk-wire-transform-staging-receipt.v3",
+  }, { compatibilityReceipt: compatibility }), /identity/);
+  assert.throws(() => normalizePhalaProductionTargetAuthority({
+    ...target, schema: "dnai.phala-production-target-authority.v2",
+  }, { compatibilityReceipt: compatibility, sdkWireTransformStagingReceipt: staging }), /schema/);
+  assert.throws(() => normalizePhalaCompatibilityReceipt({
+    ...compatibility,
+    kms: { id: "kms_Synthetic1", slug: "phala", url: "https://kms-1.phala.network/",
+      version: "0.5.8", chain_id: null, kms_contract_address: null,
+      gateway_app_id: "1".repeat(40), catalog_match_count: 1 },
+  }), /KMS projection/);
+});
+
+test("billing observation is explicit and known; non-active billing cannot authorize staging or targets", () => {
+  const original = compatibilityFixture();
+  const staging = stagingFixture(original);
+  const target = targetFixture(original, staging);
+  for (const status of ["suspended", "abandoned"]) {
+    const compatibility = structuredClone(original);
+    compatibility.workspace.billing_status = status;
+    assert.equal(normalizePhalaCompatibilityReceipt(compatibility).workspace.billing_status, status);
+    assert.notEqual(phalaCompatibilityReceiptDigest(compatibility), phalaCompatibilityReceiptDigest(original));
+    assert.throws(() => normalizePhalaSdkWireTransformStagingReceipt(staging, {
+      compatibilityReceipt: compatibility,
+    }), /billing_status must explicitly be active/);
+    assert.throws(() => normalizePhalaProductionTargetAuthority(target, {
+      compatibilityReceipt: compatibility, sdkWireTransformStagingReceipt: staging,
+    }), /billing_status must explicitly be active/);
+  }
+  for (const status of [undefined, null, "ACTIVE", "unknown", true]) {
+    const compatibility = structuredClone(original);
+    if (status === undefined) delete compatibility.workspace.billing_status;
+    else compatibility.workspace.billing_status = status;
+    assert.throws(() => normalizePhalaCompatibilityReceipt(compatibility));
+  }
+  const inherited = structuredClone(original);
+  delete inherited.workspace.billing_status;
+  Object.setPrototypeOf(inherited.workspace, { billing_status: "active" });
+  assert.throws(() => normalizePhalaCompatibilityReceipt(inherited), /plain|prototype/);
+});
+
+test("target KMS binds exact contract roots, replica inventory, and every eligible placement", () => {
+  const compatibility = compatibilityFixture();
+  const staging = stagingFixture(compatibility);
+  for (const [label, mutate] of [
+    ["contract", (kms) => { kms.contract.id = "kc_Substitute"; }],
+    ["K256 root", (kms) => { kms.contract.k256_pubkey = SYNTHETIC_PHALA_K256.replace("0x02", "0x03"); }],
+    ["CA root", (kms) => { kms.contract.ca_pubkey += "00"; }],
+    ["valid but unrelated signer", (kms) => { kms.env_encrypt_signer_k256 = SYNTHETIC_PHALA_K256.replace("0x02", "0x03"); }],
+    ["replica endpoint", (kms) => { kms.replicas[0].url = "https://substitute.phala.network/"; }],
+    ["missing replica", (kms) => { kms.replicas.pop(); }],
+    ["replica order", (kms) => { kms.replicas.reverse(); }],
+    ["placement contract", (kms) => { kms.eligible_placements[0].kms_contract_id = "kc_Substitute"; }],
+    ["placement replica", (kms) => { kms.eligible_placements[0].kms_id = "kms_Substitute"; }],
+    ["unknown nested field", (kms) => { kms.contract.hidden = undefined; }],
+  ]) {
+    const target = targetFixture(compatibility, staging);
+    mutate(target.kms);
+    assert.throws(() => normalizePhalaProductionTargetAuthority(target, {
+      compatibilityReceipt: compatibility, sdkWireTransformStagingReceipt: staging,
+    }), undefined, label);
+  }
+  for (const mutate of [
+    (kms) => { kms.contract.k256_pubkey = `0x02${"f".repeat(64)}`; },
+    (kms) => { kms.eligible_placements[0].kms_contract_id = "kc_Substitute"; },
+    (kms) => { kms.replicas[1].id = kms.replicas[0].id; },
+  ]) {
+    const value = compatibilityFixture();
+    mutate(value.kms);
+    assert.throws(() => normalizePhalaCompatibilityReceipt(value));
+  }
 });
 
 test("target authority fails closed on every mutable platform default", () => {

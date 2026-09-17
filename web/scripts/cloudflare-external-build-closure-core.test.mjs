@@ -49,11 +49,13 @@ const MODULE_SOURCES = Object.freeze({
     'import { canonical } from "./canonical-authority-graph.mjs";',
     'import { evidence } from "./phala-seven-cvm-historical-evidence-core.mjs";',
     'import { release as releaseLegacy } from "./phala-seven-cvm-release-verification-authority-core.mjs";',
-    'import { release as releaseCurrent } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";',
+    'import { release as releaseCurrent } from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";',
     'import { signature } from "./release-authority-signature-verifier-core.mjs";',
     "export const observation = canonical && evidence && releaseLegacy && releaseCurrent && signature;",
     "",
   ].join("\n"),
+  "scripts/current-model-a-input-recipe-core.mjs":
+    "export const currentRecipe = Object.freeze([]);\n",
   "scripts/cvm-descriptor-runtime-authority-core.mjs": [
     'import { v1Policy } from "./cvm-descriptor-runtime-authority-v1-policy.mjs";',
     'import { descriptors } from "./cvm-release-descriptor-set-constants.mjs";',
@@ -73,19 +75,27 @@ const MODULE_SOURCES = Object.freeze({
     "export const descriptorV2 = canonical && descriptors;",
     "",
   ].join("\n"),
-  "scripts/cvm-descriptor-runtime-authority-v2.mjs": [
+  "scripts/cvm-descriptor-runtime-authority-v3-core.mjs": [
+    'import { canonical } from "./canonical-authority-graph.mjs";',
+    'import { wire } from "./phala-app-compose-wire-core.mjs";',
+    'import { descriptors } from "./cvm-release-descriptor-set-constants-v3.mjs";',
+    "export const descriptorV3 = canonical && wire && descriptors;",
+    "",
+  ].join("\n"),
+  "scripts/cvm-descriptor-runtime-authority-v3.mjs": [
     'import "node:crypto";',
     'import "node:fs";',
     'import "node:fs/promises";',
     'import "node:path";',
     'import { descriptorSet } from "./cvm-release-descriptor-set-v3.mjs";',
-    'import { descriptorV2 } from "./cvm-descriptor-runtime-authority-v2-core.mjs";',
-    "export const descriptorAuthorityV2 = descriptorSet && descriptorV2;",
+    'import { descriptorV3 } from "./cvm-descriptor-runtime-authority-v3-core.mjs";',
+    "export const descriptorAuthorityV3 = descriptorSet && descriptorV3;",
     "",
   ].join("\n"),
   "scripts/cvm-launch-intent-core.mjs": [
     'import { policy } from "./phala-production-execution-policy.mjs";',
-    "export const launch = policy;",
+    'import { wire } from "./phala-app-compose-wire-core.mjs";',
+    "export const launch = policy && wire;",
     "",
   ].join("\n"),
   "scripts/cvm-release-descriptor-set-constants.mjs":
@@ -175,10 +185,23 @@ const MODULE_SOURCES = Object.freeze({
     "export const packet = execution && launch && tinkerBinding;",
     "",
   ].join("\n"),
+  "scripts/phala-app-compose-wire-core.mjs": [
+    'import "node:crypto";',
+    'import { canonical } from "./canonical-authority-graph.mjs";',
+    "export const wire = canonical;",
+    "",
+  ].join("\n"),
   "scripts/phala-bootstrap-public-environment-authority-core.mjs": [
     'import { launch } from "./cvm-launch-intent-core.mjs";',
     'import { publicHttpsUrl } from "./canonical-public-https-url-core.mjs";',
     "export const bootstrap = launch && publicHttpsUrl;",
+    "",
+  ].join("\n"),
+  "scripts/phala-contract-kms-core.mjs": [
+    'import "node:crypto";',
+    'import { canonical } from "./canonical-authority-graph.mjs";',
+    'import { publicHttpsUrl } from "./canonical-public-https-url-core.mjs";',
+    "export const kms = canonical && publicHttpsUrl;",
     "",
   ].join("\n"),
   "scripts/phala-executor-state-core.mjs": [
@@ -219,10 +242,18 @@ const MODULE_SOURCES = Object.freeze({
     "export const receipt = canonical;",
     "",
   ].join("\n"),
+  "scripts/phala-post-measurement-activation-receipt-v4-core.mjs": [
+    'import "node:crypto";',
+    'import { canonical } from "./canonical-authority-graph.mjs";',
+    'import { launch } from "./cvm-launch-intent-core.mjs";',
+    "export const receiptV4 = canonical && launch;",
+    "",
+  ].join("\n"),
   "scripts/phala-production-execution-policy.mjs": "export const policy = true;\n",
   "scripts/phala-production-posture-core.mjs": [
     'import { launch } from "./cvm-launch-intent-core.mjs";',
-    "export const posture = launch;",
+    'import { kms } from "./phala-contract-kms-core.mjs";',
+    "export const posture = launch && kms;",
     "",
   ].join("\n"),
   "scripts/phala-production-posture-receipt.mjs": [
@@ -246,9 +277,9 @@ const MODULE_SOURCES = Object.freeze({
     'import "node:url";',
     'new URL("../deployments/phala-sdk-runtime-capsule-authority.json", import.meta.url);',
     'new URL("../deployments/phala-sdk-upstream-registry-evidence.json", import.meta.url);',
-    'new URL("./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs", import.meta.url);',
-    'new URL("./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt", import.meta.url);',
-    'new URL("./vendor/npm/phala-cloud-0.2.10.tgz", import.meta.url);',
+    'new URL("./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs", import.meta.url);',
+    'new URL("./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt", import.meta.url);',
+    'new URL("./vendor/npm/phala-cloud-0.4.0.tgz", import.meta.url);',
     'new URL("./vendor/npm/phala-dstack-sdk-0.5.8.tgz", import.meta.url);',
     'const dataUrl = "data:text/javascript,export default true";',
     "export const capsuleModule = import(dataUrl);",
@@ -322,13 +353,20 @@ const MODULE_SOURCES = Object.freeze({
     "export const release = launch && descriptorV2 && measurement;",
     "",
   ].join("\n"),
+  "scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs": [
+    'import { launch } from "./cvm-launch-intent-core.mjs";',
+    'import { descriptorV3 } from "./cvm-descriptor-runtime-authority-v3-core.mjs";',
+    'import { measurement } from "./phala-seven-cvm-measurement-policy.mjs";',
+    "export const release = launch && descriptorV3 && measurement;",
+    "",
+  ].join("\n"),
   "scripts/phala-seven-cvm-verifier-evidence.mjs": [
     'import "node:child_process";',
     'import "node:crypto";',
     'import "node:fs";',
     'import "node:path";',
     'import "node:url";',
-    'import { descriptorAuthorityV2 } from "./cvm-descriptor-runtime-authority-v2.mjs";',
+    'import { descriptorAuthorityV3 } from "./cvm-descriptor-runtime-authority-v3.mjs";',
     'import { nonliveRuntime } from "./phala-nonlive-bootstrap-authorization.mjs";',
     'import { postureReceipt } from "./phala-production-posture-receipt.mjs";',
     'import { openedRuntime } from "./phala-seven-cvm-opened-fd-runtime-core.mjs";',
@@ -336,7 +374,7 @@ const MODULE_SOURCES = Object.freeze({
     'import { release as releaseLegacy } from "./phala-seven-cvm-release-verification-authority-core.mjs";',
     'import { release as releaseCurrent } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";',
     'new URL("./phala-seven-cvm-dcap-verify.py", import.meta.url);',
-    "export const verifierEvidence = Boolean(descriptorAuthorityV2 && nonliveRuntime",
+    "export const verifierEvidence = Boolean(descriptorAuthorityV3 && nonliveRuntime",
     "  && postureReceipt && openedRuntime && historicalAuthority && releaseLegacy",
     "  && releaseCurrent);",
     "",
@@ -388,7 +426,8 @@ const MODULE_SOURCES = Object.freeze({
     'import { frontendReceipt } from "./frontend-build-candidate-receipt-core.mjs";',
     'import { liveAuthorization } from "./release-ceremony-authorization.mjs";',
     'import { lockProtocol } from "./release-ceremony-lock-protocol-core.mjs";',
-    "export const currentStage = frontendReceipt && liveAuthorization && lockProtocol;",
+    'import { receiptV4 } from "./phala-post-measurement-activation-receipt-v4-core.mjs";',
+    "export const currentStage = frontendReceipt && liveAuthorization && lockProtocol && receiptV4;",
     "",
   ].join("\n"),
   "scripts/release-ceremony-authorization.mjs": [
@@ -512,6 +551,7 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     "",
   ].join("\n"),
   "web/scripts/build-release-env.mjs": [
+    'import "./current-model-a-prebuild-semantic-validator.mjs";',
     'import "../../scripts/exact37-model-a-semantic-validator.mjs";',
     'import "../../scripts/operator-policy-packet-core.mjs";',
     'import "../../scripts/phala-seven-cvm-historical-transcript.mjs";',
@@ -520,12 +560,23 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     'new URL("./build-release-env.mjs", import.meta.url);',
     "",
   ].join("\n"),
+  "web/scripts/current-model-a-prebuild-semantic-validator.mjs": [
+    'import "node:util";',
+    'import "../../scripts/current-model-a-input-recipe-core.mjs";',
+    'import "../../scripts/exact37-model-a-semantic-validator.mjs";',
+    'import "../../scripts/phala-post-measurement-activation-receipt-v4-core.mjs";',
+    'import "./release-env-core.mjs";',
+    'import "./execution-policy-release-core-binding.mjs";',
+    "export const currentPrebuild = true;",
+    "",
+  ].join("\n"),
   "web/scripts/build-release-env.test.mjs":
     'new URL("./build-release-env.test.mjs", import.meta.url);\n',
   "web/scripts/deploy-cloudflare-core.test.mjs":
     'import "../../scripts/compute-workload-activation-observation-core.mjs";\n',
   "web/scripts/execution-policy-release-core-binding.mjs": [
     'import "../../scripts/execution-policy-release-core.mjs";',
+    'import "../../scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs";',
     'import "../../scripts/pre-ceremony-runtime-authority-core.mjs";',
     "",
   ].join("\n"),
@@ -549,8 +600,11 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     'new URL("./frontend-release-historical-core.mjs", import.meta.url);',
     "",
   ].join("\n"),
-  "web/scripts/release-env-core.mjs":
-    'import "../../scripts/compute-workload-activation-observation-core.mjs";\n',
+  "web/scripts/release-env-core.mjs": [
+    'import "../../scripts/compute-workload-activation-observation-core.mjs";',
+    'import "../../scripts/cvm-launch-intent-core.mjs";',
+    "",
+  ].join("\n"),
   "web/scripts/release-env-core.test.mjs": [
     "export const filter = new URL(",
     '  "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",',
@@ -784,11 +838,11 @@ const RESOURCE_BYTES = Object.freeze({
   "PROJECT.md": "# Project\nBound fixture.\n",
   "README.md": "# Readme\nBound fixture.\n",
   "scripts/phala-seven-cvm-dcap-verify.py": "# pinned verifier fixture\n",
-  "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs":
+  "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs":
     "export const fixtureCapsule = true;\n",
-  "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt":
+  "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt":
     "Fixture capsule legal notice.\n",
-  "scripts/vendor/npm/phala-cloud-0.2.10.tgz":
+  "scripts/vendor/npm/phala-cloud-0.4.0.tgz":
     "fixture cloud source tarball bytes\n",
   "scripts/vendor/npm/phala-dstack-sdk-0.5.8.tgz":
     "fixture dstack source tarball bytes\n",
@@ -869,13 +923,57 @@ test("external closure is exact, typed, canonical, and domain separated", async 
     // checked-in source projection KAT at the end of this file.
     assert.equal(
       closure.aggregate_sha256,
-      "sha256:7346251b7d92fe22f93a14272a4edfebfea14df77f2a5a58e8ccc6951d610d5b",
+      "sha256:0075c555de94cb9fbbeb8d2be51d6c19c5d2bfee0a1fd90a597bafb48d05ad14",
     );
     assert.equal(
       cloudflareExternalBuildClosureSha256(closure),
-      "sha256:e6add5fd9e613e9dbd911d51f84e329df1b22b487b8515ee2bc5302c025e6050",
+      "sha256:c093461bee051a7c03f2386a486590431ab7d49a091314d5214d36f27209f8f6",
     );
   });
+});
+
+test("current prebuild orchestration does not expand root packages, back-edges, or privileged importers", async () => {
+  assert.equal(closureTest.MODULE_ENTRYPOINT_PATHS.includes(
+    "scripts/current-model-a-prebuild-semantic-validator.mjs",
+  ), false);
+  assert.equal(closureTest.MODULE_CLOSURE_PATHS.includes(
+    "scripts/current-model-a-input-recipe-core.mjs",
+  ), true);
+  assert.deepEqual(closureTest.MODULE_WEB_BACKEDGE_PATHS, [
+    "web/scripts/external-five-historical-evidence-core.mjs",
+    "web/scripts/frontend-release-historical-core.mjs",
+    "web/scripts/independent-eip191-replay-core.mjs",
+  ]);
+  assert.equal(closureTest.MODULE_BARE_PACKAGE_IMPORTS.includes("viem"), false);
+  assert.equal(closureTest.MODULE_NODE_BUILTIN_IMPORTS.includes("node:net"), false);
+  const cases = [
+    {
+      target: "scripts/current-model-a-input-recipe-core.mjs",
+      source: 'import "../web/scripts/release-env-core.mjs";\nexport const recipe = true;\n',
+      error: /undeclared import or web back-edge/,
+    },
+    {
+      target: "scripts/current-model-a-input-recipe-core.mjs",
+      source: 'import "viem";\nexport const recipe = true;\n',
+      error: /unaudited bare package import/,
+    },
+    {
+      target: "scripts/current-model-a-input-recipe-core.mjs",
+      source: 'import "node:net";\nexport const recipe = true;\n',
+      error: /unsupported or unaudited URI module specifier/,
+    },
+    {
+      target: "web/scripts/current-model-a-prebuild-semantic-validator.mjs",
+      source: `import "node:child_process";\n${WEB_SCRIPT_SOURCES["web/scripts/current-model-a-prebuild-semantic-validator.mjs"]}`,
+      error: /grants node:child_process only to its exact reviewed importers/,
+    },
+  ];
+  for (const entry of cases) {
+    await withFixture(async (root) => {
+      await writeFixtureFile(root, entry.target, entry.source);
+      await assert.rejects(projectCloudflareExternalBuildClosure(root), entry.error);
+    });
+  }
 });
 
 test("closure rejects omission, undeclared transitive imports, extras, and back-edges", async () => {
@@ -1818,6 +1916,25 @@ test("CSS permits only the reviewed quoted data URL and no import resolver", asy
 });
 
 test("external resource authority requires exact live AST request tuples", async () => {
+  for (const currentPath of [
+    "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
+    "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
+    "./vendor/npm/phala-cloud-0.4.0.tgz",
+  ]) {
+    await withFixture(async (root) => {
+      const loader = "scripts/phala-sdk-runtime-capsule.mjs";
+      await writeFixtureFile(root, loader, MODULE_SOURCES[loader].replace(
+        currentPath,
+        currentPath.replace("0.4.0", "0.2.10"),
+      ));
+      await assert.rejects(
+        projectCloudflareExternalBuildClosure(root),
+        /import-meta URL graph is not exact|undeclared external resource/,
+        "historical SDK resource names cannot substitute for current capsule inputs",
+      );
+    });
+  }
+
   await withFixture(async (root) => {
     await unlink(path.join(root, "web/scripts/cloudflare-release-artifact-core.test.mjs"));
     await assert.rejects(
@@ -1997,26 +2114,30 @@ test("TypeScript parser pin is byte-exact and projected fixtures need no node_mo
 test("real checked-in external bytes match the final release projection KAT", async () => {
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
-  assert.equal(closure.entrypoints.length, 32);
-  assert.equal(closure.files.length, 76);
+  assert.equal(closure.entrypoints.length, 36);
+  assert.equal(closure.files.length, 82);
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:17e76f66cddc8fc1627d435c1b992bfc746a0eff605673a0b8de31a20642784d",
+    "sha256:ed61747e260ed256a1c9a1cc01a13b0be965603c0a9fb828e666cfd211acdfe2",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:4be516bd702f970308cf758d2f2feb7487f199f6be9821943e72910e1328d163",
+    "sha256:828ac77500949d1d686ef5557dbff98df2dafb47db0be0757e67cda723cc205b",
   );
   assert.deepEqual(closureTest.MODULE_ENTRYPOINT_PATHS, [
     "scripts/canonical-authority-graph.mjs",
     "scripts/compute-workload-activation-observation-core.mjs",
+    "scripts/current-model-a-input-recipe-core.mjs",
+    "scripts/cvm-launch-intent-core.mjs",
     "scripts/exact37-model-a-semantic-validator.mjs",
     "scripts/execution-policy-release-core-v3-historical.fixture.mjs",
     "scripts/execution-policy-release-core-v3-historical.mjs",
     "scripts/execution-policy-release-core.fixture.mjs",
     "scripts/execution-policy-release-core.mjs",
     "scripts/operator-policy-packet-core.mjs",
+    "scripts/phala-post-measurement-activation-receipt-v4-core.mjs",
     "scripts/phala-seven-cvm-historical-transcript.mjs",
+    "scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs",
     "scripts/pre-ceremony-runtime-authority-core.mjs",
     "scripts/release-authority-current-c-v6-core.mjs",
     "scripts/release-authority-historical-core.mjs",
@@ -2029,10 +2150,12 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/canonical-authority-graph.mjs",
     "scripts/canonical-public-https-url-core.mjs",
     "scripts/compute-workload-activation-observation-core.mjs",
+    "scripts/current-model-a-input-recipe-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
-    "scripts/cvm-descriptor-runtime-authority-v2.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v3-core.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v3.mjs",
     "scripts/cvm-launch-intent-core.mjs",
     "scripts/cvm-release-descriptor-set-constants.mjs",
     "scripts/cvm-release-descriptor-set-constants-v3.mjs",
@@ -2046,12 +2169,15 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/execution-policy-release-core.mjs",
     "scripts/frontend-build-candidate-receipt-core.mjs",
     "scripts/operator-policy-packet-core.mjs",
+    "scripts/phala-app-compose-wire-core.mjs",
     "scripts/phala-bootstrap-public-environment-authority-core.mjs",
+    "scripts/phala-contract-kms-core.mjs",
     "scripts/phala-executor-state-core.mjs",
     "scripts/phala-nonlive-bootstrap-authorization-core.mjs",
     "scripts/phala-nonlive-bootstrap-authorization.mjs",
     "scripts/phala-post-measurement-activation-core.mjs",
     "scripts/phala-post-measurement-activation-receipt-core.mjs",
+    "scripts/phala-post-measurement-activation-receipt-v4-core.mjs",
     "scripts/phala-production-execution-policy.mjs",
     "scripts/phala-production-posture-core.mjs",
     "scripts/phala-production-posture-receipt.mjs",
@@ -2066,6 +2192,7 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/phala-seven-cvm-opened-fd-runtime-core.mjs",
     "scripts/phala-seven-cvm-release-verification-authority-core.mjs",
     "scripts/phala-seven-cvm-release-verification-authority-v4-core.mjs",
+    "scripts/phala-seven-cvm-release-verification-authority-v5-core.mjs",
     "scripts/phala-seven-cvm-verifier-evidence.mjs",
     "scripts/pre-ceremony-runtime-authority-core.mjs",
     "scripts/release-authority-current-c-v6-core.mjs",
@@ -2212,9 +2339,9 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/phala-sdk-runtime-capsule.mjs": [
       "../deployments/phala-sdk-runtime-capsule-authority.json",
       "../deployments/phala-sdk-upstream-registry-evidence.json",
-      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
-      "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
-      "./vendor/npm/phala-cloud-0.2.10.tgz",
+      "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
+      "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
+      "./vendor/npm/phala-cloud-0.4.0.tgz",
       "./vendor/npm/phala-dstack-sdk-0.5.8.tgz",
     ],
     "web/scripts/bootstrap-retirement.test.mjs": [
@@ -2324,24 +2451,24 @@ test("real checked-in external bytes match the final release projection KAT", as
     },
     {
       consumer: "scripts/phala-sdk-runtime-capsule.mjs",
-      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
       query: "",
       requestKind: "import_meta_url",
-      specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs",
+      specifier: "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs",
     },
     {
       consumer: "scripts/phala-sdk-runtime-capsule.mjs",
-      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      externalPath: "scripts/vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
       query: "",
       requestKind: "import_meta_url",
-      specifier: "./vendor/phala-sdk-runtime-capsule-0.2.10-0.5.8.mjs.LEGAL.txt",
+      specifier: "./vendor/phala-sdk-runtime-capsule-0.4.0-0.5.8.mjs.LEGAL.txt",
     },
     {
       consumer: "scripts/phala-sdk-runtime-capsule.mjs",
-      externalPath: "scripts/vendor/npm/phala-cloud-0.2.10.tgz",
+      externalPath: "scripts/vendor/npm/phala-cloud-0.4.0.tgz",
       query: "",
       requestKind: "import_meta_url",
-      specifier: "./vendor/npm/phala-cloud-0.2.10.tgz",
+      specifier: "./vendor/npm/phala-cloud-0.4.0.tgz",
     },
     {
       consumer: "scripts/phala-sdk-runtime-capsule.mjs",

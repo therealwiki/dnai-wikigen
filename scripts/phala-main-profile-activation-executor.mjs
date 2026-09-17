@@ -5,6 +5,10 @@ import {
   CVM_MAIN_LIVE_DEAL_PROFILE_POLICY,
 } from "./cvm-launch-intent-core.mjs";
 import {
+  assertCanonicalPlainDataGraph,
+  deepFreezeCanonicalPlainDataGraph,
+} from "./canonical-authority-graph.mjs";
+import {
   assemblePrivateAccountGenesisEnvironment,
   assemblePrivateAccountGenesisRetirementEnvironment,
   assemblePrivateLiveDealEnvironment,
@@ -18,12 +22,20 @@ import {
 } from "./phala-post-measurement-activation-receipt.mjs";
 import {
   authenticatedPhalaSdkObservationSha256,
+  bindPinnedPhalaCommittedEnvironmentKeyLookup,
   createPinnedPhalaProductionSdkAdapter,
   phalaAuthenticatedSdkRequestSemanticsSha256,
   readAuthenticatedPhalaSdkObservationResponse,
   resolvePinnedPhalaPackageIdentity,
   verifyImmediatePinnedLegacyEnvironmentKeyRefetch,
 } from "./phala-production-sdk-adapter.mjs";
+import { readPhalaProductionExecutorRuntimeDependencies } from "./phala-production-executor-runtime.mjs";
+import { phalaProductionTargetAuthorityDigest } from "./phala-production-target-authority.mjs";
+import {
+  assertVerifiedProductionCvmPostureReceipt,
+  verifyProductionCvmPostureObservation,
+} from "./phala-production-posture-receipt.mjs";
+import { projectProductionCvmPostureReadback } from "./phala-production-posture-core.mjs";
 import {
   assertFreshProductionFinalizedReadiness,
   collectProductionFinalizedReadiness,
@@ -122,7 +134,7 @@ function observationResponse(observation, adapter, method) {
   return readAuthenticatedPhalaSdkObservationResponse(observation, {
     adapter,
     method,
-    domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+    domain: ["getCurrentUser", "getWorkspace"].includes(method) ? null : "main_runtime_cvm",
   });
 }
 
@@ -130,7 +142,7 @@ function observationDigest(observation, adapter, method) {
   return authenticatedPhalaSdkObservationSha256(observation, {
     adapter,
     method,
-    domain: method === "getCurrentUser" ? null : "main_runtime_cvm",
+    domain: ["getCurrentUser", "getWorkspace"].includes(method) ? null : "main_runtime_cvm",
   });
 }
 
@@ -207,6 +219,7 @@ export async function createProductionPhalaMainProfileMutator({
   accountGenesisSecretInput,
   baseAssembly,
   compatibilityReceipt,
+  launchRuntimeResult,
   recordMutationAttempt,
   recordMutationObservation,
   sdkWireTransformStagingReceipt,
@@ -217,6 +230,43 @@ export async function createProductionPhalaMainProfileMutator({
     || typeof recordMutationObservation !== "function") {
     fail("production main profile mutation requires durable attempt and observation journals");
   }
+  const launch = readPhalaProductionExecutorRuntimeDependencies(launchRuntimeResult);
+  const historicalPosture = assertVerifiedProductionCvmPostureReceipt(
+    launch.production_posture_receipts.find((entry) => entry.domain === "main_runtime_cvm"),
+  );
+  if (phalaProductionTargetAuthorityDigest(targetAuthority, {
+    compatibilityReceipt, sdkWireTransformStagingReceipt,
+  }) !== launch.production_target_authority_evidence.productionTargetAuthoritySha256
+    || target.app_id !== historicalPosture.app_id || target.cvm_id !== historicalPosture.cvm_id
+    || target.compose_hash !== historicalPosture.compose_hash
+    || target.os_image_hash !== historicalPosture.os_image_hash
+    || !historicalPosture.prepared_binding || !historicalPosture.environment_public_key) {
+    fail("main profile mutation target differs from the provenance-replayed contract-KMS launch");
+  }
+  // Retain the reverified immutable launch identity, not caller-owned objects
+  // that could change while a profile's asynchronous observations are running.
+  const retainedTarget = launch.production_target_authority_evidence.productionTargetAuthority;
+  assertCanonicalPlainDataGraph(retainedTarget, { label: "retained launch target authority" });
+  targetAuthority = deepFreezeCanonicalPlainDataGraph(structuredClone(retainedTarget), {
+    label: "main profile immutable launch target authority",
+  });
+  if (phalaProductionTargetAuthorityDigest(targetAuthority, {
+    compatibilityReceipt, sdkWireTransformStagingReceipt,
+  }) !== launch.production_target_authority_evidence.productionTargetAuthoritySha256) {
+    fail("retained launch target authority changed before main profile mutation");
+  }
+  target = Object.freeze({
+    app_id: historicalPosture.app_id, cvm_id: historicalPosture.cvm_id,
+    compose_hash: historicalPosture.compose_hash, os_image_hash: historicalPosture.os_image_hash,
+  });
+  const postureExpected = {
+    appId: historicalPosture.app_id, composeHash: historicalPosture.compose_hash,
+    instanceType: historicalPosture.instance_type, diskSize: historicalPosture.disk_size,
+    kmsProjection: Object.fromEntries(["contract", "replicas", "eligible_placements", "gateways"]
+      .map((key) => [key, targetAuthority.kms[key]])),
+    preparedBinding: historicalPosture.prepared_binding,
+    environmentPublicKey: historicalPosture.environment_public_key,
+  };
   const adapter = await createPinnedPhalaProductionSdkAdapter({
     targetAuthority,
     compatibilityReceipt,
@@ -259,6 +309,29 @@ export async function createProductionPhalaMainProfileMutator({
         automatic_retry_authorized: false,
         live_traffic_authorized: false,
       }));
+      const workspaceObservation = await adapter.getWorkspace();
+      const prePatchInfoObservation = await adapter.getCvmInfo({
+        domain: "main_runtime_cvm", cvmId: target.cvm_id,
+      });
+      const posture = verifyProductionCvmPostureObservation({
+        domain: "main_runtime_cvm", cvmId: target.cvm_id,
+        cvmInfo: projectProductionCvmPostureReadback(
+          observationResponse(prePatchInfoObservation, adapter, "getCvmInfo"), target.cvm_id,
+        ),
+        expected: postureExpected,
+      });
+      bindPinnedPhalaCommittedEnvironmentKeyLookup({
+        adapter, cvmInfoObservation: prePatchInfoObservation, postureReceipt: posture,
+      });
+      for (const [sdkAction, observation] of [
+        ["getWorkspace", workspaceObservation], ["getCvmInfo", prePatchInfoObservation],
+      ]) {
+        await recordMutationObservation(Object.freeze({
+          mutation_name: name, sdk_action: sdkAction,
+          observation_sha256: observationDigest(observation, adapter, sdkAction),
+          automatic_retry_authorized: false, live_traffic_authorized: false,
+        }));
+      }
       const firstEnvironmentKey = await adapter.getAppEnvEncryptPubKey({
         domain: "main_runtime_cvm",
         appId: target.app_id,
@@ -418,6 +491,10 @@ export async function createProductionPhalaMainProfileMutator({
         "getCvmAttestation",
       );
       assertPostRestartTarget(info, attestation, target);
+      verifyProductionCvmPostureObservation({
+        domain: "main_runtime_cvm", cvmId: target.cvm_id,
+        cvmInfo: projectProductionCvmPostureReadback(info, target.cvm_id), expected: postureExpected,
+      });
       return Object.freeze({
         mutation_name: name,
         from_profile: from,

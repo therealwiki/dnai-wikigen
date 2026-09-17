@@ -27,15 +27,15 @@ import {
 } from "./phala-pinned-private-directory.mjs";
 
 export const PHALA_POST_MEASUREMENT_ACTIVATION_STATE_SCHEMA =
-  "dnai.phala-post-measurement-activation-state.v2";
+  "dnai.phala-post-measurement-activation-state.v3";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_JOURNAL_SCHEMA =
-  "dnai.phala-post-measurement-activation-journal.v2";
+  "dnai.phala-post-measurement-activation-journal.v3";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_LOCK_SCHEMA =
   "dnai.phala-post-measurement-activation-lock.v1";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_STATE_DOMAIN =
-  "dnai-wikigen/phala-post-measurement-activation-state/v2\0";
+  "dnai-wikigen/phala-post-measurement-activation-state/v3\0";
 export const PHALA_POST_MEASUREMENT_ACTIVATION_JOURNAL_DOMAIN =
-  "dnai-wikigen/phala-post-measurement-activation-journal/v2\0";
+  "dnai-wikigen/phala-post-measurement-activation-journal/v3\0";
 
 export const PHALA_POST_MEASUREMENT_ACTIVATION_TERMINAL_STATUSES = Object.freeze([
   "complete",
@@ -178,6 +178,7 @@ function normalizeObservation(value, index) {
   ], `sdk_observations[${index}]`);
   const allowedMethods = [
     "getCurrentUser",
+    "getWorkspace",
     "getAppEnvEncryptPubKey",
     "updateCvmEnvs",
     "restartCvm",
@@ -227,6 +228,8 @@ function normalizeMutationAttempt(value, index) {
 function expectedMethodPrefix(length) {
   return [
     "getCurrentUser",
+    "getWorkspace",
+    "getCvmInfo",
     "getAppEnvEncryptPubKey",
     "getAppEnvEncryptPubKey",
     "updateCvmEnvs",
@@ -278,45 +281,45 @@ function assertStatusShape(state) {
       compute: false, failure: null, complete: false,
     }))
     || (status === "pre_patch_reads_observed" && exact({
-      observations: 3, attempts: 0, pending: null, arena: false,
+      observations: 5, attempts: 0, pending: null, arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "patch_attempt_durable" && exact({
-      observations: 3, attempts: 1, pending: "updateCvmEnvs", arena: false,
+      observations: 5, attempts: 1, pending: "updateCvmEnvs", arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "patch_observed" && exact({
-      observations: 4, attempts: 1, pending: null, arena: false,
+      observations: 6, attempts: 1, pending: null, arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "restart_attempt_durable" && exact({
-      observations: 4, attempts: 2, pending: "restartCvm", arena: false,
+      observations: 6, attempts: 2, pending: "restartCvm", arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "restart_observed" && exact({
-      observations: 5, attempts: 2, pending: null, arena: false,
+      observations: 7, attempts: 2, pending: null, arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "post_restart_authenticated_phala_attestation_observation_verified"
       && exact({
-      observations: 7, attempts: 2, pending: null, arena: false,
+      observations: 9, attempts: 2, pending: null, arena: false,
       compute: false, failure: null, complete: false,
     }))
     || (status === "arena_worker_activation_verified" && exact({
-      observations: 7, attempts: 2, pending: null, arena: true,
+      observations: 9, attempts: 2, pending: null, arena: true,
       compute: false, failure: null, complete: false,
     }))
     || (status === "compute_recipient_activation_verified" && exact({
-      observations: 7, attempts: 2, pending: null, arena: true,
+      observations: 9, attempts: 2, pending: null, arena: true,
       compute: true, failure: null, complete: false,
     }))
     || (status === "complete" && exact({
-      observations: 7, attempts: 2, pending: null, arena: true,
+      observations: 9, attempts: 2, pending: null, arena: true,
       compute: true, failure: null, complete: true,
     }))
     || (status === "ambiguous_reconcile_required"
-      && state.sdk_observations.length >= 3
-      && state.sdk_observations.length <= 4
+      && state.sdk_observations.length >= 5
+      && state.sdk_observations.length <= 6
       && state.mutation_attempts.length >= 1
       && state.mutation_attempts.length <= 2
       && state.pending_mutation?.action
@@ -333,13 +336,13 @@ function assertStatusShape(state) {
       && state.completed_at === null)
     || (status === "post_restart_evidence_operator_review_required"
       && (exact({
-        observations: 5, attempts: 2, pending: null, arena: false,
+        observations: 7, attempts: 2, pending: null, arena: false,
         compute: false, failure: "post_restart_evidence_unavailable", complete: false,
       }) || exact({
-        observations: 7, attempts: 2, pending: null, arena: false,
+        observations: 9, attempts: 2, pending: null, arena: false,
         compute: false, failure: "arena_worker_activation_unavailable", complete: false,
       }) || exact({
-        observations: 7, attempts: 2, pending: null, arena: true,
+        observations: 9, attempts: 2, pending: null, arena: true,
         compute: false, failure: "compute_recipient_activation_unavailable", complete: false,
       })))
   );
@@ -366,7 +369,7 @@ export function normalizePhalaPostMeasurementActivationState(value) {
     || parsed.automatic_cleanup_authorized !== false
     || parsed.live_traffic_authorized !== false
     || !Array.isArray(parsed.sdk_observations)
-    || parsed.sdk_observations.length > 7
+    || parsed.sdk_observations.length > 9
     || !Array.isArray(parsed.mutation_attempts)
     || parsed.mutation_attempts.length > 2) {
     throw new Error("post-measurement activation state boundary is invalid");
@@ -471,7 +474,7 @@ export function normalizePhalaPostMeasurementActivationState(value) {
           ? 9
           : state.arena_worker_presence_sha256 !== null
             ? 8
-            : state.sdk_observations.length === 7 ? 7 : 6,
+            : state.sdk_observations.length === 9 ? 7 : 6,
     }[state.status];
     if (base !== undefined) return base;
     if (state.status === "ambiguous_reconcile_required") {
@@ -488,8 +491,8 @@ export function normalizePhalaPostMeasurementActivationState(value) {
   }
   for (let index = 0; index < state.mutation_attempts.length; index += 1) {
     const attemptMs = Date.parse(state.mutation_attempts[index].recorded_at);
-    const previousObservationIndex = index === 0 ? 2 : 3;
-    const mutationObservationIndex = index === 0 ? 3 : 4;
+    const previousObservationIndex = index === 0 ? 4 : 5;
+    const mutationObservationIndex = index === 0 ? 5 : 6;
     if (attemptMs < observedTimes[previousObservationIndex]
       || (observedTimes[mutationObservationIndex] !== undefined
         && (attemptMs > observedTimes[mutationObservationIndex]
@@ -499,7 +502,7 @@ export function normalizePhalaPostMeasurementActivationState(value) {
       throw new Error("activation mutation was not durably recorded before observation");
     }
   }
-  const postRestartAttestationMs = observedTimes[6];
+  const postRestartAttestationMs = observedTimes[8];
   const arenaVerifiedMs = state.arena_worker_presence_verified_at === null
     ? null
     : Date.parse(state.arena_worker_presence_verified_at);
@@ -610,7 +613,7 @@ export function transitionPhalaPostMeasurementActivationState(value, event = {})
   if (event.type === "pre_patch_reads_observed" && state.status === "initialized") {
     const observations = normalizedObservationBatch(
       event.observations,
-      ["getCurrentUser", "getAppEnvEncryptPubKey", "getAppEnvEncryptPubKey"],
+      ["getCurrentUser", "getWorkspace", "getCvmInfo", "getAppEnvEncryptPubKey", "getAppEnvEncryptPubKey"],
       0,
     );
     next = {

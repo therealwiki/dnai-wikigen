@@ -245,7 +245,7 @@ def test_signed_challenge_quote_and_exact_workload_verdict_boundary(
     )
     assert activation.recipient_key_id == recipient.key_id
     assert activation.to_dict()["schema"] == (
-        "dnai.compute.workload-recipient-activation.v3"
+        "dnai.compute.workload-recipient-activation.v4"
     )
     assert activation.recipient_evidence_lease_expires_at == activation.expires_at
     assert activation.measurement_policy_set_sha256 == (

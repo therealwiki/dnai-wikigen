@@ -22,6 +22,10 @@ import {
   transitionPhalaPostMeasurementActivationState,
 } from "./phala-post-measurement-activation-journal.mjs";
 import {
+  normalizePhalaPostMeasurementActivationState as normalizeHistoricalV2State,
+  phalaPostMeasurementActivationStateSha256 as historicalV2StateSha256,
+} from "./phala-post-measurement-activation-journal-v2.mjs";
+import {
   closePhalaPinnedPrivateDirectory,
   phalaPinnedPrivateDirectoryIdentityAnchorSha256,
 } from "./phala-pinned-private-directory.mjs";
@@ -71,8 +75,10 @@ function observation(method, callSequence, digit, observedAt) {
 function readPrefix() {
   return [
     observation("getCurrentUser", 1, "9", "2026-07-21T12:00:00Z"),
-    observation("getAppEnvEncryptPubKey", 2, "a", "2026-07-21T12:00:01Z"),
-    observation("getAppEnvEncryptPubKey", 3, "b", "2026-07-21T12:00:02Z"),
+    observation("getWorkspace", 2, "8", "2026-07-21T12:00:00Z"),
+    observation("getCvmInfo", 3, "7", "2026-07-21T12:00:00Z"),
+    observation("getAppEnvEncryptPubKey", 4, "a", "2026-07-21T12:00:01Z"),
+    observation("getAppEnvEncryptPubKey", 5, "b", "2026-07-21T12:00:02Z"),
   ];
 }
 
@@ -93,7 +99,7 @@ function completeState() {
     type: "mutation_observed",
     action: "updateCvmEnvs",
     observation: {
-      ...observation("updateCvmEnvs", 4, "d", "2026-07-21T12:00:04Z"),
+      ...observation("updateCvmEnvs", 6, "d", "2026-07-21T12:00:04Z"),
       request_semantics_sha256: patchSemantics,
     },
   });
@@ -108,15 +114,15 @@ function completeState() {
     type: "mutation_observed",
     action: "restartCvm",
     observation: {
-      ...observation("restartCvm", 5, "f", "2026-07-21T12:00:06Z"),
+      ...observation("restartCvm", 7, "f", "2026-07-21T12:00:06Z"),
       request_semantics_sha256: restartSemantics,
     },
   });
   state = transitionPhalaPostMeasurementActivationState(state, {
     type: "post_restart_authenticated_phala_attestation_observation_verified",
     observations: [
-      observation("getCvmInfo", 6, "1", "2026-07-21T12:00:07Z"),
-      observation("getCvmAttestation", 7, "2", "2026-07-21T12:00:08Z"),
+      observation("getCvmInfo", 8, "1", "2026-07-21T12:00:07Z"),
+      observation("getCvmAttestation", 9, "2", "2026-07-21T12:00:08Z"),
     ],
   });
   state = transitionPhalaPostMeasurementActivationState(state, {
@@ -137,6 +143,7 @@ function completeState() {
 
 test("activation state freezes journal-before-PATCH, restart, fresh reads, proof, completion", () => {
   const state = completeState();
+  assert.equal(state.schema, "dnai.phala-post-measurement-activation-state.v3");
   assert.equal(state.status, "complete");
   assert.equal(state.sequence, 9);
   assert.deepEqual(state.profile_activation, {
@@ -151,6 +158,8 @@ test("activation state freezes journal-before-PATCH, restart, fresh reads, proof
   );
   assert.deepEqual(state.sdk_observations.map(({ method }) => method), [
     "getCurrentUser",
+    "getWorkspace",
+    "getCvmInfo",
     "getAppEnvEncryptPubKey",
     "getAppEnvEncryptPubKey",
     "updateCvmEnvs",
@@ -165,6 +174,36 @@ test("activation state freezes journal-before-PATCH, restart, fresh reads, proof
   assert.match(phalaPostMeasurementActivationStateSha256(state), /^sha256:[0-9a-f]{64}$/);
   assert.deepEqual(normalizePhalaPostMeasurementActivationState(state), state);
   assert.equal(JSON.stringify(state).includes("encrypted_env"), false);
+});
+
+test("current nine-call journals reject the historical seven-call version without relabeling it", () => {
+  const current = completeState();
+  const historical = structuredClone(current);
+  historical.schema = "dnai.phala-post-measurement-activation-state.v2";
+  historical.sdk_observations = historical.sdk_observations
+    .filter((_entry, index) => index !== 1 && index !== 2)
+    .map((entry, index) => ({ ...entry, call_sequence: index + 1 }));
+  assert.deepEqual(normalizeHistoricalV2State(historical), historical);
+  assert.throws(() => normalizePhalaPostMeasurementActivationState(historical));
+  assert.throws(() => normalizeHistoricalV2State(current));
+  assert.notEqual(historicalV2StateSha256(historical), phalaPostMeasurementActivationStateSha256(current));
+  historical.schema = current.schema;
+  assert.throws(() => normalizePhalaPostMeasurementActivationState(historical));
+});
+
+test("pre-PATCH journal prefix requires account, workspace, and CVM before both key reads", () => {
+  for (const mutate of [
+    (reads) => reads.splice(1, 1),
+    (reads) => reads.splice(2, 1),
+    (reads) => { [reads[1], reads[2]] = [reads[2], reads[1]]; },
+  ]) {
+    const reads = readPrefix();
+    mutate(reads);
+    reads.forEach((entry, index) => { entry.call_sequence = index + 1; });
+    assert.throws(() => transitionPhalaPostMeasurementActivationState(initial(), {
+      type: "pre_patch_reads_observed", observations: reads,
+    }));
+  }
 });
 
 test("pure journal projection is exact and deeply frozen but carries no durable brand", () => {
@@ -196,6 +235,8 @@ test("pure journal projection is exact and deeply frozen but carries no durable 
 test("activation journal requires real calendar seconds and accepts a leap-day month boundary", () => {
   const leapBoundary = structuredClone(completeState());
   const observationTimes = [
+    "2024-02-29T23:59:49Z",
+    "2024-02-29T23:59:50Z",
     "2024-02-29T23:59:51Z",
     "2024-02-29T23:59:52Z",
     "2024-02-29T23:59:53Z",
@@ -262,7 +303,7 @@ test("durable activation journal is mode-0600, monotonic, branded, and ciphertex
       type: "mutation_observed",
       action: "updateCvmEnvs",
       observation: {
-        ...observation("updateCvmEnvs", 4, "d", "2026-07-21T12:00:04Z"),
+        ...observation("updateCvmEnvs", 6, "d", "2026-07-21T12:00:04Z"),
         request_semantics_sha256: patchSemantics,
       },
     });
@@ -279,7 +320,7 @@ test("durable activation journal is mode-0600, monotonic, branded, and ciphertex
       type: "mutation_observed",
       action: "restartCvm",
       observation: {
-        ...observation("restartCvm", 5, "f", "2026-07-21T12:00:06Z"),
+        ...observation("restartCvm", 7, "f", "2026-07-21T12:00:06Z"),
         request_semantics_sha256: restartSemantics,
       },
     });
@@ -288,8 +329,8 @@ test("durable activation journal is mode-0600, monotonic, branded, and ciphertex
       type:
         "post_restart_authenticated_phala_attestation_observation_verified",
       observations: [
-        observation("getCvmInfo", 6, "1", "2026-07-21T12:00:07Z"),
-        observation("getCvmAttestation", 7, "2", "2026-07-21T12:00:08Z"),
+        observation("getCvmInfo", 8, "1", "2026-07-21T12:00:07Z"),
+        observation("getCvmAttestation", 9, "2", "2026-07-21T12:00:08Z"),
       ],
     });
     journal = persistPhalaPostMeasurementActivationJournal({ directory, state, lock });
@@ -533,7 +574,7 @@ test("a durable mutation attempt quarantines ambiguity and can never retry autom
     () => transitionPhalaPostMeasurementActivationState(state, {
       type: "mutation_observed",
       action: "updateCvmEnvs",
-      observation: observation("updateCvmEnvs", 4, "d", "2026-07-21T12:00:04Z"),
+      observation: observation("updateCvmEnvs", 6, "d", "2026-07-21T12:00:04Z"),
     }),
     /terminal/,
   );

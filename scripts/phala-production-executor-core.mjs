@@ -6,6 +6,7 @@ import {
 import {
   PHALA_OS_IMAGE_CATALOG_ENTRY,
 } from "./cvm-launch-intent-core.mjs";
+import { assertPhalaPreparedKmsBinding } from "./phala-contract-kms-core.mjs";
 import {
   PHALA_EXECUTOR_STATE_SCHEMA,
   normalizeCompletedPhalaExecutorState,
@@ -60,10 +61,12 @@ export {
 };
 export const PHALA_EXACT_SDK_CALL_SEQUENCE = Object.freeze([
   "getCurrentUser",
+  "getWorkspace",
   "getCvmCreateResources",
+  "listKmsContracts",
+  "getKmsContract",
+  "listKmsContractNodes",
   "getOsImages",
-  "getKmsList",
-  "getKmsInfo",
   "nextAppIds",
   "provisionCvm:supporting-six-then-main",
   "getAppEnvEncryptPubKey:first-pass-all-seven",
@@ -246,6 +249,13 @@ export function buildExplicitAppCompose({
   };
 }
 
+function exactKmsContractId(value) {
+  if (typeof value !== "string" || !/^kc_[A-Za-z0-9]{1,128}$/.test(value)) {
+    throw new Error("KMS contract id must be an exact opaque kc_ identifier");
+  }
+  return value;
+}
+
 export function buildExactProvisionRequest({
   domain,
   applicationName,
@@ -254,7 +264,7 @@ export function buildExactProvisionRequest({
   activeEnvironmentKeys,
   appId,
   nonce,
-  kmsId,
+  kmsContractId,
 } = {}) {
   if (!PHALA_EXECUTION_ORDER.includes(domain)) throw new Error("unknown CVM launch domain");
   const resource = exactRecord(resourceTarget, [
@@ -293,7 +303,8 @@ export function buildExactProvisionRequest({
     image: PHALA_OS_IMAGE_CATALOG_ENTRY.name,
     compose_file: structuredClone(appCompose),
     listed: false,
-    kms_id: exactIdentifier(kmsId, "KMS id"),
+    kms: "PHALA",
+    kms_contract_id: exactKmsContractId(kmsContractId),
     key_provider_mode: "kms",
     skip_gateway: appCompose.gateway_enabled !== true,
     env_keys: envKeys,
@@ -383,9 +394,11 @@ export function assertPairwiseDistinctSignedEnvironmentKeys(bindings) {
 
 export function assertPreparedCvmObservation({
   response,
+  rawPlacement,
+  domain,
   appId,
   expectedComposeHash,
-  expectedKmsId,
+  expectedKmsProjection,
   expectedInstanceType,
   expectedOsImageHash = PHALA_OS_IMAGE_CATALOG_ENTRY.os_image_hash,
 } = {}) {
@@ -394,11 +407,13 @@ export function assertPreparedCvmObservation({
   if (normalizedAppId !== exactAppId(appId, "expected app id")
     || response.compose_hash !== exactBareDigest(expectedComposeHash, "expected compose hash")
     || response.compose_hash !== response.compose_hash?.toLowerCase()
-    || response.kms_id !== expectedKmsId
     || response.instance_type !== expectedInstanceType
     || response.os_image_hash !== expectedOsImageHash) {
     throw new Error("prepare response differs from the exact reviewed request and catalogs");
   }
+  const kmsBinding = assertPhalaPreparedKmsBinding({
+    response, rawPlacement, domain, kmsProjection: expectedKmsProjection,
+  });
   const returnedKey = response.app_env_encrypt_pubkey == null
     ? null
     : normalizeSignedEnvironmentKeyResponse({
@@ -408,15 +423,9 @@ export function assertPreparedCvmObservation({
   return {
     app_id: normalizedAppId,
     compose_hash: response.compose_hash,
-    kms_id: exactIdentifier(response.kms_id, "prepare KMS id"),
+    ...kmsBinding,
     instance_type: response.instance_type,
     os_image_hash: response.os_image_hash,
-    node_id: Number.isSafeInteger(response.node_id) && response.node_id > 0
-      ? response.node_id
-      : null,
-    device_id: response.device_id == null
-      ? null
-      : exactIdentifier(response.device_id, "prepare device id"),
     prepared_public_key: returnedKey,
   };
 }
@@ -1187,13 +1196,13 @@ export async function registerContinuityVerifiedCompletedPhalaExecutorState(
 export function buildExactCommitMetadata({
   appId,
   composeHash,
-  kmsId,
+  kmsContractId,
   environmentKeys,
 } = {}) {
   return {
     app_id: exactAppId(appId, "commit app id"),
     compose_hash: exactBareDigest(composeHash, "commit compose hash"),
-    kms_id: exactIdentifier(kmsId, "commit KMS id"),
+    kms_contract_id: exactKmsContractId(kmsContractId),
     env_keys: sortedUniqueEnvironmentKeys(environmentKeys, "commit env_keys"),
   };
 }

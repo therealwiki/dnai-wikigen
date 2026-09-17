@@ -19,6 +19,11 @@ import test from "node:test";
 
 import { IMAGE_NAMES } from "./build-tee-image-release.mjs";
 import {
+  PHALA_APP_COMPOSE_WIRE_HASH_SEMANTICS,
+  phalaAppComposeExpectedRuntimeHash,
+} from "./phala-app-compose-wire-core.mjs";
+import * as historicalV2 from "./cvm-descriptor-runtime-authority-v2.mjs";
+import {
   CVM_LAUNCH_DESCRIPTOR_FILES,
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
@@ -42,7 +47,7 @@ import {
   cvmDescriptorRuntimeAuthoritySha256,
   normalizeCvmDescriptorRuntimeAuthority,
   readFreshCvmDescriptorRuntimeMaterials,
-} from "./cvm-descriptor-runtime-authority-v2.mjs";
+} from "./cvm-descriptor-runtime-authority-v3.mjs";
 
 const RELEASE_SHA = "a".repeat(40);
 const SOURCE_REF = "refs/heads/main";
@@ -373,13 +378,18 @@ test("fresh authority stable-reads exact seven descriptors and privately brands 
         path.join(fixture.releaseDirectory, CVM_LAUNCH_DESCRIPTOR_FILES[entry.domain]),
         "utf8",
       );
-      const expectedHash = phalaDstackComposeHash(createPhalaDstackComposeHashInput(
+      const input = createPhalaDstackComposeHashInput(
         CVM_LAUNCH_DESCRIPTOR_POLICY[entry.domain].app_compose_candidate,
         file,
         CVM_LAUNCH_DESCRIPTOR_POLICY[entry.domain].exact_allowed_environment_keys,
-      ));
+      );
+      const expectedHash = phalaAppComposeExpectedRuntimeHash(input);
+      const preTransformHash = phalaDstackComposeHash(input);
       assert.equal(entry.app_compose_hash, expectedHash);
       assert.equal(authority.app_compose_hash_by_domain[entry.domain], expectedHash);
+      assert.equal(entry.pre_transform_app_compose_hash, preTransformHash);
+      assert.equal(authority.pre_transform_app_compose_hash_by_domain[entry.domain], preTransformHash);
+      assert.notEqual(expectedHash, preTransformHash);
       assert.equal(
         entry.descriptor_sha256,
         `sha256:${sha256(Buffer.from(file, "utf8"))}`,
@@ -387,7 +397,10 @@ test("fresh authority stable-reads exact seven descriptors and privately brands 
       const material = materials.find(({ domain }) => domain === entry.domain);
       assert.equal(material.docker_compose_file, file);
       assert.equal(material.app_compose_hash, entry.app_compose_hash);
+      assert.equal(material.pre_transform_app_compose_hash, entry.pre_transform_app_compose_hash);
     }
+    assert.deepEqual(authority.compose_hash_semantics, PHALA_APP_COMPOSE_WIRE_HASH_SEMANTICS);
+    assert.deepEqual(normalizeCvmDescriptorRuntimeAuthority(JSON.parse(canonicalCvmDescriptorRuntimeAuthorityText(authority))), authority);
     assert.throws(() => { authority.descriptors[0].app_compose_hash = "f".repeat(64); }, TypeError);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -407,6 +420,50 @@ test("normalization never mints the private stable-read brand", async () => {
       () => assertFreshCvmDescriptorRuntimeAuthority(normalizedClone),
       /privately branded fresh stable-read/,
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("descriptor v3 keeps runtime and audit hashes distinct while historical v2 retains its original meaning", async () => {
+  const fixture = await buildFixture();
+  try {
+    const options = { releaseDirectory: fixture.releaseDirectory, expectedReleaseSha: RELEASE_SHA };
+    const historical = await historicalV2.createFreshCvmDescriptorRuntimeAuthority(options);
+    const current = await createFreshCvmDescriptorRuntimeAuthority(options);
+    assert.equal(historical.schema, "dnai.cvm-descriptor-runtime-authority.v2");
+    assert.equal(current.schema, "dnai.cvm-descriptor-runtime-authority.v3");
+    assert.equal(Object.hasOwn(historical, "compose_hash_semantics"), false);
+    assert.deepEqual(historical.descriptor_sha256_by_domain, current.descriptor_sha256_by_domain);
+    assert.deepEqual(historical.app_compose_hash_by_domain, current.pre_transform_app_compose_hash_by_domain);
+    for (const domain of CVM_LAUNCH_DOMAINS) {
+      assert.notEqual(historical.app_compose_hash_by_domain[domain], current.app_compose_hash_by_domain[domain]);
+    }
+    assert.throws(() => normalizeCvmDescriptorRuntimeAuthority(historical));
+    assert.throws(() => historicalV2.normalizeCvmDescriptorRuntimeAuthority(current));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("descriptor v3 rejects collapsed hashes, transform drift, and relabeled historical facts", async () => {
+  const fixture = await buildFixture();
+  try {
+    const original = await createFreshCvmDescriptorRuntimeAuthority({
+      releaseDirectory: fixture.releaseDirectory, expectedReleaseSha: RELEASE_SHA,
+    });
+    for (const mutate of [
+      (value) => { value.descriptors[0].app_compose_hash = value.descriptors[0].pre_transform_app_compose_hash; },
+      (value) => { value.compose_hash_semantics.server_defaults_assumed = true; },
+      (value) => { value.compose_hash_semantics.sdk_version = "0.3.1"; },
+      (value) => { delete value.pre_transform_app_compose_hash_by_domain; },
+      (value) => { value.pre_transform_app_compose_hash_by_domain.main_runtime_cvm = "f".repeat(64); },
+      (value) => { value.schema = "dnai.cvm-descriptor-runtime-authority.v2"; },
+    ]) {
+      const value = structuredClone(original);
+      mutate(value);
+      assert.throws(() => normalizeCvmDescriptorRuntimeAuthority(value));
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -26,7 +26,7 @@ import {
 import {
   normalizePhalaPostMeasurementActivationExecutionReceipt,
   phalaPostMeasurementActivationExecutionReceiptSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   assertLocallyVerifiedCompletedDiligenceReleaseGate,
 } from "./diligence-release-activation-gate.mjs";

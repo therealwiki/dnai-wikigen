@@ -49,7 +49,7 @@ export const PRE_CEREMONY_RUNTIME_AUTHORITY_CLI_FLAG =
 export const FUTURE_WORKLOAD_ACTIVATION_AUTHORIZATION_TRANSCRIPT_POLICY_SCHEMA =
   "dnai.future-workload-activation-authorization-transcript-policy.v4";
 export const REQUIRED_SOURCE_ACTIVATION_SCHEMA =
-  "dnai.compute.workload-recipient-activation.v3";
+  "dnai.compute.workload-recipient-activation.v4";
 export const REQUIRED_INDEPENDENT_TDX_VERDICT_SCHEMA =
   "dnai.independent-tdx-verdict.v4";
 export const REQUIRED_ACTIVATION_OBSERVATION_SCHEMA =
@@ -58,7 +58,7 @@ export const REQUIRED_SIGNED_B_SCHEMA =
   "dnai.ceremony-authorization-core.v1";
 export const REQUIRED_SIGNED_B_STATUS = "pre_ceremony_authorized";
 export const REQUIRED_ACTIVATION_EXECUTION_RECEIPT_SCHEMA =
-  "dnai.phala-post-measurement-activation-execution-receipt.v3";
+  "dnai.phala-post-measurement-activation-execution-receipt.v4";
 
 export const PRE_CEREMONY_REQUIRED_OBSERVATION_LINEAGE_FIELDS = Object.freeze([
   "deployment_intent_sha256",

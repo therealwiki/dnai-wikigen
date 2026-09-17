@@ -15,7 +15,7 @@ import {
   normalizeRoyaltyReleasePrescriptiveAuthority,
   royaltyReleasePrescriptiveAuthoritySha256,
 } from "../⚙️/tinker-delegate/contracts/scripts/royalty-release-phase-plan.mjs";
-import { syntheticReleaseAuthorityStagesFixture } from "./release-authority-stages.fixture.mjs";
+import { syntheticReleaseAuthorityStagesFixture } from "./release-authority-current-stages.fixture.mjs";
 
 const pin = (byte) => `sha256:${byte.repeat(64)}`;
 const word = (byte) => `0x${byte.repeat(64)}`;

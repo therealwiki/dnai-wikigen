@@ -32,6 +32,10 @@ import {
   productionCvmPostureVerificationReceiptSha256,
 } from "./phala-production-posture-receipt.mjs";
 import {
+  normalizeProductionCvmPreparedBinding,
+  normalizeProductionCvmEnvironmentPublicKey,
+} from "./phala-production-posture-core.mjs";
+import {
   normalizeCompletedPhalaExecutorState,
   phalaExecutorStateDigest,
 } from "./phala-executor-state-core.mjs";
@@ -50,7 +54,7 @@ import {
 import {
   assertFreshCvmDescriptorRuntimeAuthority,
   cvmDescriptorRuntimeAuthoritySha256,
-} from "./cvm-descriptor-runtime-authority-v2.mjs";
+} from "./cvm-descriptor-runtime-authority-v3.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_STATUS,
@@ -63,6 +67,16 @@ import {
     normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority,
   phalaSevenCvmReleaseVerificationAuthoritySha256 as
     currentPhalaSevenCvmReleaseVerificationAuthoritySha256,
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
+import {
+  PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
+    HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA,
+  canonicalPhalaSevenCvmReleaseVerificationAuthorityText as
+    canonicalHistoricalV4ReleaseAuthorityText,
+  normalizePhalaSevenCvmReleaseVerificationAuthority as
+    normalizeHistoricalV4ReleaseAuthority,
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as
+    historicalV4ReleaseAuthoritySha256,
 } from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
 import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA as
@@ -81,7 +95,7 @@ export {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_TRUTH,
   PHALA_VERIFIER_EVIDENCE_PRODUCTION_MODE,
   PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 import {
   PHALA_SEVEN_CVM_HISTORICAL_TRANSCRIPT_MAX_AGGREGATE_BYTES as
     MAX_HISTORICAL_TRANSCRIPT_SET_BYTES,
@@ -194,7 +208,7 @@ function releaseVerificationAuthoritySchema(value) {
  * Pure version router for non-authorizing normalization and digest projection.
  *
  * Fresh production branding never enters through this router: the production
- * constructor below calls the v4 normalizer directly. The legacy v3 branch
+ * constructor below calls the v5 normalizer directly. The historical v3/v4 branches
  * exists only for the immutable synthetic fixtures and the explicitly
  * authenticated historical replay path. There is deliberately no
  * try-current-then-legacy fallback.
@@ -203,6 +217,9 @@ export function normalizePhalaSevenCvmReleaseVerificationAuthority(value) {
   const schema = releaseVerificationAuthoritySchema(value);
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return normalizeCurrentPhalaSevenCvmReleaseVerificationAuthority(value);
+  }
+  if (schema === HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA) {
+    return normalizeHistoricalV4ReleaseAuthority(value);
   }
   if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
@@ -215,6 +232,9 @@ export function canonicalPhalaSevenCvmReleaseVerificationAuthorityText(value) {
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return canonicalCurrentPhalaSevenCvmReleaseVerificationAuthorityText(value);
   }
+  if (schema === HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA) {
+    return canonicalHistoricalV4ReleaseAuthorityText(value);
+  }
   if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return canonicalLegacyPhalaSevenCvmReleaseVerificationAuthorityText(value);
   }
@@ -225,6 +245,9 @@ export function phalaSevenCvmReleaseVerificationAuthoritySha256(value) {
   const schema = releaseVerificationAuthoritySchema(value);
   if (schema === PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return currentPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
+  }
+  if (schema === HISTORICAL_V4_RELEASE_AUTHORITY_SCHEMA) {
+    return historicalV4ReleaseAuthoritySha256(value);
   }
   if (schema === LEGACY_PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA) {
     return legacyPhalaSevenCvmReleaseVerificationAuthoritySha256(value);
@@ -653,6 +676,9 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
     contractReceipt,
     contractReceiptPins,
   )}`;
+  // Artifact authorities retain sha256: syntax; this attested runtime field is
+  // the same independently normalized receipt digest encoded as exact bytes32.
+  const computeWorkloadContractReceipt = `0x${contractReceiptSha.slice(7)}`;
   if (contractReceiptSha !== signedA.fresh_contract_deployment_receipt_sha256
     || !Array.isArray(productionPostureReceipts)
     || productionPostureReceipts.length !== PHALA_SEVEN_CVM_EXECUTION_ORDER.length) {
@@ -661,7 +687,7 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
   if (mainBootstrap.values.TINKER_COMPUTE_WORKLOAD_DEPLOYMENT_INTENT_SHA256
       !== signedA.deployment_intent_sha256
     || mainBootstrap.values.TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256
-      !== contractReceiptSha
+      !== computeWorkloadContractReceipt
     || mainBootstrap.values.TINKER_COMPUTE_WORKLOAD_MEASUREMENT_POLICY_SET_SHA256
       !== policySetSha
     || mainBootstrap.values.TINKER_COMPUTE_VAULT_ADDRESS
@@ -747,6 +773,8 @@ export function createPhalaSevenCvmReleaseVerificationAuthority({
           kms_id: posture.kms_id,
           instance_type: posture.instance_type,
           disk_size: posture.disk_size,
+          prepared_binding: posture.prepared_binding,
+          environment_public_key: posture.environment_public_key,
         }),
         receipt: posture,
       })];
@@ -1181,9 +1209,14 @@ function historicalTranscriptRoleAuthority(flag) {
   throw new Error(`${flag} is not an exact seven-CVM transcript flag`);
 }
 
-function normalizeHistoricalPostureExpectedAuthority(value, expectedDomain) {
+export function normalizePhalaHistoricalPostureExpectedAuthority(value, expectedDomain) {
+  assertCanonicalPlainDataGraph(value, { label: "historical posture expected authority" });
+  const withPreparedBinding = value && (
+    Object.hasOwn(value, "prepared_binding") || Object.hasOwn(value, "environment_public_key")
+  );
   const parsed = exactRecord(value, [
     "app_id", "compose_hash", "cvm_id", "disk_size", "domain", "instance_type", "kms_id",
+    ...(withPreparedBinding ? ["prepared_binding", "environment_public_key"] : []),
   ], `${expectedDomain} historical posture expected authority`);
   if (parsed.domain !== expectedDomain || !PHALA_SEVEN_CVM_EXECUTION_ORDER.includes(expectedDomain)
     || typeof parsed.instance_type !== "string" || !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(parsed.instance_type)
@@ -1191,7 +1224,12 @@ function normalizeHistoricalPostureExpectedAuthority(value, expectedDomain) {
     || parsed.disk_size > 16_384) {
     throw new Error(`${expectedDomain} historical posture expected authority is invalid`);
   }
-  return {
+  const preparedBinding = withPreparedBinding
+    ? normalizeProductionCvmPreparedBinding(parsed.prepared_binding) : null;
+  if (preparedBinding && preparedBinding.kms_id !== parsed.kms_id) {
+    throw new Error(`${expectedDomain} historical posture prepared identity drifted`);
+  }
+  const normalized = {
     domain: expectedDomain,
     app_id: appId(parsed.app_id, `${expectedDomain} historical posture app ID`),
     cvm_id: cvmId(parsed.cvm_id, `${expectedDomain} historical posture CVM ID`),
@@ -1199,11 +1237,23 @@ function normalizeHistoricalPostureExpectedAuthority(value, expectedDomain) {
       parsed.compose_hash,
       `${expectedDomain} historical posture compose hash`,
     ),
-    kms_id: cvmId(parsed.kms_id, `${expectedDomain} historical posture KMS ID`),
+    kms_id: preparedBinding?.kms_id
+      ?? cvmId(parsed.kms_id, `${expectedDomain} historical posture KMS ID`),
     instance_type: parsed.instance_type,
     disk_size: parsed.disk_size,
   };
+  if (withPreparedBinding) {
+    const environmentPublicKey = normalizeProductionCvmEnvironmentPublicKey(parsed.environment_public_key);
+    if (environmentPublicKey !== parsed.environment_public_key) {
+      throw new Error(`${expectedDomain} historical posture prepared identity drifted`);
+    }
+    normalized.prepared_binding = preparedBinding;
+    normalized.environment_public_key = environmentPublicKey;
+  }
+  return deepFreezeCanonicalPlainDataGraph(normalized, { label: "historical posture expected authority" });
 }
+
+const normalizeHistoricalPostureExpectedAuthority = normalizePhalaHistoricalPostureExpectedAuthority;
 
 function syntheticHistoricalPostureReceipt(descriptor) {
   return deepFreezeCanonicalPlainDataGraph({
@@ -1245,7 +1295,7 @@ function normalizeSyntheticHistoricalPostureReceipt(value, descriptor) {
 function historicalPostureAuditForReleaseAuthority(releaseAuthority, domain) {
   const descriptor = releaseAuthority.descriptors.find((entry) => entry.domain === domain);
   if (!descriptor) throw new Error(`${domain} is absent from release posture authority`);
-  const expectedAuthority = Object.freeze({
+  const descriptorIdentity = Object.freeze({
     domain,
     app_id: descriptor.app_id,
     cvm_id: descriptor.cvm_id,
@@ -1256,13 +1306,19 @@ function historicalPostureAuditForReleaseAuthority(releaseAuthority, domain) {
   });
   if (releaseAuthority.evidence_mode === PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
     return Object.freeze({
-      expected_authority: expectedAuthority,
+      expected_authority: descriptorIdentity,
       receipt: syntheticHistoricalPostureReceipt(descriptor),
       receipt_sha256: descriptor.posture_receipt_sha256,
     });
   }
   const context = LIVE_POSTURE_CONTEXT_BY_RELEASE_AUTHORITY.get(releaseAuthority)?.get(domain);
-  if (!context || canonicalText(context.expectedAuthority) !== canonicalText(expectedAuthority)
+  if (!context) {
+    throw new Error(`${domain} live production posture context is unavailable or drifted`);
+  }
+  const expectedAuthority = normalizeHistoricalPostureExpectedAuthority(context.expectedAuthority, domain);
+  if (Object.keys(descriptorIdentity).some((field) => expectedAuthority[field] !== descriptorIdentity[field])
+    || !Object.hasOwn(expectedAuthority, "prepared_binding")
+    || !Object.hasOwn(expectedAuthority, "environment_public_key")
     || productionCvmPostureVerificationReceiptSha256(context.receipt, {
       expectedAuthority,
     }) !== descriptor.posture_receipt_sha256) {
@@ -3374,7 +3430,7 @@ function normalizeComputeWorkloadRecipientActivation(value) {
     "release_authority_sha256", "release_policy_hash", "report_data", "schema",
     "verdict_digest", "verifier_address",
   ], "compute-workload recipient activation");
-  if (activation.schema !== "dnai.compute.workload-recipient-activation.v3"
+  if (activation.schema !== "dnai.compute.workload-recipient-activation.v4"
     || activation.chain_id !== CHAIN_ID || activation.domain !== "main_runtime_cvm"
     || activation.profile !== "compute_workload") {
     throw new Error("compute-workload recipient activation schema is invalid");
@@ -4674,7 +4730,7 @@ function parseExactPhalaSevenCvmHistoricalTranscriptFiles(value) {
 
 function resolveHistoricalReplayReleaseAuthority(value) {
   const normalized =
-    normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
+    normalizePhalaSevenCvmReleaseVerificationAuthority(value);
   if (normalized.evidence_mode === PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE) {
     return Object.freeze({
       authority: normalized,

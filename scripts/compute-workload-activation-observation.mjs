@@ -15,7 +15,7 @@ import {
 } from "./phala-seven-cvm-verifier-evidence.mjs";
 import {
   PHALA_VERIFIER_EVIDENCE_SYNTHETIC_MODE,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 import {
   assertProductionPhalaPostMeasurementActivationExecutionReceipt,
   phalaPostMeasurementActivationExecutionReceiptSha256,

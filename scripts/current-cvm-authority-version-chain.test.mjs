@@ -34,7 +34,16 @@ import {
   cvmDescriptorRuntimeFactsSha256,
   cvmDescriptorRuntimeAuthoritySha256,
   normalizeCvmDescriptorRuntimeAuthority,
+} from "./cvm-descriptor-runtime-authority-v3-core.mjs";
+import {
+  cvmDescriptorRuntimeAuthoritySha256 as historicalV2RuntimeSha256,
 } from "./cvm-descriptor-runtime-authority-v2-core.mjs";
+import {
+  phalaSevenCvmReleaseVerificationAuthoritySha256 as historicalV4ReleaseSha256,
+} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+import {
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as historicalV4Fixture,
+} from "./current-cvm-authority-v4.fixture.mjs";
 import {
   phalaSevenCvmReleaseVerificationAuthoritySha256 as
     legacyPhalaSevenCvmReleaseVerificationAuthoritySha256,
@@ -45,7 +54,7 @@ import {
   PHALA_SEVEN_CVM_RELEASE_VERIFICATION_AUTHORITY_SCHEMA,
   phalaSevenCvmReleaseVerificationAuthoritySha256,
   normalizePhalaSevenCvmReleaseVerificationAuthority,
-} from "./phala-seven-cvm-release-verification-authority-v4-core.mjs";
+} from "./phala-seven-cvm-release-verification-authority-v5-core.mjs";
 import {
   freshContractDeploymentReceiptDigest,
   historicalFreshContractDeploymentReceiptV3Digest,
@@ -60,7 +69,7 @@ import {
 import {
   CURRENT_TINKER_ACCOUNT_BINDING_CEREMONY_RECEIPT_SHA256,
   syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture,
-} from "./current-cvm-authority-v4.fixture.mjs";
+} from "./current-cvm-authority-v5.fixture.mjs";
 import {
   normalizeRecordedCvmAuthorityTuple,
 } from "./phala-seven-cvm-historical-release-verification-authority.mjs";
@@ -161,7 +170,7 @@ function authorityForTuple({
     : normalizeLegacyPhalaSevenCvmReleaseVerificationAuthority(value);
 }
 
-test("current authority chain is exactly descriptor v3 to runtime v2 to release v4", () => {
+test("current authority chain is exactly descriptor v3 to wire-runtime v3 to release v5", () => {
   const current = syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture();
   assert.equal(
     current.schema,
@@ -264,7 +273,18 @@ test("legacy descriptor v2, runtime v1, and release v3 KATs do not rotate", () =
   );
 });
 
-test("verifier uses explicit v4 current and v3 legacy branches without fallback", async () => {
+test("historical pre-transform runtime v2 and release v4 retain their exact digest domains", () => {
+  const historical = historicalV4Fixture();
+  assert.equal(historicalV2RuntimeSha256(historical.cvm_descriptor_runtime_authority),
+    "sha256:8680f605128a94b333f3c7d72f7b1f7b0a1147610c27222be1dd5f68f3837277");
+  assert.equal(historicalV4ReleaseSha256(historical),
+    "sha256:627b3150155ca308ef6fd6f2cf1b9e95f5dde1dc8f6461d29166c2cf93180143");
+  assert.deepEqual(verifier.normalizePhalaSevenCvmReleaseVerificationAuthority(historical), historical);
+  assert.throws(() => normalizeCvmDescriptorRuntimeAuthority(historical.cvm_descriptor_runtime_authority));
+  assert.throws(() => normalizePhalaSevenCvmReleaseVerificationAuthority(historical));
+});
+
+test("verifier uses explicit v5 current and historical branches without fallback", async () => {
   const legacy =
     syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture();
   const current =
@@ -302,11 +322,11 @@ test("verifier uses explicit v4 current and v3 legacy branches without fallback"
   );
   assert.match(
     source,
-    /from "\.\/cvm-descriptor-runtime-authority-v2\.mjs"/,
+    /from "\.\/cvm-descriptor-runtime-authority-v3\.mjs"/,
   );
   assert.match(
     source,
-    /from "\.\/phala-seven-cvm-release-verification-authority-v4-core\.mjs"/,
+    /from "\.\/phala-seven-cvm-release-verification-authority-v5-core\.mjs"/,
   );
   assert.match(
     source,
@@ -334,7 +354,7 @@ test("current preflight topology imports only the descriptor v3 service authorit
   );
 });
 
-test("recorded-time authority tuples accept only v3/v4/v2/v4 or v2/v3/v1/v3", () => {
+test("recorded-time authority tuples bind current v3/v4/v3/v5 and historical v2/v3/v1/v3", () => {
   const releaseSha = "a".repeat(40);
   const deploymentIntentSha256 = `sha256:${"b".repeat(64)}`;
   const reviewerAcceptanceSha256 = `sha256:${"c".repeat(64)}`;

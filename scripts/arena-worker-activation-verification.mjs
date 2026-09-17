@@ -12,7 +12,7 @@ import {
   PHALA_ARENA_WORKER_PRESENCE_EVIDENCE_CLASSIFICATION,
   normalizePhalaArenaWorkerPresenceActivationProof,
   phalaArenaWorkerPresenceActivationProofSha256,
-} from "./phala-post-measurement-activation-receipt-core.mjs";
+} from "./phala-post-measurement-activation-receipt-v4-core.mjs";
 import {
   PHALA_ARENA_WORKER_ENDPOINT_COMMITMENT_DOMAIN,
   assertFreshProductionPhalaArenaWorkerPresenceActivationProof,

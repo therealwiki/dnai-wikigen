@@ -521,7 +521,7 @@ export async function syntheticPhalaSevenCvmVerifierEvidenceFixture() {
       message: { raw: activationVerdictDigest },
     })).toLowerCase();
   const activationBase = {
-    schema: "dnai.compute.workload-recipient-activation.v3",
+    schema: "dnai.compute.workload-recipient-activation.v4",
     ...lineage,
     measurement_policy_set_sha256: releaseAuthority.qvl_measurement_policy_set_sha256,
     main_runtime_evidence_sha256: phalaWorkloadTdxVerdictVerificationSha256(mainProof),

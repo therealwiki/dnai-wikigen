@@ -4,6 +4,7 @@ import path from "node:path";
 
 import {
   assertCanonicalPlainDataGraph,
+  deepFreezeCanonicalPlainDataGraph,
 } from "./canonical-authority-graph.mjs";
 import {
   PHALA_EXECUTION_ORDER,
@@ -14,6 +15,8 @@ import {
   phalaExecutorStateDigest,
 } from "./phala-executor-state-core.mjs";
 import {
+  assertProductionCvmPreparedBinding,
+  projectProductionCvmPostureReadback,
   assertSecretFreeExecutorStructure,
 } from "./phala-production-posture-core.mjs";
 import {
@@ -26,11 +29,14 @@ import {
   loadPhalaRecoveryJournal,
 } from "./phala-production-recovery-journal.mjs";
 import {
+  PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA,
+  normalizeProductionCvmPostureVerificationReceipt,
   verifyProductionCvmPostureObservation,
   productionCvmPostureVerificationReceiptSha256,
 } from "./phala-production-posture-receipt.mjs";
 import {
   assertPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
+  bindPinnedPhalaCommittedEnvironmentKeyLookup,
   authenticatedPhalaSdkObservationSha256,
   createPinnedPhalaHistoricalContinuityReadOnlySdkObserver,
   phalaAuthenticatedAccountSubjectSha256,
@@ -217,47 +223,70 @@ function readStablePersistedL(filePath, recoveryDirectory) {
   }
 }
 
-function buildPostureProjection(raw, cvmId) {
-  return {
-    id: String(raw.id ?? cvmId),
-    app_id: raw.app_id,
-    compose_hash: raw.compose_hash,
-    kms_info: { id: raw.kms_info?.id },
-    kms_type: raw.kms_type,
-    os: {
-      os_image_hash: raw.os?.os_image_hash,
-      is_dev: raw.os?.is_dev,
-    },
-    resource: {
-      instance_type: raw.resource?.instance_type,
-      disk_in_gb: raw.resource?.disk_in_gb,
-    },
-    listed: raw.listed,
-    public_logs: raw.public_logs,
-    public_sysinfo: raw.public_sysinfo,
-    public_tcbinfo: raw.public_tcbinfo,
-  };
-}
-
-function assertTargetMatchesHistoricalLaunch(target, targetSha256, state, launch) {
-  if (targetSha256 !== state.target_authority_sha256
+/**
+ * Pure replay cross-check, not a new transport/replay capability. The caller
+ * must obtain these historical receipts from completed cryptographic replay.
+ * A v1 posture cannot be upgraded using a current catalog or current readback.
+ */
+export function revalidateHistoricalPhalaContinuationPreparedBindings(options = {}) {
+  assertCanonicalPlainDataGraph(options, {
+    label: "historical continuation prepare authority",
+  });
+  const { target, targetSha256, state, launch, historicalPostureReceipts } = exactRecord(options,
+    ["target", "targetSha256", "state", "launch", "historicalPostureReceipts"],
+    "historical continuation prepare authority input");
+  if (typeof targetSha256 !== "string" || !SHA256.test(targetSha256)
+    || targetSha256 !== state.target_authority_sha256
     || targetSha256 !== launch.production_target_authority_sha256
     || target.release_sha !== state.release_sha
     || target.cvm_launch_intent_sha256 !== state.launch_intent_sha256) {
     throw new TypeError("historical production target authority differs from journal or L");
   }
   const byDomain = new Map(launch.domains.map((entry) => [entry.domain, entry]));
+  if (!Array.isArray(historicalPostureReceipts) || historicalPostureReceipts.length !== PHALA_EXECUTION_ORDER.length) {
+    throw new Error("continuation requires all seven replay-verified historical v2 posture receipts");
+  }
+  const receiptsByDomain = new Map(historicalPostureReceipts.map((entry) => [entry.domain, entry]));
+  const keysByDomain = new Map(state.signed_key_bindings.map((entry) => [entry.domain, entry]));
+  const posturesByDomain = new Map(state.posture_receipts.map((entry) => [entry.domain, entry]));
+  if (byDomain.size !== PHALA_EXECUTION_ORDER.length || receiptsByDomain.size !== PHALA_EXECUTION_ORDER.length
+    || keysByDomain.size !== PHALA_EXECUTION_ORDER.length || posturesByDomain.size !== PHALA_EXECUTION_ORDER.length) {
+    throw new Error("historical continuation authority domains are omitted or duplicated");
+  }
+  const projection = Object.fromEntries(["contract", "replicas", "eligible_placements", "gateways"]
+    .map((field) => [field, target.kms[field]]));
+  const normalized = {};
   for (const domain of PHALA_EXECUTION_ORDER) {
     const historical = byDomain.get(domain);
     const resource = target.resource_targets[domain];
+    const posture = receiptsByDomain.get(domain);
     if (!historical || !resource
-      || historical.kms_id !== target.kms.id
       || historical.os_image_hash !== target.os_image.os_image_hash
       || historical.instance_type !== resource.instance_type
       || historical.disk_size !== resource.disk_size) {
       throw new TypeError(`${domain} historical target KMS, OS, or resource differs from immutable L`);
     }
+    if (posture?.schema !== PHALA_PRODUCTION_CVM_POSTURE_RECEIPT_SCHEMA) {
+      throw new Error(`${domain} historical posture lacks durable v2 prepare authority; no inference or upgrade is allowed`);
+    }
+    const expectedAuthority = {
+      domain, app_id: historical.app_id, cvm_id: historical.cvm_id,
+      compose_hash: historical.committed_compose_hash, kms_id: historical.kms_id,
+      instance_type: historical.instance_type, disk_size: historical.disk_size,
+      prepared_binding: posture.prepared_binding, environment_public_key: posture.environment_public_key,
+    };
+    const verified = normalizeProductionCvmPostureVerificationReceipt(posture, { expectedAuthority });
+    const receiptSha256 = productionCvmPostureVerificationReceiptSha256(verified, { expectedAuthority });
+    const key = keysByDomain.get(domain);
+    if (receiptSha256 !== historical.production_posture_verification_receipt_sha256
+      || receiptSha256 !== posturesByDomain.get(domain)?.receipt_sha256
+      || !key || sha256(Buffer.from(verified.environment_public_key, "hex")) !== key.public_key_sha256) {
+      throw new Error(`${domain} historical v2 prepare/key authority differs from immutable launch or journal pins`);
+    }
+    assertProductionCvmPreparedBinding({ preparedBinding: verified.prepared_binding, kmsProjection: projection, domain });
+    normalized[domain] = verified;
   }
+  return deepFreezeCanonicalPlainDataGraph(normalized, { label: "historical continuation prepared bindings" });
 }
 
 function assertNoConsumedOrPostMeasurementState(handle, batchId, {
@@ -393,6 +422,21 @@ export function consumeCompletedPhalaSevenCvmLaunchContinuationCapability(
   return state.dependencies;
 }
 
+/**
+ * Detach and freeze already validated target evidence. This plain-data snapshot
+ * is not an authority validator or a capability and cannot mint either one.
+ */
+export function snapshotPhalaContinuationTargetEvidence(value) {
+  assertCanonicalPlainDataGraph(value, { label: "continuation target evidence snapshot input" });
+  exactRecord(value, [
+    "compatibilityReceipt", "sdkWireTransformStagingReceipt",
+    "productionTargetAuthority", "productionTargetAuthoritySha256",
+  ], "continuation target evidence snapshot input");
+  return deepFreezeCanonicalPlainDataGraph(structuredClone(value), {
+    label: "detached continuation target evidence",
+  });
+}
+
 export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
   const parsed = exactRecord(
     input,
@@ -442,6 +486,9 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
   if (journal === null) {
     throw new Error("completed production recovery journal is absent");
   }
+  deepFreezeCanonicalPlainDataGraph(journal, {
+    label: "retained completed recovery journal",
+  });
   const state = normalizeCompletedPhalaExecutorState(journal.state);
   if (journal.state_sha256 !== phalaExecutorStateDigest(state)) {
     throw new Error("completed production recovery journal state digest drifted");
@@ -458,10 +505,11 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
       bootstrapAuthorityFileIdentity:
         historicalAInput.bootstrapAuthorityFileIdentity,
     });
-  const historicalBootstrapAuthority =
-    normalizeBootstrapPublicEnvironmentAuthority(
+  const historicalBootstrapAuthority = deepFreezeCanonicalPlainDataGraph(
+    structuredClone(normalizeBootstrapPublicEnvironmentAuthority(
       historicalAInput.bootstrapAuthority,
-    );
+    )), { label: "detached historical bootstrap public authority" },
+  );
   const persistedRuntimeAuthority = normalizePreCeremonyRuntimeAuthority(
     parsed.persistedRuntimeAuthority,
   );
@@ -553,39 +601,51 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     raw_secret_egress: false,
   }, { label: "recorded-time seven-CVM historical replay summary" });
 
-  const compatibility = normalizePhalaCompatibilityReceipt(
+  const normalizedCompatibility = normalizePhalaCompatibilityReceipt(
     parsed.compatibilityReceipt,
   );
-  const staging = normalizePhalaSdkWireTransformStagingReceipt(
+  const normalizedStaging = normalizePhalaSdkWireTransformStagingReceipt(
     parsed.sdkWireTransformStagingReceipt,
-    { compatibilityReceipt: compatibility },
+    { compatibilityReceipt: normalizedCompatibility },
   );
-  const target = normalizePhalaProductionTargetAuthority(
+  const normalizedTarget = normalizePhalaProductionTargetAuthority(
     parsed.productionTargetAuthority,
     {
-      compatibilityReceipt: compatibility,
-      sdkWireTransformStagingReceipt: staging,
+      compatibilityReceipt: normalizedCompatibility,
+      sdkWireTransformStagingReceipt: normalizedStaging,
     },
   );
   for (const [raw, normalized, label] of [
-    [parsed.compatibilityReceipt, compatibility, "historical compatibility receipt"],
-    [parsed.sdkWireTransformStagingReceipt, staging, "historical SDK staging receipt"],
-    [parsed.productionTargetAuthority, target, "historical production target"],
+    [parsed.compatibilityReceipt, normalizedCompatibility, "historical compatibility receipt"],
+    [parsed.sdkWireTransformStagingReceipt, normalizedStaging, "historical SDK staging receipt"],
+    [parsed.productionTargetAuthority, normalizedTarget, "historical production target"],
   ]) {
     if (JSON.stringify(sorted(raw)) !== JSON.stringify(sorted(normalized))) {
       throw new Error(`${label} must already contain exact normalized authority bytes`);
     }
   }
-  const targetSha256 = phalaProductionTargetAuthorityDigest(target, {
+  const targetSha256 = phalaProductionTargetAuthorityDigest(normalizedTarget, {
+    compatibilityReceipt: normalizedCompatibility,
+    sdkWireTransformStagingReceipt: normalizedStaging,
+  });
+  // The normalized projection can retain nested references to caller data.
+  // Snapshot before the observer's first await and retain this same immutable
+  // graph in the minted capability, including compatibility and staging facts.
+  const targetAuthorityEvidence = snapshotPhalaContinuationTargetEvidence({
+    compatibilityReceipt: normalizedCompatibility,
+    sdkWireTransformStagingReceipt: normalizedStaging,
+    productionTargetAuthority: normalizedTarget,
+    productionTargetAuthoritySha256: targetSha256,
+  });
+  const {
     compatibilityReceipt: compatibility,
     sdkWireTransformStagingReceipt: staging,
+    productionTargetAuthority: target,
+  } = targetAuthorityEvidence;
+  const historicalPostureReceipts = historicalMachineReplay.corroboration.posture_receipts;
+  const historicalPostures = revalidateHistoricalPhalaContinuationPreparedBindings({
+    target, targetSha256, state, launch: historicalLaunch.receipt, historicalPostureReceipts,
   });
-  assertTargetMatchesHistoricalLaunch(
-    target,
-    targetSha256,
-    state,
-    historicalLaunch.receipt,
-  );
   if (historicalSignedA.receipt.production_target_authority_sha256
       !== targetSha256) {
     throw new Error("historically signature-verified A differs from production target");
@@ -625,6 +685,7 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
   const environmentKeyBindings = [];
   for (const domain of PHALA_EXECUTION_ORDER) {
     const historical = launchByDomain.get(domain);
+    const historicalPosture = historicalPostures[domain];
     const infoObservation = await observer.getCvmInfo({
       domain,
       cvmId: historical.cvm_id,
@@ -636,14 +697,20 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     const posture = verifyProductionCvmPostureObservation({
       domain,
       cvmId: historical.cvm_id,
-      cvmInfo: buildPostureProjection(infoResponse, historical.cvm_id),
+      cvmInfo: projectProductionCvmPostureReadback(infoResponse, historical.cvm_id),
       expected: {
         appId: historical.app_id,
         composeHash: historical.committed_compose_hash,
-        kmsId: historical.kms_id,
+        kmsProjection: Object.fromEntries(["contract", "replicas", "eligible_placements", "gateways"]
+          .map((field) => [field, target.kms[field]])),
+        preparedBinding: historicalPosture.prepared_binding,
+        environmentPublicKey: historicalPosture.environment_public_key,
         instanceType: historical.instance_type,
         diskSize: historical.disk_size,
       },
+    });
+    bindPinnedPhalaCommittedEnvironmentKeyLookup({
+      adapter: observer, cvmInfoObservation: infoObservation, postureReceipt: posture,
     });
     const attestationObservation = await observer.getCvmAttestation({
       domain,
@@ -679,12 +746,12 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
       environmentKeyObservation,
       { adapter: observer, method: "getAppEnvEncryptPubKey", domain },
     );
-    const environmentKeyBinding = await verifyPinnedLegacyEnvironmentKey({
+    const environmentKeyBinding = deepFreezeCanonicalPlainDataGraph(await verifyPinnedLegacyEnvironmentKey({
       identity: pinnedDstackIdentity,
       appId: historical.app_id,
       response: environmentKeyResponse,
       pinnedSigner: target.kms.env_encrypt_signer_k256,
-    });
+    }), { label: `${domain} retained signed environment key binding` });
     const bindingSha256 = domainSha256(
       "dnai-wikigen/phala-signed-environment-key-binding/v1\0",
       environmentKeyBinding,
@@ -700,6 +767,8 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
       cvm_id: posture.cvm_id,
       compose_hash: posture.compose_hash,
       kms_id: posture.kms_id,
+      prepared_binding: posture.prepared_binding,
+      environment_public_key: posture.environment_public_key,
       instance_type: posture.instance_type,
       disk_size: posture.disk_size,
       os_image_hash: posture.os_image_hash,
@@ -772,6 +841,7 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
     currentAccount,
     currentDomains,
     historicalEvidenceReconstruction: historicalEvidence,
+    historicalPostureReceipts,
     launchCompletionRawFileSha256: persistedLRead.sha256,
     launchCompletionReceipt: historicalLaunch.receipt,
     launchCompletionReceiptSha256: historicalLaunch.receipt_sha256,
@@ -858,12 +928,7 @@ export async function resumeCompletedPhalaSevenCvmProductionLaunch(input = {}) {
         historicalMachineReplay.workloadVerdictEvidence,
       historical_release_verification_authority:
         historicalReleaseVerificationAuthority,
-      production_target_authority_evidence: Object.freeze({
-        compatibilityReceipt: compatibility,
-        sdkWireTransformStagingReceipt: staging,
-        productionTargetAuthority: target,
-        productionTargetAuthoritySha256: targetSha256,
-      }),
+      production_target_authority_evidence: targetAuthorityEvidence,
       current_continuity_receipt: receipt,
       current_continuity_receipt_sha256: receiptSha256,
       current_production_posture_receipts:

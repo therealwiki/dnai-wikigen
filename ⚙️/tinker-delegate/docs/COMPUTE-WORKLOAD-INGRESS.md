@@ -14,7 +14,7 @@ no raw prompt, examples, dataset, or model-output route.
 1. `GET /compute/workload-encryption-contract` with `Cache-Control: no-store`.
 2. Strictly parse the exact recipient, framing rules, size/count classes, and
    full signed `dnai.independent-tdx-verdict.v4` descriptor inside the exact
-   `dnai.compute.workload-recipient-activation.v3` envelope.
+   `dnai.compute.workload-recipient-activation.v4` envelope.
 3. Authenticate the verdict signature against a release-pinned independent QVL
    verifier and independently supplied Base Sepolia chain, QVL domain/profile,
    CVM ID, deployment intent, release authority, ceremony nonce, measurement
@@ -23,7 +23,7 @@ no raw prompt, examples, dataset, or model-output route.
    digests must come from persisted release authority, never from the QVL
    response being authenticated.
 4. Recompute the X25519 recipient key ID, the `compute_workload` report-data
-   binding, v4 verdict digest, full v3 activation commitment, and stable
+   binding, v4 verdict digest, stable v4 activation commitment, and stable
    `dnai.compute.workload-recipient-release.v2` commitment. Reject a stale,
    revoked, mismatched, local, simulator, unsigned, or self-asserted recipient.
 5. Locally canonicalize the private inference or SFT payload, generate a fresh
@@ -96,7 +96,7 @@ Canonical ASCII JSON AAD binds:
 - secret-blinded workload commitment;
 - project/actor/idempotency-key commitment;
 - recipient key ID and report-data hash;
-- the immutable upload-time authenticated activation commitment; and
+- the stable v4 activation commitment authenticated at upload; and
 - the stable authenticated recipient-release commitment used by the fresh
   execution-time QVL recheck.
 
@@ -123,7 +123,7 @@ outlive the already consumed challenge, but it is policy-bounded activation
 evidence rather than renewed challenge freshness.
 
 The post-restart outer activation is exactly
-`dnai.compute.workload-recipient-activation.v3`. It binds the v4 verdict to the
+`dnai.compute.workload-recipient-activation.v4`. It binds the v4 verdict to the
 full release lineage (`chain_id`, `domain`, `profile`, `cvm_id`, deployment
 intent, release authority, ceremony nonce, and measurement policy), the
 persisted measurement-policy-set and main-runtime-evidence digests, recipient
@@ -131,14 +131,46 @@ identity/report data, Phala app/compose/OS measurements, release policy, quote,
 verifier, verdict digest, and bounded timestamps. Its explicit
 `recipient_evidence_lease_expires_at` must equal activation expiry and the
 recipient lease may last no more than 300 seconds. Missing and additional
-fields fail closed in the browser parser. Its stable release commitment uses
-domain
+fields fail closed in the browser parser. The full activation retains the fresh
+signed verdict, challenge, and lease even though its commitment is stable.
+
+The stable release commitment uses domain
 `dnai-wikigen/compute-workload-recipient-release/v2\0` and schema
 `dnai.compute.workload-recipient-release.v2`; it additionally binds the v4
 verification method, execution signer, contract, and exact recipient
-attestation. A refreshed quote changes the activation commitment but cannot
-change the release commitment unless one of those release-authority facts
-changes.
+attestation. That public attestation binds the encryption key, activation
+signer custody, Base Sepolia chain, Compute vault address and runtime code hash,
+and fresh contract deployment receipt. Release authority, deployment intent,
+ceremony nonce, measurement policies, and main-runtime evidence remain part of
+this independently rederived stable identity.
+
+The v4 activation commitment is defined by the following exact two-field
+projection, not by hashing the complete fresh activation envelope:
+
+```text
+SHA256(
+  b"dnai-wikigen/compute-workload-recipient-activation/v4\0"
+  || canonical_json({
+    "schema": "dnai.compute.workload-recipient-activation.v4",
+    "recipient_release_commitment": independently_rederived_release_v2
+  })
+)
+```
+
+`canonical_json` is the protocol's recursively key-sorted, compact ASCII JSON
+encoding, without a trailing newline; `\0` is one zero byte in the domain. The
+release value is independently recomputed from the authenticated identity and
+external release expectations, never accepted as a self-asserted commitment.
+Refreshing the proof for the same recipient and release changes the signed
+verdict digest but leaves both the activation commitment and the stable v2
+release commitment unchanged. Changing a bound release fact changes both.
+
+Every admission still independently authenticates the current signed proof,
+its challenge/appraisal binding, its lease, and revocation state. Matching
+stable commitments never authorize reuse of an expired or revoked proof.
+Exact-schema v3 clients fail closed on v4; current consumers reject v3 rather
+than translating or falling back to it. This protocol correction is not live
+activation or Intel TDX evidence.
 
 Those facts enter the launch in three non-circular phases. Deployment intent,
 ceremony nonce, measurement-policy-set, and the linked QVL measurement-policy
@@ -217,8 +249,11 @@ stable recipient-release commitment from its exact recipient/report binding,
 full release lineage, measurement-policy-set and main-runtime-evidence digests,
 compose hash, app ID, OS image hash, release policy, QVL verifier, verification
 method, execution signer, chain, and contract. The upload-time activation
-commitment remains immutable proof of the historical quote; a refreshed quote
-may differ without weakening the stable release comparison. Execution opens a
+commitment remains an immutable binding to that stable release identity, not a
+digest of the historical quote. A refreshed same-identity proof changes the
+verdict digest while preserving the v4 activation commitment; its current
+signature, challenge/appraisal binding, lease, and revocation checks still run
+independently. Execution opens a
 non-destructive authenticated lease, decrypts and validates the private frame
 inside the CVM, yields only the stripped private payload buffer to the compiled
 recipe, and then zeroizes both private payload and sealed-frame buffers. The

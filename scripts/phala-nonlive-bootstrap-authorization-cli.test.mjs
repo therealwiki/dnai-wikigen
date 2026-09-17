@@ -94,6 +94,7 @@ function canonicalFile(filePath, value, mode = 0o600) {
 }
 
 function publicValue(key) {
+  if (key === "TINKER_COMPUTE_WORKLOAD_FRESH_DEPLOYMENT_RECEIPT_SHA256") return `0x${bare("a")}`;
   if (key === "TINKER_WALLET_AUTH_DOMAIN") return "www.wikigen.me";
   if (key === "TINKER_WALLET_AUTH_URI") return "https://www.wikigen.me";
   if (key.endsWith("_ADDRESS")) return address("a");

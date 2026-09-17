@@ -7,6 +7,7 @@ import {
   mkdtemp,
   open,
   realpath,
+  rm,
   rmdir,
   unlink,
 } from "node:fs/promises";
@@ -68,6 +69,7 @@ const MAX_PATH_BYTES = 4_096;
 const PRIVATE_GH_DIRECTORY_MODE = 0o700n;
 const PRIVATE_GH_EXECUTABLE_MODE = 0o500n;
 const PRIVATE_GH_TEMP_PREFIX = "dnai-pinned-gh-";
+const PRIVATE_GH_CACHE_TEMP_PREFIX = "dnai-gh-sigstore-cache-";
 const SHARED_STICKY_TEMP_ROOT_MODE = 0o1777n;
 
 const TOP_LEVEL_MANIFEST_KEYS = Object.freeze([
@@ -670,6 +672,63 @@ async function destroyPrivateVerifiedExecutable(executable) {
   }
 }
 
+async function createPrivateSigstoreCache(executable) {
+  let directory = "";
+  try {
+    const tempRoot = path.dirname(executable.directory);
+    await inspectPrivateTempRoot(tempRoot, executable.uid);
+    directory = await mkdtemp(path.join(tempRoot, PRIVATE_GH_CACHE_TEMP_PREFIX));
+    await chmod(directory, Number(PRIVATE_GH_DIRECTORY_MODE));
+    const inspected = await inspectPrivateDirectory(directory, executable.uid);
+    return Object.freeze({
+      directory: inspected.path,
+      identity: inspected.identity,
+      uid: executable.uid,
+    });
+  } catch {
+    if (directory) {
+      try {
+        await rmdir(directory);
+      } catch {
+        reject("gh_private_cache_cleanup_failed");
+      }
+    }
+    reject("gh_private_cache_create_failed");
+  }
+}
+
+async function inspectPrivateSigstoreCache(cache) {
+  try {
+    const current = await inspectPrivateDirectory(cache.directory, cache.uid);
+    // TUF legitimately writes below this fresh cache. Bind the directory's
+    // identity and authority, not its mutable entry count or timestamps.
+    for (const key of ["dev", "ino", "mode", "uid", "gid", "birthtime_ns"]) {
+      if (current.identity[key] !== cache.identity[key]) {
+        reject("gh_private_cache_changed");
+      }
+    }
+  } catch {
+    reject("gh_private_cache_changed");
+  }
+}
+
+async function destroyPrivateSigstoreCache(cache) {
+  try {
+    await inspectPrivateSigstoreCache(cache);
+    // rm does not follow cache-entry symlinks; the canonical owned root is
+    // checked separately so a replaced root is never accepted for cleanup.
+    await rm(cache.directory, { recursive: true });
+  } catch {
+    reject("gh_private_cache_cleanup_failed");
+  }
+  try {
+    await lstat(cache.directory);
+    reject("gh_private_cache_cleanup_failed");
+  } catch (error) {
+    if (error?.code !== "ENOENT") reject("gh_private_cache_cleanup_failed");
+  }
+}
+
 function decodeExactUtf8(bytes, label) {
   const text = bytes.toString("utf8");
   if (
@@ -873,10 +932,15 @@ export function releaseManifestSigstoreVerificationArgs({
   ]);
 }
 
-function runnerOptions(cwd, timeout, maxBuffer) {
+function runnerOptions(cwd, timeout, maxBuffer, cache) {
   return Object.freeze({
     cwd,
-    env: MINIMAL_GH_ENVIRONMENT,
+    env: cache
+      ? Object.freeze({
+        ...MINIMAL_GH_ENVIRONMENT,
+        XDG_CACHE_HOME: cache.directory,
+      })
+      : MINIMAL_GH_ENVIRONMENT,
     encoding: "utf8",
     stdio: Object.freeze(["ignore", "pipe", "pipe"]),
     timeout,
@@ -1163,6 +1227,7 @@ async function verifyInternal(input, { runner, toolAuthority, production }) {
   const bundle = normalizeBundle(bundleFile);
   const cwd = path.dirname(manifestPath);
   const privateTool = await createPrivateVerifiedExecutable(toolFile);
+  let privateCache;
   try {
     const versionArgs = Object.freeze(["--version"]);
     await inspectPrivateVerifiedExecutable(privateTool);
@@ -1185,6 +1250,11 @@ async function verifyInternal(input, { runner, toolAuthority, production }) {
       bundlePath,
       releaseSha,
     });
+    // gh 2.87.3 requires a writable TUF cache. A new directory for this one
+    // verification forces fresh signed metadata without inheriting user cache,
+    // configuration, or credentials. Keep the frozen executable root separate.
+    privateCache = await createPrivateSigstoreCache(privateTool);
+    await inspectPrivateSigstoreCache(privateCache);
     const verificationOutput = await invokeRunner(
       runner,
       privateTool.path,
@@ -1193,11 +1263,13 @@ async function verifyInternal(input, { runner, toolAuthority, production }) {
         cwd,
         GH_ATTESTATION_TIMEOUT_MS,
         MAX_GH_ATTESTATION_OUTPUT_BYTES,
+        privateCache,
       ),
       "gh_attestation_verification",
     );
     validateGhAttestationOutput(verificationOutput, manifest, bundle);
     await inspectPrivateVerifiedExecutable(privateTool);
+    await inspectPrivateSigstoreCache(privateCache);
 
     await Promise.all([
       assertSnapshotsUnchanged(manifestFile, "release_manifest", {
@@ -1231,7 +1303,11 @@ async function verifyInternal(input, { runner, toolAuthority, production }) {
       ? normalizeReleaseManifestSigstoreVerificationReceipt(result)
       : result;
   } finally {
-    await destroyPrivateVerifiedExecutable(privateTool);
+    try {
+      if (privateCache) await destroyPrivateSigstoreCache(privateCache);
+    } finally {
+      await destroyPrivateVerifiedExecutable(privateTool);
+    }
   }
 }
 
