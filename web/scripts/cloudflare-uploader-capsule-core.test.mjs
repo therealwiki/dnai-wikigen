@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import {
   chmod,
@@ -18,6 +19,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  CLOUDFLARE_UPLOADER_CAPSULE_LIMITS,
   CLOUDFLARE_UPLOADER_CAPSULE_SCHEMA,
   CLOUDFLARE_UPLOADER_CAPSULE_TRUTH_STATUS,
   __test,
@@ -29,6 +31,7 @@ import {
 
 const NPM_VERSION = "11.6.0";
 const WRANGLER_VERSION = "4.131.0";
+const REVIEWED_UNDICI_VERSION = "7.29.1";
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
 const SYNTHETIC_KAT_RUNTIME = Object.freeze({
   architecture: "arm64",
@@ -46,9 +49,9 @@ const SYNTHETIC_KAT_OBSERVED_RUNTIME = Object.freeze({
 });
 const SYNTHETIC_KAT_MANIFEST_SHA256_BY_FILESYSTEM = Object.freeze({
   darwin:
-    "sha256:a2821ebb3a019c0ae73a380987ce1f556ff5f08586a1060966ff45f29006c49d",
+    "sha256:54171974d5c06a26acb8e2f7253b8c0b566fc5d1fd9749046044d69f2f5a03a2",
   linux:
-    "sha256:8fc812f8ce8ad569fa434873787979b4f8de25e2f565cc11f1bdb2ecc44f9e0f",
+    "sha256:2761eb92c93fe842532ac8af1b1e8b39e3089b7cc2d42aa848271b4bd6d81491",
 });
 
 function canonicalJson(value) {
@@ -82,6 +85,7 @@ function rootPackage(nodeVersion = process.version) {
     dependencies: { wrangler: WRANGLER_VERSION },
     engines: { node: nodeVersion.slice(1) },
     name: "dnai-cloudflare-release-uploader",
+    overrides: { undici: REVIEWED_UNDICI_VERSION },
     packageManager: `npm@${NPM_VERSION}`,
     private: true,
     version: "0.0.0",
@@ -210,6 +214,114 @@ async function withFixture(callback, fixtureOptions) {
     await rm(fixture.root, { recursive: true, force: true });
   }
 }
+
+test("capsules require the exact reviewed Undici security override", async () => {
+  await withFixture(async ({ root, options }) => {
+    const packageJson = rootPackage();
+    delete packageJson.overrides;
+    await writeOwnedFile(path.join(root, "package.json"), canonicalJson(packageJson));
+    assert.throws(
+      () => projectCloudflareUploaderCapsule(options),
+      /uploader package.json does not have the exact reviewed fields/,
+    );
+  });
+  for (const overrides of [
+    null,
+    [],
+    {},
+    { undici: "7.29.0" },
+    { undici: "7.29.2" },
+    { undici: "^7.29.1" },
+    { undici: { ".": REVIEWED_UNDICI_VERSION } },
+    { wrangler: { undici: REVIEWED_UNDICI_VERSION } },
+    { undici: REVIEWED_UNDICI_VERSION, helper: "1.2.3" },
+  ]) {
+    await withFixture(async ({ root, options }) => {
+      await writeOwnedFile(
+        path.join(root, "package.json"),
+        canonicalJson({ ...rootPackage(), overrides }),
+      );
+      assert.throws(
+        () => projectCloudflareUploaderCapsule(options),
+        /uploader security override/,
+      );
+    });
+  }
+});
+
+test("the security override accepts patched top-level and nested Undici copies", async () => {
+  for (const packagePath of [
+    "node_modules/undici",
+    "node_modules/helper/node_modules/undici",
+  ]) {
+    await withFixture(async ({ root, options }) => {
+      const lock = addSortedLockPackage(packageLock(), packagePath, {
+        version: REVIEWED_UNDICI_VERSION,
+        resolved: `https://registry.npmjs.org/undici/-/undici-${REVIEWED_UNDICI_VERSION}.tgz`,
+        integrity: INTEGRITY,
+      });
+      // npm overrides do not rewrite the upstream dependency declaration.
+      lock.packages["node_modules/helper"].dependencies = { undici: "7.29.0" };
+      await writeOwnedFile(path.join(root, "package-lock.json"), canonicalJson(lock));
+      await writeOwnedFile(
+        path.join(root, "node_modules/helper/package.json"),
+        canonicalJson({ name: "helper", version: "1.2.3", dependencies: { undici: "7.29.0" } }),
+      );
+      await makeDirectory(path.join(root, packagePath));
+      await writeOwnedFile(
+        path.join(root, packagePath, "package.json"),
+        canonicalJson({ name: "undici", version: REVIEWED_UNDICI_VERSION }),
+      );
+      const projection = projectCloudflareUploaderCapsule(options);
+      assert.equal(
+        projection.manifest.installedPackages.find(({ path: installedPath }) => (
+          installedPath === packagePath
+        )).version,
+        REVIEWED_UNDICI_VERSION,
+      );
+    });
+  }
+});
+
+test("declared security overrides cannot bless unreviewed Undici lock or installed versions", async () => {
+  for (const packagePath of [
+    "node_modules/undici",
+    "node_modules/helper/node_modules/undici",
+  ]) {
+    for (const version of ["7.29.0", "7.29.2"]) {
+      await withFixture(async ({ root, options }) => {
+        const lock = addSortedLockPackage(packageLock(), packagePath, {
+          version,
+          resolved: `https://registry.npmjs.org/undici/-/undici-${version}.tgz`,
+          integrity: INTEGRITY,
+          optional: true,
+        });
+        await writeOwnedFile(path.join(root, "package-lock.json"), canonicalJson(lock));
+        assert.throws(
+          () => projectCloudflareUploaderCapsule(options),
+          /locked uploader undici must match the reviewed security override/,
+        );
+      });
+      await withFixture(async ({ root, options }) => {
+        const lock = addSortedLockPackage(packageLock(), packagePath, {
+          version: REVIEWED_UNDICI_VERSION,
+          resolved: `https://registry.npmjs.org/undici/-/undici-${REVIEWED_UNDICI_VERSION}.tgz`,
+          integrity: INTEGRITY,
+        });
+        await writeOwnedFile(path.join(root, "package-lock.json"), canonicalJson(lock));
+        await makeDirectory(path.join(root, packagePath));
+        await writeOwnedFile(
+          path.join(root, packagePath, "package.json"),
+          canonicalJson({ name: "undici", version }),
+        );
+        assert.throws(
+          () => projectCloudflareUploaderCapsule(options),
+          /installed uploader undici must match the reviewed security override/,
+        );
+      });
+    }
+  }
+});
 
 test("projects a deterministic exact-byte Wrangler-only uploader capsule", async () => {
   await withFixture(async ({ options }) => {
@@ -456,6 +568,63 @@ test("initial root identity and every canonical ancestor identity are rechecked"
       await rename(movedRoot, root);
       await rm(ancestor, { recursive: true, force: true });
     }
+  });
+});
+
+test("one npm bin dot prefix resolves identically without rewriting installed descriptor bytes", async () => {
+  await withFixture(async ({ root, options }) => {
+    const descriptorPath = path.join(root, "node_modules/wrangler/package.json");
+    const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+    const lock = packageLock();
+    lock.packages["node_modules/wrangler"].bin = { ...descriptor.bin };
+    await writeOwnedFile(path.join(root, "package-lock.json"), canonicalJson(lock));
+    const bare = projectCloudflareUploaderCapsule(options);
+    descriptor.bin = Object.fromEntries(Object.entries(descriptor.bin).map(([command, target]) => (
+      [command, `./${target}`]
+    )));
+    const dottedBytes = canonicalJson(descriptor);
+    await writeOwnedFile(descriptorPath, dottedBytes);
+    const dotted = projectCloudflareUploaderCapsule(options);
+    assert.deepEqual(dotted.manifest.capabilities.binaryEntrypoints, bare.manifest.capabilities.binaryEntrypoints);
+    assert.equal(
+      dotted.manifest.wrangler.packageJsonSha256,
+      `sha256:${createHash("sha256").update(dottedBytes).digest("hex")}`,
+    );
+    assert.notEqual(dotted.manifest.wrangler.packageJsonSha256, bare.manifest.wrangler.packageJsonSha256);
+    assert.notEqual(dotted.manifestSha256, bare.manifestSha256);
+    assert.equal(fs.readFileSync(descriptorPath, "utf8"), dottedBytes);
+    assert.equal(lock.packages["node_modules/wrangler"].bin.wrangler, "bin/wrangler.js");
+  });
+});
+
+test("npm bin dot-prefix handling rejects aliases, traversal, absolute paths, and missing files", async () => {
+  for (const target of [
+    "././bin/wrangler.js",
+    ".//bin/wrangler.js",
+    "./bin//wrangler.js",
+    "./bin/./wrangler.js",
+    "./bin/../bin/wrangler.js",
+    "../wrangler/bin/wrangler.js",
+    "./../wrangler/bin/wrangler.js",
+    "/bin/wrangler.js",
+    "./",
+    "./bin\\wrangler.js",
+    "./bin/\0wrangler.js",
+  ]) {
+    await withFixture(async ({ root, options }) => {
+      const descriptorPath = path.join(root, "node_modules/wrangler/package.json");
+      const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+      descriptor.bin.wrangler = target;
+      await writeOwnedFile(descriptorPath, canonicalJson(descriptor));
+      assert.throws(() => projectCloudflareUploaderCapsule(options), /unsafe binary entrypoint/);
+    });
+  }
+  await withFixture(async ({ root, options }) => {
+    const descriptorPath = path.join(root, "node_modules/wrangler/package.json");
+    const descriptor = JSON.parse(fs.readFileSync(descriptorPath, "utf8"));
+    descriptor.bin.wrangler = "./bin/missing.js";
+    await writeOwnedFile(descriptorPath, canonicalJson(descriptor));
+    assert.throws(() => projectCloudflareUploaderCapsule(options), /binary entrypoint escapes or is absent/);
   });
 });
 
@@ -733,6 +902,55 @@ test("entry, file, total, and path caps can only be tightened and fail before ex
       /outside its reviewed integer bound/,
     );
   });
+});
+
+test("the 160 MiB capsule file cap cannot be raised and rejects oversized metadata before open", async (context) => {
+  const maximumFileBytes = 160 * 1024 * 1024;
+  assert.equal(CLOUDFLARE_UPLOADER_CAPSULE_LIMITS.maxFileBytes, maximumFileBytes);
+  await withFixture(async ({ options }) => {
+    assert.throws(
+      () => projectCloudflareUploaderCapsule({
+        ...options,
+        limits: { maxFileBytes: maximumFileBytes + 1 },
+      }),
+      /outside its reviewed integer bound/,
+    );
+  });
+  for (const size of [156_374_824, maximumFileBytes, maximumFileBytes + 1]) {
+    await withFixture(async ({ root, options }) => {
+      const target = path.join(root, "node_modules/helper/index.js");
+      const originalLstatSync = fs.lstatSync;
+      const originalOpenSync = fs.openSync;
+      const boundaryReached = new Error("modeled file reached its open boundary");
+      let targetOpens = 0;
+      try {
+        context.mock.method(fs, "lstatSync", (filePath, statOptions) => {
+          const metadata = originalLstatSync(filePath, statOptions);
+          if (filePath === target) metadata.size = BigInt(size);
+          return metadata;
+        });
+        context.mock.method(fs, "openSync", (filePath, ...args) => {
+          if (filePath === target) {
+            targetOpens += 1;
+            // Test the metadata gate without allocating or reading a large file.
+            throw boundaryReached;
+          }
+          return originalOpenSync(filePath, ...args);
+        });
+        if (size <= maximumFileBytes) {
+          assert.throws(() => projectCloudflareUploaderCapsule(options), (error) => (
+            error === boundaryReached
+          ));
+          assert.equal(targetOpens, 1);
+        } else {
+          assert.throws(() => projectCloudflareUploaderCapsule(options), /per-file byte bound/);
+          assert.equal(targetOpens, 0);
+        }
+      } finally {
+        context.mock.restoreAll();
+      }
+    });
+  }
 });
 
 test("lock, edge, JSON, and manifest complexity have independent strict caps", async () => {

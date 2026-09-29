@@ -984,13 +984,40 @@ this layout:
 `bundle/` is a frozen copy of the exact Pages input tree. `uploader/` is a
 minimal npm capsule whose root package has exactly one dependency,
 `wrangler@4.131.0`, and whose package metadata pins Node `24.9.0` and npm
-`11.6.0`. It must not contain npm/user configuration, OAuth state, credentials,
+`11.6.0`. Its root package must also contain exactly
+`"overrides": { "undici": "7.29.1" }`, the reviewed security override for
+[GHSA-3wwx-pv8p-q78v](https://github.com/nodejs/undici/security/advisories/GHSA-3wwx-pv8p-q78v).
+No other override, version range, or caller-selected dependency substitution is
+accepted. Every Undici entry in its canonical root lock and every installed copy,
+including nested copies, must resolve to exactly `7.29.1`; declaring the override
+alone is insufficient.
+Regenerate the lock and installed capsule using the pinned npm runtime, then
+regenerate and independently review the full capsule pin. Existing capsule pins
+and authority documents do not authorize this changed dependency tree. Wrangler,
+Node, and npm runtime pins remain unchanged; dependency auditing is not waived.
+The capsule must not contain npm/user configuration, OAuth state, credentials,
 the application source tree, or unrelated packages. Generate and independently
 review its full capsule pin, place that pin and the three bundle audit digests
 in a canonical copy of
 `deployments/cloudflare-production-uploader-authority.template.json`, and name
 the result `authority.json`. The matching JSON Schema is
 `deployments/cloudflare-production-uploader-authority.schema.json`.
+
+The capsule's per-file resource cap is 160 MiB: the pinned
+`@cloudflare/workerd-darwin-arm64@1.20260910.1/bin/workerd` is 156,374,824 bytes
+(approximately 149.13 MiB), exceeding the former 96 MiB capsule and 128 MiB
+outer-tree file caps. The capsule total remains capped at 512 MiB. The outer
+authority tree uses the 160 MiB file cap only beneath `uploader/`; its other
+files retain the 128 MiB cap, its total remains 768 MiB, and `authority.json`
+retains its additional 128 KiB descriptor cap. Caller-supplied capsule limits
+can only tighten these bounds. Limits are part of the capsule manifest, so this
+resource-budget correction requires a newly generated and independently
+reviewed capsule pin; it is not operator launch authority and does not relax
+ownership, ancestry, hashing, native-file classification, or credential checks.
+For npm binary declarations, one optional leading `./` is accepted before the
+existing canonical-path, containment, and actual-file checks. Repeated prefixes,
+dot-segment traversal, duplicate separators, and absolute targets are rejected;
+the original package descriptor bytes remain unchanged and manifest-bound.
 
 Before handoff, the producer makes `authority.json`, the uploader capsule, and
 every directory read-only; capsule files preserve executable bits only where
