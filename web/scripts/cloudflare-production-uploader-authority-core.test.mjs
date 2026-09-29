@@ -171,6 +171,7 @@ function rootPackage() {
     dependencies: { wrangler: WRANGLER_VERSION },
     engines: { node: process.version.slice(1) },
     name: "dnai-cloudflare-release-uploader",
+    overrides: { undici: "7.29.1" },
     packageManager: `npm@${NPM_VERSION}`,
     private: true,
     version: "0.0.0",
@@ -483,6 +484,59 @@ test("root producer is rejected before authority traversal or audits", async (co
   } finally {
     context.mock.restoreAll();
     await fixture.cleanup();
+  }
+});
+
+test("authority file bounds remain 128 MiB outside uploader and 160 MiB inside it", async (context) => {
+  const bundleFileLimit = 128 * 1024 * 1024;
+  const uploaderFileLimit = 160 * 1024 * 1024;
+  for (const [relative, size, reachesOpen] of [
+    ["bundle/dist/index.html", bundleFileLimit, true],
+    ["bundle/dist/index.html", bundleFileLimit + 1, false],
+    ["authority.json", bundleFileLimit + 1, false],
+    ["uploader/node_modules/helper/index.js", bundleFileLimit + 1, true],
+    ["uploader/node_modules/helper/index.js", 156_374_824, true],
+    ["uploader/node_modules/helper/index.js", uploaderFileLimit, true],
+    ["uploader/node_modules/helper/index.js", uploaderFileLimit + 1, false],
+  ]) {
+    const fixture = await createFixture();
+    const target = path.join(fixture.authorityRoot, relative);
+    const originalLstatSync = fs.lstatSync;
+    const originalOpenSync = fs.openSync;
+    const boundaryReached = new Error("modeled authority file reached its open boundary");
+    let targetOpens = 0;
+    try {
+      const { calls, options } = validatorOptions(fixture);
+      context.mock.method(fs, "lstatSync", (filePath, statOptions) => {
+        const metadata = originalLstatSync(filePath, statOptions);
+        if (filePath === target) metadata.size = BigInt(size);
+        return metadata;
+      });
+      context.mock.method(fs, "openSync", (filePath, ...args) => {
+        if (filePath === target) {
+          targetOpens += 1;
+          // This proves budget selection, not a large-file read or upload.
+          throw boundaryReached;
+        }
+        return originalOpenSync(filePath, ...args);
+      });
+      if (reachesOpen) {
+        await assert.rejects(assertCloudflareProductionUploaderAuthority(options), (error) => (
+          error === boundaryReached
+        ));
+        assert.equal(targetOpens, 1);
+      } else {
+        await assert.rejects(
+          assertCloudflareProductionUploaderAuthority(options),
+          /exceeds its file bound/,
+        );
+        assert.equal(targetOpens, 0);
+      }
+      assert.deepEqual(calls, []);
+    } finally {
+      context.mock.restoreAll();
+      await fixture.cleanup();
+    }
   }
 });
 

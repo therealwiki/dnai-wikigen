@@ -15,7 +15,7 @@ export const CLOUDFLARE_UPLOADER_CAPSULE_DOMAIN =
 export const CLOUDFLARE_UPLOADER_CAPSULE_LIMITS = Object.freeze({
   maxDependencyEdges: 50_000,
   maxEntries: 30_000,
-  maxFileBytes: 96 * 1024 * 1024,
+  maxFileBytes: 160 * 1024 * 1024,
   maxJsonDepth: 128,
   maxJsonFileBytes: 16 * 1024 * 1024,
   maxJsonTotalBytes: 32 * 1024 * 1024,
@@ -35,10 +35,13 @@ const EXPECTED_ROOT_PACKAGE_KEYS = Object.freeze([
   "dependencies",
   "engines",
   "name",
+  "overrides",
   "packageManager",
   "private",
   "version",
 ]);
+// GHSA-3wwx-pv8p-q78v: this is a reviewed security pin, not caller-selected policy.
+const REVIEWED_UNDICI_VERSION = "7.29.1";
 const EXPECTED_RUNTIME_KEYS = Object.freeze([
   "architecture",
   "nodeVersion",
@@ -730,6 +733,10 @@ function normalizeRootAndLock(packageBytes, lockBytes, runtime, limits) {
     maxDepth: limits.maxJsonDepth,
   });
   exactObjectKeys(rootPackage, EXPECTED_ROOT_PACKAGE_KEYS, "uploader package.json");
+  exactObjectKeys(rootPackage.overrides, ["undici"], "uploader security overrides");
+  if (rootPackage.overrides.undici !== REVIEWED_UNDICI_VERSION) {
+    throw new Error(`uploader security override must pin undici ${REVIEWED_UNDICI_VERSION}`);
+  }
   if (
     rootPackage.name !== "dnai-cloudflare-release-uploader"
     || rootPackage.version !== "0.0.0"
@@ -817,6 +824,12 @@ function normalizeRootAndLock(packageBytes, lockBytes, runtime, limits) {
     ) {
       throw new Error("uploader package-lock.json contains an unpinned dependency");
     }
+    if (
+      (packageNameFromPath(packagePath) === "undici" || descriptor.name === "undici")
+      && descriptor.version !== REVIEWED_UNDICI_VERSION
+    ) {
+      throw new Error("locked uploader undici must match the reviewed security override");
+    }
     for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
       dependencyEdgeCount += Object.keys(normalizeDependencyMap(
         descriptor[field],
@@ -883,7 +896,11 @@ function normalizePackageBins(value, packagePath, recordsByPath) {
     throw new Error("installed uploader dependency declares an invalid bin field");
   }
   const entries = [];
-  for (const [command, target] of Object.entries(raw)) {
+  for (const [command, rawTarget] of Object.entries(raw)) {
+    // npm may retain one declaration prefix that its lockfile bin map omits.
+    const target = typeof rawTarget === "string" && rawTarget.startsWith("./")
+      ? rawTarget.slice(2)
+      : rawTarget;
     if (
       !BIN_NAME.test(command)
       || typeof target !== "string"
@@ -891,6 +908,7 @@ function normalizePackageBins(value, packagePath, recordsByPath) {
       || target.includes("\\")
       || target.includes("\0")
       || path.posix.isAbsolute(target)
+      || target.split("/").some((part) => part === "." || part === "..")
       || path.posix.normalize(target) !== target
     ) {
       throw new Error("installed uploader dependency declares an unsafe binary entrypoint");
@@ -1117,6 +1135,12 @@ function validateInstalledDependencyTree({
     );
     const lockDescriptor = lock.packages[packagePath];
     const expectedName = packageNameFromPath(packagePath);
+    if (
+      (expectedName === "undici" || descriptor?.name === "undici")
+      && descriptor?.version !== REVIEWED_UNDICI_VERSION
+    ) {
+      throw new Error("installed uploader undici must match the reviewed security override");
+    }
     if (
       !descriptor
       || typeof descriptor !== "object"

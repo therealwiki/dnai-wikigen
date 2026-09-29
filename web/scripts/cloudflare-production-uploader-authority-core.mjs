@@ -5,6 +5,7 @@ import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import {
+  CLOUDFLARE_UPLOADER_CAPSULE_LIMITS,
   assertPinnedCloudflareUploaderCapsule,
   normalizeCloudflareUploaderCapsulePin,
 } from "./cloudflare-uploader-capsule-core.mjs";
@@ -348,7 +349,10 @@ function projectAuthorityTreeOnce({
       return;
     }
     if (named.isFile() && !named.isSymbolicLink()) {
-      if (named.size > BigInt(MAX_FILE_BYTES)) {
+      const maximumFileBytes = relative.startsWith("uploader/")
+        ? CLOUDFLARE_UPLOADER_CAPSULE_LIMITS.maxFileBytes
+        : MAX_FILE_BYTES;
+      if (named.size > BigInt(maximumFileBytes)) {
         throw new Error("Cloudflare production upload authority exceeds its file bound");
       }
       totalBytes += Number(named.size);
@@ -359,7 +363,7 @@ function projectAuthorityTreeOnce({
         absolute,
         named,
         producerUid,
-        MAX_FILE_BYTES,
+        maximumFileBytes,
         "Cloudflare production upload authority file",
         hooks,
         0,
