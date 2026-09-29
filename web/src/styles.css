@@ -758,7 +758,7 @@ label > span, fieldset legend { display: block; margin-bottom: 7px; color: var(-
 /* Honest non-actions and route-level evidence states */
 .non-action-state { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; min-height:40px; padding:8px 11px; border:1px solid var(--line); border-radius:7px; color:var(--muted); background:rgba(255,255,255,.018); font:700 8px "JetBrains Mono Variable",monospace; text-align:center; }
 .non-action-state.roadmap { color:var(--gold); border-color:rgba(var(--gold-rgb),.2); background:rgba(var(--gold-rgb),.035); }
-.starter-kit-button { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; min-height:40px; padding:8px 11px; border:1px solid rgba(var(--mint-rgb),.24); border-radius:7px; color:var(--mint); background:rgba(var(--mint-rgb),.045); cursor:pointer; font:700 8px "JetBrains Mono Variable",monospace; }
+.starter-kit-button { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; min-height:44px; padding:8px 11px; border:1px solid rgba(var(--mint-rgb),.24); border-radius:7px; color:var(--mint); background:rgba(var(--mint-rgb),.045); cursor:pointer; font:700 11px/1.4 "JetBrains Mono Variable",monospace; text-align:center; text-decoration:none; }
 .starter-kit-button:hover { border-color:rgba(var(--mint-rgb),.46); background:rgba(var(--mint-rgb),.08); }
 .starter-kit-button:focus-visible { outline:2px solid var(--mint); outline-offset:2px; }
 .table-non-action,.queue-detail-state { display:inline-flex; align-items:center; gap:5px; color:var(--muted-2); font:700 7px "JetBrains Mono Variable",monospace; white-space:nowrap; }
