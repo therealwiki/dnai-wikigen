@@ -449,6 +449,43 @@ test("accepts only a frozen different-principal bundle and minimal pinned upload
   }
 });
 
+test("root producer is rejected before authority traversal or audits", async (context) => {
+  const fixture = await createFixture();
+  const metadataReads = [];
+  const traversalCalls = [];
+  const originalLstatSync = fs.lstatSync;
+  try {
+    const { calls, options } = validatorOptions(fixture, {
+      hooks: {
+        afterAncestorRead: () => traversalCalls.push("ancestors"),
+        afterDirectoryRead: () => traversalCalls.push("directory"),
+        afterFileOpen: () => traversalCalls.push("file"),
+        betweenProjections: () => traversalCalls.push("projection"),
+      },
+    });
+    context.mock.method(fs, "lstatSync", (filePath, options) => {
+      metadataReads.push(filePath);
+      const metadata = originalLstatSync(filePath, options);
+      if (filePath === fixture.authorityRoot) {
+        // Model root ownership without privileged fixtures or changing custody.
+        metadata.uid = 0n;
+      }
+      return metadata;
+    });
+
+    await assert.rejects(
+      assertCloudflareProductionUploaderAuthority(options),
+      /different principal; producer and executor must be non-root/,
+    );
+    assert.deepEqual(metadataReads, [fixture.authorityRoot]);
+    assert.deepEqual(traversalCalls, []);
+    assert.deepEqual(calls, []);
+  } finally {
+    context.mock.restoreAll();
+    await fixture.cleanup();
+  }
+});
+
 test("same-principal, root, writable-tree, and executor-writable-ancestor handoffs fail closed", async (context) => {
   await context.test("same principal", async () => {
     const fixture = await createFixture();

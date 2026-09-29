@@ -272,7 +272,7 @@ function projectAuthorityTreeOnce({
   if (
     executorUid === 0
     || !Number.isSafeInteger(producerUid)
-    || producerUid < 0
+    || producerUid <= 0
     || producerUid > Number.MAX_SAFE_INTEGER
     || !rootMetadata.isDirectory()
     || rootMetadata.isSymbolicLink()
@@ -282,7 +282,7 @@ function projectAuthorityTreeOnce({
     || (permissionMode(rootMetadata) & 0o222) !== 0
   ) {
     throw new Error(
-      "Cloudflare production upload authority root must be frozen and owned by a different principal",
+      "Cloudflare production upload authority root must be frozen and owned by a different principal; producer and executor must be non-root",
     );
   }
   const ancestorChain = assertAncestorAuthority(
