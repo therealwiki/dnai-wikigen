@@ -18,6 +18,7 @@ from tinker_delegate.compute_auth import (
     ComputeWalletAuthService,
     ComputeWalletChallengeStore,
     classify_compute_token,
+    compute_credential_replay_context,
     compute_credential_signing_key,
     compute_wallet_signing_key,
     encrypt_compute_credential_token,
@@ -217,6 +218,114 @@ class ComputeCredentialAuthTest(unittest.TestCase):
             verify_compute_credential_token(
                 other, token, required_scope="jobs:read", now=150
             )
+
+
+class ComputeCredentialReplayContextTest(unittest.TestCase):
+    def setUp(self):
+        self.settings = Settings(
+            main_runtime_cvm_id="",
+            release_deployment_intent_sha256="",
+            release_authority_sha256="",
+            release_ceremony_nonce="",
+            compute_credential_signing_key=CREDENTIAL_KEY,
+            compute_credential_key_path="tinker/compute_credentials",
+            compute_credential_issuer="dnai-wikigen:compute-credential",
+            compute_credential_audience="dnai-wikigen:compute-jobs",
+            compute_credential_max_ttl_seconds=604800,
+        )
+        self.dstack_patch = patch(
+            "tinker_delegate.compute_auth.dstack_utils.is_dstack_enabled",
+            return_value=False,
+        )
+        self.dstack_enabled = self.dstack_patch.start()
+        self.addCleanup(self.dstack_patch.stop)
+
+    def test_empty_local_release_context_is_stable_across_repeated_calls(self):
+        first = compute_credential_replay_context(self.settings)
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.assertEqual(first, compute_credential_replay_context(self.settings))
+        self.assertEqual(
+            first,
+            compute_credential_replay_context(self.settings.model_copy(deep=True)),
+        )
+        self.assertNotIn(CREDENTIAL_KEY, first)
+
+    def test_each_release_tuple_member_changes_replay_context(self):
+        initial = compute_credential_replay_context(self.settings)
+        replacements = {
+            "main_runtime_cvm_id": "app_" + "1" * 40,
+            "release_deployment_intent_sha256": "sha256:" + "2" * 64,
+            "release_authority_sha256": "sha256:" + "3" * 64,
+            "release_ceremony_nonce": "4" * 64,
+        }
+        for field, value in replacements.items():
+            with self.subTest(field=field):
+                changed = self.settings.model_copy(update={field: value})
+                self.assertNotEqual(
+                    initial, compute_credential_replay_context(changed)
+                )
+
+    def test_each_auth_domain_member_changes_replay_context(self):
+        initial = compute_credential_replay_context(self.settings)
+        replacements = {
+            "compute_credential_issuer": "other:compute-credential",
+            "compute_credential_audience": "other:compute-jobs",
+            "compute_credential_key_path": "tinker/compute_credentials_v2",
+            "compute_credential_max_ttl_seconds": 3600,
+        }
+        for field, value in replacements.items():
+            with self.subTest(field=field):
+                changed = self.settings.model_copy(update={field: value})
+                self.assertNotEqual(
+                    initial, compute_credential_replay_context(changed)
+                )
+
+    def test_signing_key_rotation_changes_replay_context(self):
+        changed = self.settings.model_copy(
+            update={"compute_credential_signing_key": "replacement-key-" + "r" * 48}
+        )
+        self.assertNotEqual(
+            compute_credential_replay_context(self.settings),
+            compute_credential_replay_context(changed),
+        )
+
+    def test_unrelated_runtime_configuration_preserves_replay_context(self):
+        changed = self.settings.model_copy(
+            update={
+                "runtime_auth_token": "replacement-runtime-token",
+                "browser_timeout": 240.0,
+            }
+        )
+        self.assertEqual(
+            compute_credential_replay_context(self.settings),
+            compute_credential_replay_context(changed),
+        )
+
+    def test_dstack_mode_is_bound_even_with_identical_resolved_key(self):
+        with patch(
+            "tinker_delegate.compute_auth.compute_credential_signing_key",
+            return_value=b"k" * 32,
+        ):
+            local = compute_credential_replay_context(self.settings)
+            self.dstack_enabled.return_value = True
+            self.assertNotEqual(
+                local, compute_credential_replay_context(self.settings)
+            )
+
+    def test_unavailable_local_or_dstack_key_fails_closed(self):
+        missing_key = self.settings.model_copy(
+            update={"compute_credential_signing_key": ""}
+        )
+        with self.assertRaises(ComputeAuthUnavailable):
+            compute_credential_replay_context(missing_key)
+
+        self.dstack_enabled.return_value = True
+        with patch(
+            "tinker_delegate.compute_auth.dstack_utils.derive_storage_key",
+            side_effect=RuntimeError("dstack unavailable"),
+        ):
+            with self.assertRaises(ComputeAuthUnavailable):
+                compute_credential_replay_context(self.settings)
 
 
 if __name__ == "__main__":

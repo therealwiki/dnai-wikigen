@@ -1089,6 +1089,12 @@ function assertCredential(value: unknown): asserts value is ComputeCredential {
     || credential.plaintext_token_stored !== false
     || credential.upstream_tinker_key_exposed !== false
   ) throw new Error("Compute credential failed its bounded schema checks");
+  text(credential.name, "credential name", 64);
+  integer(credential.generation, "credential generation", 1);
+  integer(credential.daily_credit_cap, "credential daily cap", 1, 1_000_000);
+  integer(credential.issued_at, "credential issue time");
+  integer(credential.expires_at, "credential expiry", Number(credential.issued_at) + 1);
+  if (new Set(credential.scopes).size !== credential.scopes.length) throw new Error("Compute credential contains duplicate scopes");
 }
 
 function assertBalance(value: unknown, projectId?: string): asserts value is ComputeBalance {
@@ -1763,11 +1769,14 @@ export async function issueCredential(
   token: string,
   projectId: string,
   input: { deviceId: string; name: string; scopes: ComputeScope[]; expiresInSeconds: number; dailyCreditCap: number },
+  idempotencyKey: string,
 ): Promise<ComputeCredentialDelivery> {
-  return parseCredentialDelivery(await request(`/compute/projects/${encodeURIComponent(projectId)}/credentials`, {
+  const delivery = parseCredentialDelivery(await request(`/compute/projects/${encodeURIComponent(projectId)}/credentials`, {
     method: "POST",
     token,
+    idempotencyKey,
     body: {
+      delivery_mode: "idempotent_encrypted_capsule_v1",
       device_id: input.deviceId,
       name: input.name,
       scopes: input.scopes,
@@ -1775,12 +1784,40 @@ export async function issueCredential(
       daily_credit_cap: input.dailyCreditCap,
     },
   }), "compute_credential_issuance");
+  assertCredentialDeliveryRequest(delivery.credential, {
+    projectId, deviceId: input.deviceId, name: input.name.trim(), scopes: input.scopes,
+    dailyCreditCap: input.dailyCreditCap, generation: 1, expiresInSeconds: input.expiresInSeconds,
+  });
+  return delivery;
 }
 
-export async function rotateCredential(token: string, projectId: string, credentialId: string, expiresInSeconds: number): Promise<ComputeCredentialDelivery> {
-  return parseCredentialDelivery(await request(`/compute/projects/${encodeURIComponent(projectId)}/credentials/${encodeURIComponent(credentialId)}/rotate`, {
-    method: "POST", token, body: { expires_in_seconds: expiresInSeconds },
+function assertCredentialDeliveryRequest(credential: ComputeCredential, expected: {
+  projectId: string; deviceId: string; credentialId?: string; name: string; scopes: ComputeScope[];
+  dailyCreditCap: number; generation: number; expiresInSeconds: number;
+}): void {
+  const scopes = [...new Set(expected.scopes)].sort();
+  if (credential.project_id !== expected.projectId || credential.device_id !== expected.deviceId
+    || (expected.credentialId !== undefined && credential.credential_id !== expected.credentialId)
+    || credential.name !== expected.name || credential.daily_credit_cap !== expected.dailyCreditCap
+    || credential.generation !== expected.generation || credential.status !== "active"
+    || credential.revoked_at !== null || credential.expires_at - credential.issued_at !== expected.expiresInSeconds
+    || JSON.stringify([...credential.scopes].sort()) !== JSON.stringify(scopes)) {
+    throw new Error("Credential delivery does not match the original project, device, scope, cap, lifetime, or generation request");
+  }
+}
+
+export async function rotateCredential(token: string, projectId: string, credential: ComputeCredential, expiresInSeconds: number, idempotencyKey: string): Promise<ComputeCredentialDelivery> {
+  if (credential.project_id !== projectId) throw new Error("Credential rotation belongs to another project");
+  const delivery = parseCredentialDelivery(await request(`/compute/projects/${encodeURIComponent(projectId)}/credentials/${encodeURIComponent(credential.credential_id)}/rotate`, {
+    method: "POST", token, idempotencyKey,
+    body: { delivery_mode: "idempotent_encrypted_capsule_v1", expires_in_seconds: expiresInSeconds, expected_generation: credential.generation },
   }), "compute_credential_rotation");
+  assertCredentialDeliveryRequest(delivery.credential, {
+    projectId, deviceId: credential.device_id, credentialId: credential.credential_id,
+    name: credential.name, scopes: credential.scopes, dailyCreditCap: credential.daily_credit_cap,
+    generation: credential.generation + 1, expiresInSeconds,
+  });
+  return delivery;
 }
 
 export async function revokeCredential(token: string, projectId: string, credentialId: string): Promise<ComputeCredential> {

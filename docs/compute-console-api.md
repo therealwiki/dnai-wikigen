@@ -137,7 +137,20 @@ Issue a credential:
 }
 ```
 
-The response returns the public credential record plus a one-time capsule:
+The legacy request above returns the public credential record plus a one-time
+capsule. It retains its original non-replayable semantics: do not automatically
+repeat issuance or rotation after an ambiguous response.
+
+New clients can explicitly request recoverable encrypted delivery by sending
+both `Idempotency-Key: <8-to-128-character request ID>` and
+`"delivery_mode":"idempotent_encrypted_capsule_v1"` in the request body. The key
+uses letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit.
+The body marker is intentional: older services reject the unknown field before
+mutation instead of silently ignoring an unfamiliar header. Sending only the
+marker or only the header is rejected. Never downgrade a failed recoverable
+request to the legacy format.
+
+The response capsule has this shape:
 
 ```json
 {
@@ -159,17 +172,57 @@ The response returns the public credential record plus a one-time capsule:
 ```
 
 Only the encrypted capsule contains the scoped delegate token. The store keeps
-its JWT-ID commitment, generation, scope/cap metadata, and audit timestamps;
-it never keeps the plaintext token or the upstream Tinker key.
+its JWT-ID commitment, generation, scope/cap metadata, and audit timestamps.
+Opt-in recovery also stores that encrypted capsule atomically with the
+credential generation; it never stores the plaintext token or the upstream
+Tinker key.
 
 - `GET /compute/projects/{project_id}/credentials` lists public records.
 - `POST /compute/projects/{project_id}/credentials/{credential_id}/rotate`
   takes `{"expires_in_seconds":3600}` and returns a new capsule. The previous
-  generation is immediately invalid.
+  generation is immediately invalid. Recoverable rotation additionally requires
+  `"delivery_mode":"idempotent_encrypted_capsule_v1"`, an `Idempotency-Key`, and
+  integer `"expected_generation":<current generation>`. Reuse the original
+  expected generation when recovering that exact request; do not increment it
+  after an ambiguous response. Legacy callers may also supply
+  `expected_generation` for compare-and-swap protection, without opting into
+  replay.
 - `POST /compute/projects/{project_id}/credentials/{credential_id}/revoke`
   invalidates the current generation.
 
 Credential statuses are `active`, `expired`, and `revoked`.
+
+Recoverable requests return `idempotent_replay:false` on the initial commit and
+`true` on an exact replay. Replays require fresh wallet authentication and a
+current mutating project role. They return the **same encrypted capsule**, only
+while its credential and device remain active, its generation/JWT commitment
+remain current, and its token and recovery window have not expired. Replaying
+an old successful rotation is checked before the original generation's
+compare-and-swap check, so recovery does not rotate again.
+
+The stable intent binds wallet, project, action, device key, name, normalized
+scopes, cap, requested TTL, credential ID, and expected generation. It also
+binds a server-derived commitment to the existing release tuple and credential
+auth configuration/signing key. A changed input, release, or signing key is a
+conflict, not permission to create another credential. This equality commitment
+does not establish independent release verification or TDX attestation.
+
+Recovery lasts at most **600 seconds**, shortened by credential expiry. The
+cache admits at most **16 entries per project**, **256 globally**, and **16 KiB
+per serialized capsule**, within the existing 16 MiB store limit. Expired,
+revoked, or superseded ciphertext is pruned during a subsequent new delivery
+commit; it cannot be replayed while awaiting cleanup. Capacity exhaustion
+rejects a new request without issuing a credential. Request fingerprints remain
+as permanent tombstones within the existing 50,000-record idempotency limit,
+including after restart and ciphertext pruning. An expired key returns a
+conflict and never remints; resolving it requires inspecting/revoking any
+unreceived credential before deliberately starting a **new** request.
+
+The authenticated v1 store migrates additively to v2 after verifying its
+original HMAC and exact schema; existing projects, credentials, ledger, and
+idempotency entries are preserved. The store remains a single-worker,
+single-process design. Neither its HMAC nor atomic replacement is a
+multi-process transaction protocol or an anti-rollback guarantee.
 
 ## Service-credit balance and ledger
 

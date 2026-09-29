@@ -209,6 +209,7 @@ from tinker_delegate.compute_auth import (
     ComputeWalletAuthService,
     ComputeWalletChallengeStore,
     classify_compute_token,
+    compute_credential_replay_context,
     compute_store_integrity_key,
     encrypt_compute_credential_token,
     issue_compute_credential_token,
@@ -412,6 +413,7 @@ _arena_ingress_service_instance = None
 _arena_ingress_service_identity: tuple[str, ...] | None = None
 _compute_store_instance = None
 _compute_store_instance_identity: tuple[str, str] | None = None
+_compute_store_instance_lock = threading.Lock()
 _compute_dispatch_journal_instance = None
 _compute_dispatch_journal_instance_identity: tuple[str, str] | None = None
 _compute_workload_ingress_instance = None
@@ -1201,22 +1203,23 @@ def _get_compute_store():
             detail="Compute store integrity key is unavailable",
         ) from exc
     identity = (path, hashlib.sha256(integrity_key).hexdigest())
-    if _compute_store_instance is None or _compute_store_instance_identity != identity:
-        try:
-            instance = ComputeStore(
-                path,
-                integrity_key=integrity_key,
-                max_operator_grant_credits=int(settings.compute_max_operator_grant_credits),
-                max_project_balance_credits=int(settings.compute_max_project_balance_credits),
-            )
-        except (ComputeStoreCorruptError, OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Compute durable store is unavailable",
-            ) from exc
-        _compute_store_instance = instance
-        _compute_store_instance_identity = identity
-    return _compute_store_instance
+    with _compute_store_instance_lock:
+        if _compute_store_instance is None or _compute_store_instance_identity != identity:
+            try:
+                instance = ComputeStore(
+                    path,
+                    integrity_key=integrity_key,
+                    max_operator_grant_credits=int(settings.compute_max_operator_grant_credits),
+                    max_project_balance_credits=int(settings.compute_max_project_balance_credits),
+                )
+            except (ComputeStoreCorruptError, OSError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Compute durable store is unavailable",
+                ) from exc
+            _compute_store_instance = instance
+            _compute_store_instance_identity = identity
+        return _compute_store_instance
 
 
 def _get_compute_dispatch_journal():
@@ -2744,12 +2747,15 @@ class ComputeCredentialIssueRequest(BaseModel):
     scopes: list[str] = Field(min_length=1, max_length=5)
     expires_in_seconds: int = Field(ge=60, le=604800)
     daily_credit_cap: int = Field(ge=1, le=1_000_000)
+    delivery_mode: Literal["idempotent_encrypted_capsule_v1"] | None = None
 
 
 class ComputeCredentialRotateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expires_in_seconds: int = Field(ge=60, le=604800)
+    expected_generation: int | None = Field(default=None, strict=True, ge=1, le=999999)
+    delivery_mode: Literal["idempotent_encrypted_capsule_v1"] | None = None
 
 
 class TinkerCustomerAccountRequest(BaseModel):
@@ -6034,11 +6040,25 @@ def compute_revoke_device(
         _raise_compute_store_error(exc)
 
 
+def _compute_credential_delivery_response(action: str, result: dict) -> dict:
+    response = {
+        "surface": "compute_credential_issuance" if action == "issue" else "compute_credential_rotation",
+        **result,
+        "plaintext_token_returned": False,
+    }
+    if action == "issue":
+        response.update(schema_version=1, upstream_tinker_key_exposed=False)
+    else:
+        response["prior_generation_revoked"] = True
+    return response
+
+
 @app.post("/compute/projects/{project_id}/credentials")
 def compute_issue_credential(
     project_id: str,
     payload: ComputeCredentialIssueRequest,
     authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
 ):
     """Issue a scoped token encrypted to a registered X25519 device key."""
 
@@ -6048,15 +6068,28 @@ def compute_issue_credential(
     claims = _require_compute_wallet_auth(authorization)
     store = _get_compute_store()
     try:
-        device = store.device_for_issuance(
-            project_id,
-            actor_address=claims.address,
-            device_id=payload.device_id,
-        )
+        if bool(idempotency_key) != (payload.delivery_mode is not None):
+            raise HTTPException(400, "Recoverable delivery requires both delivery_mode and Idempotency-Key")
         now = int(_time.time())
+        normalized_scopes = normalize_compute_scopes(payload.scopes)
+        prepared = None
+        if idempotency_key:
+            prepared = store.prepare_credential_delivery(
+                project_id, actor_address=claims.address, action="issue",
+                idempotency_key=idempotency_key, replay_context=compute_credential_replay_context(settings),
+                expires_in_seconds=payload.expires_in_seconds, now=now,
+                device_id=payload.device_id, name=payload.name, scopes=normalized_scopes,
+                daily_credit_cap=payload.daily_credit_cap,
+            )
+            if prepared["replay"] is not None:
+                return _compute_credential_delivery_response("issue", prepared["replay"])
+            device = prepared["device"]
+        else:
+            device = store.device_for_issuance(
+                project_id, actor_address=claims.address, device_id=payload.device_id,
+            )
         expires_at = now + payload.expires_in_seconds
         credential_id = f"cred_{_secrets.token_hex(12)}"
-        normalized_scopes = normalize_compute_scopes(payload.scopes)
         credential_claims, token = issue_compute_credential_token(
             settings,
             credential_id=credential_id,
@@ -6077,6 +6110,13 @@ def compute_issue_credential(
         jwt_id_hash = hashlib.sha256(
             b"compute_credential_jti:" + credential_claims.jwt_id.encode()
         ).hexdigest()
+        if prepared is not None:
+            result = store.commit_credential_delivery(
+                request=prepared["request"], idempotency_key=idempotency_key,
+                credential_id=credential_id, jwt_id_hash=jwt_id_hash,
+                issued_at=now, expires_at=expires_at, capsule=capsule, now=int(_time.time()),
+            )
+            return _compute_credential_delivery_response("issue", result)
         credential = store.create_credential(
             project_id,
             actor_address=claims.address,
@@ -6133,18 +6173,36 @@ def compute_rotate_credential(
     credential_id: str,
     payload: ComputeCredentialRotateRequest,
     authorization: str = Header(default=""),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
 ):
     import time as _time
 
     claims = _require_compute_wallet_auth(authorization)
     store = _get_compute_store()
     try:
-        current, device = store.credential_for_rotation(
-            project_id,
-            actor_address=claims.address,
-            credential_id=credential_id,
-        )
+        if bool(idempotency_key) != (payload.delivery_mode is not None):
+            raise HTTPException(400, "Recoverable delivery requires both delivery_mode and Idempotency-Key")
         now = int(_time.time())
+        prepared = None
+        if idempotency_key:
+            if payload.expected_generation is None:
+                raise HTTPException(400, "expected_generation is required for recoverable credential rotation")
+            prepared = store.prepare_credential_delivery(
+                project_id, actor_address=claims.address, action="rotate",
+                idempotency_key=idempotency_key, replay_context=compute_credential_replay_context(settings),
+                expires_in_seconds=payload.expires_in_seconds, now=now,
+                credential_id=credential_id, expected_generation=payload.expected_generation,
+            )
+            if prepared["replay"] is not None:
+                return _compute_credential_delivery_response("rotate", prepared["replay"])
+            current, device = prepared["credential"], prepared["device"]
+        else:
+            current, device = store.credential_for_rotation(
+                project_id, actor_address=claims.address, credential_id=credential_id,
+            )
+            if payload.expected_generation is not None and payload.expected_generation != current["generation"]:
+                from tinker_delegate.compute_store import ComputeIdempotencyConflict
+                raise ComputeIdempotencyConflict("credential was concurrently rotated")
         expires_at = now + payload.expires_in_seconds
         credential_claims, token = issue_compute_credential_token(
             settings,
@@ -6165,6 +6223,13 @@ def compute_rotate_credential(
         jwt_id_hash = hashlib.sha256(
             b"compute_credential_jti:" + credential_claims.jwt_id.encode()
         ).hexdigest()
+        if prepared is not None:
+            result = store.commit_credential_delivery(
+                request=prepared["request"], idempotency_key=idempotency_key,
+                credential_id=credential_id, jwt_id_hash=jwt_id_hash,
+                issued_at=now, expires_at=expires_at, capsule=capsule, now=int(_time.time()),
+            )
+            return _compute_credential_delivery_response("rotate", result)
         credential = store.rotate_credential(
             project_id,
             actor_address=claims.address,
