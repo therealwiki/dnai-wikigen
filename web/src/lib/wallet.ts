@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { batch, createSignal, onCleanup, onMount } from "solid-js";
 import {
   createWalletClient,
   custom,
@@ -21,6 +21,7 @@ export interface WalletInfo {
 }
 
 export type WalletDiscoverySource = "eip6963" | "injected";
+export type WalletBalanceState = "idle" | "loading" | "ready" | "unavailable";
 
 export interface WalletOption {
   readonly info: WalletInfo;
@@ -45,6 +46,7 @@ const [discovering, setDiscovering] = createSignal(true);
 const [account, setAccount] = createSignal<Address>();
 const [chainId, setChainId] = createSignal<number>();
 const [balance, setBalance] = createSignal<bigint>(0n);
+const [balanceState, setBalanceState] = createSignal<WalletBalanceState>("idle");
 const [connecting, setConnecting] = createSignal(false);
 const [switchingChain, setSwitchingChain] = createSignal(false);
 const [error, setError] = createSignal("");
@@ -59,6 +61,7 @@ let activeConnectorDisconnect: (() => Promise<void>) | undefined;
 let providerGeneration = 0;
 let connectionAttempt = 0;
 let networkAttempt = 0;
+let balanceReadVersion = 0;
 
 type EventProvider = EIP1193Provider & {
   on: (event: string, listener: (value: unknown) => void) => void;
@@ -232,6 +235,13 @@ function invalidateAuthorization(): void {
   setAuthorizationVersion((current) => current + 1);
 }
 
+/** Invalidate observations before publishing a changed wallet identity or chain. */
+function invalidateBalance(): void {
+  balanceReadVersion += 1;
+  setBalanceState("idle");
+  setBalance(0n);
+}
+
 function parseChain(value: unknown, label: string): number {
   if (typeof value !== "string" || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(value)) {
     throw new Error(`${label} returned a malformed chain identifier`);
@@ -317,13 +327,13 @@ function clearActiveConnection(message = "", disconnectConnector = false): void 
   networkAttempt += 1;
   providerGeneration += 1;
   const connectorDisconnect = activeConnectorDisconnect;
+  invalidateBalance();
   detachProviderEvents();
   activeProvider = undefined;
   activeWalletClient = undefined;
   activeConnectorDisconnect = undefined;
   setAccount(undefined);
   setChainId(undefined);
-  setBalance(0n);
   setConnectedName("");
   setConnectedSource(undefined);
   setConnecting(false);
@@ -355,6 +365,7 @@ function attachProviderEvents(provider: EIP1193Provider, generation: number): vo
       return;
     }
     if (account()?.toLowerCase() === values[0].toLowerCase()) return;
+    invalidateBalance();
     activeWalletClient = createConnectedClient(provider, values[0]);
     setAccount(values[0]);
     setError("");
@@ -371,9 +382,11 @@ function attachProviderEvents(provider: EIP1193Provider, generation: number): vo
       return;
     }
     if (chainId() === value) return;
+    invalidateBalance();
     setChainId(value);
     setError("");
     invalidateAuthorization();
+    void refreshBalance();
   };
   const disconnected = (): void => {
     if (isCurrent()) failActiveConnection("Wallet disconnected; reconnect before continuing");
@@ -392,12 +405,30 @@ function attachProviderEvents(provider: EIP1193Provider, generation: number): vo
 }
 
 async function refreshBalance(nextAccount = account()): Promise<void> {
-  if (!nextAccount) return;
+  const provider = activeProvider;
+  const generation = providerGeneration;
+  const expectedChain = chainId();
+  if (!provider || !nextAccount || account()?.toLowerCase() !== nextAccount.toLowerCase()) return;
+  const readVersion = ++balanceReadVersion;
+  const isCurrent = (): boolean => readVersion === balanceReadVersion
+    && activeProvider === provider
+    && providerGeneration === generation
+    && account()?.toLowerCase() === nextAccount.toLowerCase()
+    && chainId() === expectedChain;
+  // Keep the bigint API for existing callers, but only a ready observation is
+  // displayable. Loading and unavailable are not evidence of a zero balance.
+  setBalanceState("loading");
+  setBalance(0n);
   try {
     const nextBalance = await publicClient.getBalance({ address: nextAccount });
-    if (account()?.toLowerCase() === nextAccount.toLowerCase()) setBalance(nextBalance);
+    if (!isCurrent()) return;
+    batch(() => {
+      setBalance(nextBalance);
+      setBalanceState("ready");
+    });
   } catch {
-    if (account()?.toLowerCase() === nextAccount.toLowerCase()) setBalance(0n);
+    if (!isCurrent()) return;
+    setBalanceState("unavailable");
   }
 }
 
@@ -464,7 +495,11 @@ async function switchToBase(): Promise<void> {
     if (attempt !== networkAttempt || activeProvider !== provider || account()?.toLowerCase() !== expectedAccount.toLowerCase()) {
       throw new Error("Wallet connection changed while switching networks");
     }
-    setChainId(confirmedChain);
+    if (chainId() !== confirmedChain) {
+      invalidateBalance();
+      setChainId(confirmedChain);
+      void refreshBalance();
+    }
     if (previousChain !== confirmedChain) invalidateAuthorization();
   } catch (cause) {
     const normalized = userFacingProviderError(cause, "Base Sepolia network switch");
@@ -607,6 +642,7 @@ async function attachProvider(
   const prepared = await prepareConnection(provider);
   if (attempt !== connectionAttempt) throw new Error("Wallet connection was superseded by a newer request");
   const previousConnectorDisconnect = activeConnectorDisconnect;
+  invalidateBalance();
   detachProviderEvents();
   providerGeneration += 1;
   activeProvider = provider;
@@ -1216,6 +1252,7 @@ export const wallet = {
   account,
   chainId,
   balance,
+  balanceState,
   connecting,
   switchingChain,
   error,

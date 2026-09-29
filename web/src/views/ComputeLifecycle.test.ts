@@ -287,17 +287,23 @@ describe("Compute view lifecycle wiring", () => {
 
   it("routes Escape, backdrop, X, and acknowledgement through the pending-close guard", () => {
     expect(computeSource).toContain("useModalFocus(keyOpen, () => credentialDialogRef, closeKeyDialog)");
-    expect(computeSource).toMatch(/function closeKeyDialog\(\): void \{\s*credentialDialog.close\(\);/);
+    expect(computeSource).toMatch(/function closeKeyDialog\(\): void \{\s*if \(credentialRecovery\(\)\?\.pending\) return;\s*credentialDialog.close\(\);/);
     expect(computeSource.match(/onClick=\{closeKeyDialog\}/g)).toHaveLength(3);
-    expect(computeSource).toContain('aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog} disabled={credentialPending()}');
+    expect(computeSource).toContain('aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog} disabled={credentialPending() || credentialRecovery()?.pending}');
     expect(computeSource).toContain("scope === projectScopeVersion");
-    expect(computeSource.match(/credentialDialog.deliver\(attempt, plaintext\)/g)).toHaveLength(2);
+    expect(computeSource.match(/credentialDialog.deliver\(attempt, received.plaintext\)/g)).toHaveLength(3);
+    expect(computeSource).toContain("endpoint === deployment.delegateUrl");
+    expect(computeSource).toContain("credentialDelivery.retryDelivery()");
+    expect(computeSource).toContain("credentialDelivery.reconcile()");
+    expect(computeSource).toContain('<Show when={error() && !keyOpen()}>');
+    const credentialModal = computeSource.slice(computeSource.indexOf('<Show when={keyOpen()}>'));
+    expect(credentialModal).toContain('<p class="form-error" role="alert">{error()}</p>');
   });
 
   it("exposes reauthorization and original-project recovery without automatically repeating mutations", () => {
     expect(computeSource).toContain("Reauthorize Compute Console");
     expect(computeSource).toContain("item.project_id === expiryRecovery()?.projectId");
-    expect(computeSource).toContain("revoke any unreceived credential before issuing another");
+    expect(computeSource).toContain("revoke any unreceived credential or delivery device before issuing another");
     expect(computeSource).toContain("nothing will be resealed, authorized, or submitted automatically");
     expect(computeSource).toContain("may already have committed even without a returned receipt");
     expect(computeSource).not.toMatch(/(?:localStorage|sessionStorage)\.(?:setItem|getItem)/);

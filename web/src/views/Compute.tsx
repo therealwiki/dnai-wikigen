@@ -55,23 +55,18 @@ import {
   ComputeHttpError,
   computeLedgerAdjacency,
   createProject,
-  decryptCredentialCapsule,
   fetchBalance,
   fetchFundingCapabilities,
   fetchLedger,
-  generateDeviceKey,
   getProject,
-  issueCredential,
   listCredentials,
   listDevices,
   listJobs,
   listProjects,
   newIdempotencyKey,
-  registerDevice,
   removeProjectMember,
   revokeCredential,
   revokeDevice,
-  rotateCredential,
   type ComputeBalance,
   type ComputeCredential,
   type ComputeDevice,
@@ -86,6 +81,7 @@ import {
   type ProjectRole,
   UnresolvedIdempotencyAttempt,
 } from "../lib/compute";
+import { createComputeCredentialDelivery, type CredentialDeliveryRecovery } from "../lib/computeCredentialDelivery";
 import { shortAddress } from "../lib/contract";
 import { computeCredentialQuickstart } from "../lib/computeQuickstart";
 import { computeProviderPresentation } from "../lib/computeProviderPresentation";
@@ -349,6 +345,7 @@ export function Compute(props: {
   const [fundOpen, setFundOpen] = createSignal(false);
   const [keyOpen, setKeyOpen] = createSignal(false);
   const [credentialPending, setCredentialPending] = createSignal(false);
+  const [credentialRecovery, setCredentialRecovery] = createSignal<CredentialDeliveryRecovery>();
   const [jobOpen, setJobOpen] = createSignal(false);
   const [projectOpen, setProjectOpen] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
@@ -382,6 +379,7 @@ export function Compute(props: {
     setOneTimeToken(state.token);
     setRevealToken(Boolean(state.token));
   });
+  const credentialDelivery = createComputeCredentialDelivery(setCredentialRecovery);
   const sessionLifetime = createComputeSessionLifetime(() => recoverConsoleSession("expired"));
   function recoverConsoleSession(reason: "expired" | "rejected"): void {
     const originalProject = projectId();
@@ -394,7 +392,7 @@ export function Compute(props: {
       projectId: originalProject,
       message: `The wallet-scoped Compute session ${reason === "expired" ? "expired" : "was rejected by the service"}. Authorize again to continue.`
         + (originalProject ? ` Reopen the original project ${originalProject} to review its current state.` : "")
-        + (credentialPending() || oneTimeToken() ? " Any one-time credential view was cleared. Issuance may have reached the server; review Credentials and revoke any unreceived credential before issuing another." : "")
+        + (credentialPending() || credentialRecovery() || oneTimeToken() ? " Any one-time credential view and in-memory recovery key were cleared. Issuance may have reached the server; review Credentials and revoke any unreceived credential or delivery device before issuing another." : "")
         + " An in-flight workload upload/deletion, authorization, or job mutation may already have committed even without a returned receipt. Inspect the original project's workload and authorization/job state before retrying. Local handoffs were cleared; nothing will be resealed, authorized, or submitted automatically."
         + (workloadReference ? ` Known workload: ${workloadReference}.` : "")
         + (jobReference ? ` Known authorization/job: ${jobReference}.` : ""),
@@ -413,6 +411,7 @@ export function Compute(props: {
   const canMutateProject = createMemo(() => ["owner", "admin", "developer"].includes(project()?.role ?? ""));
   const canManageMembers = createMemo(() => ["owner", "admin"].includes(project()?.role ?? ""));
   const credentialRotationUnavailableReason = (credential: ComputeCredential): string => {
+    if (credentialRecovery()) return "Resolve the unreceived credential delivery before rotating another credential.";
     if (!canMutateProject()) return "Viewer role is read-only; project credentials cannot be rotated.";
     if (credential.status !== "active") return `This credential is ${credential.status.replaceAll("_", " ")} and cannot be rotated.`;
     if (!deviceKeys.has(credential.device_id)) {
@@ -473,6 +472,7 @@ export function Compute(props: {
     projectScopeVersion += 1;
     sessionLifetime.clear();
     credentialDialog.invalidate();
+    credentialDelivery.invalidate();
     setAuthState("locked");
     setSessionToken("");
     setAuthorizedAddress("");
@@ -533,6 +533,7 @@ export function Compute(props: {
     if (nextProjectId !== projectId()) {
       projectScopeVersion += 1;
       credentialDialog.invalidate();
+      credentialDelivery.invalidate();
       deviceKeys.clear();
       setProjectId(nextProjectId);
       setProject(undefined);
@@ -670,10 +671,11 @@ export function Compute(props: {
   async function submitCredential(): Promise<void> {
     const selected = project();
     const token = sessionToken();
-    if (!selected || !canMutateProject()) return;
+    if (!selected || !canMutateProject() || credentialRecovery()) return;
     const scope = projectScopeVersion;
+    const endpoint = deployment.delegateUrl;
     const contextIsCurrent = () => computeSessionIsCurrent(token)
-      && scope === projectScopeVersion && selected.project_id === projectId();
+      && scope === projectScopeVersion && selected.project_id === projectId() && endpoint === deployment.delegateUrl;
     const attempt = credentialDialog.begin(contextIsCurrent);
     if (!attempt) return;
     const draft = {
@@ -686,25 +688,18 @@ export function Compute(props: {
     setBusy("credential");
     setError("");
     try {
-      const key = await generateDeviceKey();
+      const received = await credentialDelivery.issue({ token, projectId: selected.project_id, isCurrent: contextIsCurrent }, draft);
       if (!credentialDialog.current(attempt)) return;
-      const device = await registerDevice(token, selected.project_id, draft.name, draft.kind, key.publicKeyHex);
-      if (!credentialDialog.current(attempt)) return;
-      deviceKeys.set(device.device_id, key);
-      const delivery = await issueCredential(token, selected.project_id, {
-        deviceId: device.device_id,
-        name: draft.name,
-        scopes: draft.scopes,
-        expiresInSeconds: draft.expiresInSeconds,
-        dailyCreditCap: draft.dailyCreditCap,
-      });
-      if (!credentialDialog.current(attempt)) return;
-      const plaintext = await decryptCredentialCapsule(delivery, key);
-      if (!credentialDialog.deliver(attempt, plaintext)) return;
+      deviceKeys.set(received.credential.device_id, received.key);
+      if (!credentialDialog.deliver(attempt, received.plaintext)) return;
       setNotice("Credential issued and decrypted only in this tab. Copy it once; Wikigen does not retain the plaintext token.");
       await loadProject(selected.project_id, token);
     } catch (cause) {
-      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Credential issuance failed");
+      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) {
+        setError(credentialRecovery()
+          ? "Credential delivery is unresolved. The request may have committed; use the original delivery recovery below instead of creating another credential."
+          : cause instanceof Error ? cause.message : "Credential issuance was not sent");
+      }
     } finally {
       credentialDialog.finish(attempt);
       if (contextIsCurrent() && busy() === "credential") setBusy("");
@@ -724,8 +719,9 @@ export function Compute(props: {
       return;
     }
     const scope = projectScopeVersion;
+    const endpoint = deployment.delegateUrl;
     const contextIsCurrent = () => computeSessionIsCurrent(token)
-      && scope === projectScopeVersion && credential.project_id === projectId();
+      && scope === projectScopeVersion && credential.project_id === projectId() && endpoint === deployment.delegateUrl;
     if (!contextIsCurrent() || !credentialDialog.open()) return;
     const attempt = credentialDialog.begin(contextIsCurrent);
     if (!attempt) return;
@@ -733,17 +729,59 @@ export function Compute(props: {
     setBusy(action);
     setError("");
     try {
-      const delivery = await rotateCredential(token, credential.project_id, credential.credential_id, 7 * 86_400);
+      const received = await credentialDelivery.rotate({ token, projectId: credential.project_id, isCurrent: contextIsCurrent }, credential, key);
       if (!credentialDialog.current(attempt)) return;
-      const plaintext = await decryptCredentialCapsule(delivery, key);
-      if (!credentialDialog.deliver(attempt, plaintext)) return;
+      if (!credentialDialog.deliver(attempt, received.plaintext)) return;
       setNotice("Prior credential generation revoked; the rotated token is shown once.");
       await loadProject(credential.project_id, token);
     } catch (cause) {
-      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Credential rotation failed");
+      if (credentialDialog.current(attempt) && reportableComputeError(cause, token)) setError(credentialRecovery()
+        ? "Rotation delivery is unresolved. The prior generation may already be invalid; recover this exact request below."
+        : cause instanceof Error ? cause.message : "Credential rotation was not sent");
     } finally {
       credentialDialog.finish(attempt);
       if (contextIsCurrent() && busy() === action) setBusy("");
+    }
+  }
+
+  async function recoverCredentialDelivery(action: "replay" | "inspect" | "revoke-credential" | "revoke-device"): Promise<void> {
+    const recovery = credentialRecovery();
+    const token = sessionToken();
+    if (!recovery || recovery.pending || !computeSessionIsCurrent(token) || recovery.projectId !== projectId()) return;
+    if (action === "revoke-device" && !canManageMembers()) return;
+    const scope = projectScopeVersion;
+    const endpoint = deployment.delegateUrl;
+    const contextIsCurrent = () => computeSessionIsCurrent(token) && scope === projectScopeVersion
+      && recovery.projectId === projectId() && endpoint === deployment.delegateUrl;
+    const attempt = action === "replay" ? credentialDialog.begin(contextIsCurrent) : undefined;
+    if (action === "replay" && !attempt) return;
+    const operation = `credential-recovery:${action}`;
+    setBusy(operation);
+    setError("");
+    try {
+      if (action === "replay") {
+        const received = await credentialDelivery.retryDelivery();
+        if (!attempt || !credentialDialog.current(attempt)) return;
+        deviceKeys.set(received.credential.device_id, received.key);
+        if (!credentialDialog.deliver(attempt, received.plaintext)) return;
+        setNotice("The original encrypted delivery was recovered using its unchanged request key. No extra credential generation was requested.");
+      } else if (action === "inspect") {
+        await credentialDelivery.reconcile();
+        if (!contextIsCurrent()) return;
+        setNotice(credentialRecovery()
+          ? "Authoritative device and credential metadata refreshed. Missing records do not prove that the original mutation failed."
+          : "Revocation was confirmed. The unresolved delivery has been cleared without issuing another credential.");
+      } else {
+        await credentialDelivery.revokeUnreceived(action === "revoke-device" ? "device" : "credential");
+        if (!contextIsCurrent()) return;
+        setNotice("Revocation was confirmed for the original delivery. You can now explicitly create a new credential.");
+      }
+      await loadProject(recovery.projectId, token);
+    } catch (cause) {
+      if (contextIsCurrent() && reportableComputeError(cause, token)) setError(cause instanceof Error ? cause.message : "Delivery recovery could not be confirmed");
+    } finally {
+      if (attempt) credentialDialog.finish(attempt);
+      if (contextIsCurrent() && busy() === operation) setBusy("");
     }
   }
 
@@ -919,12 +957,14 @@ export function Compute(props: {
   }
 
   function closeKeyDialog(): void {
+    if (credentialRecovery()?.pending) return;
     credentialDialog.close();
   }
 
   function openNewKeyDialog(): void {
     if (!liveReady() || !credentialDialog.open()) return;
-    setSelectedScopes(["jobs:read"]);
+    setError("");
+    if (!credentialRecovery()) setSelectedScopes(["jobs:read"]);
   }
 
   async function copyOneTimeToken(): Promise<void> {
@@ -1016,7 +1056,7 @@ export function Compute(props: {
           <p>Own a wallet-scoped project, issue encrypted developer credentials, fund the production lane with exact ETH or the pinned ERC20, and keep noncash test grants separate without exposing upstream provider keys.</p>
         </div>
         <div class="head-actions">
-          <button class="secondary-button large" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject() || Boolean(busy()) || keyOpen()}><KeyRound size={17} /> New credential</button>
+          <button class="secondary-button large" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject() || Boolean(busy()) || keyOpen()}><KeyRound size={17} /> {credentialRecovery() ? "Recover delivery" : "New credential"}</button>
           <button class="primary-button large" type="button" onClick={() => setFundOpen(true)}><Plus size={17} /> Funding status</button>
         </div>
       </header>
@@ -1050,7 +1090,7 @@ export function Compute(props: {
       </section>
 
       <Show when={notice()}><div class="inline-notice success" role="status"><Check size={15} /><span>{notice()}</span><button type="button" aria-label="Dismiss notice" onClick={() => setNotice("")}>×</button></div></Show>
-      <Show when={error()}><div class="inline-notice error" role="alert"><TriangleAlert size={15} /><span>{error()}</span><button type="button" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div></Show>
+      <Show when={error() && !keyOpen()}><div class="inline-notice error" role="alert"><TriangleAlert size={15} /><span>{error()}</span><button type="button" aria-label="Dismiss error" onClick={() => setError("")}>×</button></div></Show>
       <Show when={expiryRecovery()}><div class="inline-notice" role="alert"><Clock3 size={15} /><span>{expiryRecovery()?.message}</span><button type="button" aria-label="Dismiss session recovery notice" onClick={() => setExpiryRecovery(undefined)}>×</button></div></Show>
       <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {cancelingJobId() ? "Canceling the queued job and reloading its credit ledger." : ""}
@@ -1124,7 +1164,7 @@ export function Compute(props: {
 
       <Show when={tab() === "credentials"}>
         <div id="compute-panel-credentials" role="tabpanel" aria-labelledby="compute-tab-credentials" tabindex="0">
-        <section class="console-panel credentials-panel"><div class="panel-head"><div><p class="overline">Encrypted delivery, revocable access</p><h2>Wikigen credentials</h2><p>Tokens authorize named proxy operations. The upstream Tinker key never leaves its CVM; device binding here means encrypted delivery, not hardware attestation.</p></div><button class="primary-button" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject()}><Plus size={15} /> New credential</button></div>
+        <section class="console-panel credentials-panel"><div class="panel-head"><div><p class="overline">Encrypted delivery, revocable access</p><h2>Wikigen credentials</h2><p>Tokens authorize named proxy operations. The upstream Tinker key never leaves its CVM; device binding here means encrypted delivery, not hardware attestation.</p></div><button class="primary-button" type="button" onClick={openNewKeyDialog} disabled={!liveReady() || !canMutateProject()}><Plus size={15} /> {credentialRecovery() ? "Recover delivery" : "New credential"}</button></div>
           <div class="credential-callout"><Fingerprint size={18} /><div><strong>One-time device-decrypted delivery</strong><span>This browser creates an X25519 key in memory, authenticates the capsule binding, checks the JWT claims and generation commitment, and decrypts once. The browser cannot independently verify the service's HS256 signature; HTTPS remains the service-authentication layer.</span></div></div>
           <div class="credential-table-wrap" role="region" aria-label="Project credentials table" tabindex="0"><table class="credential-table"><thead><tr><th>Name</th><th>Credential</th><th>Scopes</th><th>Expires</th><th>Last used</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
             <Show when={liveReady()} fallback={<For each={PREVIEW_KEYS}>{(key) => <tr><td><div class="credential-name"><span><KeyRound size={15} /></span><div><strong>{key.name}</strong><small>{key.kind}</small></div></div></td><td><code>{key.prefix}</code></td><td><div class="scope-list">{key.scopes.map((scope) => <span>{scope}</span>)}</div></td><td>{key.expires}</td><td>{key.used}</td><td><StateLabel status={key.status} level="modeled" /></td><td><span class="table-non-action">Preview only</span></td></tr>}</For>}>
@@ -1200,10 +1240,23 @@ export function Compute(props: {
 
       <Show when={fundOpen()}><div class="dialog-backdrop" onClick={() => setFundOpen(false)}><section ref={(element) => { fundDialogRef = element; }} class="fund-dialog" role="dialog" aria-modal="true" aria-labelledby="fund-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close funding dialog" data-autofocus onClick={() => setFundOpen(false)}>×</button><div class="dialog-mark"><BadgeDollarSign size={22} /></div><p class="overline">Choose the correct funding surface</p><h2 id="fund-title">{fundMethod() === "card" ? "Hosted checkout is outside v1" : "Use the exact-asset vault"}</h2><p>{fundMethod() === "card" ? "No card form is embedded here. The first production release uses wallet-funded exact assets; any future provider must own card collection and deliver a verified signed webhook." : "In a verified release, ETH and the pinned ERC20 move directly from your wallet into a Base Sepolia project ledger. They remain that exact asset, are capped per job, and never become test credits."}</p><div class="method-tabs" role="group" aria-label="Funding method"><button type="button" aria-pressed={fundMethod() === "card"} class={fundMethod() === "card" ? "active" : ""} onClick={() => setFundMethod("card")}><CreditCard size={15} /> Card</button><button type="button" aria-pressed={fundMethod() === "usdc"} class={fundMethod() === "usdc" ? "active" : ""} onClick={() => setFundMethod("usdc")}><CircleDollarSign size={15} /> {computeVaultDeployment.token?.symbol ?? "ERC20"}</button><button type="button" aria-pressed={fundMethod() === "eth"} class={fundMethod() === "eth" ? "active" : ""} onClick={() => setFundMethod("eth")}><Zap size={15} /> ETH</button></div><div class="credit-quote"><div><span>Status</span><strong>{fundMethod() === "card" ? "Roadmap · disabled" : computeVaultDeployment.fundingConfigured ? "Release configured · verify gates" : "Release not configured"}</strong></div><div><span>Mutation route</span><strong>{fundMethod() === "card" ? "No card payload accepted" : "Connected wallet → pinned vault"}</strong></div><div><span>Reason</span><strong>{fundMethod() === "card" ? funding()?.card.reason.replaceAll("_", " ") ?? "hosted checkout adapter not connected" : "same-asset reserve, bounded debit, and remainder release"}</strong></div></div><Show when={fundMethod() === "card"} fallback={<button class="primary-button large full" type="button" onClick={() => { setFundOpen(false); chooseTab("funding"); }}><ShieldCheck size={17} /> Open vault release checks</button>}><div class="non-action-state roadmap"><LockKeyhole size={17} /> No card collection in this app</div></Show><p class="modeled-note"><Sparkles size={13} /> Onchain actions appear only after the browser re-reads the pinned runtime and policy roots from one Base Sepolia block. Hosted checkout remains a separate roadmap integration.</p></section></div></Show>
 
-      <Show when={keyOpen()}><div class="dialog-backdrop" onClick={closeKeyDialog}><section ref={(element) => { credentialDialogRef = element; }} class="credential-dialog" role="dialog" aria-modal="true" aria-labelledby="key-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog} disabled={credentialPending()}>×</button><div class="dialog-mark"><KeyRound size={22} /></div><p class="overline">Scoped proxy access</p><h2 id="key-title">{oneTimeToken() ? "Copy your credential once" : "Create Wikigen credential"}</h2><Show when={credentialPending()}><p class="modeled-note" role="status"><LoaderCircle class="spin" size={15} /> Credential delivery is in progress. This dialog stays open until the one-time token arrives. Changing wallet or project discards delivery; review and revoke any unreceived credential afterward.</p></Show>
+      <Show when={keyOpen()}><div class="dialog-backdrop" onClick={closeKeyDialog}><section ref={(element) => { credentialDialogRef = element; }} class="credential-dialog" role="dialog" aria-modal="true" aria-labelledby="key-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close credential dialog" data-autofocus onClick={closeKeyDialog} disabled={credentialPending() || credentialRecovery()?.pending}>×</button><div class="dialog-mark"><KeyRound size={22} /></div><p class="overline">Scoped proxy access</p><h2 id="key-title">{oneTimeToken() ? "Copy your credential once" : credentialRecovery() ? "Recover the original delivery" : "Create Wikigen credential"}</h2><Show when={credentialPending()}><p class="modeled-note" role="status"><LoaderCircle class="spin" size={15} /> Credential delivery is in progress. This dialog stays open until the one-time token arrives. Changing wallet or project discards delivery; review and revoke any unreceived credential afterward.</p></Show>
+        <Show when={error()}><p class="form-error" role="alert">{error()}</p></Show>
         <Show when={!oneTimeToken()} fallback={<><p>This scoped delegate credential was decrypted inside this tab. It is not an upstream Tinker key and will be erased from the interface when this dialog closes.</p><div class="one-time-secret live-token"><button type="button" aria-label={revealToken() ? "Hide one-time credential" : "Reveal one-time credential"} onClick={() => setRevealToken(!revealToken())}>{revealToken() ? <EyeOff size={15} /> : <Eye size={15} />}</button><div><small>ONE-TIME DEVICE-DECRYPTED TOKEN</small><code>{revealToken() ? oneTimeToken() : "••••••••••••••••••••••••••••••"}</code></div><button type="button" onClick={() => void copyOneTimeToken()} aria-label="Copy credential"><Copy size={15} /></button></div><Show when={credentialQuickstart()}><div class="credential-quickstart"><div><span><Braces size={14} /><strong>Try one bounded read</strong></span><button type="button" onClick={() => void copyCredentialQuickstart()}><Copy size={13} /> Copy quickstart</button></div><pre><code>{credentialQuickstart()}</code></pre><p>The placeholder keeps your credential out of copied source. This request can only list bounded job metadata; it cannot create, dispatch, or charge work.</p></div></Show><button class="primary-button large full" type="button" onClick={closeKeyDialog} disabled={credentialPending()}><Check size={17} /> I stored it safely; clear this view</button><p class="modeled-note"><ShieldCheck size={13} /> Plaintext is held only in component memory and is never written to local storage.</p></>}>
+          <Show when={credentialRecovery()}>{(recovery) => <section aria-label="Unreceived credential recovery">
+            <div class="credential-callout"><TriangleAlert size={18} /><div><strong>{recovery().pending ? "Delivery request in progress" : "Delivery is not yet confirmed"}</strong><span>{recovery().stage === "rotation" ? "The previous generation may already be invalid. " : "The service may already have committed this request. "}Recovery reuses the original key, device and request; it does not request another credential or generation.</span></div></div>
+            <p>Keep this tab open. The CVM can replay the encrypted capsule for up to ten minutes, only while that exact generation remains active. Your private device key stays in memory; reloading, leaving Compute, changing project or wallet, or locking the console discards it.</p>
+            <div class="credit-quote"><div><span>Original project</span><code>{recovery().projectId}</code></div><div><span>Delivery device</span><code>{recovery().deviceId ?? "Not yet confirmed"}</code></div><div><span>Credential</span><code>{recovery().credentialId ?? "Not yet confirmed"}</code></div><div><span>Observed credential records</span><strong>{recovery().credentials.length}</strong></div></div>
+            <button class="primary-button large full" type="button" disabled={Boolean(busy()) || recovery().pending} onClick={() => void recoverCredentialDelivery("replay")}><RefreshCw size={16} /> Recover original encrypted delivery</button>
+            <button class="secondary-button large full" type="button" disabled={Boolean(busy()) || recovery().pending} onClick={() => void recoverCredentialDelivery("inspect")}><ShieldCheck size={16} /> Refresh device and credential metadata</button>
+            <p class="modeled-note">A missing record is not proof of failure. If encrypted recovery has expired or is rejected, confirm revocation before creating a replacement. Nothing is retried automatically.</p>
+            <Show when={recovery().credentialId}><button class="secondary-button large full" type="button" disabled={Boolean(busy()) || recovery().pending || !canMutateProject()} onClick={() => void recoverCredentialDelivery("revoke-credential")}><Ban size={16} /> Revoke this unreceived credential</button></Show>
+            <Show when={!recovery().credentialId && recovery().deviceId}><Show when={canManageMembers()} fallback={<p class="modeled-note">An owner or admin must revoke this delivery device if encrypted recovery is unavailable. Device revocation also prevents a late issuance from becoming active.</p>}><button class="secondary-button large full" type="button" disabled={Boolean(busy()) || recovery().pending} onClick={() => void recoverCredentialDelivery("revoke-device")}><Ban size={16} /> Revoke delivery device and its credentials</button></Show></Show>
+          </section>}</Show>
+          <Show when={!credentialRecovery()}>
           <div class="credential-callout scope-default-callout"><ShieldCheck size={18} /><div><strong>Least privilege by default</strong><span>Only <code>jobs:read</code> starts selected. Every <code>:create</code> or <code>:delete</code> scope below is a mutation and must be opted into explicitly; <code>jobs:create</code> can reserve bounded service credits, but it does not authorize the separate exact-asset dispatch plane.</span></div></div>
           <p>The upstream API key remains sealed. A newly generated browser X25519 key receives only a short-lived Compute capability. Arena submission and receipt scopes remain in their purpose-separated authentication domains.</p><div class="form-grid two"><label><span>Credential + device name</span><input maxlength="64" disabled={credentialPending()} value={keyName()} onInput={(event) => setKeyName(event.currentTarget.value)} /></label><label><span>Device kind</span><select disabled={credentialPending()} value={deviceKind()} onChange={(event) => setDeviceKind(event.currentTarget.value as DeviceKind)}><option value="developer_device">Developer device</option><option value="ci_service">CI service</option><option value="autonomous_agent">Autonomous agent</option></select></label></div><div class="form-grid two"><label><span>Expires after</span><div class="input-with-suffix"><input disabled={credentialPending()} value={keyExpiry()} min="1" max="7" type="number" onInput={(event) => setKeyExpiry(event.currentTarget.value)} /><span>DAYS</span></div></label><label><span>Daily spend limit</span><div class="input-with-suffix"><input disabled={credentialPending()} value={dailyCap()} min="1" max="1000000" type="number" onInput={(event) => setDailyCap(event.currentTarget.value)} /><span>CREDITS</span></div></label></div><fieldset class="scope-picker" disabled={credentialPending()}><legend>Allowed Compute scopes</legend>{COMPUTE_PUBLIC_CREDENTIAL_SCOPES.map((scope) => <label><input type="checkbox" checked={selectedScopes().includes(scope)} onChange={(event) => setSelectedScopes((current) => event.currentTarget.checked ? [...new Set([...current, scope])] : current.filter((item) => item !== scope))} /> <span><Braces size={14} />{scope}</span></label>)}</fieldset><button class="primary-button large full" type="button" onClick={() => void submitCredential()} disabled={!liveReady() || !keyName().trim() || selectedScopes().length === 0 || Number(dailyCap()) < 1 || Boolean(busy()) || credentialPending()}>{credentialPending() ? <LoaderCircle class="spin" size={17} /> : <Fingerprint size={17} />} Register device key and issue</button><p class="modeled-note"><TriangleAlert size={13} /> Encryption binds one-time delivery to this device key; it is not hardware attestation or per-request proof-of-possession.</p>
+          </Show>
         </Show></section></div></Show>
 
       <Show when={jobOpen()}><div class="dialog-backdrop" onClick={() => setJobOpen(false)}><section ref={(element) => { jobDialogRef = element; }} class="job-dialog" role="dialog" aria-modal="true" aria-labelledby="job-title" tabindex="-1" onClick={(event) => event.stopPropagation()}><button class="dialog-x" type="button" aria-label="Close job dialog" data-autofocus onClick={() => setJobOpen(false)}>×</button><div class="dialog-mark"><CloudCog size={22} /></div><p class="overline">Reservation safety gate</p><h2 id="job-title">Reservation creation is release-held</h2><p>The authenticated service can atomically reserve noncash test credits and return an inert <code>queued / not_dispatched</code> job. This browser does not expose that mutation until the release publishes a reservation-specific capability, a versioned receipt bound to the ledger reversal path, and a status lookup that can reconcile a committed POST whose response was lost. A broad Compute Console flag is not sufficient authority.</p><div class="job-estimate"><Gauge size={17} /><div><span>Browser reservation</span><strong>Release held</strong></div><div><span>Exact-asset dispatch</span><strong>Separate capability gate</strong></div></div><div class="non-action-state roadmap"><LockKeyhole size={17} /> No browser reservation mutation in this release</div><p class="modeled-note"><Sparkles size={13} /> Existing queued jobs can still be wallet-canceled by a current owner, admin, or developer; every attempt reloads jobs, balance, and the hash-chained ledger.</p></section></div></Show>

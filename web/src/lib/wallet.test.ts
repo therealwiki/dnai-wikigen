@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringToHex, type Address, type EIP1193Provider } from "viem";
+import { publicClient } from "./contract";
 import {
   buildApprovedWalletSigningMessage,
   injectedFallbackOptions,
@@ -111,9 +112,234 @@ function walletOption(provider: EIP1193Provider, overrides: Partial<WalletOption
 
 beforeEach(() => {
   wallet.disconnect();
+  vi.mocked(publicClient.getBalance).mockReset().mockResolvedValue(0n);
   serviceDeployment.computeConsoleEnabled = false;
   serviceDeployment.tinkerCustomerEnabled = false;
   serviceDeployment.delegateUrl = "";
+});
+
+describe("address- and connection-bound wallet balance observations", () => {
+  function deferredBalance() {
+    let resolve!: (value: bigint) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<bigint>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("stays idle without a connected account and does not request a balance", async () => {
+    expect(wallet.balanceState()).toBe("idle");
+    await wallet.refreshBalance();
+    await wallet.refreshBalance(ACCOUNT_A);
+    expect(publicClient.getBalance).not.toHaveBeenCalled();
+    expect(wallet.balanceState()).toBe("idle");
+  });
+
+  it("distinguishes a successfully observed zero from an unavailable balance", async () => {
+    const provider = mockProvider();
+    vi.mocked(publicClient.getBalance).mockResolvedValueOnce(7n);
+    await wallet.connect(walletOption(provider.provider));
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(7n);
+
+    vi.mocked(publicClient.getBalance).mockRejectedValueOnce(new Error("RPC unavailable"));
+    await expect(wallet.refreshBalance()).resolves.toBeUndefined();
+    expect(wallet.account()).toBe(ACCOUNT_A);
+    expect(wallet.balanceState()).toBe("unavailable");
+    expect(wallet.balance()).toBe(0n);
+
+    vi.mocked(publicClient.getBalance).mockResolvedValueOnce(0n);
+    await wallet.refreshBalance();
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(0n);
+  });
+
+  it("clears the preceding account's balance while the new account is loading", async () => {
+    const provider = mockProvider();
+    vi.mocked(publicClient.getBalance).mockResolvedValueOnce(7n);
+    await wallet.connect(walletOption(provider.provider));
+    const next = deferredBalance();
+    vi.mocked(publicClient.getBalance).mockReturnValueOnce(next.promise);
+
+    provider.setAccount(ACCOUNT_B);
+    provider.emit("accountsChanged", [ACCOUNT_B]);
+    expect(wallet.account()).toBe(ACCOUNT_B);
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    expect(publicClient.getBalance).toHaveBeenLastCalledWith({ address: ACCOUNT_B });
+
+    next.resolve(3n);
+    await vi.waitFor(() => expect(wallet.balanceState()).toBe("ready"));
+    expect(wallet.balance()).toBe(3n);
+  });
+
+  it("ignores an explicit refresh for an account that is no longer connected", async () => {
+    await wallet.connect(walletOption(mockProvider().provider));
+    vi.mocked(publicClient.getBalance).mockClear();
+    await wallet.refreshBalance(ACCOUNT_B);
+    expect(publicClient.getBalance).not.toHaveBeenCalled();
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(0n);
+  });
+
+  it.each(["success", "failure"] as const)("ignores an older overlapping read's %s after a newer observation", async (outcome) => {
+    await wallet.connect(walletOption(mockProvider().provider));
+    const older = deferredBalance();
+    const newer = deferredBalance();
+    vi.mocked(publicClient.getBalance)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const olderRead = wallet.refreshBalance();
+    const newerRead = wallet.refreshBalance();
+    expect(wallet.balanceState()).toBe("loading");
+
+    newer.resolve(8n);
+    await newerRead;
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(8n);
+
+    if (outcome === "success") older.resolve(2n);
+    else older.reject(new Error("outdated RPC failure"));
+    await olderRead;
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(8n);
+  });
+
+  it("does not let an older read finish the newer read's loading state", async () => {
+    await wallet.connect(walletOption(mockProvider().provider));
+    const older = deferredBalance();
+    const newer = deferredBalance();
+    vi.mocked(publicClient.getBalance)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const olderRead = wallet.refreshBalance();
+    const newerRead = wallet.refreshBalance();
+    older.resolve(2n);
+    await olderRead;
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    newer.resolve(8n);
+    await newerRead;
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(8n);
+  });
+
+  it("invalidates pending observations across an account A to B to A round trip", async () => {
+    const provider = mockProvider();
+    await wallet.connect(walletOption(provider.provider));
+    const firstA = deferredBalance();
+    const forB = deferredBalance();
+    const currentA = deferredBalance();
+    vi.mocked(publicClient.getBalance)
+      .mockReturnValueOnce(firstA.promise)
+      .mockReturnValueOnce(forB.promise)
+      .mockReturnValueOnce(currentA.promise);
+    const originalRead = wallet.refreshBalance();
+    provider.setAccount(ACCOUNT_B);
+    provider.emit("accountsChanged", [ACCOUNT_B]);
+    provider.setAccount(ACCOUNT_A);
+    provider.emit("accountsChanged", [ACCOUNT_A]);
+
+    firstA.resolve(1n);
+    await originalRead;
+    expect(wallet.account()).toBe(ACCOUNT_A);
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    currentA.resolve(9n);
+    await vi.waitFor(() => expect(wallet.balanceState()).toBe("ready"));
+    forB.reject(new Error("stale account failure"));
+    await forB.promise.catch(() => undefined);
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(9n);
+  });
+
+  it.each([false, true])("invalidates same-address pending reads on reconnect (same provider: %s)", async (sameProvider) => {
+    const previous = mockProvider();
+    const next = sameProvider ? previous : mockProvider();
+    await wallet.connect(walletOption(previous.provider));
+    const oldObservation = deferredBalance();
+    const newObservation = deferredBalance();
+    vi.mocked(publicClient.getBalance)
+      .mockReturnValueOnce(oldObservation.promise)
+      .mockReturnValueOnce(newObservation.promise);
+    const oldRead = wallet.refreshBalance();
+    const connection = wallet.connect(walletOption(next.provider));
+    await vi.waitFor(() => expect(publicClient.getBalance).toHaveBeenCalledTimes(3));
+    oldObservation.resolve(2n);
+    await oldRead;
+    expect(wallet.account()).toBe(ACCOUNT_A);
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    newObservation.resolve(8n);
+    await connection;
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(8n);
+  });
+
+  it("invalidates pending reads across a chain round trip and still uses the Base Sepolia public client", async () => {
+    const provider = mockProvider();
+    vi.mocked(publicClient.getBalance).mockResolvedValueOnce(7n);
+    await wallet.connect(walletOption(provider.provider));
+    const firstBase = deferredBalance();
+    const otherNetwork = deferredBalance();
+    const currentBase = deferredBalance();
+    vi.mocked(publicClient.getBalance)
+      .mockReturnValueOnce(firstBase.promise)
+      .mockReturnValueOnce(otherNetwork.promise)
+      .mockReturnValueOnce(currentBase.promise);
+    const initialRead = wallet.refreshBalance();
+    provider.setChain(1);
+    provider.emit("chainChanged", "0x1");
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    provider.setChain(84532);
+    provider.emit("chainChanged", "0x14a34");
+    firstBase.resolve(1n);
+    await initialRead;
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    currentBase.resolve(9n);
+    await vi.waitFor(() => expect(wallet.balanceState()).toBe("ready"));
+    otherNetwork.resolve(4n);
+    await otherNetwork.promise;
+    expect(wallet.balanceState()).toBe("ready");
+    expect(wallet.balance()).toBe(9n);
+    expect(publicClient.getBalance).toHaveBeenCalledTimes(4);
+    expect(provider.request.mock.calls.some(([args]) => args.method === "eth_getBalance")).toBe(false);
+  });
+
+  it("refreshes the balance after a confirmed chain switch even without a chainChanged event", async () => {
+    const provider = mockProvider({ chainId: 1 });
+    vi.mocked(publicClient.getBalance).mockResolvedValueOnce(7n);
+    await wallet.connect(walletOption(provider.provider));
+    const next = deferredBalance();
+    vi.mocked(publicClient.getBalance).mockReturnValueOnce(next.promise);
+    await wallet.switchToBase();
+    expect(wallet.chainId()).toBe(84532);
+    expect(wallet.balanceState()).toBe("loading");
+    expect(wallet.balance()).toBe(0n);
+    next.resolve(3n);
+    await vi.waitFor(() => expect(wallet.balanceState()).toBe("ready"));
+    expect(wallet.balance()).toBe(3n);
+  });
+
+  it.each(["success", "failure"] as const)("does not restore a balance after disconnect when a pending read ends with %s", async (outcome) => {
+    await wallet.connect(walletOption(mockProvider().provider));
+    const next = deferredBalance();
+    vi.mocked(publicClient.getBalance).mockReturnValueOnce(next.promise);
+    const refresh = wallet.refreshBalance();
+    wallet.disconnect();
+    expect(wallet.balanceState()).toBe("idle");
+    expect(wallet.balance()).toBe(0n);
+    if (outcome === "success") next.resolve(7n);
+    else next.reject(new Error("outdated RPC failure"));
+    await refresh;
+    expect(wallet.account()).toBeUndefined();
+    expect(wallet.balanceState()).toBe("idle");
+    expect(wallet.balance()).toBe(0n);
+  });
 });
 
 afterEach(() => {

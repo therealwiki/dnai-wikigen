@@ -16,13 +16,14 @@ import {
   LockKeyhole,
   Menu,
   Network,
+  RefreshCw,
   ShieldCheck,
   WalletCards,
   X,
 } from "lucide-solid";
 import { BASE_SEPOLIA, deployment, explorerAddress } from "../config";
 import { formatEth, shortAddress } from "../lib/contract";
-import { wallet, type WalletOption } from "../lib/wallet";
+import { wallet, type WalletBalanceState, type WalletOption } from "../lib/wallet";
 
 export type RouteKey = "overview" | "health" | "arena" | "deals" | "review" | "vaults" | "compute" | "tinker" | "lab" | "catalog" | "verify" | "collaborate" | "not_found";
 
@@ -278,6 +279,33 @@ function WalletDialog(props: { open: boolean; close: () => void }) {
   );
 }
 
+/** A missing balance observation must never be presented as a confirmed zero. */
+export function WalletBalanceSummary(props: {
+  state: WalletBalanceState;
+  balance: bigint;
+  onRefresh: () => void;
+}) {
+  const label = () => props.state === "ready"
+    ? formatEth(props.balance)
+    : props.state === "loading" ? "Loading…"
+      : props.state === "unavailable" ? "Unavailable" : "Not checked";
+  return <>
+    <div class="account-menu-head">
+      <small>Base Sepolia balance</small>
+      <strong role="status" aria-live="polite" aria-atomic="true">{label()}</strong>
+      <Show when={props.state === "unavailable"}>
+        <small>The balance read failed. Retry to check this account.</small>
+      </Show>
+    </div>
+    <Show when={props.state !== "idle"}>
+      <button type="button" onClick={props.onRefresh} disabled={props.state === "loading"}>
+        <RefreshCw size={15} aria-hidden="true" />
+        {props.state === "loading" ? "Checking balance…" : props.state === "unavailable" ? "Retry Base Sepolia balance" : "Refresh Base Sepolia balance"}
+      </button>
+    </Show>
+  </>;
+}
+
 function AccountMenu(props: { disconnect: () => void }) {
   const [open, setOpen] = createSignal(false);
   let wrapRef: HTMLDivElement | undefined;
@@ -329,10 +357,7 @@ function AccountMenu(props: { disconnect: () => void }) {
       </button>
       <Show when={open()}>
         <div id="account-menu-panel" class="account-menu" role="region" aria-label="Wallet account actions">
-          <div class="account-menu-head">
-            <small>Base Sepolia balance</small>
-            <strong>{formatEth(wallet.balance())}</strong>
-          </div>
+          <WalletBalanceSummary state={wallet.balanceState()} balance={wallet.balance()} onRefresh={() => void wallet.refreshBalance()} />
           <Show when={!wallet.isCorrectChain()}>
             <button type="button" onClick={() => void wallet.switchToBase().catch(() => undefined)} disabled={wallet.switchingChain()}>
               <Network size={15} /> {wallet.switchingChain() ? "Confirm in wallet…" : "Switch to Base Sepolia"}

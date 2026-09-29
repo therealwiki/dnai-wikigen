@@ -856,6 +856,120 @@ class ComputeApiTest(unittest.TestCase):
         )
         self.assertEqual(after_revoke.status_code, 403)
 
+    def _recoverable_issuance(self, headers, project_id, device_id, *, key="recoverable-issue-1", **changes):
+        payload = {
+            "device_id": device_id, "name": "recoverable-agent",
+            "scopes": ["jobs:read"], "expires_in_seconds": 3600,
+            "daily_credit_cap": 100, "delivery_mode": "idempotent_encrypted_capsule_v1",
+        }
+        payload.update(changes)
+        return self.client.post(f"/compute/projects/{project_id}/credentials", json=payload, headers={**headers, "Idempotency-Key": key})
+
+    def test_recoverable_issue_replays_after_lost_response_and_restart_without_minting(self):
+        headers = self._wallet_headers()
+        project_id = self._project(headers)
+        legacy, _legacy_token, private_key = self._credential(project_id, headers)
+        device_id = legacy["credential"]["device_id"]
+        first = self._recoverable_issuance(headers, project_id, device_id)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertFalse(first.json()["idempotent_replay"])
+        api._compute_store_instance = None
+        with patch.object(api, "issue_compute_credential_token", side_effect=AssertionError("retry must not mint")):
+            replay = self._recoverable_issuance(headers, project_id, device_id)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(first.json()["capsule"], replay.json()["capsule"])
+        self.assertEqual(self._decrypt_capsule(first.json(), private_key), self._decrypt_capsule(replay.json(), private_key))
+        credentials = self.client.get(f"/compute/projects/{project_id}/credentials", headers=headers).json()["credentials"]
+        self.assertEqual(len(credentials), 2)
+
+    def test_recoverable_rotation_replays_original_generation_and_revokes_prior_token(self):
+        headers = self._wallet_headers()
+        project_id = self._project(headers)
+        issued, old_token, private_key = self._credential(project_id, headers)
+        credential_id = issued["credential"]["credential_id"]
+        url = f"/compute/projects/{project_id}/credentials/{credential_id}/rotate"
+        payload = {"expires_in_seconds": 3600, "expected_generation": 1, "delivery_mode": "idempotent_encrypted_capsule_v1"}
+        keyed_headers = {**headers, "Idempotency-Key": "recoverable-rotation-1"}
+        first = self.client.post(url, json=payload, headers=keyed_headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        api._compute_store_instance = None
+        with patch.object(api, "issue_compute_credential_token", side_effect=AssertionError("retry must not rotate")):
+            replay = self.client.post(url, json=payload, headers=keyed_headers)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(first.json()["capsule"], replay.json()["capsule"])
+        self.assertEqual(replay.json()["credential"]["generation"], 2)
+        self.assertEqual(self.client.get(f"/compute/projects/{project_id}/jobs", headers={"Authorization": f"Bearer {old_token}"}).status_code, 403)
+        token = self._decrypt_capsule(replay.json(), private_key)
+        self.assertEqual(self.client.get(f"/compute/projects/{project_id}/jobs", headers={"Authorization": f"Bearer {token}"}).status_code, 200)
+        changed = self.client.post(url, json={**payload, "expected_generation": 2}, headers=keyed_headers)
+        self.assertEqual(changed.status_code, 409)
+
+    def test_recoverable_delivery_rejects_partial_opt_in_and_missing_generation(self):
+        headers = self._wallet_headers()
+        project_id = self._project(headers)
+        issued, _token, _private_key = self._credential(project_id, headers)
+        device_id = issued["credential"]["device_id"]
+        url = f"/compute/projects/{project_id}/credentials"
+        payload = {"device_id": device_id, "name": "agent", "scopes": ["jobs:read"], "expires_in_seconds": 3600, "daily_credit_cap": 100}
+        keyed_headers = {**headers, "Idempotency-Key": "recoverable-issue-1"}
+        self.assertEqual(self.client.post(url, json=payload, headers=keyed_headers).status_code, 400)
+        self.assertEqual(self.client.post(url, json={**payload, "delivery_mode": "idempotent_encrypted_capsule_v1"}, headers=headers).status_code, 400)
+        rotation = f"{url}/{issued['credential']['credential_id']}/rotate"
+        rotate_payload = {"expires_in_seconds": 3600, "delivery_mode": "idempotent_encrypted_capsule_v1"}
+        self.assertEqual(self.client.post(rotation, json=rotate_payload, headers=keyed_headers).status_code, 400)
+        for generation in (True, "1", 1.0):
+            with self.subTest(generation=generation):
+                response = self.client.post(rotation, json={**rotate_payload, "expected_generation": generation}, headers=keyed_headers)
+                self.assertEqual(response.status_code, 422)
+        self.assertEqual(len(api._get_compute_store().list_credentials(project_id, self.account.address, now=int(time.time()))), 1)
+
+    def test_recoverable_issue_conflicts_on_request_and_release_substitution(self):
+        headers = self._wallet_headers()
+        project_id = self._project(headers)
+        issued, _token, _private_key = self._credential(project_id, headers)
+        device_id = issued["credential"]["device_id"]
+        self.assertEqual(self._recoverable_issuance(headers, project_id, device_id).status_code, 200)
+        self.assertEqual(self._recoverable_issuance(headers, project_id, device_id, daily_credit_cap=101).status_code, 409)
+        api.settings.release_authority_sha256 = "sha256:" + "a" * 64
+        self.assertEqual(self._recoverable_issuance(headers, project_id, device_id).status_code, 409)
+
+    def test_recoverable_token_expiry_never_remints_with_same_key(self):
+        headers = self._wallet_headers()
+        project_id = self._project(headers)
+        issued, _token, _private_key = self._credential(project_id, headers)
+        device_id = issued["credential"]["device_id"]
+        first = self._recoverable_issuance(headers, project_id, device_id, expires_in_seconds=60)
+        self.assertEqual(first.status_code, 200, first.text)
+        future = time.time() + 61
+        with patch("time.time", return_value=future):
+            replay = self._recoverable_issuance(headers, project_id, device_id, expires_in_seconds=60)
+        self.assertEqual(replay.status_code, 409, replay.text)
+
+    def test_compute_store_initialization_is_singleton_under_thread_race(self):
+        from tinker_delegate.compute_store import ComputeStore
+
+        api._compute_store_instance = None
+        api._compute_store_instance_identity = None
+        instances, errors = [], []
+        barrier = threading.Barrier(2)
+        def initialize():
+            try:
+                barrier.wait(timeout=5)
+                instances.append(api._get_compute_store())
+            except Exception as exc:
+                errors.append(exc)
+        with patch("tinker_delegate.compute_store.ComputeStore", wraps=ComputeStore) as constructor:
+            threads = [threading.Thread(target=initialize) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(constructor.call_count, 1)
+        self.assertIs(instances[0], instances[1])
+
     def test_auth_domains_runtime_and_input_boundaries_are_separate(self):
         headers = self._wallet_headers()
         project_id = self._project(headers)

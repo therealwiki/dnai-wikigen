@@ -700,6 +700,34 @@ def compute_credential_signing_key(settings: Any) -> bytes:
     )
 
 
+def compute_credential_replay_context(settings: Any) -> str:
+    """Bind recovery to existing server release/auth configuration, not input.
+
+    This is a private equality commitment, not release verification or a new
+    authority claim. Local development may have an empty release tuple; its
+    signing key and auth domain remain part of the binding. No key material is
+    serialized or exposed to the browser.
+    """
+
+    context = {
+        "schema": "dnai.compute.credential-replay-context.v1",
+        "main_runtime_cvm_id": str(getattr(settings, "main_runtime_cvm_id", "") or ""),
+        "deployment_intent_sha256": str(getattr(settings, "release_deployment_intent_sha256", "") or ""),
+        "release_authority_sha256": str(getattr(settings, "release_authority_sha256", "") or ""),
+        "ceremony_nonce": str(getattr(settings, "release_ceremony_nonce", "") or ""),
+        "issuer": _setting_text(settings, "compute_credential_issuer", "dnai-wikigen:compute-credential"),
+        "audience": _setting_text(settings, "compute_credential_audience", "dnai-wikigen:compute-jobs"),
+        "key_path": str(getattr(settings, "compute_credential_key_path", "tinker/compute_credentials") or ""),
+        "max_ttl_seconds": _bounded_positive_int(getattr(settings, "compute_credential_max_ttl_seconds", 604800), label="Compute credential max ttl", maximum=604800),
+        "dstack": dstack_utils.is_dstack_enabled(),
+    }
+    return hmac.new(
+        compute_credential_signing_key(settings),
+        b"dnai-compute-credential-replay-context-v1:" + json.dumps(context, sort_keys=True, separators=(",", ":")).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def compute_store_integrity_key(settings: Any) -> bytes:
     return _resolve_key(
         settings,

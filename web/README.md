@@ -154,6 +154,42 @@ project, job, wallet, or credential identity in the URL:
 to Overview. Tab changes use normal hash navigation so browser Back/Forward
 history is preserved.
 
+### Wallet balance observations and credential delivery recovery
+
+The wallet header distinguishes an idle balance, a read in progress, a
+successful observation (including a real zero), and an unavailable RPC read.
+Changing the account, chain, or provider invalidates the previous observation
+before publishing the new wallet context. A late response from an older
+context cannot replace the current balance. Refresh and retry are read-only:
+they do not request a signature or submit a transaction.
+
+Compute credential issuance and rotation retain one unresolved delivery
+attempt in the current tab's memory. The browser validates the immutable
+draft before generating a delivery key or registering a device. An explicit
+retry reuses the same delivery key, request identifier, and request body;
+rotation also retains its original expected generation. It never silently
+creates a new credential to recover a lost response. The service can replay
+the same encrypted capsule for up to ten minutes, bounded by token expiry;
+that replay deadline is not a promise of immediate ciphertext deletion.
+
+The browser checks that the response matches the requested project, device,
+name, scopes, cap, lifetime, and generation before revealing the token. The
+new body-level delivery-mode discriminator makes older strict APIs reject an
+unsupported recovery protocol before issuing a credential. The client does
+not downgrade to a non-idempotent issuance after an error. See
+[`docs/compute-console-api.md`](../docs/compute-console-api.md) for the exact
+protocol, bounded replay storage, and single-process persistence limits.
+
+Private delivery keys, plaintext credentials, and retry identifiers are not
+written to browser storage. Leaving the page or losing the tab can therefore
+lose delivery recovery. Wallet, network, session, or project changes also
+invalidate the attempt and prevent a late response from revealing plaintext.
+When replay is unavailable, the UI uses authenticated status reads and
+explicit revocation recovery; missing metadata is not treated as proof that a
+mutation failed. This credential-specific recovery does not activate the
+separate service-credit job-creation flow below, prove hardware attestation,
+or change the separately scoped Tinker and Arena credential protocols.
+
 ### Compute service-credit reservation hold
 
 The authenticated CVM implements `POST /compute/projects/{project_id}/jobs` as

@@ -33,7 +33,7 @@ from tinker_delegate.compute_auth import (
 from tinker_delegate.wallet_auth import WalletAuthError, normalize_wallet_address
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_STORE_BYTES = 16 * 1024 * 1024
 MAX_PROJECTS = 1_000
 MAX_PROJECTS_PER_WALLET = 16
@@ -43,6 +43,10 @@ MAX_CREDENTIALS_PER_PROJECT = 512
 MAX_JOBS = 10_000
 MAX_LEDGER_TRANSACTIONS = 40_000
 MAX_IDEMPOTENCY_RECORDS = 50_000
+MAX_CREDENTIAL_DELIVERIES = 256
+MAX_CREDENTIAL_DELIVERIES_PER_PROJECT = 16
+MAX_CREDENTIAL_CAPSULE_BYTES = 16 * 1024
+CREDENTIAL_DELIVERY_TTL_SECONDS = 600
 MAX_TIMESTAMP = 4_102_444_800
 SERVICE_CREDIT_EXECUTION_CONTEXT_SCHEMA = (
     "dnai.compute.service-credit-execution-context.v1"
@@ -122,6 +126,7 @@ class ComputeStore:
             "jobs",
             "ledger",
             "idempotency",
+            "credential_deliveries",
         }
     )
 
@@ -150,6 +155,7 @@ class ComputeStore:
             maximum=10_000_000,
         )
         self._lock = threading.RLock()
+        self._storage_unavailable = False
         with self._lock:
             if self.path.exists():
                 self._state = self._load()
@@ -162,8 +168,19 @@ class ComputeStore:
                     "jobs": {},
                     "ledger": [],
                     "idempotency": {},
+                    "credential_deliveries": {},
                 }
                 self._persist(self._state)
+
+    @property
+    def _state(self) -> dict[str, Any]:
+        if self._storage_unavailable:
+            raise ComputeStoreCorruptError("Compute store requires recovery after an ambiguous write")
+        return self._state_value
+
+    @_state.setter
+    def _state(self, value: dict[str, Any]) -> None:
+        self._state_value = value
 
     # ------------------------------------------------------------------
     # Projects and wallet membership
@@ -317,8 +334,6 @@ class ComputeStore:
                 for item in self._state["devices"].values()
                 if item["project_id"] == project_id
             ]
-            if len(project_devices) >= MAX_DEVICES_PER_PROJECT:
-                raise ComputeCapExceeded("project device limit reached")
             key_hash = _hash_text("compute_device_key", public_key)
             for device in project_devices:
                 if device["public_key_hash"] == key_hash:
@@ -329,6 +344,8 @@ class ComputeStore:
                     ):
                         return self._device_view(device)
                     raise ComputeStoreError("device public key is already registered")
+            if len(project_devices) >= MAX_DEVICES_PER_PROJECT:
+                raise ComputeCapExceeded("project device limit reached")
             device_id = _new_id("dev")
             device = {
                 "device_id": device_id,
@@ -400,6 +417,198 @@ class ComputeStore:
                     credential["revoked_at"] = timestamp
             self._commit(candidate)
             return self._device_view(candidate_device)
+
+    def prepare_credential_delivery(
+        self,
+        project_id: str,
+        *,
+        actor_address: str,
+        action: str,
+        idempotency_key: str,
+        replay_context: str,
+        expires_in_seconds: int,
+        now: int,
+        device_id: str | None = None,
+        name: str | None = None,
+        scopes: tuple[str, ...] | list[str] | None = None,
+        daily_credit_cap: int | None = None,
+        credential_id: str | None = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Authorize and inspect an opt-in delivery, without minting or writing.
+
+        Cryptography runs outside the store lock. The commit repeats this
+        preparation under the same lock as the credential/cache write, so a
+        concurrent winner returns its capsule and unused new ciphertext is
+        discarded. A tombstone never becomes permission to mint again.
+        """
+
+        project_id = _resource_id(project_id, "project_id")
+        actor = _wallet(actor_address)
+        key = _idempotency_key(idempotency_key)
+        timestamp = _timestamp(now)
+        ttl = _integer(expires_in_seconds, "expires_in_seconds", minimum=60, maximum=604800)
+        if not isinstance(replay_context, str) or not _HEX64_RE.fullmatch(replay_context):
+            raise ComputeStoreError("credential replay context is invalid")
+        with self._lock:
+            self._require_role(project_id, actor, MUTATING_ROLES)
+            current = None
+            if action == "issue":
+                if credential_id is not None or expected_generation is not None:
+                    raise ComputeStoreError("issuance cannot choose a credential or generation")
+                device_id = _resource_id(device_id, "device_id")
+                normalized_name = _name(name, "credential name")
+                normalized_scopes = _scopes(scopes)
+                cap = _integer(daily_credit_cap, "daily_credit_cap", minimum=1, maximum=1_000_000)
+            elif action == "rotate":
+                credential_id = _resource_id(credential_id, "credential_id")
+                expected_generation = _integer(expected_generation, "expected_generation", minimum=1, maximum=999_999)
+                current = self._credential(project_id, credential_id)
+                if current["status"] != "active":
+                    raise ComputeAuthorizationError("credential is revoked")
+                device_id = current["device_id"]
+                normalized_name = current["name"]
+                normalized_scopes = tuple(current["scopes"])
+                cap = current["daily_credit_cap"]
+            else:
+                raise ComputeStoreError("credential delivery action is invalid")
+            device = self._device(project_id, device_id)
+            if device["status"] != "active":
+                raise ComputeAuthorizationError("credential device is revoked")
+            request = {
+                "action": action,
+                "actor_address": actor,
+                "project_id": project_id,
+                "device_id": device_id,
+                "recipient_public_key_hash": device["public_key_hash"],
+                "name": normalized_name,
+                "scopes": list(normalized_scopes),
+                "daily_credit_cap": cap,
+                "expires_in_seconds": ttl,
+                "credential_id": credential_id,
+                "expected_generation": expected_generation,
+                "replay_context": replay_context,
+            }
+            idem_key = _idem_hash("credential_delivery", actor, project_id, key)
+            tombstone = self._idempotent_result(idem_key, request)
+            replay = None
+            if tombstone is not None:
+                delivery = self._state["credential_deliveries"].get(idem_key)
+                if (
+                    tombstone["result_kind"] != "credential_delivery"
+                    or delivery is None
+                    or timestamp >= delivery["expires_at"]
+                ):
+                    raise ComputeIdempotencyConflict("credential delivery recovery is no longer available; this request cannot be reused")
+                credential = self._credential(project_id, delivery["credential_id"])
+                if (
+                    credential["status"] != "active"
+                    or credential["generation"] != delivery["generation"]
+                    or credential["jwt_id_hash"] != delivery["jwt_id_hash"]
+                    or credential["expires_at"] != delivery["credential_expires_at"]
+                    or credential["device_id"] != device_id
+                    or timestamp >= credential["expires_at"]
+                ):
+                    raise ComputeIdempotencyConflict("credential delivery is expired, revoked, or superseded")
+                replay = {
+                    "credential": self._credential_view(credential, now=timestamp),
+                    "capsule": copy.deepcopy(delivery["capsule"]),
+                    "idempotent_replay": True,
+                }
+            elif current is not None and current["generation"] != expected_generation:
+                raise ComputeIdempotencyConflict("credential was concurrently rotated")
+            return {
+                "request": request,
+                "device": copy.deepcopy(device),
+                "credential": copy.deepcopy(current),
+                "replay": replay,
+            }
+
+    def commit_credential_delivery(
+        self,
+        *,
+        request: Mapping[str, Any],
+        idempotency_key: str,
+        credential_id: str,
+        jwt_id_hash: str,
+        issued_at: int,
+        expires_at: int,
+        capsule: Mapping[str, Any],
+        now: int,
+    ) -> dict[str, Any]:
+        """Atomically persist one generation and its bounded encrypted replay."""
+
+        required = {"action", "actor_address", "project_id", "device_id", "recipient_public_key_hash", "name", "scopes", "daily_credit_cap", "expires_in_seconds", "credential_id", "expected_generation", "replay_context"}
+        if not isinstance(request, Mapping) or set(request) != required:
+            raise ComputeStoreError("credential delivery request is malformed")
+        timestamp = _timestamp(now)
+        issued_at = _timestamp(issued_at)
+        expires_at = _timestamp(expires_at)
+        credential_id = _resource_id(credential_id, "credential_id")
+        if not isinstance(jwt_id_hash, str) or not _HEX64_RE.fullmatch(jwt_id_hash):
+            raise ComputeStoreError("credential jwt_id_hash is malformed")
+        if issued_at > timestamp or expires_at <= timestamp or expires_at - issued_at != request["expires_in_seconds"]:
+            raise ComputeStoreError("credential delivery expiry is invalid")
+        with self._lock:
+            prepared = self.prepare_credential_delivery(
+                request["project_id"], actor_address=request["actor_address"],
+                action=request["action"], idempotency_key=idempotency_key,
+                replay_context=request["replay_context"], expires_in_seconds=request["expires_in_seconds"],
+                now=timestamp, device_id=request["device_id"], name=request["name"],
+                scopes=request["scopes"], daily_credit_cap=request["daily_credit_cap"],
+                credential_id=request["credential_id"], expected_generation=request["expected_generation"],
+            )
+            if prepared["request"] != dict(request):
+                raise ComputeIdempotencyConflict("credential delivery authority changed")
+            if prepared["replay"] is not None:
+                return prepared["replay"]
+            candidate = self._copy_state()
+            deliveries = candidate["credential_deliveries"]
+            if request["action"] == "issue":
+                if sum(item["project_id"] == request["project_id"] for item in candidate["credentials"].values()) >= MAX_CREDENTIALS_PER_PROJECT:
+                    raise ComputeCapExceeded("project credential limit reached")
+                if credential_id in candidate["credentials"]:
+                    raise ComputeStoreError("credential id collision")
+                credential = {
+                    "credential_id": credential_id, "project_id": request["project_id"],
+                    "device_id": request["device_id"], "name": request["name"],
+                    "prefix": f"wk_{'dev' if prepared['device']['kind'] == 'developer_device' else 'svc'}_{credential_id[-6:]}",
+                    "scopes": list(request["scopes"]), "daily_credit_cap": request["daily_credit_cap"],
+                    "generation": 1, "jwt_id_hash": jwt_id_hash, "status": "active",
+                    "issued_by": request["actor_address"], "issued_at": issued_at,
+                    "expires_at": expires_at, "last_used_at": None, "rotated_at": None, "revoked_at": None,
+                }
+                candidate["credentials"][credential_id] = credential
+            else:
+                if credential_id != request["credential_id"]:
+                    raise ComputeStoreError("rotation cannot change credential id")
+                credential = candidate["credentials"][credential_id]
+                credential.update(generation=request["expected_generation"] + 1, jwt_id_hash=jwt_id_hash, issued_at=issued_at, expires_at=expires_at, rotated_at=issued_at, last_used_at=None)
+            # A rotation retires the previous generation's ciphertext in this
+            # same candidate transaction, so rotation can replace its own
+            # recovery slot even when the cache is otherwise full.
+            self._prune_credential_deliveries(candidate, timestamp)
+            if len(deliveries) >= MAX_CREDENTIAL_DELIVERIES or sum(item["project_id"] == request["project_id"] for item in deliveries.values()) >= MAX_CREDENTIAL_DELIVERIES_PER_PROJECT:
+                raise ComputeCapExceeded("credential delivery recovery capacity reached")
+            idem_key = _idem_hash("credential_delivery", request["actor_address"], request["project_id"], _idempotency_key(idempotency_key))
+            delivery = {
+                "project_id": request["project_id"], "credential_id": credential_id,
+                "generation": credential["generation"], "jwt_id_hash": jwt_id_hash,
+                "created_at": timestamp, "expires_at": min(timestamp + CREDENTIAL_DELIVERY_TTL_SECONDS, expires_at),
+                "credential_expires_at": expires_at, "capsule": copy.deepcopy(dict(capsule)),
+            }
+            _validate_credential_capsule(delivery, credential, prepared["device"])
+            deliveries[idem_key] = delivery
+            self._put_idempotency(candidate, idem_key, dict(request), result_kind="credential_delivery", result_id=credential_id, created_at=timestamp)
+            self._commit(candidate)
+            return {"credential": self._credential_view(credential, now=timestamp), "capsule": copy.deepcopy(delivery["capsule"]), "idempotent_replay": False}
+
+    @staticmethod
+    def _prune_credential_deliveries(state: dict[str, Any], now: int) -> None:
+        for key, delivery in list(state["credential_deliveries"].items()):
+            credential = state["credentials"][delivery["credential_id"]]
+            if now >= delivery["expires_at"] or credential["status"] != "active" or credential["generation"] != delivery["generation"]:
+                del state["credential_deliveries"][key]
 
     def create_credential(
         self,
@@ -497,6 +706,7 @@ class ComputeStore:
         project_id = _resource_id(project_id, "project_id")
         actor = _wallet(actor_address)
         credential_id = _resource_id(credential_id, "credential_id")
+        expected_generation = _integer(expected_generation, "expected_generation", minimum=1, maximum=999_999)
         if not _HEX64_RE.fullmatch(new_jwt_id_hash):
             raise ComputeStoreError("credential jwt_id_hash is malformed")
         issued_at = _timestamp(issued_at)
@@ -506,6 +716,8 @@ class ComputeStore:
             credential = self._credential(project_id, credential_id)
             if credential["status"] != "active":
                 raise ComputeAuthorizationError("credential is revoked")
+            if self._device(project_id, credential["device_id"])["status"] != "active":
+                raise ComputeAuthorizationError("credential device is revoked")
             if credential["generation"] != expected_generation:
                 raise ComputeIdempotencyConflict("credential was concurrently rotated")
             if expires_at <= issued_at or expires_at - issued_at > DEFAULT_POLICY["credential_max_ttl_seconds"]:
@@ -1515,7 +1727,16 @@ class ComputeStore:
 
     def _commit(self, candidate: dict[str, Any]) -> None:
         self._validate_state(candidate)
-        self._persist(candidate)
+        try:
+            self._persist(candidate)
+        except OSError:
+            # Replacement may have succeeded before the directory fsync
+            # failed. Reconcile from authenticated disk state before allowing
+            # another request; stale memory must never remint a lost response.
+            self._storage_unavailable = True
+            self._state = self._load()
+            self._storage_unavailable = False
+            raise
         self._state = candidate
 
     def _persist(self, payload: dict[str, Any]) -> None:
@@ -1568,7 +1789,7 @@ class ComputeStore:
             raise ComputeStoreCorruptError("Compute store cannot be decoded") from exc
         if not isinstance(root, dict) or set(root) != self._ROOT_FIELDS:
             raise ComputeStoreCorruptError("Compute store root schema is invalid")
-        if root["surface"] != "compute_console_store" or root["schema_version"] != SCHEMA_VERSION:
+        if root["surface"] != "compute_console_store" or type(root["schema_version"]) is not int or root["schema_version"] not in {1, SCHEMA_VERSION}:
             raise ComputeStoreCorruptError("Compute store surface or version is invalid")
         payload = root["payload"]
         integrity = root["integrity"]
@@ -1585,7 +1806,15 @@ class ComputeStore:
         ).hexdigest()
         if not hmac.compare_digest(integrity["value"], expected):
             raise ComputeStoreCorruptError("Compute store integrity verification failed")
+        migrated = root["schema_version"] == 1
+        if migrated:
+            if set(payload) != self._PAYLOAD_FIELDS - {"credential_deliveries"}:
+                raise ComputeStoreCorruptError("Compute legacy payload schema is invalid")
+            payload = copy.deepcopy(payload)
+            payload["credential_deliveries"] = {}
         self._validate_state(payload)
+        if migrated:
+            self._persist(payload)
         return payload
 
     def _validate_state(self, state: dict[str, Any]) -> None:
@@ -1606,6 +1835,7 @@ class ComputeStore:
             ("credentials", MAX_PROJECTS * MAX_CREDENTIALS_PER_PROJECT),
             ("jobs", MAX_JOBS),
             ("idempotency", MAX_IDEMPOTENCY_RECORDS),
+            ("credential_deliveries", MAX_CREDENTIAL_DELIVERIES),
         ):
             if not isinstance(state[name], dict) or len(state[name]) > maximum:
                 raise ComputeStoreCorruptError(f"Compute {name} collection is invalid")
@@ -1720,6 +1950,53 @@ class ComputeStore:
                 raise ComputeStoreCorruptError("idempotency record is invalid")
             _resource_id(record["result_id"], "idempotency result_id")
             _timestamp(record["created_at"])
+        delivery_counts: dict[str, int] = {}
+        for idem_key, delivery in state["credential_deliveries"].items():
+            required = {"project_id", "credential_id", "generation", "jwt_id_hash", "created_at", "expires_at", "credential_expires_at", "capsule"}
+            tombstone = state["idempotency"].get(idem_key)
+            if not isinstance(delivery, dict) or set(delivery) != required or tombstone is None or tombstone["result_kind"] != "credential_delivery" or tombstone["result_id"] != delivery["credential_id"]:
+                raise ComputeStoreCorruptError("credential delivery record is invalid")
+            _resource_id(delivery["credential_id"], "delivery credential_id")
+            _resource_id(delivery["project_id"], "delivery project_id")
+            credential = state["credentials"].get(delivery["credential_id"])
+            if credential is None or credential["project_id"] != delivery["project_id"]:
+                raise ComputeStoreCorruptError("credential delivery references invalid credential")
+            _integer(delivery["generation"], "delivery generation", minimum=1, maximum=1_000_000)
+            if not isinstance(delivery["jwt_id_hash"], str) or not _HEX64_RE.fullmatch(delivery["jwt_id_hash"]):
+                raise ComputeStoreCorruptError("credential delivery commitment is invalid")
+            for field in ("created_at", "expires_at", "credential_expires_at"):
+                _timestamp(delivery[field])
+            if delivery["created_at"] != tombstone["created_at"] or not delivery["created_at"] < delivery["expires_at"] <= min(delivery["created_at"] + CREDENTIAL_DELIVERY_TTL_SECONDS, delivery["credential_expires_at"]):
+                raise ComputeStoreCorruptError("credential delivery expiry is invalid")
+            _validate_credential_capsule(delivery, credential, state["devices"][credential["device_id"]])
+            delivery_counts[delivery["project_id"]] = delivery_counts.get(delivery["project_id"], 0) + 1
+            if delivery_counts[delivery["project_id"]] > MAX_CREDENTIAL_DELIVERIES_PER_PROJECT:
+                raise ComputeStoreCorruptError("project credential delivery capacity exceeded")
+
+
+def _validate_credential_capsule(delivery: Mapping[str, Any], credential: Mapping[str, Any], device: Mapping[str, Any]) -> None:
+    capsule = delivery["capsule"]
+    required = {"delivery", "encrypted_token", "associated_data", "associated_data_hash", "recipient_public_key_hash", "plaintext_token_returned"}
+    if not isinstance(capsule, dict) or set(capsule) != required or len(_canonical_json(capsule)) > MAX_CREDENTIAL_CAPSULE_BYTES:
+        raise ComputeStoreError("credential delivery capsule schema or size is invalid")
+    encrypted = capsule["encrypted_token"]
+    if capsule["delivery"] != "x25519_aes_256_gcm_envelope" or capsule["plaintext_token_returned"] is not False or not isinstance(encrypted, dict) or set(encrypted) != {"ephemeral_public_key", "nonce", "ciphertext"}:
+        raise ComputeStoreError("credential delivery capsule is invalid")
+    for field, minimum, maximum in (("ephemeral_public_key", 64, 64), ("nonce", 24, 24), ("ciphertext", 32, 16384)):
+        value = encrypted[field]
+        if not isinstance(value, str) or not minimum <= len(value) <= maximum or len(value) % 2 or not re.fullmatch(r"[0-9a-f]+", value):
+            raise ComputeStoreError("credential delivery ciphertext is invalid")
+    aad_hex = capsule["associated_data"]
+    if not isinstance(aad_hex, str) or not 2 <= len(aad_hex) <= 8192 or len(aad_hex) % 2 or not re.fullmatch(r"[0-9a-f]+", aad_hex):
+        raise ComputeStoreError("credential delivery associated data is invalid")
+    aad = {
+        "surface": "compute_credential", "credential_id": delivery["credential_id"],
+        "project_id": delivery["project_id"], "device_id": credential["device_id"],
+        "generation": delivery["generation"], "jwt_id_hash": delivery["jwt_id_hash"],
+        "expires_at": delivery["credential_expires_at"],
+    }
+    if aad_hex != _canonical_json(aad).hex() or capsule["associated_data_hash"] != _hash_text("compute_credential_aad", aad_hex) or capsule["recipient_public_key_hash"] != device["public_key_hash"]:
+        raise ComputeStoreError("credential delivery capsule binding is invalid")
 
 
 def _wallet(value: Any) -> str:

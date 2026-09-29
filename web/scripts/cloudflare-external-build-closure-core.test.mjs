@@ -2116,13 +2116,15 @@ test("real checked-in external bytes match the final release projection KAT", as
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
   assert.equal(closure.entrypoints.length, 36);
   assert.equal(closure.files.length, 82);
+  // Includes the reviewed credential-replay API doc consumed by ComputeWorkloadPanel.test.ts;
+  // the external graph and the other 81 projected files are unchanged.
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:ed61747e260ed256a1c9a1cc01a13b0be965603c0a9fb828e666cfd211acdfe2",
+    "sha256:fea138d226a487faa854cc3ad8b46b0d5abfd6f09fffcc89ebac9dd61a3797f4",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:828ac77500949d1d686ef5557dbff98df2dafb47db0be0757e67cda723cc205b",
+    "sha256:63fa5a6408aac028d5dd2d7f9a594a4128599bbc7fa40ae84abde0841025d47f",
   );
   assert.deepEqual(closureTest.MODULE_ENTRYPOINT_PATHS, [
     "scripts/canonical-authority-graph.mjs",
