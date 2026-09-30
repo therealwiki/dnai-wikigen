@@ -98,6 +98,9 @@ _GRANT_MESSAGE_DOMAIN = "wikigen collaboration one-shot execution grant v2"
 _SIGNATURE_HASH_DOMAIN = (
     b"dnai-wikigen/collaboration-one-shot-execution-signature/v1\0"
 )
+_AUTHORIZATION_STATUS_REQUEST_DOMAIN = (
+    b"dnai.collaboration.execution-authorization-status.v1\0"
+)
 _FINALIZED_RECEIPT_DOMAIN = (
     b"dnai-wikigen/collaboration-finalized-vault-read-receipt/v1\0"
 )
@@ -731,6 +734,93 @@ class CollaborationExecutionCoordinator:
                 "funding_reservation"
             ],
         }
+
+    def authorization_status(
+        self,
+        *,
+        plan_token: str,
+        requester_address: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Read a lost authorization response, without renewing its authority."""
+
+        requester = normalize_wallet_address(requester_address)
+        if not isinstance(idempotency_key, str) or not _IDEMPOTENCY.fullmatch(
+            idempotency_key
+        ):
+            raise CollaborationExecutionServiceError("idempotency key is invalid")
+        plan = self._decode_plan(plan_token)
+        if (
+            plan.requester_address != requester
+            or plan.basis.sponsor_address != requester
+            or plan.basis.compute_user_address != requester
+        ):
+            raise CollaborationExecutionServiceError(
+                "only the original execution plan sponsor can read authorization status"
+            )
+        # Participant visibility is independent of executable query/grant state.
+        # Never call _require_current_plan or reconstruct a current workload here.
+        room_projection = getattr(self.store, "room_projection", None)
+        if not callable(room_projection):
+            raise CollaborationExecutionServiceUnavailable(
+                "authenticated Collaboration room visibility is unavailable"
+            )
+        room_projection(plan.basis.room_id, requester)
+        self._require_plan_release_identity(plan.basis)
+        execution = self.journal.public_authorization_status(
+            plan.basis,
+            royalty_owner_amounts=plan.royalty_owner_amounts,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "surface": "collaboration_execution_authorization_status",
+            "schema_version": 1,
+            "request_commitment": _sha256_commitment(
+                _AUTHORIZATION_STATUS_REQUEST_DOMAIN
+                + _canonical_json({
+                    "plan_token": plan_token,
+                    "idempotency_key": idempotency_key,
+                })
+            ),
+            "basis_commitment": plan.basis.commitment,
+            "read_only": True,
+            "provider_dispatch_performed": False,
+            "authorization_commitment": execution["authorization_commitment"],
+            "royalty_reservation": execution["royalty"]["funding_reservation"],
+            "execution": execution,
+        }
+
+    def _require_plan_release_identity(
+        self, basis: CollaborationExecutionBasis
+    ) -> None:
+        """Compare configured release identity only, not live execution state."""
+
+        release = royalty_release_binding_from_settings(self.settings)
+        expected = {
+            "release_git_sha": getattr(
+                self.settings, "collaboration_execution_release_git_sha", ""
+            ),
+            "release_verification_sha256": getattr(
+                self.settings, "collaboration_execution_release_verification_sha256", ""
+            ),
+            "chain_id": BASE_SEPOLIA_CHAIN_ID,
+            "cvm_id": getattr(self.settings, "main_runtime_cvm_id", ""),
+            "compose_hash": getattr(self.settings, "compute_vault_compose_hash", ""),
+            "compute_vault_address": str(
+                getattr(self.settings, "compute_vault_address", "") or ""
+            ).lower(),
+            "compute_vault_runtime_code_hash": getattr(
+                self.settings, "compute_vault_runtime_code_hash", ""
+            ),
+            "compute_finality_model": "single_rpc_reported_finalized",
+            "royalty_distributor_address": release.distributor_address,
+            "royalty_release_policy_commitment": release.release_policy_commitment,
+            "royalty_release_binding_commitment": royalty_release_binding_commitment(release),
+        }
+        if any(getattr(basis, field) != value for field, value in expected.items()):
+            raise CollaborationExecutionServiceError(
+                "execution plan release identity is no longer configured"
+            )
 
     def current_basis_for_intent(
         self,

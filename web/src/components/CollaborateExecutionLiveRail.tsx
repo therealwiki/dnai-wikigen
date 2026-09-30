@@ -32,6 +32,7 @@ import {
   assertCollaborationComputeAuthorizationMatchesPlanRequest,
   collaborationSessionIsCurrent,
   type CollaborationExecutionAuthorizationResult,
+  type CollaborationExecutionCommittedAuthorization,
   type CollaborationExecutionPlanProjection,
   type CollaborationExecutionPlanRequest,
   type CollaborationExecutionStatusProjection,
@@ -92,6 +93,7 @@ import { wallet } from "../lib/wallet";
 import {
   createCollaborationExecutionGrantClock,
   collaborationExecutionResponseIsCurrent,
+  readCollaborationExecutionAuthorizationAttempt,
   inspectCollaborationExecutionGrants,
   replaceCollaborationOwnerGrant,
   type SignedExecutionGrant,
@@ -141,7 +143,7 @@ export function CollaborateExecutionLiveRail(
     readonly SignedExecutionGrant[]
   >([]);
   const [authorization, setAuthorization] =
-    createSignal<CollaborationExecutionAuthorizationResult>();
+    createSignal<CollaborationExecutionCommittedAuthorization>();
   const [authorizationIdempotencyKey, setAuthorizationIdempotencyKey] =
     createSignal("");
   const [retainedAuthorizationResponse, setRetainedAuthorizationResponse] = createSignal<{
@@ -227,6 +229,16 @@ export function CollaborateExecutionLiveRail(
   const allOwnersSigned = () => grantReadiness().allOwnersSigned;
   const connectedOwnerNeedsGrant = () => grantReadiness().connectedOwnerNeedsGrant;
   const authorizationUnresolved = () => Boolean(authorizationIdempotencyKey() && !authorization());
+  const authorizationRecoveryContextMatches = createMemo(() => {
+    const retainedPlan = plan();
+    if (!retainedPlan || !props.room || props.room.room_id !== retainedPlan.room_id) return false;
+    try {
+      assertCollaborationExecutionPlanMatchesCurrentRelease(retainedPlan);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   const selectedReservationRefundReady = createMemo(() => Boolean(
     selectedReservation()
     && (
@@ -769,31 +781,37 @@ export function CollaborateExecutionLiveRail(
   );
 
   const recoverAuthorizationResponse = () => runWorkflow(
-    "Reading the retained execution under its original sponsor; no authorization mutation will be sent…",
+    "Reading the original authorization attempt; no authorization, grant renewal, or queue mutation will be sent…",
     async () => {
       const { adapter, session, account } = requireContext();
       const retained = retainedAuthorizationResponse();
+      const currentPlan = plan();
+      const request = plannedRequest();
+      const key = authorizationIdempotencyKey();
       const room = props.room;
-      const jointRun = props.jointRun;
-      if (!retained || !room || !jointRun || retained.plan !== plan() || retained.request !== plannedRequest()
-        || retained.key !== authorizationIdempotencyKey() || retained.plan.sponsor_address !== account) {
-        throw new Error("Reconnect the original sponsor and selected plan to recover the completed response");
+      if (!currentPlan || !request || !key || authorization() || !room
+        || room.room_id !== currentPlan.room_id || currentPlan.sponsor_address !== account
+        || (retained && (retained.plan !== currentPlan || retained.request !== request || retained.key !== key))) {
+        throw new Error("Reconnect the original sponsor and participant room to read the retained authorization attempt");
       }
-      assertCollaborationExecutionPlanMatchesCurrentRelease(retained.plan);
-      assertCollaborationExecutionPlanMatchesJointRun(retained.plan, jointRun, room);
-      assertCollaborationExecutionAuthorizationMatchesPlan(retained.result, retained.plan);
+      assertCollaborationExecutionPlanMatchesCurrentRelease(currentPlan);
       const responseContext = authorizationResponseContext();
-      const status = await adapter.fetchStatus(session.accessToken, retained.result.execution.execution_id);
-      if (retainedAuthorizationResponse() !== retained
-        || !collaborationExecutionResponseIsCurrent(responseContext, authorizationResponseContext(), !disposed && sessionCurrent())) {
-        throw new Error("Recovery context changed; the original response remains retained and was not installed");
-      }
-      const recovered = { ...retained.result, execution: status, royalty_reservation: status.royalty_reservation };
-      assertCollaborationExecutionAuthorizationMatchesPlan(recovered, retained.plan);
-      assertCollaborationComputeAuthorizationMatchesPlanRequest(status, retained.plan, retained.request);
-      if (status.execution_id !== retained.result.execution.execution_id
+      const recovered = await readCollaborationExecutionAuthorizationAttempt(
+        responseContext,
+        authorizationResponseContext,
+        () => !disposed && sessionCurrent(),
+        () => adapter.fetchAuthorizationStatus(session.accessToken, {
+          plan_token: currentPlan.plan_token,
+          idempotency_key: key,
+        }, currentPlan),
+      );
+      const status = recovered.execution;
+      assertCollaborationExecutionPlanMatchesCurrentRelease(currentPlan);
+      assertCollaborationExecutionAuthorizationMatchesPlan(recovered, currentPlan);
+      assertCollaborationComputeAuthorizationMatchesPlanRequest(status, currentPlan, request);
+      if (retained && (status.execution_id !== retained.result.execution.execution_id
         || status.intent_commitment !== retained.result.execution.intent_commitment
-        || status.authorization_commitment !== retained.result.authorization_commitment) {
+        || status.authorization_commitment !== retained.result.authorization_commitment)) {
         throw new Error("The participant status does not match the retained authorization response");
       }
       setAuthorization(recovered);
@@ -1322,19 +1340,21 @@ export function CollaborateExecutionLiveRail(
             Switch back to the sponsor. Authorization derives the reservation
             from current owner grants; it neither deposits funds nor dispatches the provider.
           </p>
+          <Show when={authorizationUnresolved()}><button class="primary-button" type="button" disabled={workflowState() === "working" || !sessionCurrent() || connectedAddress() !== plan()?.sponsor_address || !authorizationRecoveryContextMatches()} onClick={() => void recoverAuthorizationResponse()}><RefreshCw size={14} /> Recover authorization by read-only lookup</button></Show>
           <button
             type="button"
-            class="primary-button"
+            class={authorizationUnresolved() ? "secondary-button" : "primary-button"}
             disabled={workflowState() === "working" || !grantReadiness().canAuthorize || Boolean(retainedAuthorizationResponse())}
             onClick={() => void authorize()}
           >
-            <LockKeyhole size={14} /> Authorize and queue inertly
+            <LockKeyhole size={14} /> {authorizationUnresolved() ? "Retry exact authorization" : "Authorize and queue inertly"}
           </button>
-          <Show when={retainedAuthorizationResponse()}><button class="secondary-button" type="button" disabled={workflowState() === "working" || !sessionCurrent() || connectedAddress() !== plan()?.sponsor_address || !planContextMatches()} onClick={() => void recoverAuthorizationResponse()}><RefreshCw size={14} /> Recover retained authorization response</button></Show>
           <Show when={authorizationUnresolved()}>
             <small class="collaboration-live-boundary" role="status">
               Authorization outcome unresolved. The exact plan, grant set, and request key remain in memory.
-              Expiry does not prove rejection. Do not replace them; use read-only execution status or operator reconciliation.
+              Prefer read-only lookup first. Retry sends only this same request while every grant and the plan remain fresh; it never creates a new key or grant set.
+              Expiry does not prove rejection. After expiry, only read-only recovery is available.
+              A not-found response does not prove rejection; the attempt stays frozen and must not be replaced.
             </small>
           </Show>
           <Show when={authorization()}>{(value) => (

@@ -6,6 +6,7 @@ import {
   fetchCollaborationExecutionWorkerCapability,
   fetchCollaborationExecutionStatus,
   fetchCollaborationExecutionStatusEnvelope,
+  fetchCollaborationExecutionAuthorizationStatus,
   issueCollaborationExecutionGrantChallenge,
   assertCollaborationExecutionWorkerCapabilityMatchesCurrentRelease,
   type CollaborationExecutionPlanProjection,
@@ -28,6 +29,7 @@ export interface CollaborationExecutionTransportAdapter {
   readonly createPlan: typeof createCollaborationExecutionPlan;
   readonly issueGrantChallenge: typeof issueCollaborationExecutionGrantChallenge;
   readonly authorize: typeof authorizeCollaborationExecution;
+  readonly fetchAuthorizationStatus: typeof fetchCollaborationExecutionAuthorizationStatus;
   readonly fetchWorkerCapability:
     typeof fetchCollaborationExecutionWorkerCapability;
   readonly fetchStatus: typeof fetchCollaborationExecutionStatus;
@@ -40,6 +42,7 @@ CollaborationExecutionTransportAdapter = Object.freeze({
   createPlan: createCollaborationExecutionPlan,
   issueGrantChallenge: issueCollaborationExecutionGrantChallenge,
   authorize: authorizeCollaborationExecution,
+  fetchAuthorizationStatus: fetchCollaborationExecutionAuthorizationStatus,
   fetchWorkerCapability: fetchCollaborationExecutionWorkerCapability,
   fetchStatus: fetchCollaborationExecutionStatus,
   fetchStatusEnvelope: fetchCollaborationExecutionStatusEnvelope,

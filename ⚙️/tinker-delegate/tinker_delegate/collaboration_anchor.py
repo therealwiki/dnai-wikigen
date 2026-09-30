@@ -23,6 +23,7 @@ from typing import Any, Callable, Mapping, Protocol
 from tinker_delegate.collaboration_store import (
     CollaborationStore,
     CollaborationStoreCorruptError,
+    ReadOnlyCollaborationStore,
     _empty_state,
     _fsync_directory,
     _validate_state,
@@ -31,8 +32,10 @@ from tinker_delegate.execution_policy_anchor import (
     AnchoredExecutionPolicyCoordinator,
 )
 from tinker_delegate.execution_policy_store import (
+    ExecutionPolicyStore,
     ZERO_DECISION_HASH,
     execution_resource_hash,
+    execution_policy_integrity_key,
 )
 from tinker_delegate.policy_kernel import PolicyDecision, PolicyGateResult
 from tinker_delegate.wallet_signature_verifier import BASE_SEPOLIA_CHAIN_ID
@@ -285,6 +288,65 @@ class ExecutionPolicyCollaborationAnchor:
             sequence=record["sequence"],
             rollback_anchor=dict(record.get("rollback_anchor") or {}),
         )
+
+
+class _ReadOnlyExecutionPolicyStore(ExecutionPolicyStore):
+    """Prevent an anchor read from creating or repairing its local journal."""
+
+    def _persist(self, payload: dict[str, Any]) -> None:
+        raise CollaborationRollbackError("Existing execution-policy journal is required")
+
+
+class ReadOnlyExecutionPolicyCollaborationAnchor(ExecutionPolicyCollaborationAnchor):
+    """Independent no-signer anchor reader; history cannot reconcile/broadcast."""
+
+    def __init__(
+        self,
+        coordinator: AnchoredExecutionPolicyCoordinator,
+        *,
+        authority_context_hash: str,
+    ) -> None:
+        if (
+            not isinstance(coordinator, AnchoredExecutionPolicyCoordinator)
+            or getattr(coordinator.gateway, "read_only", None) is not True
+        ):
+            raise CollaborationAnchorError("Collaboration recovery requires a read-only anchor")
+        self.authority_context_hash = _required_hash(
+            authority_context_hash, "Collaboration authority context", allow_zero=False
+        )
+        self.coordinator = coordinator
+
+    @classmethod
+    def from_settings(cls, settings: Any, *, authority_context_hash: str):
+        from tinker_delegate.execution_policy_anchor import (
+            HttpsExecutionPolicyAnchorGateway,
+            verify_live_execution_policy_release_binding,
+        )
+
+        path = str(getattr(settings, "execution_policy_store_path", "") or "").strip()
+        if not path:
+            raise CollaborationRollbackError("Existing execution-policy journal is required")
+        store = _ReadOnlyExecutionPolicyStore(
+            path, integrity_key=execution_policy_integrity_key(settings)
+        )
+        gateway = None
+        try:
+            gateway = HttpsExecutionPolicyAnchorGateway.from_settings(settings, read_only=True)
+            verify_live_execution_policy_release_binding(settings, gateway)
+            return cls(
+                AnchoredExecutionPolicyCoordinator(store, gateway),
+                authority_context_hash=authority_context_hash,
+            )
+        except Exception:
+            if gateway is not None:
+                gateway.close()
+            raise
+
+    def compare_and_set(self, **_kwargs) -> CollaborationAnchorHead:
+        raise CollaborationAnchorError("Collaboration recovery anchor is read-only")
+
+    def close(self) -> None:
+        self.coordinator.close()
 
 
 def collaboration_authority_context_hash(settings: Any) -> str:
@@ -674,6 +736,50 @@ class AnchoredCollaborationStore(CollaborationStore):
                 "Collaboration witness clock is unavailable"
             )
         return timestamp
+
+
+class ReadOnlyAnchoredCollaborationStore(ReadOnlyCollaborationStore, AnchoredCollaborationStore):
+    """Read the existing snapshot witnessed now, without promoting or repairing it."""
+
+    def __init__(
+        self, path: str | Path, *, integrity_key: bytes,
+        authority_context_hash: str, rollback_anchor: CollaborationRollbackAnchor,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if rollback_anchor is None:
+            raise CollaborationRollbackError("Live Collaboration requires a rollback anchor")
+        self.authority_context_hash = _required_hash(
+            authority_context_hash, "Collaboration authority context", allow_zero=False
+        )
+        self.rollback_anchor = rollback_anchor
+        self._clock = clock or time.time
+        self._last_anchor_head = None
+        ReadOnlyCollaborationStore.__init__(self, path, integrity_key=integrity_key)
+
+    def _load_locked(self) -> dict[str, Any]:
+        try:
+            head = self.rollback_anchor.read_head(now=self._now())
+        except Exception as exc:
+            raise CollaborationRollbackError("Collaboration rollback witness is unavailable") from exc
+        self._require_anchor_head(head, previous=self._last_anchor_head)
+        if head.state_hash == ZERO_COLLABORATION_STATE_HASH:
+            raise CollaborationRollbackError("Existing Collaboration rollback witness is required")
+        self._last_anchor_head = head
+        for path in (self.path, collaboration_pending_path(self.path)):
+            if not os.path.lexists(path):
+                continue
+            state = CollaborationStore._load_path_locked(self, path)
+            state_hash = collaboration_state_hash(
+                state, authority_context_hash=self.authority_context_hash
+            )
+            if hmac.compare_digest(state_hash, head.state_hash):
+                return state
+        raise CollaborationRollbackError("Collaboration state does not match its rollback witness")
+
+    def close(self) -> None:
+        close = getattr(self.rollback_anchor, "close", None)
+        if callable(close):
+            close()
 
 
 def _require_private_regular_file(path: Path, label: str) -> None:

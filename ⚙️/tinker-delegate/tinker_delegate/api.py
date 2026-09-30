@@ -534,14 +534,15 @@ def _require_collaboration_enabled() -> None:
         )
 
 
-def _collaboration_wallet_auth_service() -> CollaborationWalletAuthService:
+def _collaboration_wallet_auth_service(*, authority_view=None) -> CollaborationWalletAuthService:
     _require_collaboration_enabled()
     # A live surface must prove that its release-bound monotonic authority is
     # readable before issuing even a wallet challenge. This prevents the auth
     # UI from appearing healthy while every authority read/mutation is blocked.
     if is_dstack_enabled():
         try:
-            _get_collaboration_store().rollback_status()
+            store = authority_view if authority_view is not None else _get_collaboration_store()
+            store.rollback_status()
         except Exception as exc:
             _raise_collaboration_store_error(exc)
     return CollaborationWalletAuthService(
@@ -650,6 +651,42 @@ def _get_collaboration_store():
     return _collaboration_store_instance
 
 
+def _get_read_only_collaboration_store():
+    """Uncached existing-state view reserved for lost-authorization reads."""
+
+    from tinker_delegate.collaboration_store import ReadOnlyCollaborationStore
+    from tinker_delegate.collaboration_anchor import (
+        ReadOnlyAnchoredCollaborationStore,
+        ReadOnlyExecutionPolicyCollaborationAnchor,
+        collaboration_authority_context_hash,
+    )
+
+    _require_collaboration_enabled()
+    path = str(settings.collaboration_store_path or "").strip()
+    anchor = None
+    try:
+        if not path:
+            raise ValueError("existing Collaboration store is required")
+        key = collaboration_store_integrity_key(settings)
+        if not is_dstack_enabled():
+            return ReadOnlyCollaborationStore(path, integrity_key=key)
+        context = collaboration_authority_context_hash(settings)
+        anchor = ReadOnlyExecutionPolicyCollaborationAnchor.from_settings(
+            settings, authority_context_hash=context
+        )
+        return ReadOnlyAnchoredCollaborationStore(
+            path, integrity_key=key, authority_context_hash=context,
+            rollback_anchor=anchor,
+        )
+    except Exception as exc:
+        if anchor is not None:
+            anchor.close()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Existing Collaboration authority is unavailable",
+        ) from exc
+
+
 def _raise_collaboration_store_error(exc: Exception) -> None:
     """Map store failures without exposing persistence or verifier internals."""
 
@@ -711,7 +748,7 @@ def _require_collaboration_execution_enabled() -> None:
         )
 
 
-def _get_collaboration_execution_journal():
+def _get_collaboration_execution_journal(*, require_existing: bool = False):
     global _collaboration_execution_journal_instance
     global _collaboration_execution_journal_instance_identity
 
@@ -741,7 +778,9 @@ def _get_collaboration_execution_journal():
             or _collaboration_execution_journal_instance_identity != identity
         ):
             _collaboration_execution_journal_instance = (
-                CollaborationExecutionJournal(path, integrity_key=key)
+                CollaborationExecutionJournal(
+                    path, integrity_key=key, require_existing=require_existing
+                )
             )
             _collaboration_execution_journal_instance_identity = identity
         return _collaboration_execution_journal_instance
@@ -757,7 +796,7 @@ def _get_collaboration_execution_journal():
         ) from exc
 
 
-def _get_collaboration_execution_coordinator():
+def _get_collaboration_execution_coordinator(*, read_only: bool = False, authority_view=None):
     global _collaboration_execution_coordinator_instance
     global _collaboration_execution_coordinator_identity
 
@@ -770,10 +809,26 @@ def _get_collaboration_execution_coordinator():
     )
 
     _require_collaboration_execution_enabled()
-    journal = _get_collaboration_execution_journal()
-    store = _get_collaboration_store()
-    workload_ingress = _get_compute_workload_ingress()
+    journal = (
+        _get_collaboration_execution_journal(require_existing=True)
+        if read_only else _get_collaboration_execution_journal()
+    )
+    if read_only and authority_view is None:
+        raise HTTPException(503, "Read-only Collaboration authority view is required")
+    store = authority_view if read_only else _get_collaboration_store()
+    workload_ingress = None if read_only else _get_compute_workload_ingress()
     key = collaboration_execution_integrity_key(settings)
+    if read_only:
+        # Recovery must not replace the executable coordinator in the shared
+        # cache: concurrent sync routes must never receive a no-workload reader
+        # while authorizing. This local reader has no current-workload dependency.
+        return CollaborationExecutionCoordinator(
+            settings=settings,
+            collaboration_store=store,
+            execution_journal=journal,
+            integrity_key=key,
+            signature_verifier=wallet_signature_verifier_from_settings(settings),
+        )
     identity = (
         str(id(journal)),
         str(id(store)),
@@ -2031,7 +2086,7 @@ def _require_compute_wallet_auth(authorization: str):
         ) from exc
 
 
-def _require_collaboration_wallet_auth(authorization: str):
+def _require_collaboration_wallet_auth(authorization: str, *, authority_view=None):
     _require_collaboration_enabled()
     token = _bearer_token(authorization)
     if not token:
@@ -2041,7 +2096,11 @@ def _require_collaboration_wallet_auth(authorization: str):
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return _collaboration_wallet_auth_service().verify_token(
+        service = (
+            _collaboration_wallet_auth_service(authority_view=authority_view)
+            if authority_view is not None else _collaboration_wallet_auth_service()
+        )
+        return service.verify_token(
             token,
             required_scope=COLLABORATION_CONSOLE_SCOPE,
         )
@@ -2690,6 +2749,17 @@ class CollaborationExecutionAuthorizeRequest(BaseModel):
     grants: list[CollaborationExecutionGrantSubmission] = Field(
         min_length=1,
         max_length=16,
+    )
+
+
+class CollaborationExecutionAuthorizationStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    plan_token: str = Field(min_length=80, max_length=98_304)
+    idempotency_key: str = Field(
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$",
     )
 
 
@@ -5298,6 +5368,7 @@ def _with_collaboration_execution_capability(
     if resource_kind not in {
         "execution_plan",
         "execution_authorization",
+        "execution_authorization_status",
         "execution_status",
     }:
         raise ValueError("collaboration execution resource kind is invalid")
@@ -5422,6 +5493,72 @@ def collaboration_authorize_execution(
         _raise_collaboration_execution_error(exc)
 
 
+def _collaboration_execution_status_projection(record: dict) -> dict:
+    """The shared bounded projection for authenticated execution reads."""
+
+    compute_projection = record.get("compute_journal_projection")
+    if isinstance(compute_projection, dict):
+        compute_projection = {
+            **compute_projection,
+            "source_authentication_proven": True,
+            "source_authentication_boundary": (
+                "authenticated_local_compute_journal_reader"
+            ),
+        }
+    return {
+        **record,
+        "source_capable_core_only": False,
+        "fresh_worker_presence_proven": False,
+        "compute_journal_projection": compute_projection,
+        "api_worker_wiring_available": True,
+        "client_supplied_vault_observation": False,
+        "client_supplied_compute_projection": False,
+    }
+
+
+@app.post("/collaboration/execution-plans/authorization-status")
+def collaboration_get_execution_authorization_status(
+    payload: CollaborationExecutionAuthorizationStatusRequest,
+    authorization: str = Header(default=""),
+):
+    """Recover the exact sponsor authorization without queueing or dispatching."""
+
+    _require_collaboration_execution_enabled()
+    if not _bearer_token(authorization):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Collaboration wallet bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    authority_view = None
+    try:
+        authority_view = _get_read_only_collaboration_store()
+        claims = _require_collaboration_wallet_auth(
+            authorization, authority_view=authority_view
+        )
+        result = _get_collaboration_execution_coordinator(
+            read_only=True, authority_view=authority_view
+        ).authorization_status(
+            plan_token=payload.plan_token,
+            requester_address=claims.address,
+            idempotency_key=payload.idempotency_key,
+        )
+        return _with_collaboration_execution_capability(
+            {
+                **result,
+                "execution": _collaboration_execution_status_projection(
+                    result["execution"]
+                ),
+            },
+            resource_kind="execution_authorization_status",
+        )
+    except Exception as exc:
+        _raise_collaboration_execution_error(exc)
+    finally:
+        if authority_view is not None:
+            authority_view.close()
+
+
 @app.get("/collaboration/executions/{execution_id}")
 def collaboration_get_execution(
     execution_id: str,
@@ -5439,24 +5576,8 @@ def collaboration_get_execution(
             record["room_id"],
             claims.address,
         )
-        compute_projection = record.get("compute_journal_projection")
-        if isinstance(compute_projection, dict):
-            compute_projection = {
-                **compute_projection,
-                "source_authentication_proven": True,
-                "source_authentication_boundary": (
-                    "authenticated_local_compute_journal_reader"
-                ),
-            }
         return _with_collaboration_execution_capability(
-            {
-                **record,
-                "source_capable_core_only": False,
-                "compute_journal_projection": compute_projection,
-                "api_worker_wiring_available": True,
-                "client_supplied_vault_observation": False,
-                "client_supplied_compute_projection": False,
-            },
+            _collaboration_execution_status_projection(record),
             resource_kind="execution_status",
         )
     except Exception as exc:

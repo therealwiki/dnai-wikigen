@@ -1082,7 +1082,7 @@ def royalty_owner_amounts_hash(
 
 
 def _normalize_persisted_royalty_owner_amounts(
-    intent: "CollaborationExecutionIntent",
+    intent: "CollaborationExecutionBasis",
     value: Mapping[str, int] | list[Mapping[str, Any]] | None,
 ) -> list[dict[str, Any]] | None:
     """Canonicalize exact payouts retained for the later sponsor settlement.
@@ -3052,7 +3052,9 @@ class CollaborationExecutionJournal:
         "updated_at",
     }
 
-    def __init__(self, path: str | Path, *, integrity_key: bytes) -> None:
+    def __init__(
+        self, path: str | Path, *, integrity_key: bytes, require_existing: bool = False
+    ) -> None:
         self.path = Path(os.path.abspath(os.fspath(path)))
         if not str(self.path) or "\x00" in str(self.path):
             raise CollaborationExecutionJournalError(
@@ -3078,6 +3080,10 @@ class CollaborationExecutionJournal:
         with self._exclusive_lock():
             if self.path.exists() or self.path.is_symlink():
                 self._load_unlocked()
+            elif require_existing:
+                raise CollaborationExecutionJournalError(
+                    "existing collaboration execution journal is unavailable"
+                )
             else:
                 self._write_unlocked(self._empty_body())
 
@@ -3684,6 +3690,53 @@ class CollaborationExecutionJournal:
                 raise CollaborationExecutionNotFound("collaboration execution was not found")
             return self._public_record(self._validate_record(record))
 
+    def public_authorization_status(
+        self,
+        basis: CollaborationExecutionBasis,
+        *,
+        royalty_owner_amounts: Mapping[str, int],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Recover one exact authorization without replaying or advancing it.
+
+        The caller authenticates the plan and its sponsor/room visibility.
+        Record validation checks grants at the persisted authorization time,
+        not at read time: expired authority can still describe historical work.
+        No current-authority callback or journal transition occurs here.
+        """
+
+        if type(basis) is not CollaborationExecutionBasis:
+            raise CollaborationExecutionError("execution plan basis is required")
+        if not isinstance(royalty_owner_amounts, Mapping):
+            raise CollaborationExecutionError("exact royalty owner amounts are required")
+        exact_amounts = _normalize_persisted_royalty_owner_amounts(
+            basis, royalty_owner_amounts
+        )
+        key = _pattern(idempotency_key, _IDEMPOTENCY_KEY, "idempotency key")
+        idem_hash = _domain_hex(_IDEMPOTENCY_DOMAIN, key.encode("ascii"))
+        with self._exclusive_lock():
+            body = self._load_unlocked()
+            match = None
+            for value in body["records"].values():
+                record = self._validate_record(value)
+                intent = CollaborationExecutionIntent.from_dict(record["intent"])
+                if (
+                    intent.to_basis() != basis
+                    or record["royalty_owner_amounts"] != exact_amounts
+                    or not hmac.compare_digest(record["idempotency_key_hash"], idem_hash)
+                ):
+                    continue
+                if match is not None:
+                    raise CollaborationExecutionConflict(
+                        "execution authorization status is ambiguous"
+                    )
+                match = record
+            if match is None:
+                raise CollaborationExecutionNotFound(
+                    "collaboration execution authorization was not found"
+                )
+            return self._public_record(match)
+
     def royalty_settlement_source(self, execution_id: str) -> dict[str, Any]:
         """Return authenticated in-process inputs for one bounded-result payout.
 
@@ -3901,7 +3954,7 @@ class CollaborationExecutionJournal:
             "authorization_expiry": intent.authorization_expiry,
             "royalty": {
                 "asset": intent.royalty_asset,
-                "total": intent.royalty_total,
+                "total": str(intent.royalty_total),
                 "owner_amounts_hash": intent.royalty_owner_amounts_hash,
                 "owner_amounts": (
                     None

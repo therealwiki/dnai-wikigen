@@ -31,11 +31,39 @@ export function collaborationExecutionResponseIsCurrent(
   current: CollaborationExecutionResponseContext,
   participantSessionCurrent: boolean,
 ): boolean {
+  return Boolean(original.jointRun) && sameRetainedExecutionContext(original, current, participantSessionCurrent);
+}
+
+function sameRetainedExecutionContext(
+  original: CollaborationExecutionResponseContext,
+  current: CollaborationExecutionResponseContext,
+  participantSessionCurrent: boolean,
+): boolean {
   return participantSessionCurrent && Boolean(original.plan && original.request && original.session
-    && original.room && original.jointRun && original.key && original.account)
+    && original.room && original.key && original.account)
     && original.plan === current.plan && original.request === current.request && original.session === current.session
     && original.room === current.room && original.jointRun === current.jointRun && original.key === current.key
     && original.account?.toLowerCase() === current.account?.toLowerCase() && original.walletVersion === current.walletVersion;
+}
+
+/** A status read can outlive grants/the executable snapshot, never its requesting UI scope. */
+export async function readCollaborationExecutionAuthorizationAttempt<T>(
+  original: CollaborationExecutionResponseContext,
+  current: () => CollaborationExecutionResponseContext,
+  participantSessionCurrent: () => boolean,
+  read: () => Promise<T>,
+): Promise<T> {
+  const assertCurrent = () => {
+    if (!sameRetainedExecutionContext(original, current(), participantSessionCurrent())
+      || original.account?.toLowerCase() !== original.plan?.sponsor_address
+      || original.room?.room_id !== original.plan?.room_id) {
+      throw new Error("Recovery context changed; the exact authorization attempt remains retained and no response was installed");
+    }
+  };
+  assertCurrent();
+  const result = await read();
+  assertCurrent();
+  return result;
 }
 
 export function inspectCollaborationExecutionGrants(input: {

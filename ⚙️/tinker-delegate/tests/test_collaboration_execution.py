@@ -22,6 +22,7 @@ from tinker_delegate.collaboration_execution import (
     CollaborationExecutionIntent,
     CollaborationExecutionJournal,
     CollaborationExecutionJournalError,
+    CollaborationExecutionNotFound,
     ExecutionState,
     FinalizedComputeVaultObservation,
     FinalizedRoyaltyAuthorityObservation,
@@ -546,6 +547,153 @@ def _authorized_and_queued(
     assert public["state"] == ExecutionState.AUTHORIZED.value
     journal.queue(intent.execution_id, queued_at=CREATED_AT + 21)
     return journal, intent, grants
+
+
+@pytest.mark.parametrize("state", [
+    "authorized", "queued", "claimed", "bounded_result_ready", "failed",
+    "reconciliation_hold", "authority_invalidated",
+])
+def test_authorization_lookup_is_byte_stable_in_every_recovery_state(
+    tmp_path, monkeypatch, state,
+):
+    intent = _intent()
+    grants = _grants(intent)
+    journal = CollaborationExecutionJournal(
+        tmp_path / "collaboration-execution.json", integrity_key=b"k" * 32
+    )
+    amounts = {OWNER_A: 1_200, OWNER_B: 800}
+    journal.authorize(
+        intent, grants, royalty_owner_amounts=amounts,
+        idempotency_key="collab-execution-0001", authorized_at=CREATED_AT + 20,
+    )
+    if state != "authorized":
+        journal.queue(intent.execution_id, queued_at=CREATED_AT + 21)
+    if state == "authority_invalidated":
+        with pytest.raises(CollaborationExecutionAuthorityError):
+            journal.claim_next(
+                _current_validator(intent, grants),
+                claimed_at=intent.authorization_expiry + 1,
+            )
+    elif state not in {"authorized", "queued"}:
+        journal.claim_next(_current_validator(intent, grants), claimed_at=CREATED_AT + 30)
+        if state != "claimed":
+            handoff = ComputeHandoff.from_dict(journal.prepare_compute_handoff(
+                intent.execution_id, prepared_at=CREATED_AT + 31
+            ))
+            projection = _projection(
+                handoff,
+                stage="provider_outcome_ambiguous" if state == "reconciliation_hold" else "settled",
+                observed_at=CREATED_AT + 32,
+                result=None if state == "reconciliation_hold" else _result(
+                    intent, handoff.authorization_commitment,
+                    outcome="failed" if state == "failed" else "succeeded",
+                ),
+            )
+            journal.reconcile_compute_projection(
+                intent.execution_id, projection, reconciled_at=CREATED_AT + 32
+            )
+    expected = journal.public_get(intent.execution_id)
+    assert expected["state"] == state
+    before = journal.path.read_bytes()
+    before_stat = journal.path.stat()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("authorization lookup attempted to advance execution")
+
+    for name in ("authorize", "queue", "claim_next", "prepare_compute_handoff",
+                 "recover_incomplete", "reconcile_compute_projection", "_write_unlocked"):
+        monkeypatch.setattr(journal, name, forbidden)
+    assert journal.public_authorization_status(
+        intent.to_basis(), royalty_owner_amounts=amounts,
+        idempotency_key="collab-execution-0001",
+    ) == expected
+    assert journal.path.read_bytes() == before
+    assert journal.path.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert journal.path.stat().st_ino == before_stat.st_ino
+
+
+def test_authorization_lookup_requires_exact_full_basis_and_retained_allocations(tmp_path):
+    intent = _intent()
+    grants = _grants(intent)
+    journal = CollaborationExecutionJournal(
+        tmp_path / "collaboration-execution.json", integrity_key=b"k" * 32
+    )
+    amounts = {OWNER_A: 1_200, OWNER_B: 800}
+    journal.authorize(
+        intent, grants, royalty_owner_amounts=amounts,
+        idempotency_key="collab-execution-0001", authorized_at=CREATED_AT + 20,
+    )
+    before = journal.path.read_bytes()
+    # Same sponsor, room, owners and idempotency key are insufficient.
+    for changed_basis in (
+        replace(intent.to_basis(), room_generation=intent.room_generation + 1),
+        replace(intent.to_basis(), query_ref=_sha("9")),
+        replace(intent.to_basis(), compute_workload_commitment=_bytes32("9")),
+    ):
+        with pytest.raises(CollaborationExecutionNotFound):
+            journal.public_authorization_status(
+                changed_basis, royalty_owner_amounts=amounts,
+                idempotency_key="collab-execution-0001",
+            )
+    with pytest.raises(CollaborationExecutionError, match="amounts changed"):
+        journal.public_authorization_status(
+            intent.to_basis(), royalty_owner_amounts={OWNER_A: 1_199, OWNER_B: 801},
+            idempotency_key="collab-execution-0001",
+        )
+    assert journal.path.read_bytes() == before
+
+
+def test_authorization_lookup_does_not_invent_missing_historical_allocations(tmp_path):
+    journal, intent, _grants_value = _authorized_and_queued(tmp_path)
+    before = journal.path.read_bytes()
+    with pytest.raises(CollaborationExecutionNotFound):
+        journal.public_authorization_status(
+            intent.to_basis(), royalty_owner_amounts={OWNER_A: 1_200, OWNER_B: 800},
+            idempotency_key="collab-execution-0001",
+        )
+    assert journal.path.read_bytes() == before
+
+
+def test_authorization_lookup_rejects_ambiguous_records_without_choosing_first(
+    tmp_path, monkeypatch,
+):
+    intent = _intent()
+    journal = CollaborationExecutionJournal(
+        tmp_path / "collaboration-execution.json", integrity_key=b"k" * 32
+    )
+    amounts = {OWNER_A: 1_200, OWNER_B: 800}
+    journal.authorize(
+        intent, _grants(intent), royalty_owner_amounts=amounts,
+        idempotency_key="collab-execution-0001", authorized_at=CREATED_AT + 20,
+    )
+    with journal._exclusive_lock():
+        body = journal._load_unlocked()
+    body["records"]["duplicate"] = body["records"][intent.execution_id]
+    before = journal.path.read_bytes()
+    # Normal authenticated loading also rejects duplicate one-shot authority;
+    # isolate the lookup's additional unique-match guard against future loaders.
+    monkeypatch.setattr(journal, "_load_unlocked", lambda: body)
+    with pytest.raises(CollaborationExecutionConflict, match="ambiguous"):
+        journal.public_authorization_status(
+            intent.to_basis(), royalty_owner_amounts=amounts,
+            idempotency_key="collab-execution-0001",
+        )
+    assert journal.path.read_bytes() == before
+
+
+def test_require_existing_journal_never_creates_missing_execution_data(tmp_path):
+    path = tmp_path / "missing-execution.json"
+    with pytest.raises(CollaborationExecutionJournalError, match="existing.*unavailable"):
+        CollaborationExecutionJournal(
+            path, integrity_key=b"k" * 32, require_existing=True,
+        )
+    assert not path.exists()
+    # The ordinary authorization path retains its existing creation behavior.
+    created = CollaborationExecutionJournal(path, integrity_key=b"k" * 32)
+    before = path.read_bytes()
+    read = CollaborationExecutionJournal(path, integrity_key=b"k" * 32, require_existing=True)
+    assert read.path == created.path
+    assert path.read_bytes() == before
 
 
 def test_intent_is_canonical_and_binds_every_release_collaboration_compute_and_funding_field():
