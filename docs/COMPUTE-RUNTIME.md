@@ -452,6 +452,74 @@ from the same branded observation; missing, extra, or drifted lineage keeps
 browser upload fail-closed. These are bounded public release pins, never a
 serialized capability or deployment claim.
 
+### Artifact and Arena recipient-trust bootstrap
+
+Recipient trust is not an input that an operator can invent by filling in a
+`TRUST_JSON` template. The operator collector in
+`scripts/phala-recipient-evidence-bootstrap.mjs` runs inside the coordinator's
+current, consumed postlaunch phase. For each of `artifact_recipient` and
+`arena`, it obtains an authenticated, purpose-specific QVL challenge, asks the
+main API for its fixed actual recipient quote, and submits that quote to the
+independent QVL. The raw quote collector is explicitly unappraised:
+`POST /attestation/recipient-quote` accepts only `context` and
+`challenge_digest`, returns `verified: false`, and accepts neither a caller
+public key nor caller report data.
+
+The collector authenticates challenge and verdict signatures against the five
+independently verified QVL roles, checks the actual key/static-report/raw-quote
+binding and exact release lineage, and rechecks the active phase and reviewed
+file bindings before advancing. The read-only release verifier independently
+authenticates those observations. Only its branded projection, cross-bound
+again to the genuine seven-CVM evidence and final authority, can supply the
+four deferred recipient trust/URL variables. Challenge leases are at most 120
+seconds and verdict leases at most 900 seconds; the reviewed deferred
+environment deadline must fit inside both current recipient verdict leases
+and the existing activation deadline. Phase failure or expiry discards the
+bootstrap capability. Partial success is not retained for automatic replay;
+use the explicit completed-launch recovery workflow and collect fresh proofs.
+
+There is an earlier, separate prerequisite which this bridge does not replace:
+
+1. After the non-live main API is available, observe its actual artifact public
+   key using the bounded unappraised quote collector with a fresh nonzero
+   random challenge digest. This is discovery only, not an Intel TDX/DCAP
+   appraisal or authority to encrypt user data. The collector requires neither
+   recipient trust nor a QVL token. The legacy artifact attestation also exposes
+   this same actual key, but its public metadata alone is not a trust root.
+2. Build and independently review the Diligence QVL policy's
+   `artifact_recipient_binding` from that observed key and its recomputed key
+   ID, alongside independently reviewed measurements, contracts, and release
+   roots. Admitting the observed key as policy authority requires independent
+   appraisal of its actual quote against those reviewed measurements; HTTPS
+   and self-described metadata alone are not evidence of the key's TDX origin.
+   Do not substitute example keys or use a later recipient trust
+   projection to construct its own prerequisite policy. The primary Diligence
+   ceremony remains `diligence`; `artifact_recipient` is an auxiliary purpose.
+3. Complete the separately authorized QVL policy/bootstrap workflow and obtain
+   the independent QVL identity proofs before entering the fresh signed
+   challenge/quote/verdict bridge above. `QVL_RELEASE_POLICY_B64` is a reviewed
+   post-measurement policy input, not an initial-provision secret. Dedicated
+   artifact/Arena QVL credentials must agree between the main and corresponding
+   QVL service; result, worker, writer, and metering credentials are not valid
+   substitutes.
+4. After final main-runtime activation restarts the process, fresh recipient
+   renewal must still bind the exact key, static report, QVL policy, and release.
+   Artifact ingress uses the dstack-derived path `tinker/artifact_ingress` so a
+   process restart under the same dstack identity does not rotate this key.
+   This is not a promise of stability across app, compose, KMS, or key rotation;
+   changed identity requires new review and recipient trust.
+
+The current resident driver does **not** automate the separately authorized
+QVL policy installation. It launches the seven non-live CVMs and then waits for
+external QVL evidence; its Stage-A authorization does not permit
+post-measurement secret activation. The existing external reviewed JSON →
+encrypted policy delivery is described in the
+[QVL external release-policy workflow](../⚙️/attestation-qvl/README.md#external-release-policy).
+This remains an explicit orchestration prerequisite, not a completed live
+deployment or an implicit grant to mutate QVL services. Local mocked tests
+prove the bootstrap protocol and phase ordering, not provider deployment,
+reviewer approval, genuine TDX evidence, or live inference.
+
 ## Explicit activation boundary
 
 The rollback-resistant execution-policy gate is implemented and tested,

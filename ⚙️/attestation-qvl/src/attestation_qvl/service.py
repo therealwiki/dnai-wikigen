@@ -34,6 +34,7 @@ from .errors import (
 )
 from .identity_attestation import DstackIdentityAttestor, IdentityAttestor
 from .models import (
+    ArenaCandidateIngressBinding,
     CapabilityResponse,
     IdentityAttestationRequest,
     IdentityResponse,
@@ -58,6 +59,8 @@ class Runtime:
     rate_refill_per_second: float
     request_body_timeout_seconds: float
     verification_timeout_seconds: float
+    artifact_recipient_auth_token: str | None = field(default=None, repr=False)
+    arena_recipient_auth_token: str | None = field(default=None, repr=False)
 
 
 class GlobalCapacityGate:
@@ -105,6 +108,70 @@ def _authenticate(authorization: str, expected: str) -> None:
     except TypeError:
         authenticated = False
     if not authenticated:
+        raise Unauthorized
+
+
+def _authenticate_profile(authorization: str, runtime: Runtime) -> str | None:
+    """Return a recipient-only profile, or None for the existing runtime bearer."""
+    for expected, profile in (
+        (runtime.auth_token, None),
+        (runtime.artifact_recipient_auth_token, "artifact_recipient"),
+        (runtime.arena_recipient_auth_token, "arena"),
+    ):
+        if not expected:
+            continue
+        try:
+            _authenticate(authorization, expected)
+        except Unauthorized:
+            continue
+        return profile
+    raise Unauthorized
+
+
+def _validate_recipient_bearer_domains(runtime: Runtime) -> None:
+    tokens = [value for value in (
+        runtime.auth_token,
+        runtime.artifact_recipient_auth_token,
+        runtime.arena_recipient_auth_token,
+    ) if value is not None]
+    if len(tokens) != len(set(tokens)) or any(
+        not 32 <= len(token) <= 4096
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in token)
+        for token in tokens
+    ):
+        raise VerifierUnavailable
+    policy = runtime.release.policy
+    if (
+        runtime.artifact_recipient_auth_token is not None
+        and policy.artifact_recipient_binding is None
+    ) or (
+        runtime.arena_recipient_auth_token is not None
+        and not isinstance(policy.report_data_binding, ArenaCandidateIngressBinding)
+    ):
+        raise VerifierUnavailable
+
+
+def _require_recipient_scope(
+    profile: str | None,
+    request: QvlChallengeRequest | IndependentVerificationRequest,
+) -> None:
+    if profile is None:
+        return
+    request_profile = (
+        request.challenge.profile
+        if isinstance(request, IndependentVerificationRequest)
+        else request.profile
+    )
+    if request_profile != profile:
+        raise Unauthorized
+    if isinstance(request, IndependentVerificationRequest) and any(
+        value is not None for value in (
+            request.result_authorization,
+            request.compute_authorization,
+            request.royalty_authorization,
+            request.compute_workload_recipient,
+        )
+    ):
         raise Unauthorized
 
 
@@ -176,6 +243,7 @@ def _fixed_error(error: QvlServiceError) -> JSONResponse:
 def _create_app(runtime: Runtime) -> FastAPI:
     """Internal dependency boundary used by production bootstrap and tests only."""
 
+    _validate_recipient_bearer_domains(runtime)
     app = FastAPI(
         title="DNAI Independent Attestation QVL",
         docs_url=None,
@@ -261,7 +329,7 @@ def _create_app(runtime: Runtime) -> FastAPI:
         request: Request,
         authorization: str = Header(default=""),
     ) -> dict[str, object]:
-        _authenticate(authorization, runtime.auth_token)
+        profile = _authenticate_profile(authorization, runtime)
         async with gate.slot():
             parsed = _parse_challenge_request(
                 await _bounded_body(
@@ -269,6 +337,7 @@ def _create_app(runtime: Runtime) -> FastAPI:
                     timeout_seconds=runtime.request_body_timeout_seconds,
                 )
             )
+            _require_recipient_scope(profile, parsed)
             if parsed.chain_id != runtime.release.policy.chain_id:
                 raise InvalidRequest
             challenge = await runtime.challenge_store.issue(parsed)
@@ -310,7 +379,7 @@ def _create_app(runtime: Runtime) -> FastAPI:
 
     @app.post("/verify")
     async def verify(request: Request, authorization: str = Header(default="")) -> dict[str, object]:
-        _authenticate(authorization, runtime.auth_token)
+        profile = _authenticate_profile(authorization, runtime)
         async with gate.slot():
             parsed = _parse_verification_request(
                 await _bounded_body(
@@ -318,6 +387,7 @@ def _create_app(runtime: Runtime) -> FastAPI:
                     timeout_seconds=runtime.request_body_timeout_seconds,
                 )
             )
+            _require_recipient_scope(profile, parsed)
             async with runtime.challenge_store.reserve(parsed.challenge):
                 try:
                     verdict = await asyncio.wait_for(
@@ -370,4 +440,12 @@ def create_production_app() -> FastAPI:
         rate_refill_per_second=settings.rate_refill_per_second,
         request_body_timeout_seconds=settings.request_body_timeout_seconds,
         verification_timeout_seconds=settings.verification_timeout_seconds,
+        artifact_recipient_auth_token=(
+            settings.artifact_recipient_auth_token.get_secret_value()
+            if settings.artifact_recipient_auth_token is not None else None
+        ),
+        arena_recipient_auth_token=(
+            settings.arena_recipient_auth_token.get_secret_value()
+            if settings.arena_recipient_auth_token is not None else None
+        ),
     ))

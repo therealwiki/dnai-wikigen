@@ -547,7 +547,8 @@ export function Arena(props: {
       && deployment.arenaSubmissionEnabled
       && deployment.delegateUrl
       && deployment.composeHash
-      && /^sha256:[0-9a-f]{64}$/.test(deployment.arenaVerifiedQuoteSha256),
+      && deployment.arenaRecipientTrust
+      && deployment.recipientDeploymentBinding,
   ));
 
   const briefExample = createMemo(() => {
@@ -1537,7 +1538,7 @@ export function Arena(props: {
                 <h4>Hard gates</h4>
                 <ul class="check-list">
                   <li><CheckCircle2 size={15} /> Exact challenge version and manifest commitment</li>
-                  <li><CheckCircle2 size={15} /> Quote-pinned recipient key and report-data binding</li>
+                  <li><CheckCircle2 size={15} /> Fresh independent signed recipient evidence and a current lease</li>
                   <li><CheckCircle2 size={15} /> Ciphertext-only durable ingress with no source egress</li>
                   <li><CheckCircle2 size={15} /> {safeIrWorkerPresenceMatchesPreflight() ? "Release-bound presence and startup registry match; per-job quote/QVL and policy gates remain" : "Worker execution stays modeled without fresh matching release evidence"}</li>
                 </ul>
@@ -1780,7 +1781,7 @@ export function Arena(props: {
             <Show when={submissionResult()} fallback={<>
               <p class="overline">{challenge().short} · CIPHERTEXT INGRESS · RELEASE GATED</p>
               <h2 id="submit-title">Prepare an encrypted queue record</h2>
-              <p>Your source is hashed locally, browser-preflighted against the exact frozen Base Sepolia challenge version, encrypted to the independently quote-pinned Arena recipient, authorized by your wallet, and sent as ciphertext only. The proposed finalized block/hash snapshot is cryptographically bound to the ciphertext; the proxy independently verifies it before either durable write.</p>
+              <p>Your source is hashed locally, browser-preflighted against the exact frozen Base Sepolia challenge version, and encrypted only after fresh independent signed evidence binds the Arena recipient to this release. The evidence lease is checked again before ciphertext is sent with your wallet authorization. The proposed finalized block/hash snapshot is cryptographically bound to the ciphertext; the proxy independently verifies it before either durable write.</p>
               <div class="submission-steps"><span class="done">1 <em>Commit</em></span><i /><span>2 <em>Verify + encrypt</em></span><i /><span>3 <em>Authorize</em></span><i /><span>4 <em>Queue</em></span></div>
               <label class="file-drop compact-drop"><input type="file" accept={challenge().runtime === "dnai-safe-ir-v1" ? ".json,application/json" : ".py,.zip,.tar.gz"} disabled={submitting()} onChange={(event) => void selectFile(event.currentTarget.files?.[0])} /><FileCode2 size={23} /><span><strong>{submissionFile()?.name || (challenge().runtime === "dnai-safe-ir-v1" ? "Choose a canonical Safe-IR JSON program" : "Choose a Python file or package")}</strong><small>{hashing() ? "Hashing locally…" : `Maximum ${(challenge().maxSourceBytes ?? 8 * 1024).toLocaleString()} bytes · plaintext never enters the request body`}</small></span></label>
               <Show when={submissionError()}>

@@ -135,7 +135,7 @@ describe("Tinker delegated account console", () => {
       'data-tinker-mutation={`start-${row.key}`}',
     );
     expect(tinkerAccountSource).toContain(
-      'disabled={!lifecycleReady() || !activeAccount() || Boolean(busy())}',
+      'disabled={!lifecycleReady() || !activeAccount() || Boolean(busy()) || Boolean(trainingRecoveryContext())}',
     );
     expect(tinkerAccountSource).toContain(
       'disabled={!lifecycleReady() || Boolean(busy())}',
@@ -264,7 +264,7 @@ describe("Tinker delegated account console", () => {
   });
 
   it("submits a bounded customer training run and exposes fail-safe reconciliation truth", () => {
-    expect(tinkerAccountSource).toContain("executeTinkerCustomerTraining");
+    expect(tinkerAccountSource).toContain("trainingAttempt.execute");
     expect(tinkerAccountSource).toContain('data-tinker-mutation="submit-training"');
     expect(tinkerAccountSource).toContain("Claim authority + submit training");
     expect(tinkerAccountSource).toContain(
@@ -288,7 +288,7 @@ describe("Tinker delegated account console", () => {
   });
 
   it("recovers only the retained signed result and blocks drift or new work while held", () => {
-    expect(tinkerAccountSource).toContain("recoverTinkerCustomerTraining");
+    expect(tinkerAccountSource).toContain("new TinkerTrainingAttempt()");
     expect(tinkerAccountSource).toContain(
       "trainingRecoveryContextIsCurrent",
     );
@@ -302,9 +302,7 @@ describe("Tinker delegated account console", () => {
     expect(tinkerAccountSource).toContain(
       "context.controls",
     );
-    expect(tinkerAccountSource).toContain(
-      "context.credentialToken",
-    );
+    expect(tinkerAccountSource).toContain("trainingAttempt.matches");
     expect(tinkerAccountSource).toContain(
       "No signed result is available yet. The original reconciliation hold remains open",
     );
@@ -312,10 +310,30 @@ describe("Tinker delegated account console", () => {
       "it cannot create a new reservation or redispatch provider work",
     );
     expect(tinkerAccountSource).toContain(
-      "New training blocked by hold",
+      "New training blocked by unresolved request",
     );
     expect(tinkerAccountSource).toContain(
       'disabled={!trainingRecoveryContextIsCurrent() || Boolean(busy())}',
     );
+  });
+
+  it("locks a validated immutable attempt before dispatch and preserves its non-secret guard after authority loss", () => {
+    expect(tinkerAccountSource.indexOf("trainingAttempt.begin({"))
+      .toBeLessThan(tinkerAccountSource.indexOf("await dispatchRetainedTraining(false)"));
+    expect(tinkerAccountSource).toContain("parseTinkerTrainingDraft");
+    expect(tinkerAccountSource).toContain("setTrainingRecoveryContext(context)");
+    expect(tinkerAccountSource).toContain("trainingAttempt.clearAuthority()");
+    expect(tinkerAccountSource).toContain("setTrainingRecoveryContext(trainingAttempt.snapshot())");
+    expect(tinkerAccountSource).toContain("onCleanup(() => trainingAttempt.dispose())");
+    expect(tinkerAccountSource).toContain("!lifecycleContextIsCurrent(currentSession, generation, context.accountId)");
+    expect(tinkerAccountSource).toContain("oneTimeToken() !== credentialToken");
+    expect(tinkerAccountSource).not.toContain("trainingAttempt.keyFor");
+    expect(tinkerAccountSource).toContain("Retry same training request");
+    expect(tinkerAccountSource).toContain("A timeout does not cancel server work or prove a hold exists");
+    expect(tinkerAccountSource).toContain("If the initial request never arrived, this explicit retry may create and execute that one claim");
+    expect(tinkerAccountSource).toContain("only a validated terminal receipt unlocks another run");
+    expect(tinkerAccountSource).toContain("Reloading or leaving the page loses that local guard");
+    expect(tinkerAccountSource.match(/disabled=\{Boolean\(trainingRecoveryContext\(\)\)\}/g))
+      .toHaveLength(3);
   });
 });

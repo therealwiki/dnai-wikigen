@@ -67,3 +67,34 @@ def test_secrets_and_pccs_origin_fail_closed(monkeypatch, tmp_path, token, pccs)
     monkeypatch.setenv("QVL_PCCS_URL", pccs)
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_recipient_bearers_load_as_optional_distinct_secret_domains(monkeypatch, tmp_path):
+    monkeypatch.setenv("QVL_RELEASE_POLICY_PATH", str(tmp_path / "policy.json"))
+    monkeypatch.setenv("QVL_AUTH_TOKEN", TOKEN)
+    monkeypatch.setenv("QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN", "artifact-recipient-token-0123456789abcdef")
+    monkeypatch.setenv("QVL_ARENA_RECIPIENT_AUTH_TOKEN", "arena-recipient-token-0123456789abcdef")
+    settings = Settings()
+    assert settings.artifact_recipient_auth_token.get_secret_value().startswith("artifact-")
+    assert settings.arena_recipient_auth_token.get_secret_value().startswith("arena-")
+    assert "0123456789abcdef" not in repr(settings)
+    monkeypatch.setenv("QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN", "")
+    assert Settings().artifact_recipient_auth_token is None
+
+
+@pytest.mark.parametrize("token", [TOKEN, "short", "x" * 31 + "\n", "x" * 31 + "é"])
+def test_recipient_bearer_must_be_valid_and_distinct_from_runtime(monkeypatch, tmp_path, token):
+    monkeypatch.setenv("QVL_RELEASE_POLICY_PATH", str(tmp_path / "policy.json"))
+    monkeypatch.setenv("QVL_AUTH_TOKEN", TOKEN)
+    monkeypatch.setenv("QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN", token)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_recipient_bearers_must_not_alias_each_other(monkeypatch, tmp_path):
+    monkeypatch.setenv("QVL_RELEASE_POLICY_PATH", str(tmp_path / "policy.json"))
+    monkeypatch.setenv("QVL_AUTH_TOKEN", TOKEN)
+    monkeypatch.setenv("QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN", "shared-recipient-token-0123456789abcdef")
+    monkeypatch.setenv("QVL_ARENA_RECIPIENT_AUTH_TOKEN", "shared-recipient-token-0123456789abcdef")
+    with pytest.raises(ValidationError):
+        Settings()

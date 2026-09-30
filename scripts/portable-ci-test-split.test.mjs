@@ -189,19 +189,19 @@ test("portable/operator manifest assigns every root test exactly once", () => {
     portable_file_count: manifest.portable_file_count,
     portable_files_sha256: manifest.portable_files_sha256,
   }, {
-    discovered_file_count: 99,
+    discovered_file_count: 100,
     discovered_files_sha256:
-      "sha256:d9d3ea2e088c4d7397e49aac66e071b711d3099e43f253d27bf368ff58ea7a65",
+      "sha256:e8bace98179ad23a6a9640ce3e3d1e939ba7548a5ed3cc10b5afbe6265a81472",
     operator_host_file_count: 23,
     operator_host_files_sha256:
       "sha256:e37cb82d691324b183ce972a413f4251783bc032f28b9efb7b8ca7d9de5a6095",
-    portable_file_count: 76,
+    portable_file_count: 77,
     portable_files_sha256:
-      "sha256:f6f1f3d574f30d960d8e3bee2baee69ebc2d71f7ed0114300a28a61072f7578e",
+      "sha256:8dcc3dc758e2551d0863fc8a16105fb1d6050163445f2204036a05c44f0d7de7",
   });
   assert.equal(
     createHash("sha256").update(fs.readFileSync(MANIFEST_PATH)).digest("hex"),
-    "08b253ee896e6c7f5367fc0213dd1021dfbb3fa53655525c2b73e3aee0ab8f51",
+    "2095c7bfa722452d9d099b174c23be0979a75b6059bff1a5cac6018191cd0476",
   );
   assert.equal(manifest.portable.includes("scripts/portable-ci-test-split.test.mjs"), true);
   assert.equal(

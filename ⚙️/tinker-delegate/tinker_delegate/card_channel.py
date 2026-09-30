@@ -43,6 +43,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from tinker_delegate import dstack_utils
 from tinker_delegate.automation_receipts import (
     BALANCE_BANDS,
     AutomationOutcome,
@@ -227,6 +228,38 @@ def get_tee_keypair() -> TEEKeyPair:
     return _tee_keypair
 
 
+ARTIFACT_INGRESS_DSTACK_KEY_PATH = "tinker/artifact_ingress"
+
+
+class ArtifactRecipientUnavailable(ValueError):
+    """Fixed failure without exposing dstack key derivation details."""
+
+
+def get_artifact_keypair(*, require_dstack: bool = False) -> TEEKeyPair:
+    """Resolve the purpose-separated production artifact recipient.
+
+    The same dstack derivation material reproduces the key after a process
+    restart. This does not promise retention across app, KMS, or measurement
+    changes; changed public keys still require new independently reviewed pins.
+    No derived private material is written to disk or accepted from the caller.
+
+    Existing explicitly modeled local/simulator flows keep their boot key.
+    Production recipient evidence requires real dstack and never falls back.
+    Resolve anew rather than caching a key across a changed dstack identity.
+    """
+    if not is_dstack_enabled() or is_dstack_simulator():
+        if require_dstack:
+            raise ArtifactRecipientUnavailable("Artifact recipient is unavailable")
+        return get_tee_keypair()
+    try:
+        raw = dstack_utils.derive_storage_key(ARTIFACT_INGRESS_DSTACK_KEY_PATH)
+        if not isinstance(raw, bytes) or len(raw) != 32 or not any(raw):
+            raise ValueError
+        return TEEKeyPair.from_private_key_hex(raw.hex())
+    except Exception:
+        raise ArtifactRecipientUnavailable("Artifact recipient is unavailable") from None
+
+
 def attestation_report_data(context: str, public_key: bytes) -> bytes:
     """Report data binding an operation context to the TEE encryption key."""
     payload = json.dumps(
@@ -254,7 +287,7 @@ def get_attestation(context: str = "ingress") -> dict:
 
     Locally: returns a stub with the encryption public key (for testing).
     """
-    keypair = get_tee_keypair()
+    keypair = get_artifact_keypair() if context == "artifact" else get_tee_keypair()
     report_data = attestation_report_data(context, keypair.public_key_bytes)
     public_base = {
         "quote": "",

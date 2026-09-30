@@ -222,11 +222,12 @@ test("D manifest freezes the exact acyclic producer/validator recipe and digest 
     canonicalFrontendBuildInputManifestText(value),
     `${JSON.stringify(value, null, 2)}\n`,
   );
-  // Frozen after the schema fixture settles; this assertion prevents a silent
-  // producer/validator recipe drift.
+  // Current fixture KAT: the pure v2 policy adapter adds the 83rd external
+  // file, shifting subsequent index-derived synthetic size/hash pins. The
+  // 37-input recipe and historical D manifest KAT remain unchanged.
   assert.equal(
     frontendBuildInputManifestSha256(value),
-    "sha256:14b928fd0b8954081b093c61ab54a40f0ee90a05e9a97e0855fce983496c3bef",
+    "sha256:577961e507ab99da97ee823bc462acc99fdb6dee75358a2b4598d2f93acaca5d",
   );
 });
 

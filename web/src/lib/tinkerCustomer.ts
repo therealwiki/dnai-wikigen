@@ -414,6 +414,22 @@ export interface TinkerTrainingControls {
   ttlSeconds: number;
 }
 
+export interface TinkerTrainingAttemptIdentity {
+  readonly credentialToken: string;
+  readonly credentialId: string;
+  readonly accountId: string;
+  readonly walletSession: TinkerCustomerSession;
+}
+
+/** Public page-memory tombstone; never contains either bearer token. */
+export interface TinkerTrainingAttemptSnapshot {
+  readonly credentialId: string;
+  readonly accountId: string;
+  readonly idempotencyKey: string;
+  readonly controls: Readonly<TinkerTrainingControls>;
+  readonly hold?: TinkerTrainingReconciliationReceipt;
+}
+
 export interface TinkerDeviceKey {
   publicKeyHex: string;
   privateKey: CryptoKey;
@@ -2637,12 +2653,9 @@ export async function revokeTinkerAccount(
   return parseTinkerAccountRevokeReceipt(value, accountId);
 }
 
-export async function executeTinkerCustomerTraining(
-  credentialToken: string,
+function validateTinkerTrainingControls(
   controls: TinkerTrainingControls,
-  idempotencyKey: string,
-  signal?: AbortSignal,
-): Promise<TinkerTrainingExecutionReceipt> {
+): Readonly<TinkerTrainingControls> {
   const maxUsdMicros = integer(
     controls.maxUsdMicros,
     "Tinker training authority ceiling",
@@ -2661,6 +2674,35 @@ export async function executeTinkerCustomerTraining(
     60,
     3_600,
   );
+  return Object.freeze({ maxUsdMicros, steps, ttlSeconds });
+}
+
+export function parseTinkerTrainingDraft(
+  draft: { maxUsdMicros: string; steps: string; ttlSeconds: string },
+  credentialCap: string,
+): Readonly<TinkerTrainingControls> {
+  if (Object.values(draft).some((value) => !/^(?:0|[1-9][0-9]*)$/.test(value))) {
+    throw new Error("Training controls must be whole decimal integers");
+  }
+  const controls = validateTinkerTrainingControls({
+    maxUsdMicros: Number(draft.maxUsdMicros),
+    steps: Number(draft.steps),
+    ttlSeconds: Number(draft.ttlSeconds),
+  });
+  if (BigInt(controls.maxUsdMicros) > BigInt(uint256String(
+    credentialCap,
+    "Tinker training credential cap",
+  ))) throw new Error("Training authority exceeds the retained credential cap");
+  return controls;
+}
+
+export async function executeTinkerCustomerTraining(
+  credentialToken: string,
+  controls: TinkerTrainingControls,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<TinkerTrainingExecutionReceipt> {
+  const { maxUsdMicros, steps, ttlSeconds } = validateTinkerTrainingControls(controls);
   const serializedBody = (
     `{"max_usd_micros":${maxUsdMicros},"steps":${steps},`
     + `"ttl_seconds":${ttlSeconds}}`
@@ -2731,6 +2773,105 @@ export async function recoverTinkerCustomerTraining(
       assertSameTrainingClaim(cause.receipt, hold);
     }
     throw cause;
+  }
+}
+
+/**
+ * One unresolved training attempt per mounted page. A transport/HTTP/parser error
+ * is not proof that the synchronous server did not claim or dispatch the job.
+ * Only a validated terminal receipt releases this slot; clearing authority drops
+ * secrets but deliberately preserves the non-secret tombstone until page disposal.
+ */
+export class TinkerTrainingAttempt {
+  private pending?: {
+    snapshot: TinkerTrainingAttemptSnapshot;
+    authority?: Readonly<TinkerTrainingAttemptIdentity>;
+  };
+  private requestInFlight = false;
+
+  snapshot(): TinkerTrainingAttemptSnapshot | undefined {
+    return this.pending?.snapshot;
+  }
+
+  begin(
+    identity: TinkerTrainingAttemptIdentity,
+    draft: { maxUsdMicros: string; steps: string; ttlSeconds: string },
+    credentialCap: string,
+  ): TinkerTrainingAttemptSnapshot {
+    if (this.pending) throw new Error("An unresolved training attempt cannot be replaced");
+    const controls = parseTinkerTrainingDraft(draft, credentialCap);
+    if (
+      !ACCOUNT_ID.test(identity.accountId)
+      || !CREDENTIAL_ID.test(identity.credentialId)
+      || identity.credentialToken.length < 80
+      || identity.credentialToken.length > 4_096
+      || !JWT.test(identity.credentialToken)
+    ) throw new Error("Tinker training authority is invalid");
+    const snapshot = Object.freeze({
+      accountId: identity.accountId,
+      credentialId: identity.credentialId,
+      controls,
+      idempotencyKey: newTinkerIdempotencyKey("tinkercustomertraining"),
+    });
+    this.pending = { snapshot, authority: Object.freeze({ ...identity }) };
+    return snapshot;
+  }
+
+  matches(identity: TinkerTrainingAttemptIdentity): boolean {
+    const authority = this.pending?.authority;
+    return Boolean(authority
+      && authority.walletSession === identity.walletSession
+      && authority.accountId === identity.accountId
+      && authority.credentialId === identity.credentialId
+      && authority.credentialToken === identity.credentialToken);
+  }
+
+  clearAuthority(): void {
+    if (this.pending) this.pending.authority = undefined;
+  }
+
+  dispose(): void {
+    this.clearAuthority();
+    this.pending = undefined;
+  }
+
+  async execute(
+    isCurrent: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<TinkerTrainingExecutionReceipt | undefined> {
+    const pending = this.pending;
+    const authority = pending?.authority;
+    if (!pending || !authority || !isCurrent()) {
+      throw new Error("Training recovery authority is missing or changed");
+    }
+    if (this.requestInFlight) throw new Error("Training recovery is already in progress");
+    this.requestInFlight = true;
+    const current = () => this.pending === pending
+      && pending.authority === authority
+      && isCurrent();
+    const { controls, idempotencyKey, hold } = pending.snapshot;
+    try {
+      const receipt = hold
+        ? await recoverTinkerCustomerTraining(
+          authority.credentialToken, controls, idempotencyKey, hold, signal,
+        )
+        : await executeTinkerCustomerTraining(
+          authority.credentialToken, controls, idempotencyKey, signal,
+        );
+      if (!current()) return undefined;
+      this.pending = undefined;
+      return receipt;
+    } catch (cause) {
+      if (!current()) return undefined;
+      if (cause instanceof TinkerTrainingReconciliationError) {
+        pending.snapshot = Object.freeze({ ...pending.snapshot, hold: cause.receipt });
+      }
+      // No HTTP status alone proves the absence of an earlier durable claim.
+      throw cause;
+    } finally {
+      if (this.pending === pending && !current()) this.clearAuthority();
+      this.requestInFlight = false;
+    }
   }
 }
 

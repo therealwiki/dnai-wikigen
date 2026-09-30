@@ -44,9 +44,13 @@ import { ComputeVaultPanel } from "../components/ComputeVaultPanel";
 import {
   ComputeWorkloadPanel,
   computeWorkloadHandoffId,
+  computeWorkloadMetadataMatchesHandoff,
   type SealedComputeWorkloadHandoff,
 } from "../components/ComputeWorkloadPanel";
 import { computeVaultDeployment, computeWorkloadDeployment, deployment } from "../config";
+import { computeVaultProjectId } from "../lib/computeVault";
+import { fetchAuthenticatedComputeWorkloadContract, fetchComputeWorkloadMetadata } from "../lib/computeWorkload";
+import { assertComputeCollaborationWorkloadCurrent, clearComputeCollaborationWorkloadDraft, retainComputeCollaborationWorkloadDraft } from "../lib/computeCollaborationHandoff";
 import {
   addProjectMember,
   cancelComputeJob,
@@ -334,6 +338,7 @@ export function Compute(props: {
   const [vaultInspectReference, setVaultInspectReference] = createSignal("");
   const [vaultAuthorizationReceipt, setVaultAuthorizationReceipt] = createSignal<ComputeAuthorizationHandoff>();
   const [sealedWorkload, setSealedWorkload] = createSignal<SealedComputeWorkloadHandoff>();
+  const [collaborationDraftJson, setCollaborationDraftJson] = createSignal("");
   const [busy, setBusy] = createSignal("");
   const [cancelingJobId, setCancelingJobId] = createSignal("");
   const [error, setError] = createSignal("");
@@ -488,6 +493,8 @@ export function Compute(props: {
     setVaultInspectReference("");
     setVaultAuthorizationReceipt(undefined);
     setSealedWorkload(undefined);
+    setCollaborationDraftJson("");
+    if (!disposed) clearComputeCollaborationWorkloadDraft();
     setBusy("");
     setCancelingJobId("");
     setFundOpen(false);
@@ -545,6 +552,8 @@ export function Compute(props: {
       setVaultInspectReference("");
       setVaultAuthorizationReceipt(undefined);
       setSealedWorkload(undefined);
+      setCollaborationDraftJson("");
+      clearComputeCollaborationWorkloadDraft();
       if (expiryRecovery()?.projectId !== nextProjectId) setExpiryRecovery(undefined);
     }
     const requestIsCurrent = () => request === projectLoadVersion && computeSessionIsCurrent(token);
@@ -604,6 +613,51 @@ export function Compute(props: {
       lockConsole();
       setAuthState("error");
       setError(cause instanceof Error ? cause.message : "Compute Console authorization failed");
+    }
+  }
+
+  async function exportCollaborationWorkload(): Promise<void> {
+    if (busy()) return;
+    const retained = sealedWorkload();
+    const selectedProject = project();
+    const token = sessionToken();
+    const scope = projectScopeVersion;
+    const actor = authorizedAddress().toLowerCase();
+    const trustPolicy = computeWorkloadDeployment.trustPolicy;
+    if (!retained || !selectedProject || !trustPolicy || !deployment.releaseSha || !computeSessionIsCurrent(token)) return;
+    const isCurrent = () => !disposed && scope === projectScopeVersion && project() === selectedProject
+      && sealedWorkload() === retained && computeSessionIsCurrent(token);
+    const assertCurrent = () => {
+      if (!isCurrent()) {
+        throw new Error("Wallet, project or workload changed while preparing the public Collaboration draft");
+      }
+    };
+    setBusy("collaboration-export");
+    setError("");
+    setCollaborationDraftJson("");
+    try {
+      const [recipient, metadata] = await Promise.all([
+        fetchAuthenticatedComputeWorkloadContract(deployment.delegateUrl, trustPolicy),
+        fetchComputeWorkloadMetadata(deployment.delegateUrl, `Bearer ${token}`, selectedProject.project_id, computeWorkloadHandoffId(retained)),
+      ]);
+      assertCurrent();
+      if (!computeWorkloadMetadataMatchesHandoff(metadata, retained)) throw new Error("Fresh workload metadata differs from the retained upload; inspect custody before exporting");
+      const draft = retainComputeCollaborationWorkloadDraft({
+        surface: "compute_collaboration_workload_draft", schema_version: 1,
+        project_reference: selectedProject.project_id, compute_project_id: computeVaultProjectId(selectedProject.project_id),
+        wallet_address: actor, chain_id: 84532, delegate_url: deployment.delegateUrl,
+        release_sha: deployment.releaseSha, result_policy: retained.authorization.resultPolicy, workload: metadata,
+      });
+      assertComputeCollaborationWorkloadCurrent(draft, selectedProject, metadata, recipient.recipient, funding()?.dispatch_intents.credential_workload_wallet_adoption === true);
+      assertCurrent();
+      setCollaborationDraftJson(JSON.stringify(draft, null, 2));
+      setNotice("Public workload draft ready. Collaboration will recheck this project and workload, then ask for separate exact-asset terms and fresh owner grants. No vault authorization was created.");
+    } catch (cause) {
+      if (!isCurrent()) return;
+      clearComputeCollaborationWorkloadDraft();
+      setError(cause instanceof Error ? cause.message : "Could not prepare the public workload draft");
+    } finally {
+      if (isCurrent() && busy() === "collaboration-export") setBusy("");
     }
   }
 
@@ -1149,17 +1203,32 @@ export function Compute(props: {
           activeHandoff={sealedWorkload()}
           onSessionRejected={rejectChildSession}
           onWorkloadReady={(handoff) => {
+            setCollaborationDraftJson("");
+            clearComputeCollaborationWorkloadDraft();
             setSealedWorkload(handoff);
             setVaultAuthorizationReceipt(undefined);
             setVaultInspectReference("");
           }}
           onClearWorkload={() => {
+            setCollaborationDraftJson("");
+            clearComputeCollaborationWorkloadDraft();
             setSealedWorkload(undefined);
             setVaultAuthorizationReceipt(undefined);
             setVaultInspectReference("");
           }}
           onContinueToAuthorization={() => chooseTab("funding")}
         />
+        <Show when={sealedWorkload()}>
+          <article class="console-panel">
+            <div class="panel-head"><div><p class="overline">Collaborative execution · separate authority</p><h2>Bring this workload to a joint room</h2><p>Export only verified public references and bounds. Do this before standalone job authorization: a Collaboration execution requires its own exact one-shot funding authorization after every owner signs.</p></div></div>
+            <button class="secondary-button" type="button" onClick={() => void exportCollaborationWorkload()} disabled={!liveReady() || !canMutateProject() || Boolean(busy()) || Boolean(vaultAuthorizationReceipt())}><Users size={15} /> {busy() === "collaboration-export" ? "Checking workload custody…" : "Prepare public Collaboration draft"}</button>
+            <Show when={collaborationDraftJson()}>
+              <p>No prompts, examples, ciphertext, bearer tokens or keys are included. This draft is not an attestation or spending authorization. The in-memory handoff disappears on reload; an explicitly copied public draft must be reverified before use.</p>
+              <details><summary>Inspect public draft JSON</summary><pre><code>{collaborationDraftJson()}</code></pre></details>
+              <div class="workload-retry-actions"><button class="ghost-button" type="button" onClick={() => void navigator.clipboard.writeText(collaborationDraftJson()).then(() => setNotice("Public workload draft copied; no credentials or private payload were included."), () => setError("Clipboard unavailable; copy the inspected public draft manually."))}><Copy size={14} /> Copy public draft</button><a class="primary-button" href="#/collaborate">Continue in Collaboration <ArrowRight size={15} /></a></div>
+            </Show>
+          </article>
+        </Show>
       </Show>
 
       <Show when={tab() === "credentials"}>

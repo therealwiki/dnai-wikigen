@@ -5,6 +5,7 @@ import { parseDiligenceEvaluatorConfig } from "./lib/diligencePolicies";
 import { parseFrontendReleaseIdentity } from "./lib/releaseIdentity";
 import { parseRoyaltyReleaseConfiguration } from "./lib/royaltyReleaseAuthority";
 import { parseCollaborationExecutionReleaseConfig } from "./lib/collaborationExecutionReleaseConfig";
+import { parseRecipientTrustConfiguration, parseRecipientDeploymentBinding } from "./lib/recipientEvidence";
 
 const env = import.meta.env;
 const PRODUCTION_WALLET_AUTH_DOMAIN = "www.wikigen.me";
@@ -221,11 +222,14 @@ export const deployment = {
   contractWritesEnabled: clean(env.VITE_ENABLE_CONTRACT_WRITES) === "true",
   artifactUploadEnabled: clean(env.VITE_ENABLE_ARTIFACT_UPLOAD) === "true",
   artifactVerifiedQuoteSha256: clean(env.VITE_ARTIFACT_VERIFIED_QUOTE_SHA256),
+  artifactRecipientTrust: parseRecipientTrustConfiguration(env.VITE_ARTIFACT_RECIPIENT_TRUST_JSON, "artifact"),
+  recipientDeploymentBinding: parseRecipientDeploymentBinding(env.VITE_RECIPIENT_DEPLOYMENT_JSON),
   computeConsoleEnabled: clean(env.VITE_ENABLE_COMPUTE_CONSOLE) === "true",
   tinkerCustomerEnabled: clean(env.VITE_ENABLE_TINKER_CUSTOMER) === "true",
   collaborationEnabled: collaborationFeatureEnabled,
   arenaSubmissionEnabled: clean(env.VITE_ENABLE_ARENA_SUBMISSION) === "true",
   arenaVerifiedQuoteSha256: clean(env.VITE_ARENA_VERIFIED_QUOTE_SHA256),
+  arenaRecipientTrust: parseRecipientTrustConfiguration(env.VITE_ARENA_RECIPIENT_TRUST_JSON, "arena"),
   computeMeteringVerifiedQuoteSha256: clean(
     env.VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256,
   ),

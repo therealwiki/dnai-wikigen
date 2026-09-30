@@ -8,6 +8,7 @@ import {
 import { BASE_SEPOLIA, deployment } from "../config";
 import { publicClient } from "./contract";
 import { publicErrorText } from "./errorText";
+import { authenticateRecipientEvidence, assertRecipientTrustMatchesDeployment, requireFreshRecipientEvidence, type AuthenticatedRecipientEvidence } from "./recipientEvidence";
 
 const encoder = new TextEncoder();
 const MAX_PUBLIC_RESPONSE_BYTES = 512 * 1024;
@@ -2010,19 +2011,6 @@ export interface ArenaSubmissionResult {
   raw_secret_egress: false;
 }
 
-interface ArenaAttestation {
-  mode: "tdx";
-  quote: string;
-  encryption_public_key: string;
-  report_context: "arena";
-  report_data: string;
-  quote_report_data: string;
-  app_id: string;
-  compose_hash: string;
-  os_image_hash: string;
-  verified: false;
-}
-
 interface ArenaEncryptionContract {
   recipient: {
     encryption_public_key: string;
@@ -2667,25 +2655,6 @@ export function newArenaIdempotencyKey(): string {
   return `arena-${crypto.randomUUID()}`;
 }
 
-function parseArenaAttestation(value: unknown): ArenaAttestation {
-  const item = exactRecord(value, ["mode", "quote", "encryption_public_key", "report_context", "report_data", "quote_report_data", "app_id", "compose_hash", "os_image_hash", "verified"], "Arena attestation");
-  if (
-    item.mode !== "tdx"
-    || item.report_context !== "arena"
-    || item.verified !== false
-    || typeof item.quote !== "string"
-    || typeof item.encryption_public_key !== "string"
-    || typeof item.report_data !== "string"
-    || typeof item.quote_report_data !== "string"
-    || typeof item.app_id !== "string"
-    || typeof item.compose_hash !== "string"
-    || typeof item.os_image_hash !== "string"
-  ) throw new Error("Arena attestation is not a fail-closed TDX envelope");
-  bytesFromHex(item.encryption_public_key, 32).fill(0);
-  bytesFromHex(item.report_data, 32).fill(0);
-  return item as unknown as ArenaAttestation;
-}
-
 export function parseArenaEncryptionContract(value: unknown): ArenaEncryptionContract {
   const contract = exactRecord(value, ["surface", "schema_version", "product_status", "execution_assurance", "protocol", "encoding_rules", "aad", "recipient", "limits", "submission_gate", "envelope_exact_fields", "raw_secret_egress"], "Arena encryption contract");
   if (
@@ -2770,78 +2739,32 @@ export function parseArenaEncryptionContract(value: unknown): ArenaEncryptionCon
   return { recipient, limits } as unknown as ArenaEncryptionContract;
 }
 
-async function quoteDigest(quote: string): Promise<`sha256:${string}`> {
-  const bytes = bytesFromHex(quote);
-  if (bytes.length < 632 || bytes.length > 16 * 1024) {
-    bytes.fill(0);
-    throw new Error("Arena TDX quote length is outside the approved bound");
-  }
-  try {
-    return sha256Commitment(bytes);
-  } finally {
-    bytes.fill(0);
-  }
-}
-
-async function verifiedArenaRecipient(): Promise<{ contract: ArenaEncryptionContract; attestation: ArenaAttestation; quoteDigest: `sha256:${string}` }> {
+async function verifiedArenaRecipient(): Promise<{ contract: ArenaEncryptionContract; evidence: AuthenticatedRecipientEvidence }> {
   if (!deployment.arenaSubmissionEnabled) throw new Error("Arena submissions are disabled until the fresh CVM is independently verified");
-  if (!SHA256_COMMITMENT.test(deployment.arenaVerifiedQuoteSha256)) throw new Error("No independently verified Arena quote is pinned in this build");
-  if (!deployment.composeHash) throw new Error("No approved CVM compose hash is pinned in this build");
+  if (!deployment.arenaRecipientTrust) throw new Error("No independently reviewed Arena recipient trust is configured");
+  assertRecipientTrustMatchesDeployment(deployment.arenaRecipientTrust, deployment);
   const noCache: RequestInit = {
     cache: "no-store",
     credentials: "omit",
     headers: { "Cache-Control": "no-cache, no-store", Pragma: "no-cache" },
+    signal: AbortSignal.timeout(90_000),
   };
-  const [attestationValue, contractValue] = await Promise.all([
-    boundedJson("/attestation?context=arena", noCache, false),
+  const [evidenceValue, contractValue] = await Promise.all([
+    boundedJson("/attestation/recipient?context=arena", noCache, false),
     boundedJson("/arena/candidate-encryption-contract", noCache, false),
   ]);
-  const attestation = parseArenaAttestation(attestationValue);
+  const evidence = await authenticateRecipientEvidence(evidenceValue, deployment.arenaRecipientTrust);
   const contract = parseArenaEncryptionContract(contractValue);
-  const digest = await quoteDigest(attestation.quote);
-  if (digest !== deployment.arenaVerifiedQuoteSha256) throw new Error("Arena quote does not match the independently verified quote pin");
-  if (attestation.compose_hash !== deployment.composeHash) throw new Error("Arena compose hash does not match the approved frontend manifest");
-  if (deployment.appId && attestation.app_id !== deployment.appId) throw new Error("Arena app identity does not match the approved frontend manifest");
-  if (deployment.osImageHash && attestation.os_image_hash !== deployment.osImageHash) throw new Error("Arena OS image does not match the approved frontend manifest");
   if (
-    contract.recipient.encryption_public_key !== attestation.encryption_public_key
-    || contract.recipient.report_context !== attestation.report_context
-    || contract.recipient.report_data !== attestation.report_data
+    contract.recipient.encryption_public_key !== evidence.recipient.encryption_public_key
+    || contract.recipient.report_context !== evidence.recipient.report_context
+    || contract.recipient.report_data !== evidence.recipient.report_data
+    || contract.recipient.key_id !== evidence.recipient.key_id
+    || contract.recipient.attestation_report_data_sha256 !== await sha256Commitment(bytesFromHex(evidence.recipient.report_data, 32))
   ) throw new Error("Arena attestation and current encryption recipient do not match");
-
-  const publicKey = bytesFromHex(attestation.encryption_public_key, 32);
-  const reportData = bytesFromHex(attestation.report_data, 32);
-  const expectedKeyId = await sha256Commitment(publicKey);
-  const expectedReportObject = {
-    context: "arena",
-    encryption_public_key: attestation.encryption_public_key,
-    key_id: expectedKeyId,
-    protocol: "arena_candidate_ingress_v1",
-    service: "dnai-wikigen",
-  };
-  const expectedReportData = await sha256Hex(canonicalBytes(expectedReportObject));
-  const expectedReportHash = await sha256Commitment(reportData);
-  try {
-    if (
-      contract.recipient.key_id !== expectedKeyId
-      || contract.recipient.report_data !== expectedReportData
-      || contract.recipient.attestation_report_data_sha256 !== expectedReportHash
-    ) throw new Error("Arena recipient is not bound to its versioned report-data contract");
-    const quoteReportData = bytesFromHex(attestation.quote_report_data);
-    try {
-      if (
-        (quoteReportData.length !== 32 && quoteReportData.length !== 64)
-        || hexFromBytes(quoteReportData.slice(0, 32)) !== attestation.report_data
-        || (quoteReportData.length === 64 && quoteReportData.slice(32).some((byte) => byte !== 0))
-      ) throw new Error("Arena quote report data does not match the recipient binding");
-    } finally {
-      quoteReportData.fill(0);
-    }
-  } finally {
-    publicKey.fill(0);
-    reportData.fill(0);
-  }
-  return { contract, attestation, quoteDigest: digest };
+  requireFreshRecipientEvidence(evidence);
+  assertRecipientTrustMatchesDeployment(deployment.arenaRecipientTrust, deployment);
+  return { contract, evidence };
 }
 
 export interface ArenaEncryptionTestOptions {
@@ -2964,6 +2887,7 @@ export async function prepareArenaSubmission(input: {
   const aad = arenaCandidateAad(binding);
   try {
     if (aad.length > verified.contract.limits.max_aad_bytes) throw new Error("Arena AAD exceeds the live contract limit");
+    requireFreshRecipientEvidence(verified.evidence);
     const encrypted = await encryptArenaCandidateBytes(source, verified.contract.recipient.encryption_public_key, aad);
     if (encrypted.ciphertextBytes > verified.contract.limits.max_ciphertext_bytes_including_gcm_tag) throw new Error("Arena ciphertext exceeds the live contract limit");
     return {
@@ -2975,7 +2899,7 @@ export async function prepareArenaSubmission(input: {
       sourceBytes: source.length,
       ciphertextSha256: encrypted.ciphertextSha256,
       keyId: verified.contract.recipient.key_id,
-      quoteDigest: verified.quoteDigest,
+      quoteDigest: verified.evidence.quoteDigest,
       registryBrowserPreflight,
       payload: {
         candidate_commitment: commitment,
@@ -2986,7 +2910,7 @@ export async function prepareArenaSubmission(input: {
           algorithm: "X25519-HKDF-SHA256-AES-256-GCM",
           encoding: "base64url-nopad",
           key_id: verified.contract.recipient.key_id,
-          attestation_report_data: verified.attestation.report_data,
+          attestation_report_data: verified.evidence.recipient.report_data,
           aad: base64url(aad),
           ephemeral_public_key: encrypted.ephemeralPublicKey,
           nonce: encrypted.nonce,
@@ -3126,6 +3050,15 @@ export async function submitPreparedArenaSubmission(
   if (!sameArenaChallengeRegistryBrowserPreflight(prepared.registryBrowserPreflight, currentRegistryPreflight)) {
     throw new Error("Arena ChallengeRegistry browser preflight changed after candidate encryption");
   }
+  // Renew only public evidence. Preserve ciphertext and idempotency identity on
+  // an ambiguous retry; regenerating either could create a different request.
+  const renewed = await verifiedArenaRecipient();
+  if (renewed.evidence.recipient.key_id !== prepared.keyId
+    || renewed.evidence.recipient.report_data !== prepared.payload.envelope.attestation_report_data) {
+    throw new Error("Arena recipient changed after candidate encryption; the retained submission cannot be sent");
+  }
+  requireFreshRecipientEvidence(renewed.evidence);
+  assertRecipientTrustMatchesDeployment(deployment.arenaRecipientTrust!, deployment);
   const response = await boundedJson(
     `/arena/challenges/${encodeURIComponent(prepared.challengeId)}/versions/${encodeURIComponent(prepared.challengeVersion)}/submissions`,
     {

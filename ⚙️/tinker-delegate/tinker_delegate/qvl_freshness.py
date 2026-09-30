@@ -20,6 +20,7 @@ CHALLENGE_DOMAIN = b"dnai-wikigen/attestation-qvl/challenge/v2\x00"
 QVL_PROFILES = frozenset(
     {
         "diligence",
+        "artifact_recipient",
         "arena",
         "execution_policy_anchor_writer",
         "compute_metering",

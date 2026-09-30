@@ -284,6 +284,75 @@ test("historical pre-transform runtime v2 and release v4 retain their exact dige
   assert.throws(() => normalizePhalaSevenCvmReleaseVerificationAuthority(historical));
 });
 
+test("recipient authority stays out of historical v2/v4 and has exact current v3/v5 domain and phase holders", () => {
+  const artifactToken = "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN";
+  const arenaToken = "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN";
+  const recipientKeys = [
+    artifactToken,
+    "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+    "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+    arenaToken,
+    "TINKER_ARENA_RECIPIENT_QVL_URL",
+    "TINKER_ARENA_RECIPIENT_TRUST_JSON",
+  ].sort();
+  const recipientSubset = (keys) => keys.filter(
+    (key) => recipientKeys.includes(key),
+  ).sort();
+  const historical = historicalV4Fixture().cvm_descriptor_runtime_authority;
+  const current = syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture()
+    .cvm_descriptor_runtime_authority;
+  assert.equal(historical.schema, "dnai.cvm-descriptor-runtime-authority.v2");
+  assert.equal(current.schema, "dnai.cvm-descriptor-runtime-authority.v3");
+  assert.equal(historical.descriptors.length, 7);
+  assert.equal(current.descriptors.length, 7);
+
+  for (const descriptor of historical.descriptors) {
+    assert.deepEqual(recipientSubset(descriptor.allowed_environment_keys), [], descriptor.domain);
+    assert.deepEqual(recipientSubset(descriptor.descriptor_environment_keys), [], descriptor.domain);
+    for (const keys of Object.values(
+      descriptor.phase_policy.encrypted_secret_environment_keys_by_phase,
+    )) {
+      assert.deepEqual(recipientSubset(keys), [], descriptor.domain);
+    }
+  }
+
+  for (const descriptor of current.descriptors) {
+    const expectedKeys = descriptor.domain === "main_runtime_cvm"
+      ? recipientKeys
+      : descriptor.domain === "diligence_qvl_cvm"
+        ? [artifactToken]
+        : descriptor.domain === "arena_qvl_cvm"
+          ? [arenaToken]
+          : [];
+    assert.deepEqual(
+      recipientSubset(descriptor.allowed_environment_keys),
+      expectedKeys,
+      `${descriptor.domain} allowed recipient fields`,
+    );
+    assert.deepEqual(
+      recipientSubset(descriptor.descriptor_environment_keys),
+      expectedKeys,
+      `${descriptor.domain} descriptor recipient fields`,
+    );
+    for (const [phase, keys] of Object.entries(
+      descriptor.phase_policy.encrypted_secret_environment_keys_by_phase,
+    )) {
+      const expectedTokens = descriptor.domain === "main_runtime_cvm"
+        && phase === "final_authority_runtime"
+        ? [artifactToken, arenaToken].sort()
+        : phase === "post_measurement_policy_bootstrap"
+          && ["diligence_qvl_cvm", "arena_qvl_cvm"].includes(descriptor.domain)
+          ? expectedKeys
+          : [];
+      assert.deepEqual(
+        recipientSubset(keys),
+        expectedTokens,
+        `${descriptor.domain} ${phase} recipient secrets`,
+      );
+    }
+  }
+});
+
 test("verifier uses explicit v5 current and historical branches without fallback", async () => {
   const legacy =
     syntheticPhalaSevenCvmReleaseVerificationAuthorityFixture();

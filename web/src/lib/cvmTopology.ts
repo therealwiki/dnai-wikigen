@@ -10,8 +10,8 @@ export const CVM_RELEASE_TOPOLOGY = Object.freeze([
     key: "diligence_qvl_cvm",
     label: "Diligence QVL",
     category: "Independent verifier",
-    purpose: "Intel DCAP appraisal for Diligence and the separate Email/KMS restart-evidence profile.",
-    independence: "A distinct QVL root; the secondary Email/KMS profile does not add an eighth CVM.",
+    purpose: "Intel DCAP appraisal for Diligence, with separate artifact-recipient and Email/KMS restart-evidence profiles.",
+    independence: "A distinct QVL root; auxiliary profiles do not add another CVM or authorize Diligence results.",
   }),
   Object.freeze({
     key: "arena_qvl_cvm",

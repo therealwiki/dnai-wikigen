@@ -56,6 +56,7 @@ const MODULE_CLOSURE_PATHS = Object.freeze([
   "scripts/cvm-descriptor-runtime-authority-core.mjs",
   "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
   "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
+  "scripts/cvm-descriptor-runtime-authority-v2-policy.mjs",
   "scripts/cvm-descriptor-runtime-authority-v3-core.mjs",
   "scripts/cvm-descriptor-runtime-authority-v3.mjs",
   "scripts/cvm-launch-intent-core.mjs",
@@ -300,7 +301,9 @@ const WEB_MODULE_IMPORT_META_URLS = Object.freeze({
   ]),
   "web/scripts/release-env-core.test.mjs": Object.freeze([
     "../RELEASE-MANIFEST.md",
-      "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
+    "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
+    "../src/lib/fixtures/recipient-evidence-arena.json",
+    "../src/lib/fixtures/recipient-evidence-artifact.json",
   ]),
   "web/scripts/security-headers-core.test.mjs": Object.freeze([
     "./security-headers-core.test.mjs",

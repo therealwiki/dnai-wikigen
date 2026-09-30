@@ -1982,6 +1982,26 @@ function assertEnvironmentClassification(domain, descriptorText) {
   assertRenderedComposeName(domain, descriptorText);
   const policy = CVM_LAUNCH_DESCRIPTOR_POLICY[domain];
   const references = referencedEnvironmentKeys(descriptorText);
+  for (const [context, qvlDomain] of [
+    ["ARTIFACT", "diligence_qvl_cvm"], ["ARENA", "arena_qvl_cvm"],
+  ]) {
+    const source = `TINKER_${context}_RECIPIENT_QVL_AUTH_TOKEN`;
+    const destination = `QVL_${context}_RECIPIENT_AUTH_TOKEN`;
+    const expectedPath = `$.services.qvl.environment.${destination}`;
+    const paths = references.environmentDestinationPaths.filter(
+      (value) => value.endsWith(`.environment.${destination}`),
+    );
+    if (domain === qvlDomain) {
+      const occurrences = references.occurrences.filter(({ name }) => name === source);
+      if (paths.length !== 1 || paths[0] !== expectedPath
+        || occurrences.length !== 1 || occurrences[0].path !== expectedPath
+        || occurrences[0].suffix !== ":-" || occurrences[0].exact_environment_scalar !== true) {
+        throw new Error(`${domain} recipient credential must use its exact qvl-only alias`);
+      }
+    } else if (paths.length) {
+      throw new Error(`${domain} contains another domain's recipient credential alias`);
+    }
+  }
   const expectedReferences = [...new Set([
     ...policy.exact_allowed_environment_keys.filter((key) => key !== "COMPOSE_PROFILES"),
     ...policy.public_environment_key_classification.descriptor_defaulted_keys,

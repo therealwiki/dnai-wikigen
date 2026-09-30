@@ -541,7 +541,7 @@ export function Verify(props: {
           <div>
             <p class="overline">Trust center · verify, don't infer</p>
             <h1>Follow every claim to evidence.</h1>
-            <p>Wikigen treats attestation as a layered proof, not a green badge. This browser observes configured contract bytecode, checks a bounded application-envelope binding, and classifies receipt shape. It does not perform independent Intel collateral, QVL-signature, or release-policy verification.</p>
+            <p>Wikigen treats attestation as a layered proof, not a green badge. This dashboard observes configured contract bytecode, checks a bounded application-envelope binding, and classifies receipt shape. These dashboard checks do not verify Intel collateral, QVL signatures, or release policy. The separate artifact and Arena upload paths authenticate fresh, independently signed recipient evidence before sending ciphertext; that recipient check is not proof of a completed job or its result.</p>
           </div>
           <div class="verify-summary-card" role="status" aria-live="polite" aria-atomic="true">
             <div><Fingerprint size={22} /><span><small>BROWSER-OBSERVED LEVEL</small><strong>{observationSummary().title}</strong></span></div>
@@ -614,7 +614,7 @@ export function Verify(props: {
           <div class="receipt-workbench-copy">
             <p class="overline">Layer · result provenance</p>
             <h2>Receipt inspection workbench</h2>
-            <p>Paste a bounded receipt to classify its evidence level. This browser checks size, types, nested or root result-hash placement, and modeled markers. It does not perform signer, quote, or policy verification.</p>
+            <p>Paste a bounded receipt to classify its evidence level. This workbench checks size, types, nested or root result-hash placement, and modeled markers. It does not perform signer, quote, or policy verification.</p>
             <ul><li><Check size={14} /> Rejects malformed JSON</li><li><Check size={14} /> Recognizes modeled receipts</li><li><Check size={14} /> Never upgrades shape to hardware proof</li></ul>
           </div>
           <div class="receipt-editor">

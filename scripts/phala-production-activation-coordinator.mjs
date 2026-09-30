@@ -122,6 +122,10 @@ import {
   consumePhalaProductionPostlaunchActivationCapability,
   disposePhalaProductionPostlaunchActivationCapability,
 } from "./phala-production-postlaunch-activation-capability.mjs";
+import {
+  collectPhalaRecipientBootstrapEvidence,
+  readPhalaRecipientBootstrapVerificationInputs,
+} from "./phala-recipient-evidence-bootstrap.mjs";
 
 export const PHALA_PRODUCTION_ACTIVATION_EVIDENCE_SESSION_SCHEMA =
   "dnai.phala-production-activation-coordinator-evidence-session.v1";
@@ -161,6 +165,7 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const EVIDENCE_SESSIONS = new WeakMap();
 const SIGNING_SESSIONS = new WeakMap();
 const RUNTIME_SESSIONS = new WeakMap();
+const RECIPIENT_BOOTSTRAP_AUTHORITIES = new WeakMap();
 
 const QVL_EVIDENCE_DOMAINS = Object.freeze([
   "diligence_qvl_cvm",
@@ -389,6 +394,10 @@ function publicFileIdentity(identity, basename) {
 }
 
 function closeEvidenceState(state) {
+  if (state?.recipientBootstrapAuthority) {
+    RECIPIENT_BOOTSTRAP_AUTHORITIES.delete(state.recipientBootstrapAuthority);
+    state.recipientBootstrapAuthority = null;
+  }
   if (state?.recoveryHandle) {
     closePhalaPinnedPrivateDirectory(state.recoveryHandle);
     state.recoveryHandle = null;
@@ -645,6 +654,110 @@ export function readPhalaProductionActivationEvidenceDependencies(value) {
   });
 }
 
+function createRecipientBootstrapAuthority(state, reviewedSet, finalPhaseInput) {
+  if (state.recipientBootstrapAuthority) fail("recipient bootstrap was already started");
+  const value = Object.freeze({
+    schema: "dnai.phala-recipient-bootstrap-authority.v1",
+    release_sha: state.launch.release_sha,
+    batch_id: state.launch.batch_id,
+    automatic_retry_authorized: false,
+    activation_mutation_authorized: false,
+  });
+  RECIPIENT_BOOTSTRAP_AUTHORITIES.set(value, {
+    state, reviewedSet, finalPhaseInput,
+    digest: domainSha256("dnai-wikigen/phala-recipient-bootstrap-authority/v1\0", value),
+  });
+  state.recipientBootstrapAuthority = value;
+  return value;
+}
+
+/** Read only inside the exact consumed postlaunch session's bootstrap phase. */
+export function readPhalaRecipientBootstrapAuthority(value) {
+  const retained = value && RECIPIENT_BOOTSTRAP_AUTHORITIES.get(value);
+  if (!retained || retained.state.recipientBootstrapAuthority !== value
+    || retained.state.consumed !== true
+    || retained.digest !== domainSha256("dnai-wikigen/phala-recipient-bootstrap-authority/v1\0", value)) {
+    fail("recipient bootstrap requires the exact active coordinator phase authority");
+  }
+  const { state, reviewedSet, finalPhaseInput } = retained;
+  const releaseAuthority = assertFreshProductionPhalaSevenCvmReleaseVerificationAuthority(state.releaseVerificationAuthority);
+  const evidenceSet = assertProductionPhalaSevenCvmEvidenceSet(state.evidenceCheckpoint.evidenceSet);
+  const completion = assertFreshProductionPhalaSevenCvmLaunchCompletionReceipt(state.launchCompletionCheckpoint);
+  const projection = assertReviewedFinalAuthorityRuntimeProjection(reviewedSet.projection);
+  const dependencies = readReviewedFinalAuthorityRuntimeDependencies(projection);
+  const authoritySha256 = phalaSevenCvmReleaseVerificationAuthoritySha256(releaseAuthority);
+  const final = dependencies.final_authority;
+  const main = releaseAuthority.descriptors.find((entry) => entry.domain === "main_runtime_cvm");
+  const mainEvidence = evidenceSet.domains.find((entry) => entry.domain === "main_runtime_cvm");
+  const unresolvedMain = reviewedSet.deferredReview.reviewed_unresolved_values_by_domain.find((entry) => entry.domain === "main_runtime_cvm");
+  const deadlineMs = Math.min(
+    Date.parse(reviewedSet.deferredReview.valid_until),
+    Date.parse(projection.review_expires_at),
+    evidenceSet.minimum_activation_evidence_lease_expires_at * 1_000,
+  );
+  if (!main || !mainEvidence || !unresolvedMain || !final
+    || Date.now() >= deadlineMs || Date.now() < Date.parse(reviewedSet.deferredReview.reviewed_at)
+    || evidenceSet.release_authority_sha256 !== authoritySha256
+    || evidenceSet.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+    || evidenceSet.ceremony_nonce !== releaseAuthority.ceremony_nonce
+    || completion.machine_verifier_evidence_set_sha256 !== phalaSevenCvmVerifiedEvidenceSetSha256(evidenceSet)
+    || projection.release_sha !== releaseAuthority.release_sha
+    || projection.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+    || projection.cvm_launch_intent_sha256 !== completion.cvm_launch_intent_sha256
+    || final.cvm.app_id !== main.app_id || final.cvm.cvm_id !== main.cvm_id
+    || final.cvm.compose_hash !== main.compose_hash || final.cvm.os_image_hash !== main.os_image_hash
+    || final.cvm.tee_identity !== mainEvidence.tee_identity
+    || final.contracts.diligence_room.address !== releaseAuthority.contracts.diligence_room) {
+    fail("recipient bootstrap lineage, current phase, or evidence lease drifted");
+  }
+  // Reopen all reviewed files and the exact secret binding before each network
+  // step. The helper never receives caller-selected endpoints or JSON roots.
+  for (const [key, binding] of Object.entries(reviewedSet.bindings)) {
+    stableRead(binding, `recipient bootstrap reviewed ${key}`);
+  }
+  stableRead(reviewedSet.deferredReviewBinding, "recipient bootstrap deferred review");
+  stableRead(finalPhaseInput, "recipient bootstrap final phase secrets", {
+    exactMode: 0o600, maximum: MAX_SECRET_FILE_BYTES, minimum: 2,
+  });
+  const roots = evidenceSet.domains.filter((entry) => entry.evidence_kind === "qvl_identity_local_dcap_verification");
+  if (roots.length !== 5 || new Set(roots.map((entry) => entry.tee_identity)).size !== 5) {
+    fail("recipient bootstrap requires the exact five independent QVL identities");
+  }
+  const contexts = {};
+  for (const [context, domain, profile, endpointKey, contractKey] of [
+    ["artifact", "diligence_qvl_cvm", "artifact_recipient", "TINKER_DILIGENCE_QVL_URL", "diligence_room"],
+    ["arena", "arena_qvl_cvm", "arena", "TINKER_ARENA_WORKER_QVL_VERDICT_URL", "challenge_registry"],
+  ]) {
+    const qvl = roots.find((entry) => entry.domain === domain);
+    if (!qvl || qvl.tee_identity === mainEvidence.tee_identity) fail("recipient bootstrap QVL role separation failed");
+    contexts[context] = Object.freeze({
+      context, profile, domain: "main_runtime_cvm", chain_id: 84_532,
+      cvm_id: main.cvm_id,
+      deployment_intent_sha256: releaseAuthority.deployment_intent_sha256,
+      release_authority_sha256: authoritySha256,
+      ceremony_nonce: releaseAuthority.ceremony_nonce,
+      measurement_policy_sha256: qvl.tdx_measurement_policy_sha256,
+      release_policy_hash: `0x${qvl.qvl_release_policy_sha256.slice(7)}`,
+      verifier_address: qvl.tee_identity,
+      signer_address: mainEvidence.tee_identity,
+      contract_address: final.contracts[contractKey].address,
+      compose_hash: `0x${main.compose_hash.replace(/^0x/, "")}`,
+      app_id: main.app_id,
+      os_image_hash: main.os_image_hash.replace(/^0x/, ""),
+      qvl_url: unresolvedMain.values[endpointKey],
+    });
+  }
+  return Object.freeze({
+    releaseSha: releaseAuthority.release_sha,
+    batchId: completion.batch_id,
+    cvmLaunchIntentSha256: completion.cvm_launch_intent_sha256,
+    delegateUrl: final.cvm.delegate_url,
+    finalPhaseInput,
+    deadlineMs,
+    contexts: Object.freeze(contexts),
+  });
+}
+
 function normalizeDeferredReview(value, expected) {
   const parsed = exactOwnRecord(value, [
     "cvm_launch_intent_sha256",
@@ -762,7 +875,9 @@ function readReviewedFinalAuthoritySet(filesValue, deferredReviewBinding, state)
     || Date.now() >= Date.parse(deferredReview.valid_until)) {
     fail("deferred review is stale, future-dated, or outside the reviewed final-authority window");
   }
-  return Object.freeze({ bindings, projection, deferredReview });
+  return Object.freeze({ bindings, projection, deferredReview,
+    deferredReviewBinding: normalizeFileBinding(deferredReviewBinding, "deferred-authority review"),
+  });
 }
 
 function stageBBodyAndPayload({
@@ -1162,6 +1277,7 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
   const state = EVIDENCE_SESSIONS.get(publicEvidenceSession);
   state.consumed = true;
   let signingHandle;
+  let recipientBootstrapAuthority;
   try {
     if (state.evidenceCheckpoint === null
       || state.launchCompletionCheckpoint === null) {
@@ -1330,17 +1446,36 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       enforceFreshness: true,
     });
 
+    recipientBootstrapAuthority = createRecipientBootstrapAuthority(state, reviewedSet, finalPhaseInput);
+    const recipientBootstrapEvidence = await collectPhalaRecipientBootstrapEvidence({
+      authority: recipientBootstrapAuthority,
+    });
+    const { createRecipientTrustProjectionFromBootstrapEvidence } = await import("../web/scripts/release-env-core.mjs");
+    const reviewedRecipientTrustProjection = await createRecipientTrustProjectionFromBootstrapEvidence(
+      readPhalaRecipientBootstrapVerificationInputs(recipientBootstrapEvidence, {
+        now: Math.floor(Date.now() / 1_000),
+      }),
+    );
+    // Signature recovery is asynchronous. Recheck the live phase and exact
+    // reviewed files before this projection can become environment authority.
+    readPhalaRecipientBootstrapVerificationInputs(recipientBootstrapEvidence, {
+      now: Math.floor(Date.now() / 1_000),
+    });
     const deferredAuthority =
       await projectPhalaDeferredPublicEnvironmentAuthority({
         releaseAuthority: state.releaseVerificationAuthority,
         verifiedEvidenceSet: evidenceSet,
         launchCompletionReceipt: launchCompletion,
         reviewedFinalAuthorityRuntimeProjection: reviewedSet.projection,
+        reviewedRecipientTrustProjection,
         reviewedUnresolvedValuesByDomain:
           reviewedSet.deferredReview.reviewed_unresolved_values_by_domain,
         reviewedAt: reviewedSet.deferredReview.reviewed_at,
         validUntil: reviewedSet.deferredReview.valid_until,
       });
+    RECIPIENT_BOOTSTRAP_AUTHORITIES.delete(recipientBootstrapAuthority);
+    state.recipientBootstrapAuthority = null;
+    recipientBootstrapAuthority = null;
     const plan = await createPhalaPostMeasurementActivationPlan({
       releaseAuthority: state.releaseVerificationAuthority,
       verifiedEvidenceSet: evidenceSet,
@@ -1498,6 +1633,11 @@ async function resumePhalaProductionActivationWithEvidenceInternal(
       closeEvidenceState(state);
     }
     throw error;
+  } finally {
+    if (recipientBootstrapAuthority) {
+      RECIPIENT_BOOTSTRAP_AUTHORITIES.delete(recipientBootstrapAuthority);
+      state.recipientBootstrapAuthority = null;
+    }
   }
 }
 

@@ -374,7 +374,7 @@ test("launch core has a stable explicit-NUL compact canonical digest", () => {
   assert.equal(cvmLaunchIntentCoreDigest(value), expected);
   assert.equal(
     expected,
-    "95bf1c4aaf796a481f5081c582a4472843686b59265da051695e57f4f41f7c95",
+    "2f96f8fb837ebeab24c534edb73fadc37a145cc9ae1718f6196ccf2b351eba81",
   );
   assert.notEqual(
     expected,
@@ -522,7 +522,7 @@ test("launch core freezes seven descriptor policies and contains names but no va
   );
   assert.deepEqual(qvl.encrypted_secret_environment_keys_by_phase, {
     bootstrap_provision: [],
-    post_measurement_policy_bootstrap: ["QVL_AUTH_TOKEN", "QVL_RELEASE_POLICY_B64"],
+    post_measurement_policy_bootstrap: ["QVL_AUTH_TOKEN", "QVL_RELEASE_POLICY_B64", "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"],
     final_authority_runtime: [],
     anchor_writer_ceremony: [],
   });
@@ -530,6 +530,7 @@ test("launch core freezes seven descriptor policies and contains names but no va
     "COMPOSE_PROFILES",
     "QVL_AUTH_TOKEN",
     "QVL_RELEASE_POLICY_B64",
+    "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
   ]);
   const main = value.descriptors[0];
   const mainClassification = main.public_environment_key_classification;
@@ -1567,6 +1568,12 @@ test("main environment aliases are one deeply frozen exact path contract", () =>
     );
   }
   assert.deepEqual(CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS, [
+    "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+    "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+    "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARENA_RECIPIENT_QVL_URL",
+    "TINKER_ARENA_RECIPIENT_TRUST_JSON",
     "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
     "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
     "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
@@ -2466,8 +2473,12 @@ function descriptorText(domain) {
         ? activeServiceLate
         : late)
       : strictAndDefaulted;
+    const destinationKey = domain === "diligence_qvl_cvm" && key === "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"
+      ? "QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN"
+      : domain === "arena_qvl_cvm" && key === "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"
+        ? "QVL_ARENA_RECIPIENT_AUTH_TOKEN" : key;
     target.push(
-      `      ${key}: \${${key}${fixtureReferenceSuffix(
+      `      ${destinationKey}: \${${key}${fixtureReferenceSuffix(
         key,
         lateKeys.has(key),
       )}}`,
@@ -2535,7 +2546,7 @@ function descriptorText(domain) {
     }[profile];
     const serviceName = domain === "main_runtime_cvm" && mainProfileService
       ? mainProfileService
-      : `fixture-${profile}`;
+      : domain.endsWith("_qvl_cvm") ? "qvl" : `fixture-${profile}`;
     lines.push(
       `  ${serviceName}:`,
       "    profiles:",
@@ -3161,6 +3172,36 @@ test("builder rejects descriptor drift and a non-fresh ledger before output", as
     }
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("builder restricts each recipient credential to its exact QVL alias and service", async () => {
+  for (const [domain, context] of [["diligence_qvl_cvm", "ARTIFACT"], ["arena_qvl_cvm", "ARENA"]]) {
+    for (const kind of ["wrong-alias", "wrong-service", "duplicate", "wrong-input"]) {
+      const fixture = await buildFixture();
+      try {
+        const descriptorPath = path.join(fixture.directory, CVM_LAUNCH_DESCRIPTOR_POLICY[domain].descriptor_file);
+        const original = await readFile(descriptorPath, "utf8");
+        const key = `QVL_${context}_RECIPIENT_AUTH_TOKEN`;
+        const source = `TINKER_${context}_RECIPIENT_QVL_AUTH_TOKEN`;
+        const exact = `      ${key}: \${${source}:-}`;
+        const mutated = kind === "wrong-alias" ? original.replace(exact, `      ${source}: \${${source}:-}`)
+          : kind === "wrong-service" ? original.replace("  qvl:\n", "  policy-init:\n")
+            : kind === "duplicate" ? original.replace(exact, `${exact}\n      UNRELATED_TOKEN: \${${source}:-}`)
+              : original.replace(exact, `      ${key}: \${QVL_AUTH_TOKEN:-}`);
+        assert.notEqual(mutated, original);
+        await writeFile(descriptorPath, mutated);
+        const topology = JSON.parse(await readFile(fixture.topologyPath, "utf8"));
+        topology.trust_domains[domain].sha256 = rawSha256(Buffer.from(mutated)).slice(7);
+        await writeFile(fixture.topologyPath, canonicalJson(topology));
+        await assert.rejects(buildCvmLaunchIntentFromFiles({
+          topologyPath: fixture.topologyPath, ledgerPath: fixture.ledgerPath,
+          expectedTinkerAccountBindingCeremonyReceiptSha256: fixture.tinkerAccountBindingCeremonyReceiptSha256,
+        }), /recipient credential must use its exact qvl-only alias/);
+      } finally {
+        await rm(fixture.directory, { recursive: true, force: true });
+      }
+    }
   }
 });
 

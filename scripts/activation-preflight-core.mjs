@@ -37,7 +37,7 @@ export {
 export const PREFLIGHT_SCHEMA = "dnai.activation-preflight.v4";
 export const PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA =
   "dnai.activation-preflight-root-causes.v1";
-export const PREFLIGHT_EXACT_CHECK_COUNT = 110;
+export const PREFLIGHT_EXACT_CHECK_COUNT = 113;
 export const SEMANTIC_VALIDATION_SCHEMA =
   "dnai.semantic-live-activation-validation.v4";
 export const SEMANTIC_VALIDATION_STATUS =
@@ -520,6 +520,8 @@ export const REQUIRED_RUNTIME_CREDENTIALS = Object.freeze([
     "Diligence QVL bearer",
   ],
   ["credential.arena_qvl", "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN", "Arena QVL bearer"],
+  ["credential.artifact_recipient_qvl", "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN", "artifact-recipient-only QVL bearer"],
+  ["credential.arena_recipient_qvl", "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN", "Arena-recipient-only QVL bearer"],
   [
     "credential.anchor_writer_qvl",
     "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN",
@@ -550,7 +552,7 @@ export const REQUIRED_RUNTIME_CREDENTIALS = Object.freeze([
   ["credential.neko_admin", "NEKO_PASSWORD_ADMIN", "Neko administrator credential"],
 ]);
 
-// The activation surface contains ten environment assignments but only eight
+// The activation surface contains twelve environment assignments but only ten
 // independent secret domains. Two values intentionally cross a process
 // boundary under different variable names: the activation verifier and meter
 // are clients of the same compute-metering QVL, while the compute worker is a
@@ -558,6 +560,8 @@ export const REQUIRED_RUNTIME_CREDENTIALS = Object.freeze([
 export const INTERNAL_RUNTIME_CREDENTIAL_GROUPS = Object.freeze([
   Object.freeze(["TINKER_DILIGENCE_QVL_AUTH_TOKEN"]),
   Object.freeze(["TINKER_ARENA_WORKER_QVL_AUTH_TOKEN"]),
+  Object.freeze(["TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"]),
+  Object.freeze(["TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"]),
   Object.freeze(["TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN"]),
   Object.freeze(["TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN"]),
   Object.freeze([
@@ -3573,6 +3577,39 @@ export function buildPreflightReport(snapshot) {
   const tinkerCustomerAuthorityInit =
     services["tinker-customer-authority-init"] || {};
   const delegate = services.delegate || {};
+  const recipientPairs = [
+    ["ARTIFACT", "diligence_qvl_cvm"],
+    ["ARENA", "arena_qvl_cvm"],
+  ];
+  const recipientScopesIsolated = recipientPairs.every(([context, qvlDomain]) => {
+    const operatorKey = `TINKER_${context}_RECIPIENT_QVL_AUTH_TOKEN`;
+    const qvlKey = `QVL_${context}_RECIPIENT_AUTH_TOKEN`;
+    return qvlServices[qvlDomain]?.qvl?.environment?.[qvlKey] === `\${${operatorKey}:-}`
+      && ["QVL_AUTH_TOKEN", "QVL_URL", "TRUST_JSON"].every((suffix) => {
+      const key = `TINKER_${context}_RECIPIENT_${suffix}`;
+      return sameStringSet(bearerHolders(key), ["delegate"])
+        && delegate.environment?.[key] === `\${${key}:-}`;
+    }) && Object.values(services).every((service) => !Object.hasOwn(service.environment || {}, qvlKey))
+      && Object.entries(qvlServices).every(([domain, domainServices]) =>
+        Object.entries(domainServices).every(([name, service]) => {
+          const environment = service.environment || {};
+          return !Object.hasOwn(environment, operatorKey)
+            && (domain === qvlDomain && name === "qvl"
+              ? environment[qvlKey] === `\${${operatorKey}:-}`
+              : !Object.hasOwn(environment, qvlKey));
+        }))
+      && Object.values(meteringServices).every((service) =>
+        !Object.hasOwn(service.environment || {}, qvlKey)
+        && !Object.hasOwn(service.environment || {}, operatorKey));
+  });
+  checks.push(check(
+    "phala.recipient_qvl_scope_isolation",
+    recipientScopesIsolated ? "pass" : "fail",
+    recipientScopesIsolated
+      ? "Artifact and Arena recipient credentials are limited to delegate and their respective independent QVL recipient scopes."
+      : "A recipient credential, trust pin, endpoint, or QVL alias escaped its exact purpose-separated holder boundary.",
+    "Regenerate the seven-CVM descriptors; never share recipient credentials with result signing, workers, or another QVL.",
+  ));
   const reviewOperations = services["review-operations"] || {};
   const mailboxGenesis = services["mailbox-genesis"] || {};
   const tinkerAccountGenesis = services["tinker-account-genesis"] || {};

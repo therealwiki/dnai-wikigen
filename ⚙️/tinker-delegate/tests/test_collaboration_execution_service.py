@@ -84,7 +84,7 @@ def _selector(signature: str) -> bytes:
     return keccak(signature.encode("ascii"))[:4]
 
 
-def _make_release(*, distributor_code: bytes = b"\x60\x00") -> RoyaltySettlementReleaseBinding:
+def _make_release(*, distributor_code: bytes = b"\x60\x00", **release_overrides) -> RoyaltySettlementReleaseBinding:
     settlement = Account.from_key("0x" + "31" * 32).address.lower()
     qvl = Account.from_key("0x" + "32" * 32).address.lower()
     distributor = Account.from_key("0x" + "33" * 32).address.lower()
@@ -110,6 +110,7 @@ def _make_release(*, distributor_code: bytes = b"\x60\x00") -> RoyaltySettlement
         "app_id": "e1" * 20,
         "os_image_hash": "f1" * 32,
     }
+    values.update(release_overrides)
     release_policy = "0x" + keccak(
         b"".join(
             (
@@ -301,6 +302,9 @@ def _coordinator(tmp_path: Path):
         execution_journal=journal,
         integrity_key=key,
         signature_verifier=_RecoveringVerifier(),
+        # These tests isolate grant/funding protocol behavior. The real
+        # encrypted-ingress boundary has its own store integration suite.
+        workload_ingress=SimpleNamespace(validate_collaboration_workload=lambda _basis, **_kwargs: None),
         clock=lambda: NOW,
     )
     request = {

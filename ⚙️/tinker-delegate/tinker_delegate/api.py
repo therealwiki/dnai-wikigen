@@ -159,12 +159,14 @@ from tinker_delegate.request_body_limits import (
 )
 from tinker_delegate.tinker_client_config_store import resolve_tinker_client_config
 from tinker_delegate.card_channel import (
+    ArtifactRecipientUnavailable,
     AttestationResponse,
     CardPayload,
     EncryptedCardPayload,
     BalancePayload,
     BillingResponse,
     get_tee_keypair,
+    get_artifact_keypair,
     get_attestation,
     handle_card_update,
     handle_encrypted_card_update,
@@ -770,10 +772,12 @@ def _get_collaboration_execution_coordinator():
     _require_collaboration_execution_enabled()
     journal = _get_collaboration_execution_journal()
     store = _get_collaboration_store()
+    workload_ingress = _get_compute_workload_ingress()
     key = collaboration_execution_integrity_key(settings)
     identity = (
         str(id(journal)),
         str(id(store)),
+        str(id(workload_ingress)),
         hashlib.sha256(key).hexdigest(),
         str(getattr(settings, "collaboration_execution_release_git_sha", "")),
         str(
@@ -801,6 +805,7 @@ def _get_collaboration_execution_coordinator():
                 signature_verifier=wallet_signature_verifier_from_settings(
                     settings
                 ),
+                workload_ingress=workload_ingress,
             )
         )
         _collaboration_execution_coordinator_identity = identity
@@ -1312,6 +1317,10 @@ def _get_compute_workload_ingress():
         str(settings.compute_workload_measurement_policy_set_sha256 or ""),
         str(settings.compute_workload_qvl_measurement_policy_sha256 or ""),
         str(settings.compute_workload_main_runtime_evidence_sha256 or ""),
+        str(settings.compute_store_path or ""),
+        str(settings.compute_store_integrity_key_path or ""),
+        hashlib.sha256(str(settings.compute_store_integrity_key or "").encode()).hexdigest(),
+        str(bool(settings.compute_workload_wallet_adoption_enabled)),
         "dstack" if _is_dstack_enabled() else "local",
     )
     if (
@@ -4034,6 +4043,104 @@ ATTESTATION_CONTEXTS = {
 }
 
 
+_recipient_evidence_providers: dict[str, tuple[str, Any]] = {}
+_recipient_evidence_provider_lock = threading.Lock()
+_recipient_quote_collector = None
+
+
+class RecipientQuoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    context: Literal["artifact", "arena"]
+    challenge_digest: str = Field(strict=True, min_length=66, max_length=66, pattern=r"^0x[0-9a-f]{64}$")
+
+    @field_validator("challenge_digest")
+    @classmethod
+    def nonzero_challenge(cls, value: str) -> str:
+        if int(value[2:], 16) == 0:
+            raise ValueError("challenge digest must be nonzero")
+        return value
+
+
+def _actual_recipient_binding(context: str):
+    from tinker_delegate import dstack_utils
+    from tinker_delegate.card_channel import get_artifact_keypair
+    from tinker_delegate.recipient_evidence import recipient_binding
+
+    if not dstack_utils.is_dstack_enabled() or dstack_utils.is_dstack_simulator():
+        raise ValueError
+    if context == "arena":
+        recipient = _get_arena_ingress().recipient
+        return recipient.to_attestation_binding(), recipient.custody_mode
+    return recipient_binding("artifact", get_artifact_keypair(require_dstack=True).public_key_bytes), "dstack"
+
+
+@app.post("/attestation/recipient-quote")
+def collect_recipient_quote(payload: RecipientQuoteRequest, response: Response):
+    """Unappraised bootstrap quote; never authenticates its caller's challenge."""
+    from tinker_delegate.recipient_evidence import RecipientQuoteCollector, RecipientQuoteRateLimited
+
+    global _recipient_quote_collector
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with _recipient_evidence_provider_lock:
+            if _recipient_quote_collector is None:
+                _recipient_quote_collector = RecipientQuoteCollector()
+            collector = _recipient_quote_collector
+        binding, custody_mode = _actual_recipient_binding(payload.context)
+        return collector.collect(payload.context, binding,
+                                 challenge_digest=payload.challenge_digest, custody_mode=custody_mode)
+    except RecipientQuoteRateLimited:
+        raise HTTPException(429, "Recipient quote collection is rate limited",
+                            headers={"Cache-Control": "no-store", "Retry-After": "2"}) from None
+    except Exception:
+        raise HTTPException(503, "Recipient evidence is unavailable", headers={"Cache-Control": "no-store"}) from None
+
+
+def _get_recipient_evidence_provider(context: str):
+    """Select an exact immutable provider; no remote I/O under this lock."""
+    from tinker_delegate.recipient_evidence import (
+        AUTH_TOKEN_ENV,
+        HttpsRecipientEvidenceProvider,
+        RecipientEvidenceUnavailable,
+    )
+
+    if context not in AUTH_TOKEN_ENV:
+        raise RecipientEvidenceUnavailable("Recipient evidence is unavailable")
+    trust = getattr(settings, f"{context}_recipient_trust_json", "")
+    url = getattr(settings, f"{context}_recipient_qvl_url", "")
+    token = os.environ.get(AUTH_TOKEN_ENV[context], "")
+    identity = hashlib.sha256(json.dumps(
+        [trust, url, hashlib.sha256(token.encode("utf-8")).hexdigest()],
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    with _recipient_evidence_provider_lock:
+        previous = _recipient_evidence_providers.get(context)
+        if previous is not None and previous[0] == identity:
+            return previous[1]
+        provider = HttpsRecipientEvidenceProvider(
+            trust_policy=trust, qvl_url=url, auth_token=token,
+        )
+        if provider.context != context:
+            provider.close()
+            raise RecipientEvidenceUnavailable("Recipient evidence is unavailable")
+        _recipient_evidence_providers[context] = (identity, provider)
+        return provider
+
+
+@app.get("/attestation/recipient")
+def recipient_attestation_evidence(response: Response, context: str = "artifact"):
+    """Public renewable evidence for the actual artifact or Arena recipient."""
+    response.headers["Cache-Control"] = "no-store"
+    if context not in {"artifact", "arena"}:
+        raise HTTPException(400, "unsupported recipient context", headers={"Cache-Control": "no-store"})
+    try:
+        provider = _get_recipient_evidence_provider(context)
+        binding, custody_mode = _actual_recipient_binding(context)
+        return provider.evidence(binding, custody_mode=custody_mode)
+    except Exception:
+        raise HTTPException(503, "Recipient evidence is unavailable", headers={"Cache-Control": "no-store"}) from None
+
+
 @app.get("/attestation", response_model=AttestationResponse)
 def attestation(context: str = "ingress") -> AttestationResponse:
     """Get TDX attestation quote + context-bound TEE encryption public key.
@@ -4070,7 +4177,10 @@ def attestation(context: str = "ingress") -> AttestationResponse:
         )
     # Validate through the bounded response model here as well as at FastAPI's
     # serialization boundary.  Any undeclared lower-layer metadata is dropped.
-    return AttestationResponse.model_validate(get_attestation(context))
+    try:
+        return AttestationResponse.model_validate(get_attestation(context))
+    except ArtifactRecipientUnavailable:
+        raise HTTPException(503, "Artifact recipient is unavailable", headers={"Cache-Control": "no-store"}) from None
 
 
 @app.post("/auth/wallet/challenge", response_model=WalletChallengeResponse)
@@ -8876,7 +8986,7 @@ async def deal_upload_artifact_encrypted(
         ciphertext_sha256 = "sha256:" + hashlib.sha256(encrypted.ciphertext).hexdigest()
         artifact_buffer, commitment_secret = decrypt_artifact_payload(
             encrypted,
-            get_tee_keypair(),
+            get_artifact_keypair(),
             deal_id=deal_id,
             artifact_hash=submitted_hash,
             chain_id=settings.diligence_chain_id,
@@ -8898,6 +9008,8 @@ async def deal_upload_artifact_encrypted(
             "padding_profile": ARTIFACT_PADDING_PROFILE,
             "exact_plaintext_size_egress": False,
         }
+    except ArtifactRecipientUnavailable:
+        raise HTTPException(503, "Artifact recipient is unavailable", headers={"Cache-Control": "no-store"}) from None
     except KeyError:
         raise HTTPException(404, f"Deal {deal_id} not found")
     except (AssertionError, ValueError) as e:

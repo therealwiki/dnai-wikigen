@@ -103,6 +103,11 @@ describe("Verify selected evidence projection", () => {
     expect(html).toContain("LIVE READ PATH · BLOCKED");
     expect(html).toContain("READ ONLY");
     expect(html).toContain("modeled-receipt:not-a-hardware-signature");
+    expect(html).toContain("These dashboard checks do not verify Intel collateral, QVL signatures, or release policy.");
+    expect(html).toContain("separate artifact and Arena upload paths authenticate fresh, independently signed recipient evidence");
+    expect(html).toContain("recipient check is not proof of a completed job or its result");
+    expect(html).toContain("separate artifact-recipient and Email/KMS restart-evidence profiles");
+    expect(html).toContain("auxiliary profiles do not add another CVM or authorize Diligence results");
   });
 
   it("renders illustrative context as a named, keyboard-focusable region", () => {

@@ -30,8 +30,8 @@
   "descriptors": [
     {
       "app_compose_candidate": {
-        "allowed_envs_count": 126,
-        "allowed_envs_sha256": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4",
+        "allowed_envs_count": 132,
+        "allowed_envs_sha256": "sha256:83b2d4c90e1fbe2096651873d6940064b20c001ce7ed0328f5ec492dc06dbf0d",
         "allowed_envs_source": "descriptor.exact_allowed_environment_keys",
         "authority_status": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable",
         "docker_compose_file_byte_length": null,
@@ -74,8 +74,10 @@
           "TINKER_ARENA_PROVISION_AUTH_TAG",
           "TINKER_ARENA_PROVISION_EVALUATOR_B64",
           "TINKER_ARENA_PROVISION_RELEASE_B64",
+          "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
           "TINKER_ARENA_REGISTRY_RPC_URL",
           "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN",
+          "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
           "TINKER_CHAIN_RPC_URL",
           "TINKER_COMPUTE_CHAIN_RPC_URL",
           "TINKER_COMPUTE_METERING_AUTH_TOKEN",
@@ -115,6 +117,9 @@
         "TINKER_ARENA_PROVISION_EVALUATOR_SHA256",
         "TINKER_ARENA_PROVISION_RELEASE_B64",
         "TINKER_ARENA_QVL_MEASUREMENT_POLICY_SHA256",
+        "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+        "TINKER_ARENA_RECIPIENT_QVL_URL",
+        "TINKER_ARENA_RECIPIENT_TRUST_JSON",
         "TINKER_ARENA_REGISTRY_ADDRESS",
         "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
         "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -130,6 +135,9 @@
         "TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256",
         "TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT",
         "TINKER_ARENA_WORKER_RELEASE_SHA",
+        "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+        "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+        "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
         "TINKER_CHAIN_CONTRACT_ADDRESS",
         "TINKER_CHAIN_RPC_URL",
         "TINKER_CHAIN_START_BLOCK",
@@ -218,7 +226,7 @@
         "TINKER_WALLET_AUTH_RPC_URL",
         "TINKER_WALLET_AUTH_RPC_URL_SECONDARY"
       ],
-      "exact_allowed_environment_keys_sha256": "sha256:f90b9eb5424ff3f3c8161fb0c3e193a6073a4aa5ab8f2d19575eac91c9bde6d4",
+      "exact_allowed_environment_keys_sha256": "sha256:83b2d4c90e1fbe2096651873d6940064b20c001ce7ed0328f5ec492dc06dbf0d",
       "launch_settings": {
         "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
         "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
@@ -462,6 +470,8 @@
           "TINKER_ACCOUNT_GENESIS_AUTHORIZATION_SHA256",
           "TINKER_ACCOUNT_GENESIS_MAIN_QVL_VERDICT_SHA256",
           "TINKER_ACCOUNT_GENESIS_MEASUREMENT_POLICY_SHA256",
+          "TINKER_ARENA_RECIPIENT_QVL_URL",
+          "TINKER_ARENA_RECIPIENT_TRUST_JSON",
           "TINKER_ARENA_REGISTRY_ADDRESS",
           "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
           "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -470,6 +480,8 @@
           "TINKER_ARENA_WORKER_QVL_VERDICT_URL",
           "TINKER_ARENA_WORKER_RELEASE_MANIFEST_SHA256",
           "TINKER_ARENA_WORKER_RELEASE_POLICY_COMMITMENT",
+          "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+          "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
           "TINKER_COLLABORATION_ENABLED",
           "TINKER_COLLABORATION_EXECUTION_ENABLED",
           "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
@@ -575,8 +587,8 @@
         },
         "post_measurement_deferred": {
           "authority_status": "required_not_implemented",
-          "key_count": 51,
-          "key_names_sha256": "sha256:cba9d5b60a69fe9487a4c0c8924be7a3b4a0de3b21d9a425ff651e11d6c40b85",
+          "key_count": 55,
+          "key_names_sha256": "sha256:133624b51e171d588f0526d248b220665a70289174ce6fec6f87d14d956f6a5c",
           "keys_source": "classification.post_measurement_deferred_keys",
           "required_before": [
             "encrypted_environment_update",
@@ -612,8 +624,8 @@
     },
     {
       "app_compose_candidate": {
-        "allowed_envs_count": 3,
-        "allowed_envs_sha256": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5",
+        "allowed_envs_count": 4,
+        "allowed_envs_sha256": "sha256:5726234ae94b91f6e37a138c5d3545e97afb0bd7b04486d30eb3a235e11edd4c",
         "allowed_envs_source": "descriptor.exact_allowed_environment_keys",
         "authority_status": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable",
         "docker_compose_file_byte_length": null,
@@ -642,15 +654,17 @@
         "final_authority_runtime": [],
         "post_measurement_policy_bootstrap": [
           "QVL_AUTH_TOKEN",
-          "QVL_RELEASE_POLICY_B64"
+          "QVL_RELEASE_POLICY_B64",
+          "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"
         ]
       },
       "exact_allowed_environment_keys": [
         "COMPOSE_PROFILES",
         "QVL_AUTH_TOKEN",
-        "QVL_RELEASE_POLICY_B64"
+        "QVL_RELEASE_POLICY_B64",
+        "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"
       ],
-      "exact_allowed_environment_keys_sha256": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5",
+      "exact_allowed_environment_keys_sha256": "sha256:5726234ae94b91f6e37a138c5d3545e97afb0bd7b04486d30eb3a235e11edd4c",
       "launch_settings": {
         "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
         "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",
@@ -786,8 +800,8 @@
     },
     {
       "app_compose_candidate": {
-        "allowed_envs_count": 3,
-        "allowed_envs_sha256": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5",
+        "allowed_envs_count": 4,
+        "allowed_envs_sha256": "sha256:53fb09892288c427aa039ae227976a5a5c55c8c59be6ea4be5721000968c4e1a",
         "allowed_envs_source": "descriptor.exact_allowed_environment_keys",
         "authority_status": "reviewed_candidate_pending_pinned_adapter_and_authenticated_staging_semantics_non_executable",
         "docker_compose_file_byte_length": null,
@@ -816,15 +830,17 @@
         "final_authority_runtime": [],
         "post_measurement_policy_bootstrap": [
           "QVL_AUTH_TOKEN",
-          "QVL_RELEASE_POLICY_B64"
+          "QVL_RELEASE_POLICY_B64",
+          "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"
         ]
       },
       "exact_allowed_environment_keys": [
         "COMPOSE_PROFILES",
         "QVL_AUTH_TOKEN",
-        "QVL_RELEASE_POLICY_B64"
+        "QVL_RELEASE_POLICY_B64",
+        "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"
       ],
-      "exact_allowed_environment_keys_sha256": "sha256:b73569eca86f882120abd82fa2bdea923369ab9257fa8d5260b7d73cc683faf5",
+      "exact_allowed_environment_keys_sha256": "sha256:53fb09892288c427aa039ae227976a5a5c55c8c59be6ea4be5721000968c4e1a",
       "launch_settings": {
         "cvm_resource_profile_request_semantics": "send_instance_type_and_disk_size_omit_node_id_and_region_for_bound_automatic_best_match",
         "cvm_resource_profile_verification": "exact_prepare_response_and_commit_verification_required_not_implemented",

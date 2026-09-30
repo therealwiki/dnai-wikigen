@@ -174,9 +174,12 @@ test("post-measurement plan freezes the exact main-runtime PATCH/restart proof b
       .TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256 = sha("f");
   }, TypeError);
   assert.equal(canonicalPhalaPostMeasurementActivationPlanText(plan).endsWith("\n"), true);
+  // Current-policy KAT: six main recipient inputs and one scoped bearer per
+  // Diligence/Arena QVL, plus their derived authority hashes. Historical
+  // runtime/release KATs remain frozen in the version-chain tests.
   assert.equal(
     phalaPostMeasurementActivationPlanSha256(plan),
-    "sha256:99da51f8e1073b758755b8ee2a4c82bc987bca61110beaca681cb70bb7d26499",
+    "sha256:f69845f6b53ce90902db160258e28a6139c139d2aa0133b39da6b9768335bd87",
   );
   const runtimeAuthority =
     plan.release_verification_authority.cvm_descriptor_runtime_authority;

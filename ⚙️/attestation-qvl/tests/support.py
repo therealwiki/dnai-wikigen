@@ -24,6 +24,7 @@ from attestation_qvl.policy import LoadedReleasePolicy, load_release_policy
 from attestation_qvl.qvl import (
     IndependentQuoteVerifier,
     VerifiedQuote,
+    derive_artifact_recipient_report_data,
     derive_compute_workload_recipient_report_data,
     derive_email_oracle_kms_restart_report_data,
     derive_release_report_data,
@@ -96,6 +97,7 @@ def policy_payload(
     compute_workload: bool = False,
     compute_metering: bool = False,
     email_restart: bool = False,
+    artifact_recipient: bool = False,
     royalty: bool = False,
 ) -> dict[str, object]:
     if sum((arena, anchor_writer, compute_workload, compute_metering)) > 1:
@@ -141,6 +143,12 @@ def policy_payload(
     }
     if include_statuses:
         payload["allowed_tcb_statuses"] = ["OK"]
+    if artifact_recipient:
+        payload["artifact_recipient_binding"] = {
+            "kind": "artifact_recipient_v1",
+            "encryption_public_key": WORKLOAD_RECIPIENT_PUBLIC_KEY,
+            "key_id": WORKLOAD_RECIPIENT_KEY_ID,
+        }
     if email_restart:
         implementation = "0x" + "77" * 20
         payload["email_oracle_kms_restart_binding"] = {
@@ -277,6 +285,7 @@ def make_context(
     compute_workload: bool = False,
     compute_metering: bool = False,
     email_restart: bool = False,
+    artifact_recipient: bool = False,
     royalty: bool = False,
     policy_valid_until: int | None = None,
     challenge_expires_at: int | None = None,
@@ -289,6 +298,7 @@ def make_context(
         compute_workload=compute_workload,
         compute_metering=compute_metering,
         email_restart=email_restart,
+        artifact_recipient=artifact_recipient,
         royalty=royalty,
     )
     if policy_valid_until is not None:
@@ -343,6 +353,10 @@ def make_context(
         report_data = derive_compute_workload_recipient_report_data(
             workload_attestation
         )
+    elif artifact_recipient:
+        report_data = derive_artifact_recipient_report_data(
+            release.policy.artifact_recipient_binding,
+        )
     elif email_restart:
         report_data = derive_email_oracle_kms_restart_report_data(
             signer_address=SIGNER_ADDRESS,
@@ -370,9 +384,13 @@ def make_context(
                 "royalty_settlement"
                 if royalty
                 else (
-                    "email_oracle_kms_restart"
-                    if email_restart
-                    else qvl_profile(release.policy.report_data_binding)
+                    "artifact_recipient"
+                    if artifact_recipient
+                    else (
+                        "email_oracle_kms_restart"
+                        if email_restart
+                        else qvl_profile(release.policy.report_data_binding)
+                    )
                 )
             ),
             "cvm_id": target_cvm_id,

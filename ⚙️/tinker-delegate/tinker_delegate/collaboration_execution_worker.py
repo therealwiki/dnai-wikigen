@@ -628,6 +628,7 @@ def build_collaboration_execution_runtime(
             execution_journal=execution_journal,
             integrity_key=execution_key,
             signature_verifier=wallet_signature_verifier_from_settings(settings),
+            workload_ingress=workload_ingress,
         )
         vault_reader = FinalizedComputeVaultReader(
             rpc_url=str(settings.compute_chain_rpc_url or ""),

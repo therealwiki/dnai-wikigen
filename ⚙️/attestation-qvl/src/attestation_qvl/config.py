@@ -20,6 +20,8 @@ class Settings(BaseSettings):
 
     release_policy_path: str
     auth_token: SecretStr
+    artifact_recipient_auth_token: SecretStr | None = None
+    arena_recipient_auth_token: SecretStr | None = None
     pccs_url: str = "https://pccs.phala.network"
     max_concurrency: int = Field(default=4, ge=1, le=16)
     rate_capacity: int = Field(default=30, ge=1, le=600)
@@ -38,6 +40,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "QVL request-body and verification timeouts exceed the server phase budget"
             )
+        tokens = [
+            value.get_secret_value()
+            for value in (
+                self.auth_token,
+                self.artifact_recipient_auth_token,
+                self.arena_recipient_auth_token,
+            )
+            if value is not None
+        ]
+        if len(tokens) != len(set(tokens)):
+            raise ValueError("QVL bearer domains must use distinct auth tokens")
         return self
 
     @field_validator("auth_token")
@@ -51,6 +64,13 @@ class Settings(BaseSettings):
         ):
             raise ValueError("QVL auth token is invalid")
         return value
+
+    @field_validator("artifact_recipient_auth_token", "arena_recipient_auth_token")
+    @classmethod
+    def validate_optional_auth_token(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or value.get_secret_value() == "":
+            return None
+        return cls.validate_auth_token(value)
 
     @field_validator("pccs_url")
     @classmethod
