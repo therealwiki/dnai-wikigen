@@ -43,19 +43,19 @@ import { publicErrorText } from "../lib/errorText";
 import {
   TinkerRequestError,
   TinkerTrainingReconciliationError,
+  TinkerTrainingAttempt,
   TinkerIdempotencyAttempt,
   appendTinkerCredentialPage,
   assertTinkerCredentialListMatchesAccount,
   beginTinkerCredentialHistory,
   decryptTinkerCredentialCapsule,
-  executeTinkerCustomerTraining,
   fetchCurrentTinkerAccount,
   fetchTinkerAccount,
   formatTinkerPolicyUnits,
   generateTinkerDeviceKey,
   issueTinkerCredential,
   listTinkerCredentials,
-  recoverTinkerCustomerTraining,
+  parseTinkerTrainingDraft,
   refreshTinkerCredentialHistory,
   requestTinkerAccount,
   rotateTinkerCredential,
@@ -70,7 +70,7 @@ import {
   type TinkerCustomerSession,
   type TinkerDeviceKey,
   type TinkerTrainingExecutionReceipt,
-  type TinkerTrainingControls,
+  type TinkerTrainingAttemptSnapshot,
   type TinkerTrainingReconciliationReceipt,
 } from "../lib/tinkerCustomer";
 import { wallet } from "../lib/wallet";
@@ -83,16 +83,6 @@ export interface TinkerAccountProps {
   requestWalletConnection?: () => void;
   /** Navigates to an existing Compute surface; it never performs the surfaced action itself. */
   openCompute?: (tab: ComputeRouteTab) => void;
-}
-
-interface TinkerTrainingRecoveryContext {
-  readonly credentialToken: string;
-  readonly credentialId: string;
-  readonly accountId: string;
-  readonly walletSession: TinkerCustomerSession;
-  readonly idempotencyKey: string;
-  readonly controls: Readonly<TinkerTrainingControls>;
-  readonly hold: TinkerTrainingReconciliationReceipt;
 }
 
 const FUNDING_RAILS = [
@@ -212,14 +202,15 @@ export function TinkerAccount(props: TinkerAccountProps) {
     TinkerTrainingExecutionReceipt | TinkerTrainingReconciliationReceipt
   >();
   const [trainingRecoveryContext, setTrainingRecoveryContext] = createSignal<
-    TinkerTrainingRecoveryContext
+    TinkerTrainingAttemptSnapshot
   >();
   const [revealToken, setRevealToken] = createSignal(false);
   const [revokeAccountArmed, setRevokeAccountArmed] = createSignal(false);
   const [credentialRevokeArmed, setCredentialRevokeArmed] = createSignal("");
   const accountRequestAttempt = new TinkerIdempotencyAttempt();
   const accountRevokeAttempt = new TinkerIdempotencyAttempt();
-  const trainingAttempt = new TinkerIdempotencyAttempt();
+  const trainingAttempt = new TinkerTrainingAttempt();
+  onCleanup(() => trainingAttempt.dispose());
   const credentialRevokeAttempts = new Map<string, TinkerIdempotencyAttempt>();
   let pendingCredentialAttempt: {
     accountId: string;
@@ -302,11 +293,12 @@ export function TinkerAccount(props: TinkerAccountProps) {
   }
 
   function clearCredentialDelivery(clearPendingAttempt = true): void {
+    trainingAttempt.clearAuthority();
     setOneTimeToken("");
     setTrainingCredentialId("");
     setTrainingCredentialCap("");
     setTrainingProblem("");
-    setTrainingRecoveryContext(undefined);
+    setTrainingRecoveryContext(trainingAttempt.snapshot());
     setRevealToken(false);
     setCredentialDialogOpen(false);
     setCredentialCap("");
@@ -325,7 +317,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
     setProblem("");
     setRevokeAccountArmed(false);
     setCredentialRevokeArmed("");
-    setTrainingProjection(undefined);
+    setTrainingProjection(trainingAttempt.snapshot()?.hold);
     clearCredentialDelivery(true);
   }
 
@@ -548,6 +540,10 @@ export function TinkerAccount(props: TinkerAccountProps) {
   }
 
   function openCredentialDialog(priorCredentialId = ""): void {
+    if (trainingRecoveryContext()) {
+      setProblem("Resolve the retained training attempt before replacing its credential or starting new training.");
+      return;
+    }
     setProblem("");
     setNotice("");
     setCredentialTtl(String(
@@ -584,6 +580,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
     const priorCredentialId = credentialRotationSource();
     if (
       !currentSession
+      || Boolean(trainingRecoveryContext())
       || !lifecycleReady()
       || !currentAccount
       || currentAccount.status !== "active"
@@ -696,42 +693,35 @@ export function TinkerAccount(props: TinkerAccountProps) {
   }
 
   function trainingControlsValid(): boolean {
-    const cap = trainingCredentialCap();
-    const maximum = trainingMaxUsdMicros();
-    const steps = Number(trainingSteps());
-    const ttl = Number(trainingTtlSeconds());
-    return Boolean(
-      oneTimeToken()
-      && /^\d+$/.test(maximum)
-      && /^(?:0|[1-9][0-9]*)$/.test(cap)
-      && BigInt(maximum) >= 1n
-      && BigInt(maximum) <= 5_000_000n
-      && BigInt(maximum) <= BigInt(cap)
-      && Number.isInteger(steps)
-      && steps >= 1
-      && steps <= 50
-      && Number.isInteger(ttl)
-      && ttl >= 60
-      && ttl <= 3_600
-    );
+    if (!oneTimeToken()) return false;
+    try {
+      parseTinkerTrainingDraft({
+        maxUsdMicros: trainingMaxUsdMicros(),
+        steps: trainingSteps(),
+        ttlSeconds: trainingTtlSeconds(),
+      }, trainingCredentialCap());
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function trainingRecoveryContextIsCurrent(): boolean {
     const context = trainingRecoveryContext();
-    const projection = trainingProjection();
+    const currentSession = session();
     return Boolean(
       context
-      && projection?.status === "reconciliation_required"
-      && projection.reservation_id === context.hold.reservation_id
-      && projection.reservation_commitment
-        === context.hold.reservation_commitment
-      && projection.workload_commitment === context.hold.workload_commitment
-      && session() === context.walletSession
+      && currentSession
+      && trainingAttempt.matches({
+        accountId: account()?.account_id ?? "",
+        credentialId: trainingCredentialId(),
+        credentialToken: oneTimeToken(),
+        walletSession: currentSession,
+      })
       && lifecycleReady()
       && activeAccount()
       && account()?.account_id === context.accountId
       && trainingCredentialId() === context.credentialId
-      && oneTimeToken() === context.credentialToken
       && trainingMaxUsdMicros() === String(context.controls.maxUsdMicros)
       && trainingSteps() === String(context.controls.steps)
       && trainingTtlSeconds() === String(context.controls.ttlSeconds)
@@ -742,54 +732,73 @@ export function TinkerAccount(props: TinkerAccountProps) {
     const credentialToken = oneTimeToken();
     const currentSession = session();
     const currentAccount = account();
-    const generation = lifecycleGeneration;
     if (
       !currentSession
       || !currentAccount
       || !lifecycleReady()
       || !activeAccount()
       || !credentialToken
+      || Boolean(busy())
       || !trainingControlsValid()
-      || trainingProjection()?.status === "reconciliation_required"
+      || Boolean(trainingRecoveryContext())
     ) return;
-    const maxUsdMicros = Number(trainingMaxUsdMicros());
-    const steps = Number(trainingSteps());
-    const ttlSeconds = Number(trainingTtlSeconds());
-    const immutableControls = Object.freeze({
-      maxUsdMicros,
-      steps,
-      ttlSeconds,
-    });
-    setTrainingMaxUsdMicros(String(maxUsdMicros));
-    setTrainingSteps(String(steps));
-    setTrainingTtlSeconds(String(ttlSeconds));
-    const key = trainingAttempt.keyFor(
-      "tinkercustomertraining",
-      [
-        currentAccount.account_id,
-        trainingCredentialId(),
-        maxUsdMicros,
-        steps,
-        ttlSeconds,
-      ].join(":"),
-    );
-    setBusy("run-training");
+    try {
+      // Capture the validated body, credential/context, and key before dispatch.
+      const context = trainingAttempt.begin({
+        credentialToken,
+        credentialId: trainingCredentialId(),
+        accountId: currentAccount.account_id,
+        walletSession: currentSession,
+      }, {
+        maxUsdMicros: trainingMaxUsdMicros(),
+        steps: trainingSteps(),
+        ttlSeconds: trainingTtlSeconds(),
+      }, trainingCredentialCap());
+      setTrainingMaxUsdMicros(String(context.controls.maxUsdMicros));
+      setTrainingSteps(String(context.controls.steps));
+      setTrainingTtlSeconds(String(context.controls.ttlSeconds));
+      setTrainingProjection(undefined);
+      setTrainingRecoveryContext(context);
+    } catch (cause) {
+      setTrainingProblem(boundedError(cause, "Training controls were rejected before dispatch"));
+      return;
+    }
+    await dispatchRetainedTraining(false);
+  }
+
+  async function recoverCustomerTraining(): Promise<void> {
+    if (busy()) return;
+    if (!trainingRecoveryContextIsCurrent()) {
+      setTrainingProblem(
+        "Recovery is unavailable because the page-memory credential, controls, or wallet session is missing or changed. The unresolved attempt remains blocked; clearing browser state does not cancel server work.",
+      );
+      return;
+    }
+    await dispatchRetainedTraining(true);
+  }
+
+  async function dispatchRetainedTraining(recovering: boolean): Promise<void> {
+    const context = trainingRecoveryContext();
+    const currentSession = session();
+    const credentialToken = oneTimeToken();
+    const generation = lifecycleGeneration;
+    if (!context || !currentSession || !trainingRecoveryContextIsCurrent()) return;
+    const action = recovering ? "recover-training" : "run-training";
+    setBusy(action);
     setTrainingProblem("");
-    setTrainingRecoveryContext(undefined);
     setNotice("");
     let refreshAccount = false;
     try {
-      const receipt = await executeTinkerCustomerTraining(
-        credentialToken,
-        immutableControls,
-        key,
+      const receipt = await trainingAttempt.execute(
+        trainingRecoveryContextIsCurrent,
       );
-      if (!lifecycleContextIsCurrent(
-        currentSession,
-        generation,
-        currentAccount.account_id,
-      )) return;
-      trainingAttempt.resolve(key);
+      if (
+        !receipt
+        || !lifecycleContextIsCurrent(currentSession, generation, context.accountId)
+        || session() !== currentSession
+        || trainingCredentialId() !== context.credentialId
+        || oneTimeToken() !== credentialToken
+      ) return;
       setTrainingRecoveryContext(undefined);
       setTrainingProjection(receipt);
       setNotice(
@@ -799,93 +808,28 @@ export function TinkerAccount(props: TinkerAccountProps) {
       );
       refreshAccount = true;
     } catch (cause) {
-      if (!lifecycleContextIsCurrent(
-        currentSession,
-        generation,
-        currentAccount.account_id,
-      )) return;
+      if (
+        trainingRecoveryContext()?.idempotencyKey !== context.idempotencyKey
+        || !trainingRecoveryContextIsCurrent()
+      ) return;
+      setTrainingRecoveryContext(trainingAttempt.snapshot());
       if (cause instanceof TinkerTrainingReconciliationError) {
         setTrainingProjection(cause.receipt);
-        setTrainingRecoveryContext(Object.freeze({
-          credentialToken,
-          credentialId: trainingCredentialId(),
-          accountId: currentAccount.account_id,
-          walletSession: currentSession,
-          idempotencyKey: key,
-          controls: immutableControls,
-          hold: cause.receipt,
-        }));
         setTrainingProblem(
-          "Dispatch outcome is uncertain. The durable claim is held for operator reconciliation and this browser will not submit it again.",
+          recovering && context.hold
+            ? "No signed result is available yet. The original reconciliation hold remains open; recovery did not create a reservation or redispatch the provider."
+            : "The service returned a durable reconciliation hold. Automatic provider redispatch is disabled; retain this request to recover its signed result.",
         );
       } else {
-        setTrainingProblem(boundedError(
-          cause,
-          "Bounded Tinker training could not be submitted",
-        ));
+        // Even an HTTP rejection on a replay cannot disprove a prior claim.
+        setTrainingProblem("The request outcome is unconfirmed. A timeout, connection failure, or rejected response does not prove training stopped. The exact request is retained; use explicit same-request recovery and do not start another run.");
       }
     } finally {
-      if (generation === lifecycleGeneration) {
+      setTrainingRecoveryContext(trainingAttempt.snapshot());
+      if (generation === lifecycleGeneration && session() === currentSession && busy() === action) {
         setBusy(undefined);
         if (refreshAccount) {
           void loadLifecycle(currentSession, { quiet: true });
-        }
-      }
-    }
-  }
-
-  async function recoverCustomerTraining(): Promise<void> {
-    const context = trainingRecoveryContext();
-    if (!context || !trainingRecoveryContextIsCurrent()) {
-      setTrainingProblem(
-        "Signed-result recovery is unavailable because its page-memory credential, controls, wallet session, or claim binding is missing or changed. The reconciliation hold remains open.",
-      );
-      return;
-    }
-    setBusy("recover-training");
-    setTrainingProblem("");
-    setNotice("");
-    let refreshAccount = false;
-    try {
-      const receipt = await recoverTinkerCustomerTraining(
-        context.credentialToken,
-        context.controls,
-        context.idempotencyKey,
-        context.hold,
-      );
-      if (
-        trainingRecoveryContext() !== context
-        || !trainingRecoveryContextIsCurrent()
-      ) return;
-      trainingAttempt.resolve(context.idempotencyKey);
-      setTrainingRecoveryContext(undefined);
-      setTrainingProjection(receipt);
-      setNotice(
-        receipt.status === "settled"
-          ? "Recovered the signed bounded result and completed its authority settlement without another provider dispatch."
-          : "Recovered a signed pre-dispatch release without another provider dispatch.",
-      );
-      refreshAccount = true;
-    } catch (cause) {
-      if (
-        trainingRecoveryContext() !== context
-        || !trainingRecoveryContextIsCurrent()
-      ) return;
-      if (cause instanceof TinkerTrainingReconciliationError) {
-        setTrainingProblem(
-          "No signed result is available yet. The original reconciliation hold remains open; recovery did not create a reservation or redispatch the provider.",
-        );
-      } else {
-        setTrainingProblem(boundedError(
-          cause,
-          "Signed-result recovery could not verify the retained claim; the reconciliation hold remains open",
-        ));
-      }
-    } finally {
-      if (busy() === "recover-training") {
-        setBusy(undefined);
-        if (refreshAccount) {
-          void loadLifecycle(context.walletSession, { quiet: true });
         }
       }
     }
@@ -1690,6 +1634,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                         !lifecycleReady()
                         || credential.status !== "active"
                         || Boolean(busy())
+                        || Boolean(trainingRecoveryContext())
                       }
                       onClick={() => openCredentialDialog(credential.credential_id)}
                     >
@@ -1720,7 +1665,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
             class="primary-button full"
             type="button"
             data-tinker-mutation="issue-credential"
-            disabled={!lifecycleReady() || !activeAccount() || Boolean(busy())}
+            disabled={!lifecycleReady() || !activeAccount() || Boolean(busy()) || Boolean(trainingRecoveryContext())}
             onClick={() => openCredentialDialog()}
           >
             <KeyRound size={15} /> Issue training credential
@@ -1759,7 +1704,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
               );
             }}
           </For>
-          <div class="job-row expanded tinker-spend-row" data-tinker-training-state={trainingProjection()?.status ?? "not-submitted"}>
+          <div class="job-row expanded tinker-spend-row" data-tinker-training-state={trainingProjection()?.status ?? (trainingRecoveryContext() ? "unconfirmed" : "not-submitted")}>
             <span class="job-icon"><Cpu size={17} /></span>
             <div class="job-main">
               <div>
@@ -1773,6 +1718,8 @@ export function TinkerAccount(props: TinkerAccountProps) {
                         ? "Observed API release · no dispatch"
                         : trainingProjection()?.status === "reconciliation_required"
                           ? "Observed API hold · reconcile"
+                          : trainingRecoveryContext()
+                            ? "Unconfirmed request · recovery retained"
                           : activeAccount()
                             ? "Live-capable · credential required"
                             : "Release gated"
@@ -1799,6 +1746,8 @@ export function TinkerAccount(props: TinkerAccountProps) {
                     ? "Not performed"
                     : trainingProjection()?.status === "reconciliation_required"
                       ? "Unknown · held"
+                      : trainingRecoveryContext()
+                        ? "Unconfirmed · request retained"
                       : "Not dispatched"}
               </strong>
             </div>
@@ -1809,6 +1758,8 @@ export function TinkerAccount(props: TinkerAccountProps) {
                   ? `${trainingExecutionProjection()?.actual_policy_units} used / ${trainingExecutionProjection()?.reserved_policy_units} reserved`
                   : trainingProjection()?.status === "reconciliation_required"
                     ? "Open · not provider billing"
+                    : trainingRecoveryContext()
+                      ? "Unconfirmed · not provider billing"
                     : "0 used · 0 reserved"}
               </strong>
             </div>
@@ -1821,16 +1772,16 @@ export function TinkerAccount(props: TinkerAccountProps) {
                   !lifecycleReady()
                   || !activeAccount()
                   || Boolean(busy())
-                  || trainingProjection()?.status === "reconciliation_required"
+                  || Boolean(trainingRecoveryContext())
                 }
                 onClick={() => openCredentialDialog()}
               >
                 <KeyRound size={13} />
-                {trainingProjection()?.status === "reconciliation_required"
-                  ? "New training blocked by hold"
+                {trainingRecoveryContext()
+                  ? "New training blocked by unresolved request"
                   : "Issue credential + submit"}
               </button>
-              <Show when={trainingProjection()?.status === "reconciliation_required"}>
+              <Show when={trainingRecoveryContext()}>
                 <button
                   class="secondary-button compact"
                   type="button"
@@ -1842,8 +1793,10 @@ export function TinkerAccount(props: TinkerAccountProps) {
                     ? <LoaderCircle class="spin" size={13} />
                     : <RefreshCw size={13} />}
                   {trainingRecoveryContextIsCurrent()
-                    ? "Recover signed result"
-                    : "Recover signed result · context unavailable"}
+                    ? trainingRecoveryContext()?.hold
+                      ? "Recover signed result"
+                      : "Retry same training request"
+                    : "Recovery context unavailable"}
                 </button>
               </Show>
               <button
@@ -1858,6 +1811,20 @@ export function TinkerAccount(props: TinkerAccountProps) {
             </div>
           </div>
         </div>
+        <Show when={trainingRecoveryContext()}>
+          {(context) => (
+            <div class="agent-inline-notice warning" role="status">
+              <TriangleAlert size={15} />
+              <span>
+                <strong>One training request remains unresolved.</strong>{" "}
+                {trainingRecoveryContextIsCurrent()
+                  ? "Use explicit recovery with the retained credential and exact request; no automatic retry is scheduled."
+                  : "The recovery credential or session is no longer available. Ask the operator to reconcile this request; revocation, refreshing, or closing this page does not cancel server work."}
+                {" "}Request {context().idempotencyKey} · account {context().accountId}.
+              </span>
+            </div>
+          )}
+        </Show>
       </section>
 
       <Show when={credentialDialogOpen()}>
@@ -2019,6 +1986,8 @@ export function TinkerAccount(props: TinkerAccountProps) {
                           ? "Observed release"
                           : trainingProjection()?.status === "reconciliation_required"
                             ? "Observed hold"
+                            : trainingRecoveryContext()
+                              ? "Outcome unconfirmed"
                             : "Ready to submit"
                     }
                   />
@@ -2034,7 +2003,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                         step="1"
                         inputmode="numeric"
                         value={trainingMaxUsdMicros()}
-                        disabled={busy() === "run-training" || busy() === "recover-training" || trainingProjection()?.status === "reconciliation_required"}
+                        disabled={Boolean(trainingRecoveryContext())}
                         aria-invalid={!trainingControlsValid()}
                         onInput={(event) => setTrainingMaxUsdMicros(event.currentTarget.value)}
                       />
@@ -2050,7 +2019,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                       step="1"
                       inputmode="numeric"
                       value={trainingSteps()}
-                      disabled={busy() === "run-training" || busy() === "recover-training" || trainingProjection()?.status === "reconciliation_required"}
+                      disabled={Boolean(trainingRecoveryContext())}
                       onInput={(event) => setTrainingSteps(event.currentTarget.value)}
                     />
                   </label>
@@ -2064,7 +2033,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                         step="60"
                         inputmode="numeric"
                         value={trainingTtlSeconds()}
-                        disabled={busy() === "run-training" || busy() === "recover-training" || trainingProjection()?.status === "reconciliation_required"}
+                        disabled={Boolean(trainingRecoveryContext())}
                         onInput={(event) => setTrainingTtlSeconds(event.currentTarget.value)}
                       />
                       <span>SECONDS</span>
@@ -2100,14 +2069,16 @@ export function TinkerAccount(props: TinkerAccountProps) {
                     </div>
                   )}
                 </Show>
-                <Show when={trainingProjection()?.status === "reconciliation_required"}>
+                <Show when={trainingRecoveryContext()}>
                   <div class="tinker-training-recovery">
                     <div class="tinker-training-receipt hold" role="status">
                       <TriangleAlert size={17} />
                       <div>
-                        <small>DURABLE CLAIM · RECONCILIATION REQUIRED</small>
+                        <small>{trainingRecoveryContext()?.hold ? "DURABLE CLAIM · RECONCILIATION REQUIRED" : "REQUEST RETAINED · OUTCOME UNCONFIRMED"}</small>
                         <strong>Automatic provider redispatch is disabled.</strong>
-                        <span>Reservation {trainingProjection()?.reservation_id} remains held until signed evidence can be recovered or an operator resolves its provider outcome.</span>
+                        <span>{trainingRecoveryContext()?.hold
+                          ? `Reservation ${trainingRecoveryContext()?.hold?.reservation_id} remains held until signed evidence can be recovered or an operator resolves its provider outcome.`
+                          : "The server may still be executing, or the request may not have arrived. Its controls and idempotency key cannot be replaced while the outcome is unknown."}</span>
                       </div>
                     </div>
                     <button
@@ -2115,7 +2086,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                       type="button"
                       data-tinker-action="recover-training"
                       disabled={
-                        busy() === "recover-training"
+                        Boolean(busy())
                         || !trainingRecoveryContextIsCurrent()
                       }
                       onClick={() => void recoverCustomerTraining()}
@@ -2125,10 +2096,12 @@ export function TinkerAccount(props: TinkerAccountProps) {
                         : <RefreshCw size={17} />}
                       {busy() === "recover-training"
                         ? "Checking retained claim"
-                        : "Recover signed result"}
+                        : trainingRecoveryContext()?.hold
+                          ? "Recover signed result"
+                          : "Retry same training request"}
                     </button>
                     <p class="modeled-note">
-                      <ShieldCheck size={13} /> Recovery reuses the exact page-memory credential, immutable controls, and original idempotency key. It can return a signed result or the same hold; it cannot create a new reservation or redispatch provider work.
+                      <ShieldCheck size={13} /> Recovery reuses the exact page-memory credential, immutable controls, and original idempotency key. For an existing durable claim it cannot create a new reservation or redispatch provider work. If the initial request never arrived, this explicit retry may create and execute that one claim.
                     </p>
                   </div>
                 </Show>
@@ -2142,7 +2115,7 @@ export function TinkerAccount(props: TinkerAccountProps) {
                     || !lifecycleReady()
                     || !activeAccount()
                     || !trainingControlsValid()
-                    || trainingProjection()?.status === "reconciliation_required"
+                    || Boolean(trainingRecoveryContext())
                   }
                   onClick={() => void runCustomerTraining()}
                 >
@@ -2151,14 +2124,14 @@ export function TinkerAccount(props: TinkerAccountProps) {
                     : <Cpu size={17} />}
                   {busy() === "run-training"
                     ? "Claiming + executing once"
-                    : trainingProjection()?.status === "reconciliation_required"
-                      ? "New training blocked by reconciliation"
+                    : trainingRecoveryContext()
+                      ? "New training blocked by unresolved request"
                     : trainingExecutionProjection()
                       ? "Submit another bounded run"
                       : "Claim authority + submit training"}
                 </button>
                 <p class="modeled-note">
-                  <LockKeyhole size={13} /> An uncertain outcome becomes a visible reconciliation hold. Retrying that claim never calls the provider again.
+                  <LockKeyhole size={13} /> A timeout does not cancel server work or prove a hold exists. Keep this page open to retain exact-request recovery; only a validated terminal receipt unlocks another run.
                 </p>
               </section>
               <button
@@ -2168,12 +2141,12 @@ export function TinkerAccount(props: TinkerAccountProps) {
                 onClick={closeCredentialDialog}
               >
                 <Check size={17} />
-                {trainingProjection()?.status === "reconciliation_required"
+                {trainingRecoveryContext()
                   ? "Clear credential + recovery context"
                   : "I stored it safely; clear this view"}
               </button>
               <p class="modeled-note">
-                <ShieldCheck size={13} /> Plaintext and any recovery context are held only in component memory. They are not written to URL state, local storage, session storage, logs, or analytics. Clearing this view makes browser recovery unavailable but does not clear an on-service reconciliation hold.
+                <ShieldCheck size={13} /> Plaintext and any recovery context are held only in component memory. They are not written to URL state, local storage, session storage, logs, or analytics. Clearing this view drops recovery authority but leaves the unresolved request blocked on this page. Reloading or leaving the page loses that local guard; neither action cancels server work.
               </p>
             </Show>
           </section>

@@ -10,6 +10,7 @@ import { deployment } from "../config";
 import {
   TinkerRequestError,
   TinkerTrainingReconciliationError,
+  TinkerTrainingAttempt,
   TinkerIdempotencyAttempt,
   appendTinkerCredentialPage,
   assertTinkerCredentialListMatchesAccount,
@@ -26,6 +27,7 @@ import {
   parseTinkerCredentialList,
   parseTinkerTrainingExecutionReceipt,
   parseTinkerTrainingReconciliationReceipt,
+  parseTinkerTrainingDraft,
   recoverTinkerCustomerTraining,
   refreshTinkerCredentialHistory,
   revokeTinkerAccount,
@@ -1245,6 +1247,244 @@ describe("Tinker customer HTTP boundary", () => {
     expect(tinkerCustomerSource).not.toMatch(
       /\blocalStorage\b|\bsessionStorage\b|\bindexedDB\b/,
     );
+  });
+});
+
+describe("Tinker retained training attempt", () => {
+  const mutableDeployment = deployment as unknown as { delegateUrl: string };
+  let originalDelegateUrl = "";
+  const draft = { maxUsdMicros: "50000", steps: "2", ttlSeconds: "600" };
+  const identity = () => ({
+    accountId: ACCOUNT_ID,
+    credentialId: CREDENTIAL_ID,
+    credentialToken: walletToken(),
+    walletSession: {
+      accessToken: walletToken(),
+      address: WALLET_ADDRESS,
+      issuedAt: NOW - 5,
+      expiresAt: NOW + 300,
+      walletAuthorizationVersion: 7,
+    },
+  });
+
+  beforeEach(() => {
+    originalDelegateUrl = mutableDeployment.delegateUrl;
+    mutableDeployment.delegateUrl = "https://delegate.example";
+  });
+
+  afterEach(() => {
+    mutableDeployment.delegateUrl = originalDelegateUrl;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("captures immutable canonical controls and a public tombstone before any egress", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const authority = identity();
+    const mutableDraft = { ...draft };
+    const snapshot = attempt.begin(authority, mutableDraft, "50000");
+    mutableDraft.steps = "3";
+    expect(snapshot.controls).toEqual({ maxUsdMicros: 50000, steps: 2, ttlSeconds: 600 });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.controls)).toBe(true);
+    expect(attempt.matches(authority)).toBe(true);
+    expect(JSON.stringify(snapshot)).not.toContain(authority.credentialToken);
+    expect(JSON.stringify(snapshot)).not.toContain("walletSession");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ ...draft, maxUsdMicros: "0" }, "50000"],
+    [{ ...draft, maxUsdMicros: "50001" }, "50000"],
+    [{ ...draft, steps: "1.5" }, "50000"],
+    [{ ...draft, steps: "0x10" }, "50000"],
+    [{ ...draft, ttlSeconds: "3e2" }, "50000"],
+    [{ ...draft, ttlSeconds: "3601" }, "50000"],
+    [draft, "invalid"],
+  ])("rejects invalid drafts before request identity allocation or egress: %j", (invalid, cap) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const random = vi.spyOn(crypto, "randomUUID");
+    const attempt = new TinkerTrainingAttempt();
+    expect(() => attempt.begin(identity(), invalid, cap)).toThrow();
+    expect(attempt.snapshot()).toBeUndefined();
+    expect(random).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(parseTinkerTrainingDraft(draft, "50000").steps).toBe(2);
+  });
+
+  it("keeps a lost-response request and replays the same body, bearer, and key only explicitly", async () => {
+    const fetchMock = vi.fn<(
+      input: RequestInfo | URL, init?: RequestInit,
+    ) => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("Network response lost"))
+      .mockResolvedValueOnce(jsonResponse(trainingExecutionReceipt({ idempotent_replay: true })));
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const authority = identity();
+    const snapshot = attempt.begin(authority, draft, "50000");
+    await expect(attempt.execute(() => attempt.matches(authority))).rejects.toThrow("response lost");
+    expect(attempt.snapshot()).toBe(snapshot);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(() => attempt.begin(authority, { ...draft, steps: "3" }, "50000"))
+      .toThrow("cannot be replaced");
+    await expect(attempt.execute(() => attempt.matches(authority)))
+      .resolves.toMatchObject({ status: "settled", idempotent_replay: true });
+    const first = fetchMock.mock.calls[0][1] as RequestInit;
+    const retry = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(retry.body).toBe(first.body);
+    expect(retry.headers).toEqual(first.headers);
+    expect(attempt.snapshot()).toBeUndefined();
+    expect(attempt.begin(authority, draft, "50000").idempotencyKey)
+      .not.toBe(snapshot.idempotencyKey);
+  });
+
+  it("retains the attempt after the actual request timeout signal aborts", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      })
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const snapshot = attempt.begin(identity(), draft, "50000");
+    const running = attempt.execute(() => true);
+    const rejection = expect(running).rejects.toMatchObject({ name: "TimeoutError" });
+    controller.abort(new DOMException("Request deadline reached", "TimeoutError"));
+    await rejection;
+    expect(timeout).toHaveBeenCalledWith(12_000);
+    expect(attempt.snapshot()).toBe(snapshot);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([401, 403, 409, 422, 500, 503])("does not treat HTTP %i as proof that a prior request was never claimed", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ detail: "Request rejected" }, status)));
+    const attempt = new TinkerTrainingAttempt();
+    const snapshot = attempt.begin(identity(), draft, "50000");
+    await expect(attempt.execute(() => true)).rejects.toBeInstanceOf(TinkerRequestError);
+    expect(attempt.snapshot()).toBe(snapshot);
+  });
+
+  it("does not unlock on malformed or mismatched terminal results", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ result: "not a receipt" }))
+      .mockResolvedValueOnce(jsonResponse(trainingExecutionReceipt({ reserved_policy_units: "40000" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const snapshot = attempt.begin(identity(), draft, "50000");
+    await expect(attempt.execute(() => true)).rejects.toThrow();
+    await expect(attempt.execute(() => true)).rejects.toThrow();
+    expect(attempt.snapshot()).toBe(snapshot);
+  });
+
+  it("retains a parsed hold and rejects a later receipt for another claim", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: trainingReconciliationReceipt() }, 409))
+      .mockResolvedValueOnce(jsonResponse(trainingExecutionReceipt({ reservation_id: `tcr_${"d".repeat(24)}` })))
+      .mockResolvedValueOnce(jsonResponse(trainingExecutionReceipt({ idempotent_replay: true })));
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const snapshot = attempt.begin(identity(), draft, "50000");
+    await expect(attempt.execute(() => true)).rejects.toBeInstanceOf(TinkerTrainingReconciliationError);
+    expect(attempt.snapshot()?.hold?.reservation_id).toBe(RESERVATION_ID);
+    expect(attempt.snapshot()?.idempotencyKey).toBe(snapshot.idempotencyKey);
+    await expect(attempt.execute(() => true)).rejects.toThrow("differs from the retained claim");
+    expect(attempt.snapshot()?.hold?.reservation_id).toBe(RESERVATION_ID);
+    await expect(attempt.execute(() => true)).resolves.toMatchObject({ status: "settled" });
+    expect(attempt.snapshot()).toBeUndefined();
+  });
+
+  it("unlocks after a validated full pre-dispatch release", async () => {
+    const settled = trainingExecutionReceipt();
+    const released = trainingExecutionReceipt({
+      status: "released",
+      actual_policy_units: "0",
+      released_policy_units: "50000",
+      training_result: {
+        ...settled.training_result as Record<string, unknown>,
+        success: false,
+        outcome: "policy_denied",
+        furthest_stage: "policy_checked",
+        steps_completed: 0,
+        checkpoint_saved: false,
+        error_kind: "policy_denied",
+        bounded_message: "policy_denied",
+        provider_dispatch_attempted: false,
+        provider_dispatch_performed: false,
+      },
+      settlement: {
+        ...settled.settlement as Record<string, unknown>,
+        status: "released",
+        provider_dispatch_performed: false,
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(released)));
+    const attempt = new TinkerTrainingAttempt();
+    attempt.begin(identity(), draft, "50000");
+    await expect(attempt.execute(() => true)).resolves.toMatchObject({
+      status: "released",
+      released_policy_units: "50000",
+      training_result: { provider_dispatch_performed: false },
+    });
+    expect(attempt.snapshot()).toBeUndefined();
+  });
+
+  it("allows only one in-flight submission and ignores a stale successful reply", async () => {
+    let complete!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { complete = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const authority = identity();
+    const snapshot = attempt.begin(authority, draft, "50000");
+    let current = true;
+    const running = attempt.execute(() => current);
+    await expect(attempt.execute(() => current)).rejects.toThrow("already in progress");
+    current = false;
+    complete(jsonResponse(trainingExecutionReceipt()));
+    await expect(running).resolves.toBeUndefined();
+    expect(attempt.snapshot()).toBe(snapshot);
+    expect(attempt.matches(authority)).toBe(false);
+    await expect(attempt.execute(() => true)).rejects.toThrow("missing or changed");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("drops authority on clearing while keeping the unresolved request blocked", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const attempt = new TinkerTrainingAttempt();
+    const authority = identity();
+    const snapshot = attempt.begin(authority, draft, "50000");
+    for (const changed of [
+      { ...authority, accountId: `tca_${"d".repeat(24)}` },
+      { ...authority, credentialId: `tcc_${"d".repeat(24)}` },
+      { ...authority, credentialToken: `${authority.credentialToken}x` },
+      { ...authority, walletSession: { ...authority.walletSession } },
+    ]) expect(attempt.matches(changed)).toBe(false);
+    attempt.clearAuthority();
+    expect(attempt.snapshot()).toBe(snapshot);
+    expect(attempt.matches(authority)).toBe(false);
+    await expect(attempt.execute(() => true)).rejects.toThrow("missing or changed");
+    expect(() => attempt.begin(authority, draft, "50000")).toThrow("cannot be replaced");
+    expect(fetchMock).not.toHaveBeenCalled();
+    attempt.dispose();
+    expect(attempt.snapshot()).toBeUndefined();
+  });
+
+  it("suppresses a stale failed response after the authority has been cleared", async () => {
+    let fail!: (cause: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((_resolve, reject) => { fail = reject; })));
+    const attempt = new TinkerTrainingAttempt();
+    const snapshot = attempt.begin(identity(), draft, "50000");
+    const running = attempt.execute(() => true);
+    attempt.clearAuthority();
+    fail(new TypeError("Late transport error"));
+    await expect(running).resolves.toBeUndefined();
+    expect(attempt.snapshot()).toBe(snapshot);
   });
 });
 
