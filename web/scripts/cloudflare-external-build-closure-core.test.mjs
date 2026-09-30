@@ -929,15 +929,16 @@ test("external closure is exact, typed, canonical, and domain separated", async 
       closure.aggregate_sha256,
     );
     // This KAT freezes the closure algorithm and canonicalization over the
-    // synthetic graph above. It is intentionally separate from the real
-    // checked-in source projection KAT at the end of this file.
+    // synthetic graph above. The v2 adapter import and its one pure fixture
+    // module are the only delta from the prior 82-file synthetic graph. This
+    // is separate from the real source projection KAT at the end of the file.
     assert.equal(
       closure.aggregate_sha256,
-      "sha256:0075c555de94cb9fbbeb8d2be51d6c19c5d2bfee0a1fd90a597bafb48d05ad14",
+      "sha256:57fd32629e954ed7f153e2ba809d27edaa83e88e934bba89e842c356e3e4c411",
     );
     assert.equal(
       cloudflareExternalBuildClosureSha256(closure),
-      "sha256:c093461bee051a7c03f2386a486590431ab7d49a091314d5214d36f27209f8f6",
+      "sha256:2aba46df57658d3d824ec6bb9ad492d18327d2abd1b37ac2bdf8c586c70bd6a7",
     );
   });
 });
