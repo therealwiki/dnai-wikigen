@@ -20,6 +20,7 @@ from tinker_delegate.collaboration_execution import (
     CollaborationExecutionAuthorityInvalidated,
     CollaborationExecutionIntent,
     CollaborationExecutionJournal,
+    CollaborationExecutionNotFound,
     ComputeJournalProjection,
     FinalizedComputeVaultObservation,
     OwnerExecutionGrant,
@@ -30,6 +31,7 @@ from tinker_delegate.collaboration_execution_service import (
     AuthenticatedComputeProjection,
     CollaborationExecutionCoordinator,
     CollaborationExecutionServiceError,
+    CollaborationExecutionServiceUnavailable,
     CollaborationExecutionWorkerService,
     FinalizedComputeVaultReader,
     FinalizedObservationReceipt,
@@ -232,6 +234,16 @@ class _Store:
             self.snapshot["run_id"], participant_address
         )
 
+    def room_projection(self, room_id: str, participant_address: str):
+        assert room_id == self.snapshot["room_id"]
+        assert participant_address in {
+            item["owner_address"] for item in self.snapshot["owners"]
+        }
+        return {"room_id": room_id}
+
+    def close(self):
+        pass
+
 
 class _RecoveringVerifier:
     def verify(self, *, address: str, message: str, signature: str) -> str:
@@ -337,7 +349,7 @@ def _coordinator(tmp_path: Path):
     return coordinator, journal, accounts, snapshot, request, release
 
 
-def _authorize(tmp_path: Path):
+def _authorize_with_plan(tmp_path: Path):
     coordinator, journal, accounts, snapshot, request, release = _coordinator(
         tmp_path
     )
@@ -374,7 +386,11 @@ def _authorize(tmp_path: Path):
         body = journal._load_unlocked()
         record = next(iter(body["records"].values()))
     intent = CollaborationExecutionIntent.from_dict(record["intent"])
-    return coordinator, journal, intent, result, request, release
+    return (coordinator, journal, intent, result, request, release), plan
+
+
+def _authorize(tmp_path: Path):
+    return _authorize_with_plan(tmp_path)[0]
 
 
 def _stored_grants(
@@ -386,6 +402,279 @@ def _stored_grants(
         OwnerExecutionGrant.from_dict(item)
         for item in record["execution_grants"]
     )
+
+
+def test_authorization_status_recovers_expired_plan_without_revalidating_or_writing(
+    tmp_path, monkeypatch,
+):
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, authorized, _request, _release = values
+    before = journal.path.read_bytes()
+    before_stat = journal.path.stat()
+    coordinator.clock = lambda: NOW + 10_000
+    coordinator.store.snapshot["current"] = False
+    coordinator.store.snapshot["room_generation"] += 1
+    visibility_calls = []
+    original_visibility = coordinator.store.room_projection
+
+    def visible(room_id, requester):
+        visibility_calls.append((room_id, requester))
+        return original_visibility(room_id, requester)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("read-only recovery invoked an executable-authority or write path")
+
+    monkeypatch.setattr(coordinator.store, "room_projection", visible)
+    for name in ("execution_authority_snapshot", "execution_authority_snapshot_by_commitment"):
+        monkeypatch.setattr(coordinator.store, name, forbidden)
+    monkeypatch.setattr(coordinator, "_require_current_plan", forbidden)
+    monkeypatch.setattr(coordinator, "_basis_from_snapshot", forbidden)
+    monkeypatch.setattr(coordinator.signature_verifier, "verify", forbidden)
+    monkeypatch.setattr(coordinator.workload_ingress, "validate_collaboration_workload", forbidden)
+    for name in ("authorize", "queue", "claim_next", "prepare_compute_handoff",
+                 "recover_incomplete", "reconcile_compute_projection", "_write_unlocked"):
+        monkeypatch.setattr(journal, name, forbidden)
+    request = {
+        "plan_token": plan.plan_token,
+        "idempotency_key": "collaboration-execution-0001",
+    }
+    recovered = coordinator.authorization_status(
+        **request, requester_address=intent.sponsor_address
+    )
+    assert set(recovered) == {
+        "surface", "schema_version", "request_commitment", "basis_commitment",
+        "read_only", "provider_dispatch_performed", "authorization_commitment",
+        "royalty_reservation", "execution",
+    }
+    assert recovered["surface"] == "collaboration_execution_authorization_status"
+    assert recovered["schema_version"] == 1
+    assert recovered["request_commitment"] == "sha256:" + hashlib.sha256(
+        b"dnai.collaboration.execution-authorization-status.v1\0"
+        + json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert recovered["basis_commitment"] == plan.basis.commitment
+    assert recovered["authorization_commitment"] == authorized["authorization_commitment"]
+    assert recovered["execution"] == authorized["execution"]
+    assert authorized["execution"]["royalty"]["total"] == str(intent.royalty_total)
+    assert recovered["execution"]["royalty"]["total"] == str(intent.royalty_total)
+    assert recovered["royalty_reservation"] == authorized["royalty_reservation"]
+    assert recovered["read_only"] is True
+    assert recovered["provider_dispatch_performed"] is False
+    assert "verifier_kinds" not in recovered
+    assert visibility_calls == [(intent.room_id, intent.sponsor_address)]
+    assert journal.path.read_bytes() == before
+    assert journal.path.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert journal.path.stat().st_ino == before_stat.st_ino
+
+
+@pytest.mark.parametrize("mismatch", ["sponsor", "mac", "key", "plan"])
+def test_authorization_status_rejects_wrong_sponsor_mac_key_or_plan(
+    tmp_path, mismatch,
+):
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, _authorized, request, _release = values
+    lookup = {
+        "plan_token": plan.plan_token,
+        "requester_address": intent.sponsor_address,
+        "idempotency_key": "collaboration-execution-0001",
+    }
+    expected_error = CollaborationExecutionServiceError
+    if mismatch == "sponsor":
+        lookup["requester_address"] = intent.owner_addresses[1]
+    elif mismatch == "mac":
+        encoded, mac = lookup["plan_token"].split(".")
+        lookup["plan_token"] = encoded + "." + ("A" if mac[0] != "A" else "B") + mac[1:]
+    elif mismatch == "key":
+        lookup["idempotency_key"] = "collaboration-execution-other"
+        expected_error = CollaborationExecutionNotFound
+    else:
+        other = coordinator.create_plan(
+            run_id=plan.run_id,
+            requester_address=intent.sponsor_address,
+            request=request,
+            now=NOW,
+        )
+        lookup["plan_token"] = other.plan_token
+        expected_error = CollaborationExecutionNotFound
+    before = journal.path.read_bytes()
+    with pytest.raises(expected_error):
+        coordinator.authorization_status(**lookup)
+    assert journal.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("collaboration_execution_release_git_sha", "b" * 40),
+    ("collaboration_execution_release_verification_sha256", _sha("e")),
+    ("main_runtime_cvm_id", "cvm_changed_release_01"),
+    ("compute_vault_compose_hash", _bytes32("e")),
+    ("compute_vault_address", "0x" + "e1" * 20),
+    ("compute_vault_runtime_code_hash", _bytes32("e")),
+    ("royalty_distributor_address", "0x" + "e2" * 20),
+    ("royalty_release_policy_commitment", _bytes32("e")),
+    ("release_deployment_intent_sha256", _sha("e")),
+    ("release_authority_sha256", _sha("e")),
+    ("release_ceremony_nonce", _bytes32("e")),
+    ("royalty_main_runtime_compose_hash", "e" * 64),
+])
+def test_authorization_status_requires_configured_release_identity(
+    tmp_path, field, value,
+):
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, _authorized, _request, _release = values
+    setattr(coordinator.settings, field, value)
+    before = journal.path.read_bytes()
+    with pytest.raises((CollaborationExecutionServiceError, CollaborationExecutionServiceUnavailable)):
+        coordinator.authorization_status(
+            plan_token=plan.plan_token,
+            requester_address=intent.sponsor_address,
+            idempotency_key="collaboration-execution-0001",
+        )
+    assert journal.path.read_bytes() == before
+
+
+def test_authorization_status_requires_current_room_visibility(tmp_path, monkeypatch):
+    from tinker_delegate.collaboration_store import CollaborationAuthorizationError
+
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, _authorized, _request, _release = values
+
+    def not_visible(*_args):
+        raise CollaborationAuthorizationError("Wallet cannot view this collaboration room")
+
+    monkeypatch.setattr(coordinator.store, "room_projection", not_visible)
+    before = journal.path.read_bytes()
+    with pytest.raises(CollaborationAuthorizationError):
+        coordinator.authorization_status(
+            plan_token=plan.plan_token,
+            requester_address=intent.sponsor_address,
+            idempotency_key="collaboration-execution-0001",
+        )
+    assert journal.path.read_bytes() == before
+
+
+def test_read_only_coordinator_skips_workload_and_preserves_executable_cache(
+    tmp_path, monkeypatch,
+):
+    from tinker_delegate import api
+    from tinker_delegate import wallet_signature_verifier
+
+    coordinator, journal, _accounts, _snapshot, _request, _release = _coordinator(tmp_path)
+    cached = object()
+    cached_identity = ("executable-coordinator",)
+    monkeypatch.setattr(api, "settings", coordinator.settings)
+    monkeypatch.setattr(api, "_require_collaboration_execution_enabled", lambda: None)
+    def existing_journal(*, require_existing):
+        assert require_existing is True
+        return journal
+
+    monkeypatch.setattr(api, "_get_collaboration_execution_journal", existing_journal)
+    monkeypatch.setattr(api, "_get_collaboration_store", lambda: coordinator.store)
+    monkeypatch.setattr(api, "_collaboration_execution_coordinator_instance", cached)
+    monkeypatch.setattr(api, "_collaboration_execution_coordinator_identity", cached_identity)
+    monkeypatch.setattr(execution_service_module, "collaboration_execution_integrity_key", lambda _settings: b"k" * 32)
+    monkeypatch.setattr(wallet_signature_verifier, "wallet_signature_verifier_from_settings", lambda _settings: coordinator.signature_verifier)
+
+    def forbidden():
+        pytest.fail("recovery attempted to construct current Compute workload authority")
+
+    monkeypatch.setattr(api, "_get_compute_workload_ingress", forbidden)
+    reader = api._get_collaboration_execution_coordinator(
+        read_only=True, authority_view=coordinator.store
+    )
+    assert reader is not cached
+    assert reader.journal is journal
+    assert reader.workload_ingress is None
+    assert api._collaboration_execution_coordinator_instance is cached
+    assert api._collaboration_execution_coordinator_identity is cached_identity
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_authorization_status_api_never_initializes_a_missing_journal(
+    tmp_path, monkeypatch, cached,
+):
+    from fastapi import HTTPException
+    from tinker_delegate import api, wallet_signature_verifier
+
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, _authorized, _request, _release = values
+    coordinator.settings.collaboration_execution_journal_path = str(journal.path)
+    identity = (str(journal.path), hashlib.sha256(b"k" * 32).hexdigest())
+    monkeypatch.setattr(api, "settings", coordinator.settings)
+    monkeypatch.setattr(api, "_require_collaboration_execution_enabled", lambda: None)
+    monkeypatch.setattr(api, "_require_collaboration_wallet_auth", lambda _auth, **_kwargs: SimpleNamespace(address=intent.sponsor_address))
+    monkeypatch.setattr(api, "_get_read_only_collaboration_store", lambda: coordinator.store)
+    monkeypatch.setattr(api, "_get_collaboration_store", lambda: coordinator.store)
+    monkeypatch.setattr(api, "_collaboration_execution_journal_instance", journal if cached else None)
+    monkeypatch.setattr(api, "_collaboration_execution_journal_instance_identity", identity if cached else None)
+    monkeypatch.setattr(execution_service_module, "collaboration_execution_integrity_key", lambda _settings: b"k" * 32)
+    monkeypatch.setattr(wallet_signature_verifier, "wallet_signature_verifier_from_settings", lambda _settings: coordinator.signature_verifier)
+    journal.path.unlink()
+    with pytest.raises(HTTPException) as raised:
+        api.collaboration_get_execution_authorization_status(
+            api.CollaborationExecutionAuthorizationStatusRequest(
+                plan_token=plan.plan_token,
+                idempotency_key="collaboration-execution-0001",
+            ),
+            authorization="Bearer synthetic-wallet-auth",
+        )
+    assert raised.value.status_code == 503
+    assert not journal.path.exists()
+
+
+def _authorization_status_api_fixture(tmp_path, monkeypatch):
+    """Produce a shared browser contract from the real coordinator and route."""
+
+    from tinker_delegate import api
+    from tinker_delegate.collaboration_execution_evidence import (
+        project_collaboration_execution_worker_capability,
+    )
+
+    grant_ids = iter(("41" * 16, "42" * 16))
+    monkeypatch.setattr(execution_service_module, "_fresh_nonzero_bytes32", lambda: _bytes32("d"))
+    monkeypatch.setattr(execution_service_module, "_fresh_nonzero_uint256", lambda: 2**200 + 123_456_789)
+    monkeypatch.setattr(execution_service_module, "secrets", SimpleNamespace(token_hex=lambda _length: next(grant_ids)))
+    values, plan = _authorize_with_plan(tmp_path)
+    coordinator, journal, intent, authorized, plan_request, _release = values
+    request = {
+        "plan_token": plan.plan_token,
+        "idempotency_key": "collaboration-execution-0001",
+    }
+    monkeypatch.setattr(api, "_require_collaboration_execution_enabled", lambda: None)
+    monkeypatch.setattr(api, "_require_collaboration_wallet_auth", lambda _auth, **_kwargs: SimpleNamespace(address=intent.sponsor_address))
+    monkeypatch.setattr(api, "_get_read_only_collaboration_store", lambda: coordinator.store)
+
+    def get_reader(*, read_only, authority_view):
+        assert read_only is True
+        assert authority_view is coordinator.store
+        return coordinator
+
+    monkeypatch.setattr(api, "_get_collaboration_execution_coordinator", get_reader)
+    monkeypatch.setattr(api, "_project_collaboration_execution_capability", lambda: project_collaboration_execution_worker_capability(
+        enabled=True, expected_bindings=None, heartbeat_store=None,
+        now=NOW + 10_000, ttl_seconds=30,
+    ))
+    coordinator.clock = lambda: NOW + 10_000
+    before = journal.path.read_bytes()
+    response = api.collaboration_get_execution_authorization_status(
+        api.CollaborationExecutionAuthorizationStatusRequest.model_validate(request),
+        authorization="Bearer synthetic-wallet-auth",
+    )
+    assert journal.path.read_bytes() == before
+    return {
+        "plan_request": plan_request,
+        "plan": plan.to_public_dict(),
+        "request": request,
+        "response": response,
+        "authorization_response": api._with_collaboration_execution_capability(
+            authorized, resource_kind="execution_authorization"
+        ),
+    }
+
+
+def test_authorization_status_api_matches_shared_browser_fixture(tmp_path, monkeypatch):
+    fixture_path = Path(__file__).resolve().parents[3] / "web/src/lib/fixtures/collaboration-authorization-status.json"
+    expected = json.loads(fixture_path.read_text("utf-8"))
+    assert _authorization_status_api_fixture(tmp_path, monkeypatch) == expected
 
 
 def test_plan_and_grants_bind_a_server_generated_deposited_reservation(tmp_path):

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -650,6 +651,79 @@ class CollaborationApiV2Test(unittest.TestCase):
                 "erc20_approval",
             },
         )
+
+    def test_authorization_status_requires_fresh_auth_and_strict_read_request(self):
+        from tinker_delegate.collaboration_execution import CollaborationExecutionNotFound
+
+        route = "/collaboration/execution-plans/authorization-status"
+        request = {"plan_token": "p" * 80, "idempotency_key": "original-request-0001"}
+        disabled = self.client.post(route, json=request)
+        self.assertEqual(disabled.status_code, 503, disabled.text)
+        api.settings.collaboration_execution_enabled = True
+        unauthenticated = self.client.post(route, json=request)
+        self.assertEqual(unauthenticated.status_code, 401, unauthenticated.text)
+        headers = self.headers(self.creator)
+        calls = []
+        reservation = {"transaction": {"calldata": "0x1234", "value": "10"}}
+        execution = {
+            "surface": "collaboration_one_shot_execution",
+            "state": "claimed",
+            "royalty": {"funding_reservation": reservation},
+            "source_capable_core_only": True,
+            "compute_journal_projection": {"source_authentication_proven": False},
+        }
+
+        def recover(**kwargs):
+            calls.append(kwargs)
+            return {
+                "surface": "collaboration_execution_authorization_status",
+                "schema_version": 1,
+                "request_commitment": _commitment("request"),
+                "basis_commitment": _commitment("basis"),
+                "read_only": True,
+                "provider_dispatch_performed": False,
+                "authorization_commitment": _commitment("authorization"),
+                "royalty_reservation": reservation,
+                "execution": execution,
+            }
+
+        authority_view = SimpleNamespace(close=lambda: None)
+        with patch.object(api, "_get_read_only_collaboration_store", return_value=authority_view), patch.object(api, "_get_collaboration_execution_coordinator", return_value=SimpleNamespace(authorization_status=recover)) as get_reader:
+            recovered = self.client.post(route, headers=headers, json=request)
+            self.assertEqual(recovered.status_code, 200, recovered.text)
+            get_reader.assert_called_once_with(read_only=True, authority_view=authority_view)
+            for invalid in (
+                {**request, "grants": []}, {**request, "now": 1},
+                {**request, "idempotency_key": "short"},
+                {**request, "plan_token": 123},
+            ):
+                rejected = self.client.post(route, headers=headers, json=invalid)
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+            with patch("tinker_delegate.collaboration_auth.time.time", return_value=time.time() + 86_400):
+                expired_auth = self.client.post(route, headers=headers, json=request)
+            self.assertEqual(expired_auth.status_code, 401, expired_auth.text)
+            get_reader.assert_called_once_with(read_only=True, authority_view=authority_view)
+        self.assertEqual(calls, [{**request, "requester_address": self.creator.address.lower()}])
+        body = recovered.json()
+        self.assertEqual(body["resource_kind"], "execution_authorization_status")
+        result = body["payload"]
+        self.assertTrue(result["read_only"])
+        self.assertFalse(result["provider_dispatch_performed"])
+        self.assertFalse(result["execution"]["source_capable_core_only"])
+        self.assertFalse(result["execution"]["fresh_worker_presence_proven"])
+        self.assertTrue(result["execution"]["api_worker_wiring_available"])
+        self.assertTrue(result["execution"]["compute_journal_projection"]["source_authentication_proven"])
+        for royalty in (result["royalty_reservation"], result["execution"]["royalty"]["funding_reservation"]):
+            self.assertEqual(royalty["transaction"]["status"], "gated_worker_presence_required")
+            self.assertNotIn("calldata", royalty["transaction"])
+        self.assertIn("calldata", reservation["transaction"])
+        self.assertNotIn("verifier_kinds", result)
+        with patch.object(api, "_get_read_only_collaboration_store", return_value=authority_view), patch.object(api, "_get_collaboration_execution_coordinator", return_value=SimpleNamespace(
+            authorization_status=lambda **_kwargs: (_ for _ in ()).throw(CollaborationExecutionNotFound("unknown"))
+        )):
+            unknown = self.client.post(route, headers=headers, json=request)
+        self.assertEqual(unknown.status_code, 404, unknown.text)
+        self.assertNotIn("execution", unknown.json())
 
     def test_sponsor_settlement_prepare_status_broadcast_and_lost_response_replay(self):
         now = 1_800_000_000

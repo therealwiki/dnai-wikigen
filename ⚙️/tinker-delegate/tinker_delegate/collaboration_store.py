@@ -2120,6 +2120,42 @@ class CollaborationStore:
         }
 
 
+class ReadOnlyCollaborationStore(CollaborationStore):
+    """Existing authenticated state only; no initialization or durable writes.
+
+    A distinct type keeps recovery reads independent of shared mutable store
+    instances. The lock leaf may be created, but no data file or parent is.
+    """
+
+    def __init__(self, path: str | Path, *, integrity_key: bytes) -> None:
+        self.path = Path(path)
+        if not isinstance(integrity_key, bytes) or len(integrity_key) < 32:
+            raise CollaborationStoreError(
+                "Collaboration store integrity key must be at least 32 bytes"
+            )
+        self._integrity_key = bytes(integrity_key)
+        self._lock_path = self.path.with_name(f".{self.path.name}.lock")
+        with self._locked():
+            self._load_locked()
+
+    def rollback_status(self) -> dict[str, Any]:
+        with self._locked():
+            self._load_locked()
+            return dict(self._rollback_truth())
+
+    def _commit_locked(self, candidate: dict[str, Any]) -> None:
+        raise CollaborationStoreCorruptError("Collaboration authority view is read-only")
+
+    def _persist_locked(self, payload: dict[str, Any]) -> None:
+        raise CollaborationStoreCorruptError("Collaboration authority view is read-only")
+
+    def _persist_path_locked(self, path: str | Path, payload: dict[str, Any]) -> None:
+        raise CollaborationStoreCorruptError("Collaboration authority view is read-only")
+
+    def close(self) -> None:
+        pass
+
+
 class _FileLock:
     def __init__(self, path: Path) -> None:
         self.path = path

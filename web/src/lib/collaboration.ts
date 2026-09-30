@@ -593,6 +593,7 @@ export interface CollaborationExecutionWorkerCapability {
 export type CollaborationExecutionApiResourceKind =
   | "execution_plan"
   | "execution_authorization"
+  | "execution_authorization_status"
   | "execution_status";
 
 export interface CollaborationExecutionQueueControlProjection {
@@ -627,6 +628,26 @@ export interface CollaborationExecutionAuthorizationResult {
   readonly royaltyReservationFinalizedInBrowser: false;
   readonly royaltyReservationMayUnlockExecutionControls: false;
   readonly execution: CollaborationExecutionStatusProjection;
+}
+
+/** Common committed terms, not a claim that recovery verified fresh signatures. */
+export type CollaborationExecutionCommittedAuthorization = Pick<
+  CollaborationExecutionAuthorizationResult,
+  "authorization_commitment" | "royalty_reservation" | "execution"
+>;
+
+export interface CollaborationExecutionAuthorizationStatusRequest {
+  readonly plan_token: string;
+  readonly idempotency_key: string;
+}
+
+export interface CollaborationExecutionAuthorizationStatus extends CollaborationExecutionCommittedAuthorization {
+  readonly surface: "collaboration_execution_authorization_status";
+  readonly schema_version: 1;
+  readonly request_commitment: string;
+  readonly basis_commitment: string;
+  readonly read_only: true;
+  readonly provider_dispatch_performed: false;
 }
 
 export interface CreateCollaborationRoomRequest {
@@ -3938,7 +3959,7 @@ export function assertCollaborationExecutionPlanMatchesCurrentRelease(
     || !release.releaseSha
     || !release.releaseVerificationSha256
     || !release.mainRuntimeCvmId
-    || !deployment.composeHash
+    || !BARE_HASH.test(deployment.composeHash)
     || !deployment.royaltyDistributorAddress
     || !royaltyAuthority
   ) {
@@ -3948,7 +3969,7 @@ export function assertCollaborationExecutionPlanMatchesCurrentRelease(
     releaseSha: release.releaseSha,
     releaseVerificationSha256: release.releaseVerificationSha256,
     mainRuntimeCvmId: release.mainRuntimeCvmId,
-    composeHash: deployment.composeHash,
+    composeHash: `0x${deployment.composeHash}`,
     royaltyDistributorAddress: deployment.royaltyDistributorAddress,
     royaltyReleasePolicyCommitment:
       royaltyAuthority.release_policy_commitment,
@@ -3994,7 +4015,7 @@ function commitmentBytes32(value: string): string {
 }
 
 export function assertCollaborationExecutionAuthorizationMatchesPlan(
-  result: CollaborationExecutionAuthorizationResult,
+  result: CollaborationExecutionCommittedAuthorization,
   plan: CollaborationExecutionPlanProjection,
 ): void {
   const execution = result.execution;
@@ -5479,6 +5500,95 @@ export async function authorizeCollaborationExecution(
     );
   }
   return envelope.payload;
+}
+
+function captureCollaborationExecutionAuthorizationStatusRequest(
+  input: CollaborationExecutionAuthorizationStatusRequest,
+): CollaborationExecutionAuthorizationStatusRequest {
+  const value = record(input, "Collaboration authorization status request");
+  exactKeys(value, ["plan_token", "idempotency_key"], "Collaboration authorization status request");
+  return Object.freeze({
+    plan_token: boundedExecutionToken(value.plan_token, "Collaboration execution plan token"),
+    idempotency_key: patterned(value.idempotency_key, IDEMPOTENCY_KEY, "Collaboration execution idempotency key", 128),
+  });
+}
+
+export function collaborationExecutionAuthorizationStatusRequestCommitment(
+  input: CollaborationExecutionAuthorizationStatusRequest,
+): string {
+  return collaborationExecutionCanonicalCommitment(
+    "dnai.collaboration.execution-authorization-status.v1\0",
+    captureCollaborationExecutionAuthorizationStatusRequest(input),
+  );
+}
+
+export function parseCollaborationExecutionAuthorizationStatus(
+  value: unknown,
+): CollaborationExecutionAuthorizationStatus {
+  const result = record(value, "Collaboration authorization status");
+  exactKeys(result, ["surface", "schema_version", "request_commitment", "basis_commitment", "read_only",
+    "provider_dispatch_performed", "authorization_commitment", "royalty_reservation", "execution"],
+  "Collaboration authorization status");
+  literal(result.surface, "collaboration_execution_authorization_status", "Collaboration authorization status surface");
+  literal(result.schema_version, 1, "Collaboration authorization status schema");
+  const execution = parseCollaborationExecutionStatus(result.execution);
+  const authorizationCommitment = commitment(result.authorization_commitment, "Collaboration execution authorization");
+  const royaltyReservation = parseCollaborationExecutionRoyaltyReservation(result.royalty_reservation);
+  if (execution.authorization_commitment !== authorizationCommitment
+    || execution.royalty_reservation.reservation_id !== royaltyReservation.reservation_id
+    || execution.royalty_reservation.walletActionReady !== royaltyReservation.walletActionReady
+    || `0x${execution.intent_commitment.slice(7)}` !== royaltyReservation.request.execution_commitment) {
+    throw new Error("Collaboration recovered authorization terms changed");
+  }
+  return Object.freeze({
+    surface: "collaboration_execution_authorization_status",
+    schema_version: 1,
+    request_commitment: commitment(result.request_commitment, "Collaboration authorization request binding"),
+    basis_commitment: commitment(result.basis_commitment, "Collaboration authorization plan binding"),
+    read_only: literal(result.read_only, true, "Collaboration recovery read-only boundary"),
+    provider_dispatch_performed: literal(result.provider_dispatch_performed, false, "Collaboration recovery dispatch boundary"),
+    authorization_commitment: authorizationCommitment,
+    royalty_reservation: royaltyReservation,
+    execution,
+  });
+}
+
+/** Read an existing exact attempt; absence never proves the original request did not commit. */
+export async function fetchCollaborationExecutionAuthorizationStatus(
+  token: string,
+  input: CollaborationExecutionAuthorizationStatusRequest,
+  expectedPlan: CollaborationExecutionPlanProjection,
+  signal?: AbortSignal,
+): Promise<CollaborationExecutionAuthorizationStatus> {
+  const captured = captureCollaborationExecutionAuthorizationStatusRequest(input);
+  const capturedPlan = Object.freeze({ ...expectedPlan, owner_addresses: Object.freeze([...expectedPlan.owner_addresses]) });
+  if (captured.plan_token !== capturedPlan.plan_token) throw new Error("The original Collaboration plan is required for recovery");
+  assertCollaborationExecutionPlanMatchesCurrentRelease(capturedPlan);
+  const expectedRequestCommitment = collaborationExecutionAuthorizationStatusRequestCommitment(captured);
+  let response: unknown;
+  try {
+    response = await request("/collaboration/execution-plans/authorization-status", {
+      method: "POST", token, body: { ...captured }, signal,
+    });
+  } catch (cause) {
+    if (cause instanceof CollaborationRequestError && cause.status === 404) {
+      throw new CollaborationRequestError(
+        "No committed authorization was found for this exact attempt. Its outcome remains unresolved; retain the original plan, grants, and request key and do not create a replacement.",
+        404,
+      );
+    }
+    throw cause;
+  }
+  const envelope = parseCollaborationExecutionApiEnvelope(response, "execution_authorization_status", parseCollaborationExecutionAuthorizationStatus);
+  const recovered = envelope.payload;
+  if (recovered.request_commitment !== expectedRequestCommitment
+    || recovered.basis_commitment !== capturedPlan.basis_commitment
+    || recovered.royalty_reservation.walletActionReady !== envelope.queue_control.onchain_reservation_ready) {
+    throw new Error("Collaboration recovery returned a different attempt, plan, or capability");
+  }
+  assertCollaborationExecutionPlanMatchesCurrentRelease(capturedPlan);
+  assertCollaborationExecutionAuthorizationMatchesPlan(recovered, capturedPlan);
+  return recovered;
 }
 
 export async function fetchCollaborationExecutionWorkerCapability(

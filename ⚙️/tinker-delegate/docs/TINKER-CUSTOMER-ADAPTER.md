@@ -309,6 +309,16 @@ bounded `409` reconciliation receipt with
 `automatic_provider_redispatch: false`. The reservation remains explicit for
 operator reconciliation instead of being guessed settled or released.
 
+The reserved workload and the real runner receipt bind the model using the
+same established `stable_hash(model, prefix="tinker_model")` convention:
+SHA-256 of `tinker_model`, a NUL separator, and the exact model bytes. A bare
+model SHA-256 or another model remains a mismatch and cannot finalize. Any
+reservation persisted by the older bare-hash wrapper keeps its original
+commitment; a retry under the corrected wrapper conflicts before dispatch and
+requires explicit reconciliation. There is no automatic migration or provider
+redispatch. Tests compose the actual runner with synthetic SDK/adapter
+boundaries and do not claim live provider execution.
+
 A proven pre-dispatch failure signs a zero-actual-unit release. A proven
 completed run signs a settlement that consumes the requested fixed ceiling.
 That deliberately conservative amount is authority accounting, not metered

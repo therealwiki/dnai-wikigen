@@ -1,12 +1,24 @@
-import { describe, expect, it } from "vitest";
-import { zeroAddress, type Hex } from "viem";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sha256, zeroAddress, type Hex } from "viem";
+import { deployment } from "../config";
 import {
   assertCollaborationComputeAuthorizationMatchesPlanRequest,
+  assertCollaborationExecutionAuthorizationMatchesPlan,
+  assertCollaborationExecutionPlanMatchesCurrentRelease,
+  collaborationExecutionAuthorizationStatusRequestCommitment,
+  createCollaborationExecutionPlan,
+  fetchCollaborationExecutionAuthorizationStatus,
+  parseCollaborationExecutionPlan,
+  parseCollaborationExecutionApiEnvelope,
+  parseCollaborationExecutionAuthorizationResult,
+  parseCollaborationExecutionAuthorizationStatus,
   parseCollaborationExecutionStatus,
   type CollaborationExecutionPlanProjection,
   type CollaborationExecutionPlanRequest,
   type CollaborationExecutionStatusProjection,
 } from "./collaboration";
+import { pythonCanonicalJson } from "./policyCommitments";
+import authorizationStatusFixture from "./fixtures/collaboration-authorization-status.json";
 import { verifyCollaborationComputeAuthorizationTerms } from "./collaborationComputeAuthorization";
 import {
   computeCollaborationOneShotAuthorizationContextCommitment,
@@ -346,5 +358,217 @@ describe("binding API Compute terms to the retained request and plan", () => {
     expect(() => verifyProjectedTerms(parseCollaborationExecutionStatus(statusFixture()), {
       ...plan(), basis_commitment: pin("a"),
     })).toThrow("context");
+  });
+});
+
+describe("exact committed authorization recovery transport", () => {
+  const originalDeployment = { ...deployment };
+  const token = `${"a".repeat(40)}.${"b".repeat(40)}.${"c".repeat(40)}`;
+  const attempt = () => ({ plan_token: plan().plan_token, idempotency_key: "collab-authorize-retained-0001" });
+  const canonicalHash = (domain: string, value: unknown) => `sha256:${sha256(new TextEncoder().encode(domain + pythonCanonicalJson(value))).slice(2)}`;
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+    status, headers: { "Content-Type": "application/json" },
+  });
+
+  function envelope() {
+    const execution = statusFixture();
+    execution.execution_id = `exec_${sha256(new TextEncoder().encode(
+      `dnai-wikigen/collaboration-execution-id/v1\0${execution.intent_commitment}`,
+    )).slice(2)}`;
+    execution.authorization_commitment = canonicalHash("dnai-wikigen/collaboration-execution-authorization/v1\0", {
+      schema: "dnai.collaboration.execution-authorization.v1",
+      execution_id: execution.execution_id,
+      intent_commitment: execution.intent_commitment,
+      execution_basis_commitment: plan().basis_commitment,
+      execution_grant_set_commitment: execution.execution_grant_set_commitment,
+    }) as `sha256:${string}`;
+    return {
+      surface: "collaboration_execution_api_envelope", schema_version: 1, resource_kind: "execution_authorization_status",
+      payload: {
+        surface: "collaboration_execution_authorization_status", schema_version: 1,
+        request_commitment: canonicalHash("dnai.collaboration.execution-authorization-status.v1\0", attempt()),
+        basis_commitment: plan().basis_commitment, read_only: true, provider_dispatch_performed: false,
+        authorization_commitment: execution.authorization_commitment,
+        royalty_reservation: execution.royalty.funding_reservation,
+        execution,
+      },
+      worker_capability: {
+        surface: "collaboration_execution_worker_capability", schema: "dnai.collaboration.execution-worker-capability.v1",
+        status: "unavailable", gate_reason: "heartbeat_stale", execution_enabled: true, queue_control_plane_available: true,
+        queued_work_executable: false, onchain_reservation_ready: false, worker_connected: false,
+        freshness: "unavailable", evidence_authenticity: "unverified",
+        evidence_classification: "authenticated_worker_presence_not_job_attestation",
+        heartbeat_observed_at: null, presence_binding_sha256: null, release_binding_sha256: null, release_binding: null,
+        qvl_capability: { configuration: "unavailable", reachability: "unavailable", observation_sha256: null,
+          observed_at: null, expires_at: null, profile: null, royalty_authorization_schema: null,
+          per_job_qvl_required: true, per_job_qvl_verified: false },
+        real_dstack: false, simulator: false, tdx_job_attestation_proven: false, qvl_job_verdict_proven: false,
+        warning: "Synthetic transport fixture; no hardware or live worker proof.",
+      },
+      queue_control: { queue_control_plane_available: true, queued_not_executable: true, onchain_reservation_ready: false,
+        fresh_worker_presence_proven: false, api_worker_wiring_claimed: false },
+    };
+  }
+
+  beforeEach(() => {
+    Object.assign(deployment, {
+      collaborationEnabled: true, delegateUrl: "https://delegate.example", releaseIdentityStatus: "release_bound",
+      releaseSha: "b".repeat(40), verificationChainReleaseSha: "b".repeat(40), appId: "a".repeat(40),
+      cvmId: "cvm-main-runtime-0001", composeHash: "d".repeat(64), osImageHash: "e".repeat(64),
+      imageDigest: `ghcr.io/wikigen/delegate@sha256:${"f".repeat(64)}`,
+      walletAuthDomain: "www.wikigen.me", walletAuthUri: "https://www.wikigen.me",
+      executionPolicyAnchorRelease: { address: `0x${"5".repeat(40)}`, runtimeCodeHash: word("6"), writer: USER,
+        writerReleaseCommitment: word("7"), confirmations: 2, maxBlockAgeSeconds: 600, maxFutureBlockSkewSeconds: 30 },
+      collaborationExecutionRelease: { ...deployment.collaborationExecutionRelease, configured: true, executionEnabled: true,
+        releaseSha: "b".repeat(40), releaseVerificationSha256: pin("c"), mainRuntimeCvmId: "cvm-main-runtime-0001",
+        walletAdoptionEnabled: true },
+      royaltyDistributorAddress: DISTRIBUTOR,
+      royaltyRelease: { ...deployment.royaltyRelease, authority: { ...deployment.royaltyRelease.authority, release_policy_commitment: word("a") } },
+    });
+  });
+  afterEach(() => { Object.assign(deployment, originalDeployment); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  it("normalizes the actual bare deployment compose hash to exact plan bytes32", () => {
+    expect(() => assertCollaborationExecutionPlanMatchesCurrentRelease(plan())).not.toThrow();
+    expect(() => assertCollaborationExecutionPlanMatchesCurrentRelease({ ...plan(), compose_hash: word("c") })).toThrow("current v4 release");
+  });
+
+  it("accepts actual Python plan and recovery producers through the configured browser transports", async () => {
+    // Regenerated and equality-checked by test_collaboration_execution_service.py.
+    // Synthetic signed owners/local journal only; this fixture proves no live CVM.
+    const fixture = authorizationStatusFixture;
+    const request = fixture.plan_request as CollaborationExecutionPlanRequest;
+    const expectedPlan = parseCollaborationExecutionPlan(fixture.plan, request);
+    const originalAuthorization = parseCollaborationExecutionApiEnvelope(
+      fixture.authorization_response,
+      "execution_authorization",
+      parseCollaborationExecutionAuthorizationResult,
+    ).payload;
+    expect(() => assertCollaborationExecutionAuthorizationMatchesPlan(originalAuthorization, expectedPlan)).not.toThrow();
+    expect(() => assertCollaborationComputeAuthorizationMatchesPlanRequest(originalAuthorization.execution, expectedPlan, request)).not.toThrow();
+    Object.assign(deployment, {
+      releaseSha: expectedPlan.release_git_sha, verificationChainReleaseSha: expectedPlan.release_git_sha,
+      cvmId: expectedPlan.cvm_id, composeHash: expectedPlan.compose_hash.slice(2),
+      collaborationExecutionRelease: { ...deployment.collaborationExecutionRelease,
+        releaseSha: expectedPlan.release_git_sha, releaseVerificationSha256: expectedPlan.release_verification_sha256,
+        mainRuntimeCvmId: expectedPlan.cvm_id },
+      royaltyDistributorAddress: expectedPlan.royalty_distributor_address,
+      royaltyRelease: { ...deployment.royaltyRelease, authority: { ...deployment.royaltyRelease.authority,
+        release_policy_commitment: expectedPlan.royalty_release_policy_commitment } },
+    });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(json({ ...fixture.response, resource_kind: "execution_plan", payload: fixture.plan }))
+      .mockResolvedValueOnce(json(fixture.response));
+    vi.stubGlobal("fetch", fetch);
+    const createdPlan = await createCollaborationExecutionPlan(token, expectedPlan.run_id, request, expectedPlan.sponsor_address);
+    const recovered = await fetchCollaborationExecutionAuthorizationStatus(token, fixture.request, createdPlan);
+    expect(createdPlan).toEqual(expectedPlan);
+    expect(recovered.execution.execution_id).toBe(fixture.response.payload.execution.execution_id);
+    expect(recovered.execution.execution_id).toBe(originalAuthorization.execution.execution_id);
+    expect(recovered.request_commitment).toBe(fixture.response.payload.request_commitment);
+    expect(recovered.basis_commitment).toBe(createdPlan.basis_commitment);
+    expect(recovered.royalty_reservation.walletActionReady).toBe(false);
+    expect(() => assertCollaborationComputeAuthorizationMatchesPlanRequest(recovered.execution, createdPlan, request)).not.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual(fixture.request);
+  });
+
+  it.each([word("d"), `0x0x${"d".repeat(64)}`, "0".repeat(64), "d".repeat(63), "D".repeat(64)])(
+    "rejects noncanonical deployment compose hash %s instead of stripping arbitrary prefixes", async (composeHash) => {
+      Object.assign(deployment, { composeHash });
+      const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+      await expect(fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan())).rejects.toThrow();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reads the exact attempt after expiry without grants or an execution-id and keeps funding gated", async () => {
+    const raw = envelope();
+    const fetch = vi.fn(async () => json(raw)); vi.stubGlobal("fetch", fetch);
+    vi.spyOn(Date, "now").mockReturnValue((NOW + 900) * 1000);
+    const result = await fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan());
+    expect(result.read_only).toBe(true);
+    expect(result.execution.execution_id).toBe(raw.payload.execution.execution_id);
+    expect(result.royalty_reservation.walletActionReady).toBe(false);
+    expect(result.execution.clientDtoMayUnlockExecutionControls).toBe(false);
+    expect(result.execution.qvlVerifiedInBrowser).toBe(false);
+    expect(result).not.toHaveProperty("verifier_kinds");
+    const [url, options] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://delegate.example/collaboration/execution-plans/authorization-status");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(String(options.body))).toEqual(attempt());
+    expect(options.headers).toMatchObject({ Authorization: `Bearer ${token}` });
+    expect(options.credentials).toBe("omit");
+    expect(options.cache).toBe("no-store");
+    expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("uses the same canonical request binding across object insertion order", () => {
+    const input = attempt();
+    expect(collaborationExecutionAuthorizationStatusRequestCommitment(input)).toBe(envelope().payload.request_commitment);
+    expect(collaborationExecutionAuthorizationStatusRequestCommitment({ idempotency_key: input.idempotency_key, plan_token: input.plan_token }))
+      .toBe(envelope().payload.request_commitment);
+  });
+
+  it.each([
+    ["request_commitment", pin("a")], ["basis_commitment", pin("b")], ["read_only", false],
+    ["provider_dispatch_performed", true], ["authorization_commitment", pin("a")],
+    ["execution.room_id", `room_${"9".repeat(32)}`], ["execution.execution_id", `exec_${"9".repeat(64)}`],
+    ["unexpected_authority", true],
+  ])("rejects a changed recovery field %s", async (path, value) => {
+    const raw = envelope(); replacePath(raw.payload, String(path), value);
+    vi.stubGlobal("fetch", vi.fn(async () => json(raw)));
+    await expect(fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan())).rejects.toThrow();
+  });
+
+  it("does not accept a capability upgrade from a status response", async () => {
+    const raw = envelope(); raw.queue_control.onchain_reservation_ready = true;
+    vi.stubGlobal("fetch", vi.fn(async () => json(raw)));
+    await expect(fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan())).rejects.toThrow();
+  });
+
+  it("validates and snapshots the exact attempt and plan before await", async () => {
+    const raw = envelope();
+    const input = attempt(); const retainedPlan = plan();
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((done) => { resolve = done; })));
+    const pending = fetchCollaborationExecutionAuthorizationStatus(token, input, retainedPlan);
+    input.idempotency_key = "collab-authorize-replaced-0002";
+    Object.assign(retainedPlan, { basis_commitment: pin("a"), sponsor_address: OTHER });
+    resolve(json(raw));
+    await expect(pending).resolves.toMatchObject({ request_commitment: raw.payload.request_commitment });
+  });
+
+  it("rejects an otherwise bound response after the configured release changes", async () => {
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((done) => { resolve = done; })));
+    const pending = fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan());
+    Object.assign(deployment, { composeHash: "c".repeat(64) });
+    resolve(json(envelope()));
+    await expect(pending).rejects.toThrow("current v4 release");
+  });
+
+  it("keeps not-found distinct from proof that no authorization committed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ detail: "not found" }, 404)));
+    await expect(fetchCollaborationExecutionAuthorizationStatus(token, attempt(), plan())).rejects.toThrow("outcome remains unresolved");
+  });
+
+  it.each([
+    { plan_token: "invalid", idempotency_key: "valid-attempt-key" },
+    { ...attempt(), idempotency_key: "?" }, { ...attempt(), grants: [] },
+    { ...attempt(), plan_token: `${"c".repeat(40)}.${"d".repeat(40)}` },
+  ])("rejects malformed, expanded or replaced recovery inputs before fetch", async (input) => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(fetchCollaborationExecutionAuthorizationStatus(token, input, plan())).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("parses no synthetic hardware evidence and freezes the recovered projection", () => {
+    const raw = envelope().payload;
+    const parsed = parseCollaborationExecutionAuthorizationStatus(raw);
+    raw.execution.state = "claimed";
+    expect(parsed.execution.state).toBe("authorized");
+    expect(parsed.execution.independentJournalSourceAuthenticated).toBe(false);
+    expect(parsed.execution.tdxAttestationVerifiedInBrowser).toBe(false);
   });
 });

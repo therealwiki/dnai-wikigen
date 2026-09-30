@@ -353,6 +353,7 @@ describe("Collaboration execution transport", () => {
     expect(collaborationExecutionTransportAdapter.createPlan).toBeTypeOf("function");
     expect(collaborationExecutionTransportAdapter.issueGrantChallenge).toBeTypeOf("function");
     expect(collaborationExecutionTransportAdapter.authorize).toBeTypeOf("function");
+    expect(collaborationExecutionTransportAdapter.fetchAuthorizationStatus).toBeTypeOf("function");
     expect(collaborationExecutionTransportAdapter.fetchWorkerCapability).toBeTypeOf("function");
     expect(collaborationExecutionTransportAdapter.fetchStatus).toBeTypeOf("function");
   });

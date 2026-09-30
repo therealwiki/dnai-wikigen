@@ -10,6 +10,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
 )
 
+from tinker_delegate import tinker_training
+from tinker_delegate.fake_tinker_backend import FakeTinkerServiceClient
+from tinker_delegate.run_metadata_store import stable_hash
 from tinker_delegate.tinker_customer_adapter import TinkerCustomerAdapter
 from tinker_delegate.tinker_customer_execution import (
     TinkerCustomerReconciliationRequired,
@@ -64,7 +67,7 @@ def _runner_result(
             "cleanup_completed" if success else "policy_checked"
         ),
         "deal_id_hash": hashlib.sha256(b"deal").hexdigest(),
-        "model_hash": hashlib.sha256(request.model.encode()).hexdigest(),
+        "model_hash": stable_hash(request.model, prefix="tinker_model"),
         "rank": request.rank,
         "steps_requested": request.steps,
         "steps_completed": request.steps if success else 0,
@@ -252,6 +255,126 @@ def test_pre_dispatch_failure_releases_the_full_policy_reservation(
     assert receipt["released_policy_units"] == "50000"
     assert receipt["settlement"]["provider_dispatch_performed"] is False
     assert calls["runner"] == 1
+
+
+def test_actual_training_runner_receipt_settles_and_replays_without_redispatch(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Actual runner and signed results; adapter, policy, and SDK boundaries fake."""
+    backend = FakeTinkerServiceClient(api_key="synthetic-test-only")
+    connections = []
+
+    def preflight(_settings, **kwargs):
+        assert kwargs["required"] is True
+        assert kwargs["compose_hash"] == COMPOSE
+        assert kwargs["amount_dollars"] == 0.125
+        return SimpleNamespace(allowed=True, to_public_dict=lambda: {})
+
+    def connect(_sdk, api_key, project_id, base_url):
+        connections.append((project_id, base_url))
+        assert api_key == "synthetic-test-only"
+        return backend
+
+    monkeypatch.setattr(tinker_training, "time", SimpleNamespace(time=lambda: NOW))
+    monkeypatch.setattr(tinker_training, "preflight_tinker_operation", preflight)
+    monkeypatch.setattr(tinker_training, "resolve_api_key", lambda _: "synthetic-test-only")
+    monkeypatch.setattr(tinker_training, "resolve_tinker_client_config", lambda _: {
+        "project_id": "synthetic-project", "base_url": "https://provider.invalid",
+    })
+    monkeypatch.setattr(tinker_training, "_create_service_client", connect)
+    service, calls, directory = _service(tmp_path, tinker_training.run_tinker_training)
+    request = TinkerCustomerTrainingRequest(max_usd_micros=125_000, steps=2)
+    kwargs = {
+        "credential_token": "customer-credential", "request": request,
+        "idempotency_key": "actual-runner-settlement-0001",
+    }
+    first = service.execute(**kwargs)
+    replay = service.execute(**kwargs)
+
+    assert first["status"] == "settled"
+    assert first["actual_policy_units"] == "125000"
+    assert first["released_policy_units"] == "0"
+    assert first["training_result"]["model_hash"] == hashlib.sha256(
+        b"tinker_model\0" + MODEL.encode("utf-8")
+    ).hexdigest()
+    assert first["training_result"]["outcome"] == "training_completed"
+    assert first["training_result"]["steps_completed"] == 2
+    assert first["training_result"]["checkpoint_saved"] is True
+    assert first["training_result"]["provider_dispatch_performed"] is True
+    assert first["provider_authoritative_billing"] is False
+    assert first["authority_accounting_only"] is True
+    assert replay["idempotent_replay"] is True
+    assert replay["training_result"] == first["training_result"]
+    assert calls["runner"] == 1 and calls["finalize"] == 2
+    assert connections == [("synthetic-project", "https://provider.invalid")]
+    assert len(backend.created_training_clients) == 1
+    training_client = backend.created_training_clients[0][1]
+    assert len(training_client.forward_backward_calls) == 2
+    assert len(training_client.optim_step_calls) == 2
+    assert backend.rest_client.deleted
+    assert (directory / f"{RESERVATION_ID}.training.json").is_file()
+    assert (directory / f"{RESERVATION_ID}.json").is_file()
+
+
+def test_actual_training_runner_pre_dispatch_failure_releases_and_replays(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(tinker_training, "time", SimpleNamespace(time=lambda: NOW))
+    monkeypatch.setattr(tinker_training, "preflight_tinker_operation", lambda *_, **__: (
+        SimpleNamespace(allowed=True, to_public_dict=lambda: {})
+    ))
+    monkeypatch.setattr(tinker_training, "resolve_api_key", lambda _: "")
+    monkeypatch.setattr(tinker_training, "resolve_tinker_client_config", lambda _: pytest.fail(
+        "definite pre-dispatch failure must not configure a provider client"
+    ))
+    monkeypatch.setattr(tinker_training, "_create_service_client", lambda *_, **__: pytest.fail(
+        "definite pre-dispatch failure must not contact a provider"
+    ))
+    service, calls, directory = _service(tmp_path, tinker_training.run_tinker_training)
+    kwargs = {
+        "credential_token": "customer-credential",
+        "request": TinkerCustomerTrainingRequest(max_usd_micros=50_000),
+        "idempotency_key": "actual-runner-release-0001",
+    }
+    first = service.execute(**kwargs)
+    replay = service.execute(**kwargs)
+
+    assert first["status"] == "released"
+    assert first["actual_policy_units"] == "0"
+    assert first["released_policy_units"] == "50000"
+    assert first["training_result"]["model_hash"] == stable_hash(MODEL, prefix="tinker_model")
+    assert first["training_result"]["outcome"] == "api_key_missing"
+    assert first["training_result"]["provider_dispatch_attempted"] is False
+    assert first["training_result"]["provider_dispatch_performed"] is False
+    assert first["settlement"]["provider_dispatch_performed"] is False
+    assert replay["idempotent_replay"] is True
+    assert replay["training_result"] == first["training_result"]
+    assert calls["runner"] == 1 and calls["finalize"] == 2
+    assert (directory / f"{RESERVATION_ID}.training.json").is_file()
+    assert (directory / f"{RESERVATION_ID}.json").is_file()
+
+
+@pytest.mark.parametrize("model_hash", [
+    hashlib.sha256(MODEL.encode("utf-8")).hexdigest(),
+    stable_hash("different-model", prefix="tinker_model"),
+])
+def test_mismatched_model_hash_still_requires_reconciliation_without_redispatch(
+    tmp_path: Path, model_hash: str,
+) -> None:
+    def runner(_settings, request, **_kwargs):
+        return {**_runner_result(request=request), "model_hash": model_hash}
+
+    service, calls, directory = _service(tmp_path, runner)
+    for _attempt in range(2):
+        with pytest.raises(TinkerCustomerReconciliationRequired):
+            service.execute(
+                credential_token="customer-credential",
+                request=TinkerCustomerTrainingRequest(max_usd_micros=50_000),
+                idempotency_key="mismatched-model-receipt-0001",
+            )
+    assert calls["runner"] == 1
+    assert calls["finalize"] == 0
+    assert not list(directory.iterdir())
 
 
 def test_ambiguous_post_claim_outcome_is_held_and_retry_never_dispatches(

@@ -2,6 +2,7 @@ import hashlib
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,8 @@ from fastapi import HTTPException
 from tinker_delegate import api
 from tinker_delegate.collaboration_anchor import (
     AnchoredCollaborationStore,
+    ReadOnlyAnchoredCollaborationStore,
+    ReadOnlyExecutionPolicyCollaborationAnchor,
     CollaborationAnchorError,
     CollaborationAnchorHead,
     CollaborationRollbackError,
@@ -19,7 +22,12 @@ from tinker_delegate.collaboration_anchor import (
     collaboration_pending_path,
     collaboration_state_hash,
 )
-from tinker_delegate.collaboration_store import CollaborationStore
+from tinker_delegate.collaboration_store import (
+    CollaborationAuthorizationError,
+    CollaborationStore,
+    CollaborationStoreCorruptError,
+    ReadOnlyCollaborationStore,
+)
 from tinker_delegate.config import Settings
 from tinker_delegate.execution_policy_anchor import (
     AnchoredExecutionPolicyCoordinator,
@@ -386,6 +394,78 @@ class CollaborationRollbackRecoveryTest(unittest.TestCase):
         self.assertIsNone(witness["authority_context_hash"])
         self.assertIsNone(witness["rollback_anchor"])
 
+    def _read_only(self, *, path=None, anchor=None):
+        return ReadOnlyAnchoredCollaborationStore(
+            path or self.path, integrity_key=KEY,
+            authority_context_hash=CONTEXT,
+            rollback_anchor=anchor or self.anchor, clock=lambda: NOW,
+        )
+
+    def test_read_only_view_preserves_active_and_pending_and_cannot_mutate(self):
+        self.store.create_room(**_room_request())
+        pending = collaboration_pending_path(self.path)
+        pending.write_bytes(self.path.read_bytes())
+        before = {path: path.read_bytes() for path in (self.path, pending)}
+        calls = self.anchor.compare_calls
+        reader = self._read_only()
+        self.assertEqual(reader.room_projection(ROOM, CREATOR)["room_id"], ROOM)
+        self.assertTrue(reader.rollback_status()["rollback_protection"])
+        with self.assertRaises(CollaborationAuthorizationError):
+            reader.room_projection(ROOM, "0x" + "99" * 20)
+        with self.assertRaisesRegex(CollaborationStoreCorruptError, "read-only"):
+            reader.cancel_invitation(
+                room_id=ROOM, creator_address=CREATOR, invitee_address=OWNER,
+                idempotency_key="readonly-mutation-0001", cancelled_at=NOW + 1,
+            )
+        self.assertEqual(self.anchor.compare_calls, calls)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_read_only_view_reads_matching_pending_without_promotion(self):
+        self.anchor.fail_after_commit = True
+        with self.assertRaises(CollaborationRollbackError):
+            self.store.create_room(**_room_request())
+        pending = collaboration_pending_path(self.path)
+        before = {path: path.read_bytes() for path in (self.path, pending)}
+        calls = self.anchor.compare_calls
+        reader = self._read_only()
+        self.assertEqual(reader.room_projection(ROOM, CREATOR)["room_id"], ROOM)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        self.path.unlink()
+        self.assertEqual(self._read_only().room_projection(ROOM, CREATOR)["room_id"], ROOM)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(pending.read_bytes(), before[pending])
+        self.assertEqual(self.anchor.compare_calls, calls)
+
+    def test_read_only_view_rejects_zero_missing_mismatch_and_unavailable_without_writes(self):
+        self.store.create_room(**_room_request())
+        before = self.path.read_bytes()
+        calls = self.anchor.compare_calls
+        zero = FakeRollbackAnchor()
+        with self.assertRaisesRegex(CollaborationRollbackError, "Existing.*witness"):
+            self._read_only(anchor=zero)
+        self.assertEqual(zero.compare_calls, 0)
+        missing = self.path.with_name("missing-collaboration.json")
+        with self.assertRaises(CollaborationRollbackError):
+            self._read_only(path=missing)
+        self.assertFalse(missing.exists())
+        original_head = self.anchor.head
+        self.anchor.head = replace(original_head, state_hash="f" * 64)
+        with self.assertRaisesRegex(CollaborationRollbackError, "does not match"):
+            self._read_only()
+        self.anchor.head = original_head
+        reader = self._read_only()
+        self.anchor.unavailable = True
+        with self.assertRaisesRegex(CollaborationRollbackError, "unavailable"):
+            reader.rollback_status()
+        self.assertEqual(self.anchor.compare_calls, calls)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_local_read_only_view_never_initializes_missing_state(self):
+        missing = self.path.with_name("missing-local.json")
+        with self.assertRaises(CollaborationStoreCorruptError):
+            ReadOnlyCollaborationStore(missing, integrity_key=KEY)
+        self.assertFalse(missing.exists())
+
 
 class CollaborationAuthorityContextTest(unittest.TestCase):
     def test_context_binds_project_release_domain_and_exact_state(self):
@@ -436,6 +516,67 @@ class CollaborationAuthorityContextTest(unittest.TestCase):
 
 
 class CollaborationLiveApiGateTest(unittest.TestCase):
+    def test_recovery_auth_uses_supplied_read_only_view_not_normal_store(self):
+        view = MagicMock()
+        auth_service = MagicMock()
+        auth_service.verify_token.return_value = SimpleNamespace(address=CREATOR)
+        with (
+            patch.object(api, "settings", _settings()),
+            patch.object(api, "is_dstack_enabled", return_value=True),
+            patch.object(api, "_get_collaboration_store", side_effect=AssertionError("normal store accessed")),
+            patch.object(api, "CollaborationWalletAuthService", return_value=auth_service),
+        ):
+            claims = api._require_collaboration_wallet_auth("Bearer synthetic-token", authority_view=view)
+        self.assertEqual(claims.address, CREATOR)
+        view.rollback_status.assert_called_once_with()
+        auth_service.verify_token.assert_called_once_with("synthetic-token", required_scope="collaboration:console")
+
+    def test_recovery_route_binds_one_view_to_auth_and_visibility_and_closes_it(self):
+        view = MagicMock()
+        seen = []
+
+        def authenticate(_auth, *, authority_view):
+            self.assertIs(authority_view, view)
+            seen.append("auth")
+            return SimpleNamespace(address=CREATOR)
+
+        def coordinator(*, read_only, authority_view):
+            self.assertTrue(read_only)
+            self.assertIs(authority_view, view)
+            seen.append("coordinator")
+            return SimpleNamespace(authorization_status=lambda **_kwargs: {"execution": {}})
+
+        with (
+            patch.object(api, "_require_collaboration_execution_enabled"),
+            patch.object(api, "_get_read_only_collaboration_store", return_value=view),
+            patch.object(api, "_require_collaboration_wallet_auth", side_effect=authenticate),
+            patch.object(api, "_get_collaboration_execution_coordinator", side_effect=coordinator),
+            patch.object(api, "_get_collaboration_store", side_effect=AssertionError("normal store accessed")),
+            patch.object(api, "_with_collaboration_execution_capability", side_effect=lambda value, **_kwargs: value),
+        ):
+            api.collaboration_get_execution_authorization_status(
+                api.CollaborationExecutionAuthorizationStatusRequest(plan_token="p" * 80, idempotency_key="original-key-0001"),
+                authorization="Bearer synthetic-token",
+            )
+        self.assertEqual(seen, ["auth", "coordinator"])
+        view.close.assert_called_once_with()
+
+    def test_read_only_factory_rejects_missing_policy_journal_before_gateway(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "missing-policy.json"
+        with (
+            patch("tinker_delegate.collaboration_anchor.execution_policy_integrity_key", return_value=KEY),
+            patch("tinker_delegate.execution_policy_anchor.HttpsExecutionPolicyAnchorGateway.from_settings") as gateway,
+        ):
+            with self.assertRaises(CollaborationRollbackError):
+                ReadOnlyExecutionPolicyCollaborationAnchor.from_settings(
+                    SimpleNamespace(execution_policy_store_path=str(path)),
+                    authority_context_hash=CONTEXT,
+                )
+        self.assertFalse(path.exists())
+        gateway.assert_not_called()
+
     def test_live_wallet_challenge_fails_before_auth_when_witness_is_unavailable(
         self,
     ):
@@ -518,6 +659,27 @@ class CollaborationLiveApiGateTest(unittest.TestCase):
 
 
 class ExecutionPolicyCollaborationAnchorAdapterTest(unittest.TestCase):
+    def test_read_only_adapter_requires_no_signer_gateway_and_cannot_compare_and_set(self):
+        class Reader(AnchoredExecutionPolicyCoordinator):
+            def __init__(self, read_only):
+                self.gateway = SimpleNamespace(read_only=read_only)
+                self.calls = []
+
+            def history(self, **kwargs):
+                self.calls.append(kwargs)
+                self.assert_read_only = self.gateway.read_only
+                return (), MagicMock(to_bounded_dict=lambda: _rollback_status(sequence=0, decision_hash=ZERO_DECISION_HASH))
+
+        with self.assertRaises(CollaborationAnchorError):
+            ReadOnlyExecutionPolicyCollaborationAnchor(Reader(False), authority_context_hash=CONTEXT)
+        coordinator = Reader(True)
+        anchor = ReadOnlyExecutionPolicyCollaborationAnchor(coordinator, authority_context_hash=CONTEXT)
+        self.assertEqual(anchor.read_head(now=NOW).sequence, 0)
+        self.assertTrue(coordinator.assert_read_only)
+        with self.assertRaises(CollaborationAnchorError):
+            anchor.compare_and_set(expected_state_hash="0" * 64, new_state_hash="f" * 64, now=NOW)
+        self.assertEqual(len(coordinator.calls), 1)
+
     def test_adapter_writes_hold_commitment_not_execution_pass(self):
         class FakeCoordinator(AnchoredExecutionPolicyCoordinator):
             def __init__(self):

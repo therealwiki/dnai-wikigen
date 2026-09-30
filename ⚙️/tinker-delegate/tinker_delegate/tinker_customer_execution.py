@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from tinker_delegate.run_metadata_store import stable_hash
 from tinker_delegate.tinker_customer_adapter import (
     AttestedSettlementResult,
     TinkerCustomerAdapter,
@@ -208,7 +209,7 @@ def _configured_workload(
         "max_usd_micros": str(request.max_usd_micros),
         "steps": request.steps,
         "ttl_seconds": request.ttl_seconds,
-        "model_hash": hashlib.sha256(model.encode("utf-8")).hexdigest(),
+        "model_hash": stable_hash(model, prefix="tinker_model"),
         "rank": rank,
         "learning_rate": "0.0001",
         "compose_hash": compose_hash,

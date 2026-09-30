@@ -213,11 +213,12 @@ irreversible Compute or payment boundary.
 
 ## Dedicated execution and Royalty settlement extension
 
-The source-implemented extension has four participant-facing execution routes:
+The source-implemented extension has five participant-facing execution routes:
 
 - `POST /collaboration/runs/{run_id}/execution-plans`
 - `POST /collaboration/execution-plans/grant-challenges`
 - `POST /collaboration/execution-plans/authorize`
+- `POST /collaboration/execution-plans/authorization-status`
 - `GET /collaboration/executions/{execution_id}`
 
 Plan construction binds the current room/query/grant state to the exact sealed
@@ -227,8 +228,45 @@ nonzero nonce. The settlement nonce stays a canonical decimal string across
 the public plan, signed challenge, plan token, intent, wallet handoff, journal,
 and status response, including values above JavaScript's `2^53` safe-integer
 boundary. The `refund_after` wallet field is also a canonical decimal string.
+Public execution status serializes `royalty.total` as a canonical decimal
+string too; internal intent arithmetic and journal commitments are unchanged.
 No route accepts a raw corpus, prompt, health record, private key, caller-made
 execution context, or caller-made royalty allocation.
+
+### Lost authorization response recovery
+
+If the authorization response is lost before the browser learns its execution
+ID, the sponsor can send exactly `{ "plan_token": "…", "idempotency_key": "…" }`
+to `POST /collaboration/execution-plans/authorization-status` with a current
+`collaboration:console` wallet bearer. The server verifies the MACed original
+plan, original sponsor, current participant visibility, configured release,
+complete execution basis, exact owner allocation, and original request key.
+Expired plan/grant authority may describe an already committed record; this
+read never renews that authority or permits a fresh authorization.
+
+The response is an `execution_authorization_status` API envelope with request,
+basis, and immutable authorization commitments. It is an authenticated bounded
+status projection, not new signature verification, worker presence, TDX/QVL,
+funding, or settlement evidence. Wallet funding fields remain independently
+gated by current worker capability. The browser checks exact plan and Compute
+terms and rejects late responses after wallet, session, room, plan, or attempt
+context changes.
+
+This route uses its own read-only authority view: it cannot create a missing
+data journal, initialize an anchor, reconcile or broadcast policy, promote or
+discard pending state, authorize, queue, claim, or dispatch. On live dstack, an
+existing authenticated active or pending snapshot must match a freshly read
+rollback head; unavailable, zero, or mismatched authority fails closed. A local lock
+leaf may be created for serialization, but authoritative data is not changed.
+
+Not-found does **not** establish that the original request cannot still commit.
+Keep the original plan, grant set, and idempotency key frozen. The UI prefers
+read-only recovery; an explicit exact-same-attempt authorization retry remains
+available only while all original authority is fresh. After expiry, use this
+read or explicit operator reconciliation, never a replacement key or grant set.
+These are source/test guarantees; activation still requires the fresh release.
+
+### Funding and settlement continuation
 
 Only after every fresh execution grant verifies does the coordinator derive the
 exact `FundingReservationRequest`, deterministic reservation ID, and one-shot
