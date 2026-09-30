@@ -1308,7 +1308,7 @@ export async function withdrawVaultAccrued(
   return { hash: confirmed.hash, amount: withdrawn.amount, symbol, decimals, unitVerified };
 }
 
-function validateWorkloadAuthorizationBinding(
+export function validateWorkloadAuthorizationBinding(
   binding: VaultWorkloadAuthorizationBinding,
 ): void {
   if (!/^wrk_[0-9a-f]{32}$/.test(binding.workloadId)) {

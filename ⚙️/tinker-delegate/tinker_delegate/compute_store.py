@@ -24,7 +24,7 @@ import secrets
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from tinker_delegate.compute_auth import (
     ComputeCredentialClaims,
@@ -137,8 +137,12 @@ class ComputeStore:
         integrity_key: bytes,
         max_operator_grant_credits: int = 100_000,
         max_project_balance_credits: int = 1_000_000,
+        read_only: bool = False,
     ) -> None:
         self.path = Path(path)
+        if type(read_only) is not bool:
+            raise ComputeStoreError("Compute store read-only mode is invalid")
+        self._read_only = read_only
         if not isinstance(integrity_key, bytes) or len(integrity_key) < 32:
             raise ComputeStoreError("Compute store integrity key must be at least 32 bytes")
         self._integrity_key = bytes(integrity_key)
@@ -160,6 +164,8 @@ class ComputeStore:
             if self.path.exists():
                 self._state = self._load()
             else:
+                if self._read_only:
+                    raise ComputeStoreCorruptError("Compute authority store is unavailable")
                 self._state = {
                     "sequence": 0,
                     "projects": {},
@@ -249,6 +255,25 @@ class ComputeStore:
         wallet = _wallet(wallet_address)
         with self._lock:
             return self._project_view(_resource_id(project_id, "project_id"), wallet)
+
+    def resolve_project_reference(self, reference: str, *, actor_address: str) -> str:
+        """Resolve a chain hash only through current authenticated project state."""
+
+        from tinker_delegate.compute_runtime import canonical_compute_project_id
+
+        actor = _wallet(actor_address)
+        if not isinstance(reference, str):
+            raise ComputeAuthorizationError("Compute project authority is unavailable")
+        with self._lock:
+            if re.fullmatch(r"0x[0-9a-f]{64}", reference):
+                matches = [project_id for project_id in self._state["projects"] if canonical_compute_project_id(project_id) == reference]
+                if len(matches) != 1:
+                    raise ComputeAuthorizationError("Compute project authority is unavailable")
+                project_id = matches[0]
+            else:
+                project_id = _resource_id(reference, "project_id")
+            self._require_role(project_id, actor, MUTATING_ROLES)
+            return project_id
 
     def add_member(
         self,
@@ -1726,6 +1751,8 @@ class ComputeStore:
         return copy.deepcopy(self._state)
 
     def _commit(self, candidate: dict[str, Any]) -> None:
+        if self._read_only:
+            raise ComputeStoreError("Compute authority reader cannot mutate state")
         self._validate_state(candidate)
         try:
             self._persist(candidate)
@@ -1740,6 +1767,8 @@ class ComputeStore:
         self._state = candidate
 
     def _persist(self, payload: dict[str, Any]) -> None:
+        if self._read_only:
+            raise ComputeStoreError("Compute authority reader cannot persist state")
         canonical_payload = _canonical_json(payload)
         root = {
             "surface": "compute_console_store",
@@ -1813,7 +1842,7 @@ class ComputeStore:
             payload = copy.deepcopy(payload)
             payload["credential_deliveries"] = {}
         self._validate_state(payload)
-        if migrated:
+        if migrated and not self._read_only:
             self._persist(payload)
         return payload
 
@@ -1997,6 +2026,25 @@ def _validate_credential_capsule(delivery: Mapping[str, Any], credential: Mappin
     }
     if aad_hex != _canonical_json(aad).hex() or capsule["associated_data_hash"] != _hash_text("compute_credential_aad", aad_hex) or capsule["recipient_public_key_hash"] != device["public_key_hash"]:
         raise ComputeStoreError("credential delivery capsule binding is invalid")
+
+
+def compute_project_resolver_from_settings(settings: Any) -> Callable[[str, str], str]:
+    """Read fresh HMAC-authenticated membership for each execution boundary.
+
+    Workers never create or migrate the API-owned store. The reader's legacy
+    schema normalization is memory-only and cannot publish a new store file.
+    """
+
+    def resolve(reference: str, actor_address: str) -> str:
+        from tinker_delegate.compute_auth import compute_store_integrity_key
+
+        path = str(getattr(settings, "compute_store_path", "") or "").strip()
+        if not path:
+            raise ComputeStoreCorruptError("Compute authority store is not configured")
+        reader = ComputeStore(path, integrity_key=compute_store_integrity_key(settings), read_only=True)
+        return reader.resolve_project_reference(reference, actor_address=actor_address)
+
+    return resolve
 
 
 def _wallet(value: Any) -> str:

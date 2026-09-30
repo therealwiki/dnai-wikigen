@@ -386,6 +386,7 @@ test("historical D replay preserves its v2 closure while current builds use the 
     "scripts/current-model-a-input-recipe-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v2-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v3-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v3.mjs",
     "scripts/cvm-release-descriptor-set-constants-v3.mjs",

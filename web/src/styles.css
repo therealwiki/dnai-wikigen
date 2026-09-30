@@ -2121,7 +2121,12 @@ label > span, fieldset legend { display: block; margin-bottom: 7px; color: var(-
 .collaboration-live-progress small { overflow: hidden; color: var(--muted-2); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .collaboration-live-progress > div.complete span { color: #06100c; border-color: var(--mint); background: var(--mint); }
 .collaboration-live-progress > div.complete strong { color: var(--ink); }
-.collaboration-live-grid { display: grid; grid-template-columns: 1.18fr 1fr 1fr; gap: 12px; padding: 18px 18px 12px; }
+.collaboration-live-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 18px 18px 12px; }
+.collaboration-live-grid .plan-card, .collaboration-live-money-grid .compute-authorization-card { grid-column: 1 / -1; }
+.collaboration-compute-builder fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.collaboration-funding-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 14px; }
+.collaboration-funding-fields input, .collaboration-funding-fields select { min-width: 0; min-height: 44px; width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--bg); font: inherit; }
+@media (max-width: 700px) { .collaboration-funding-fields { grid-template-columns: 1fr; } }
 .collaboration-live-money-grid { display: grid; grid-template-columns: 1.08fr .92fr; gap: 12px; padding: 0 18px 18px; }
 .collaboration-live-card { display: flex; flex-direction: column; min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(145deg, rgba(255,255,255,.021), transparent 46%), #0c1213; }
 .collaboration-live-card.plan-card { border-color: rgba(var(--violet-rgb), .2); }
@@ -2199,6 +2204,14 @@ label > span, fieldset legend { display: block; margin-bottom: 7px; color: var(-
 }
 
 @media (max-width: 460px) {
+  .brief-composer-section { padding: 12px; }
+  .collaboration-execution-transport { margin-inline: 0; border-inline: 0; border-radius: 0; }
+  .collaboration-live-rail { margin-inline: 8px; }
+  .collaboration-live-rail-head { padding-inline: 15px; }
+  .collaboration-live-grid { padding-inline: 8px; }
+  .collaboration-live-money-grid { padding-inline: 8px; }
+  .collaboration-live-card { padding: 12px; }
+  .collaboration-live-card button { min-height: 44px; }
   .collaboration-live-rail-head h3 { font-size: 22px; }
   .collaboration-live-facts { grid-template-columns: 1fr; }
   .collaboration-live-facts > div, .collaboration-live-facts > div:nth-child(2n) { border-right: 0; border-bottom: 1px solid var(--line); }

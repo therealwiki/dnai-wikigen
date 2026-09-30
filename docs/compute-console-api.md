@@ -423,6 +423,67 @@ DTO, or a heartbeat is not funding authority. There is no public HTTP field or
 route that can synthesize the one-shot context. The response always states
 `legacy_credit_ledger_mutated: false` and `provider_authoritative: false`.
 
+### Collaboration workload handoff and trusted project resolution
+
+The Compute browser exports a `compute_collaboration_workload_draft` schema-v1
+public draft, not a complete authority packet. Its exact fields are the
+`prj_*` resource reference and derived canonical project ID, sponsor wallet,
+Base Sepolia chain ID, delegate/release identity, supported result policy, and
+schema-v2 bounded workload metadata. No bearer, credential, signature, private
+key, plaintext input or ciphertext is exported. Imported drafts are untrusted:
+the Collaboration builder freshly checks membership, recipient release and
+exact current metadata before producing the existing exact 25-field plan
+request. It derives the vault nonce and release-supported asset/rate policy
+from pinned reads and verifies that the requested job is absent at the same
+block. Those reads are repeated immediately before plan creation.
+
+The user supplies the job reference, exact-asset Compute cap, royalty total,
+all-in cap and 60–3,600-second lifetime. Browser request integers are bounded by
+`Number.MAX_SAFE_INTEGER` (`9,007,199,254,740,991`); the client rejects rather
+than rounds larger or fractional values. Amounts are base units, not Compute
+Credits. Compute cap plus royalty cannot exceed the all-in cap, Compute cap
+cannot exceed current available vault capacity, and current owner allocations
+must divide the positive royalty into exact positive base-unit amounts.
+
+Canonical bytes32 project IDs remain in the signed Collaboration Basis and
+Compute intent. At the physical ingress boundary the service resolves that
+commitment to an existing `prj_*` through the HMAC-authenticated Compute store
+and checks the funding wallet's current owner/admin/developer membership.
+The worker opens fresh read-only authority views: it cannot create, persist or
+migrate the API-owned store. There is no request-selectable alias or arbitrary
+resource-reference bypass. Missing resolution fails closed. Exact workload,
+uploader wallet, source kind, resource limits, recipient, CVM/compose/vault and
+release bindings are rechecked at planning, authorization/current-plan checks,
+claim and provider-lease boundaries. Credential-origin adoption still requires
+its measured release gate. Removed membership invalidates queued authority;
+temporary authority-store unavailability remains a retriable queue hold, not
+permission to dispatch. Lease reauthentication also checks current membership.
+
+Fresh owner grants authorize the Collaboration execution only. The separate
+browser Compute path parses the server-derived `collaboration_one_shot` terms,
+binds them to the retained plan/request, independently recomputes the context
+and dispatch commitments, and requests the exact vault authorization. Royalty
+reservation funding remains a separate transaction. Neither standalone
+Compute authorization nor one of these funding stages implies the other.
+
+The console bearer, raw owner grants, selected plan/request and delayed
+authorization response are mounted-page memory only. A response arriving after
+a wallet/session/room switch is retained for the original context but not
+installed into the new one; its original sponsor can recover by an
+authenticated status read without another authorization POST. Losing page
+memory is not proof that a prior mutation failed. Public Compute/Royalty
+transaction intent metadata and hashes may be retained in browser storage,
+without signatures or secrets. Compute submission ambiguity is sticky, with
+no automatic resend; browser reconciliation checks exact calldata, event and
+finalized state before reporting its limited chain observation.
+
+Integration tests cover the real encrypted `prj_*` upload, Collaboration
+plan/grants/journal, worker claim, authenticated Compute admission/ingress,
+provider lease/decryption and checkpoint release. QVL and chain observations
+in those tests are synthetic fixtures. This source-tested seam does not prove
+live provider execution, production contract/CVM deployment, Intel TDX or QVL
+verification, actual funding/settlement, or Cloudflare activation.
+
 After bounded execution, the Collaboration service derives and anchors the
 exact settlement decision on demand, obtains purpose-separated main-runtime and
 independent Royalty-QVL authorizations, and persists the exact sponsor-wallet

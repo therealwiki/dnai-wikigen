@@ -550,6 +550,8 @@ const ENV_KEYS = Object.freeze([
   "VITE_WALLET_AUTH_URI",
   "VITE_ENABLE_ARTIFACT_UPLOAD",
   "VITE_ARTIFACT_VERIFIED_QUOTE_SHA256",
+  "VITE_ARTIFACT_RECIPIENT_TRUST_JSON",
+  "VITE_RECIPIENT_DEPLOYMENT_JSON",
   "VITE_ENABLE_COMPUTE_CONSOLE",
   "VITE_ENABLE_TINKER_CUSTOMER",
   "VITE_ENABLE_COLLABORATION",
@@ -557,6 +559,7 @@ const ENV_KEYS = Object.freeze([
   ...COMPUTE_WORKLOAD_BROWSER_ENV_KEYS,
   "VITE_ENABLE_ARENA_SUBMISSION",
   "VITE_ARENA_VERIFIED_QUOTE_SHA256",
+  "VITE_ARENA_RECIPIENT_TRUST_JSON",
   "VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256",
   "VITE_ARENA_CHALLENGE_REGISTRY_BINDINGS_JSON",
   "VITE_ARENA_APPROVED_CHALLENGE_SET_SHA256",
@@ -1844,7 +1847,7 @@ function normalizeQvlTrustDomain(
     );
   }
   if (domain === "diligence_qvl") {
-    bindingKeys.push("email_oracle_kms_restart_binding");
+    bindingKeys.push("email_oracle_kms_restart_binding", "artifact_recipient_binding");
   }
   if (domain === "compute_metering_qvl") {
     bindingKeys.push("policy_set_hash", "signer_custody");
@@ -1854,6 +1857,17 @@ function normalizeQvlTrustDomain(
     bindingKeys,
     `trust_domains.${domain}.policy_binding`,
   );
+  let artifactRecipientBinding;
+  if (domain === "diligence_qvl") {
+    const recipient = exactRecord(binding.artifact_recipient_binding,
+      ["kind", "encryption_public_key", "key_id"], "artifact recipient policy binding");
+    const publicKey = bareBytes32(recipient.encryption_public_key, "artifact recipient public key");
+    const keyId = `sha256:${createHash("sha256").update(Buffer.from(publicKey, "hex")).digest("hex")}`;
+    if (recipient.kind !== "artifact_recipient_v1" || /^0+$/.test(publicKey) || recipient.key_id !== keyId) {
+      throw new Error("artifact recipient policy binding does not match its public key");
+    }
+    artifactRecipientBinding = { kind: recipient.kind, encryption_public_key: publicKey, key_id: keyId };
+  }
   const expectedContract = domain === "diligence_qvl"
     ? contracts.diligence_room.address
     : domain === "arena_qvl"
@@ -1951,6 +1965,7 @@ function normalizeQvlTrustDomain(
       report_data_binding_kind: expectedBindingKind,
       ...(domain === "diligence_qvl" ? {
         email_oracle_kms_restart_binding: expectedEmailBinding,
+        artifact_recipient_binding: artifactRecipientBinding,
       } : {}),
       ...(domain === "anchor_writer_qvl" ? {
         writer_release_commitment:
@@ -4147,6 +4162,236 @@ export function validateDeploymentLedger(value, candidate, authorityBindingValue
   return anchorReleaseSnapshotBlockNumber;
 }
 
+function recipientReportBinding(context, publicKeyValue) {
+  if (!["artifact", "arena"].includes(context)) throw new Error("unsupported recipient context");
+  const publicKey = bareBytes32(publicKeyValue, `${context} recipient public key`);
+  if (/^0+$/.test(publicKey)) throw new Error("recipient public key must be nonzero");
+  const keyId = `sha256:${createHash("sha256").update(Buffer.from(publicKey, "hex")).digest("hex")}`;
+  const report = context === "artifact"
+    ? { context, encryption_public_key: publicKey, service: "tinker-delegate" }
+    : { context, encryption_public_key: publicKey, key_id: keyId, protocol: "arena_candidate_ingress_v1", service: "dnai-wikigen" };
+  return {
+    encryption_public_key: publicKey,
+    key_id: keyId,
+    report_data: `0x${createHash("sha256").update(canonicalJson(report), "ascii").digest("hex")}`,
+  };
+}
+
+/** Public projection only. Production authority is createRecipientTrustProjection. */
+function projectRecipientTrustPolicy(candidate, context, evidence, authenticatedVerdict = candidate.attestations[context].verdict) {
+  validateDeploymentEvidence(evidence, candidate, context);
+  const verdict = authenticatedVerdict;
+  return Object.freeze({
+    schema: "dnai.recipient-trust-policy.v1",
+    context,
+    profile: context === "artifact" ? "artifact_recipient" : "arena",
+    domain: "main_runtime_cvm",
+    chain_id: BASE_SEPOLIA_CHAIN_ID,
+    cvm_id: verdict.cvm_id,
+    deployment_intent_sha256: verdict.deployment_intent_sha256,
+    release_authority_sha256: verdict.release_authority_sha256,
+    ceremony_nonce: verdict.ceremony_nonce,
+    measurement_policy_sha256: verdict.measurement_policy_sha256,
+    release_policy_hash: verdict.release_policy_hash,
+    verifier_address: verdict.verifier_address,
+    signer_address: verdict.signer_address,
+    contract_address: verdict.contract_address,
+    compose_hash: verdict.compose_hash,
+    app_id: verdict.app_id,
+    os_image_hash: verdict.os_image_hash,
+    ...recipientReportBinding(context, evidence.cvm.encryption_public_key),
+    max_verdict_age_seconds: MAX_ACTIVATION_EVIDENCE_LEASE_SECONDS,
+  });
+}
+
+const recipientTrustProjections = new WeakMap();
+
+/** Authenticate fresh, purpose-correct evidence before projecting runtime roots. */
+export async function createRecipientTrustProjection({
+  candidate: candidateValue,
+  artifactEvidence: artifactEvidenceValue,
+  arenaEvidence: arenaEvidenceValue,
+  trustedVerifierAddresses,
+  now,
+  candidateAuthorityStage = "live",
+}) {
+  // Detach every input before the first await. Some normalizers intentionally
+  // retain nested records; callers must not mutate what later receives a brand.
+  const candidate = normalizeReleaseCandidate(structuredClone(candidateValue), { authorityStage: candidateAuthorityStage });
+  const artifactEvidence = structuredClone(artifactEvidenceValue);
+  const arenaEvidence = structuredClone(arenaEvidenceValue);
+  const trustedRoots = validateExternalTrustedVerifierSet(candidate, trustedVerifierAddresses);
+  const checkedAt = integer(now, "recipient evidence projection clock", 1);
+  validateDeploymentEvidence(artifactEvidence, candidate, "artifact", checkedAt);
+  validateDeploymentEvidence(arenaEvidence, candidate, "arena", checkedAt);
+  const artifactVerdict = await validateIndependentVerdict(candidate.attestations.artifact, candidate,
+    candidate.contracts.diligence_room.address, { now: checkedAt, trustedVerifierAddresses: trustedRoots });
+  const arenaVerdict = await validateIndependentVerdict(candidate.attestations.arena, candidate,
+    candidate.contracts.challenge_registry.address, {
+      now: checkedAt,
+      trustedVerifierAddresses: trustedRoots,
+      expectedReleaseAuthoritySha256: artifactVerdict.release_authority_sha256,
+      expectedCeremonyNonce: artifactVerdict.ceremony_nonce,
+    });
+  const result = Object.freeze({
+    schema: "dnai.recipient-trust-projection.v1",
+    release_sha: candidate.release_sha,
+    deployment_intent_sha256: candidate.deployment_intent_sha256,
+    release_authority_sha256: artifactVerdict.release_authority_sha256,
+    ceremony_nonce: artifactVerdict.ceremony_nonce,
+    validated_at: checkedAt,
+    evidence_expires_at: Math.min(artifactVerdict.expires_at, arenaVerdict.expires_at),
+    artifact: Object.freeze({
+      trust: projectRecipientTrustPolicy(candidate, "artifact", artifactEvidence, artifactVerdict),
+      qvl_url: candidate.trust_domains.diligence_qvl.endpoint,
+      quote_sha256: candidate.attestations.artifact.quote_sha256,
+      verdict_digest: canonicalVerdictDigest(artifactVerdict),
+    }),
+    arena: Object.freeze({
+      trust: projectRecipientTrustPolicy(candidate, "arena", arenaEvidence, arenaVerdict),
+      qvl_url: candidate.trust_domains.arena_qvl.endpoint,
+      quote_sha256: candidate.attestations.arena.quote_sha256,
+      verdict_digest: canonicalVerdictDigest(arenaVerdict),
+    }),
+  });
+  recipientTrustProjections.set(result, canonicalJson(result));
+  return result;
+}
+
+export function readRecipientTrustProjection(value, { now } = {}) {
+  if (!value || !recipientTrustProjections.has(value)
+    || recipientTrustProjections.get(value) !== canonicalJson(value)) {
+    throw new Error("recipient trust projection lacks authenticated producer provenance");
+  }
+  const checkedAt = integer(now, "recipient trust projection clock", 1);
+  if (checkedAt < value.validated_at - 5 || checkedAt >= value.evidence_expires_at) {
+    throw new Error("recipient trust projection activation evidence is stale");
+  }
+  return value;
+}
+
+const RECIPIENT_ROOT_KEYS = ["chain_id", "domain", "profile", "cvm_id", "deployment_intent_sha256", "release_authority_sha256", "ceremony_nonce", "measurement_policy_sha256", "release_policy_hash", "verifier_address"];
+const RECIPIENT_IDENTITY_KEYS = ["compose_hash", "app_id", "os_image_hash", "signer_address", "contract_address"];
+const RECIPIENT_CHALLENGE_KEYS = ["schema", ...RECIPIENT_ROOT_KEYS, "challenge_id", "challenge_digest", "issued_at", "expires_at", "verifier_signature"];
+const RECIPIENT_VERDICT_KEYS = ["schema", "verification_method", "verified", ...RECIPIENT_ROOT_KEYS, ...RECIPIENT_IDENTITY_KEYS, "challenge_id", "challenge_digest", "challenge_issued_at", "challenge_expires_at", "quote_hash", "report_data", "issued_at", "activation_evidence_lease_expires_at", "expires_at", "verifier_signature"];
+
+async function authenticateRecipientBootstrapEntry(value, context, trustedVerifier, now) {
+  const { expected, challenge, quote, verdict } = exactRecord(value, ["expected", "challenge", "quote", "verdict"], `${context} recipient bootstrap inputs`);
+  exactRecord(expected, ["context", ...RECIPIENT_ROOT_KEYS, ...RECIPIENT_IDENTITY_KEYS, "qvl_url"], `${context} expected recipient authority`);
+  if (expected.context !== context || expected.profile !== (context === "artifact" ? "artifact_recipient" : "arena")
+    || expected.domain !== "main_runtime_cvm" || expected.chain_id !== BASE_SEPOLIA_CHAIN_ID) {
+    throw new Error(`${context} recipient bootstrap purpose mismatch`);
+  }
+  canonicalVerdictCvmId(expected.cvm_id, "recipient CVM identity");
+  for (const field of ["deployment_intent_sha256", "release_authority_sha256", "measurement_policy_sha256"]) nonzeroSha256Pin(expected[field], field);
+  for (const field of ["ceremony_nonce", "release_policy_hash", "compose_hash"]) canonicalVerdictBytes32(expected[field], field);
+  canonicalVerdictAppId(expected.app_id, "recipient app identity");
+  canonicalVerdictBareBytes32(expected.os_image_hash, "recipient OS identity");
+  for (const field of ["signer_address", "contract_address", "verifier_address"]) canonicalVerdictAddress(expected[field], field);
+  if (canonicalVerdictAddress(trustedVerifier, "external recipient verifier") !== expected.verifier_address
+    || expected.verifier_address === expected.signer_address || expected.verifier_address === expected.contract_address) {
+    throw new Error(`${context} recipient verifier is not the independently approved root`);
+  }
+  boundedServiceEndpoint(expected.qvl_url, `${context} recipient QVL endpoint`, "/verify");
+  exactRecord(challenge, RECIPIENT_CHALLENGE_KEYS, `${context} recipient challenge`);
+  exactRecord(verdict, RECIPIENT_VERDICT_KEYS, `${context} recipient verdict`);
+  if (challenge.schema !== "dnai.attestation-qvl-challenge.v2" || verdict.schema !== VERDICT_SCHEMA
+    || verdict.verification_method !== VERIFICATION_METHOD || verdict.verified !== true
+    || RECIPIENT_ROOT_KEYS.some((field) => challenge[field] !== expected[field] || verdict[field] !== expected[field])
+    || RECIPIENT_IDENTITY_KEYS.some((field) => verdict[field] !== expected[field])) {
+    throw new Error(`${context} recipient challenge or verdict authority mismatch`);
+  }
+  canonicalVerdictBytes32(challenge.challenge_id, "recipient challenge id");
+  canonicalVerdictBytes32(challenge.challenge_digest, "recipient challenge digest");
+  for (const field of ["issued_at", "expires_at"]) {
+    integer(challenge[field], `recipient challenge ${field}`, 1);
+    integer(verdict[field], `recipient verdict ${field}`, 1);
+  }
+  if (challenge.issued_at > now + 5 || challenge.expires_at <= challenge.issued_at
+    || challenge.expires_at - challenge.issued_at > 120 || verdict.issued_at < challenge.issued_at
+    || verdict.issued_at >= challenge.expires_at || verdict.issued_at > now + 5
+    || verdict.expires_at <= now || verdict.expires_at <= verdict.issued_at
+    || verdict.expires_at - verdict.issued_at > MAX_ACTIVATION_EVIDENCE_LEASE_SECONDS
+    || verdict.activation_evidence_lease_expires_at !== verdict.expires_at
+    || verdict.challenge_id !== challenge.challenge_id || verdict.challenge_digest !== challenge.challenge_digest
+    || verdict.challenge_issued_at !== challenge.issued_at || verdict.challenge_expires_at !== challenge.expires_at) {
+    throw new Error(`${context} recipient challenge or verdict lease is stale or invalid`);
+  }
+  const challengePayload = Object.fromEntries(Object.entries(challenge).filter(([key]) => !["challenge_digest", "verifier_signature"].includes(key)));
+  const challengeDigest = `0x${createHash("sha256").update("dnai-wikigen/attestation-qvl/challenge/v2\0", "ascii").update(canonicalJson(challengePayload), "ascii").digest("hex")}`;
+  if (challengeDigest !== challenge.challenge_digest) throw new Error(`${context} recipient challenge digest mismatch`);
+  exactRecord(quote, ["schema", "context", "recipient", "quote", "quote_hash", "quote_report_data", ...RECIPIENT_IDENTITY_KEYS.filter((key) => !["signer_address", "contract_address"].includes(key)), "verified"], `${context} recipient quote`);
+  const recipient = exactRecord(quote.recipient, ["encryption_public_key", "key_id", "report_context", "report_data"], `${context} actual recipient`);
+  canonicalVerdictBareBytes32(recipient.encryption_public_key, "actual recipient public key");
+  const binding = recipientReportBinding(context, recipient.encryption_public_key);
+  if (quote.schema !== "dnai.recipient-quote.v1" || quote.context !== context || quote.verified !== false
+    || recipient.report_context !== context || recipient.key_id !== binding.key_id
+    || `0x${recipient.report_data}` !== binding.report_data || verdict.report_data !== binding.report_data
+    || ["compose_hash", "app_id", "os_image_hash"].some((key) => quote[key] !== expected[key])) {
+    throw new Error(`${context} recipient actual public key or report binding mismatch`);
+  }
+  if (typeof quote.quote !== "string" || !/^0x[0-9a-f]+$/.test(quote.quote)
+    || quote.quote.length % 2 || quote.quote.length > 2 + 16_384 * 2) {
+    throw new Error(`${context} recipient quote encoding or size is invalid`);
+  }
+  const rawQuote = Buffer.from(quote.quote.slice(2), "hex");
+  const reportData = `${binding.report_data}${challengeDigest.slice(2)}`;
+  if (rawQuote.length < 1_024 || rawQuote.readUInt16LE(0) !== 4 || rawQuote.readUInt32LE(4) !== 0x81
+    || `0x${rawQuote.subarray(568, 632).toString("hex")}` !== reportData || quote.quote_report_data !== reportData) {
+    throw new Error(`${context} recipient actual quote report data does not match the key and challenge`);
+  }
+  const quoteDigest = createHash("sha256").update(rawQuote).digest("hex");
+  if (quote.quote_hash !== `0x${quoteDigest}` || verdict.quote_hash !== `0x${quoteDigest}`) {
+    throw new Error(`${context} recipient actual quote hash does not match the independent verdict`);
+  }
+  const verdictDigest = canonicalVerdictDigest(verdict);
+  for (const [payload, digest, purpose] of [[challenge, challengeDigest, "challenge"], [verdict, verdictDigest, "verdict"]]) {
+    const signature = validateCanonicalSignature(payload.verifier_signature, `${context} recipient ${purpose} signature`);
+    const recovered = await recoverMessageAddress({ message: { raw: digest }, signature });
+    if (recovered.toLowerCase() !== trustedVerifier) throw new Error(`${context} recipient ${purpose} signature is not independently authenticated`);
+  }
+  const { qvl_url: qvlUrl, ...authority } = expected;
+  return {
+    entry: Object.freeze({
+      trust: Object.freeze({ schema: "dnai.recipient-trust-policy.v1", ...authority, ...binding, max_verdict_age_seconds: MAX_ACTIVATION_EVIDENCE_LEASE_SECONDS }),
+      qvl_url: qvlUrl,
+      quote_sha256: `sha256:${quoteDigest}`,
+      verdict_digest: verdictDigest,
+    }),
+    expiresAt: verdict.expires_at,
+  };
+}
+
+/**
+ * Read-only crypto producer. The coordinator supplies phase-bound observations;
+ * the deployment environment producer independently cross-binds these roots to
+ * its branded seven-CVM authorities. This module must not import collectors or
+ * mutation tooling into the Cloudflare release-verifier closure.
+ */
+export async function createRecipientTrustProjectionFromBootstrapEvidence(inputs) {
+  const snapshot = structuredClone(inputs);
+  exactRecord(snapshot, ["releaseSha", "artifact", "arena", "trustedVerifierAddresses", "now"], "recipient bootstrap verification inputs");
+  const sourceSha = releaseSha(snapshot.releaseSha);
+  const now = integer(snapshot.now, "recipient bootstrap verification clock", 1);
+  const roots = exactRecord(snapshot.trustedVerifierAddresses, ["artifact", "arena"], "independent recipient verifier roots");
+  const artifact = await authenticateRecipientBootstrapEntry(snapshot.artifact, "artifact", roots.artifact, now);
+  const arena = await authenticateRecipientBootstrapEntry(snapshot.arena, "arena", roots.arena, now);
+  const sharedFields = ["deployment_intent_sha256", "release_authority_sha256", "ceremony_nonce", "cvm_id", "compose_hash", "app_id", "os_image_hash", "signer_address"];
+  if (sharedFields.some((key) => artifact.entry.trust[key] !== arena.entry.trust[key])) {
+    throw new Error("recipient bootstrap contexts do not share the same main runtime and release lineage");
+  }
+  const projection = Object.freeze({
+    schema: "dnai.recipient-trust-projection.v1", release_sha: sourceSha,
+    deployment_intent_sha256: artifact.entry.trust.deployment_intent_sha256,
+    release_authority_sha256: artifact.entry.trust.release_authority_sha256,
+    ceremony_nonce: artifact.entry.trust.ceremony_nonce,
+    validated_at: now, evidence_expires_at: Math.min(artifact.expiresAt, arena.expiresAt),
+    artifact: artifact.entry, arena: arena.entry,
+  });
+  recipientTrustProjections.set(projection, canonicalJson(projection));
+  return projection;
+}
+
 export function validateDeploymentEvidence(value, candidate, context, _now) {
   if (!["artifact", "arena"].includes(context)) throw new Error("deployment evidence context is unsupported");
   const evidence = exactRecord(value, [
@@ -4269,7 +4514,17 @@ export function validateDeploymentEvidence(value, candidate, context, _now) {
   ) {
     throw new Error(`${context} deployment evidence report data does not match the independent verdict`);
   }
-  bareBytes32(cvm.encryption_public_key, `${context} evidence encryption public key`);
+  const recipientPublicKey = bareBytes32(cvm.encryption_public_key, `${context} evidence encryption public key`);
+  const recipientBinding = recipientReportBinding(context, recipientPublicKey);
+  if (signedReportData !== recipientBinding.report_data) {
+    throw new Error(`${context} independently appraised report data does not bind the actual recipient public key`);
+  }
+  if (context === "artifact") {
+    const approved = candidate.trust_domains.diligence_qvl.policy_binding.artifact_recipient_binding;
+    if (approved.encryption_public_key !== recipientPublicKey || approved.key_id !== recipientBinding.key_id) {
+      throw new Error("artifact evidence recipient differs from the reviewed independent QVL policy");
+    }
+  }
   integer(cvm.quote_size, `${context} evidence quote size`, 632);
   if (cvm.quote_size > 16 * 1024) throw new Error(`${context} deployment evidence quote is too large`);
   const fetchedAt = integer(
@@ -4487,7 +4742,7 @@ export async function validateIndependentVerdict(wrapper, candidate, expectedCon
     verifier_signature: validateCanonicalSignature(verdict.verifier_signature, `${wrapper.context} verdict signature`),
   };
   const expectedProfile = options.expectedProfile || ({
-    artifact: "diligence",
+    artifact: "artifact_recipient",
     arena: "arena",
     compute_metering: "compute_metering",
     anchor_writer: "execution_policy_anchor_writer",
@@ -6185,9 +6440,11 @@ export async function buildReleaseEnv({
   collaborationExecutionReleaseEnv = {},
 }) {
   const authorityBinding = normalizeReleaseAuthorityBinding(authorityBindingValue);
-  const candidate = normalizeReleaseCandidate(candidateValue, {
+  const candidate = normalizeReleaseCandidate(structuredClone(candidateValue), {
     authorityStage: candidateAuthorityStage,
   });
+  artifactEvidence = structuredClone(artifactEvidence);
+  arenaEvidence = structuredClone(arenaEvidence);
   let publicRpcEndpoints;
   try {
     publicRpcEndpoints = exactDistinctPublicHttpsEndpoints(
@@ -6439,6 +6696,15 @@ export async function buildReleaseEnv({
     VITE_WALLET_AUTH_URI: candidate.wallet_auth.uri,
     VITE_ENABLE_ARTIFACT_UPLOAD: String(requested.artifact_upload),
     VITE_ARTIFACT_VERIFIED_QUOTE_SHA256: candidate.attestations.artifact.quote_sha256,
+    VITE_ARTIFACT_RECIPIENT_TRUST_JSON: JSON.stringify(projectRecipientTrustPolicy(candidate, "artifact", artifactEvidence)),
+    VITE_RECIPIENT_DEPLOYMENT_JSON: JSON.stringify({
+      schema: "dnai.recipient-deployment-binding.v1",
+      release_sha: candidate.release_sha,
+      delegate_url: candidate.cvm.delegate_url,
+      deployment_intent_sha256: candidate.deployment_intent_sha256,
+      release_authority_sha256: artifactVerdict.release_authority_sha256,
+      ceremony_nonce: artifactVerdict.ceremony_nonce,
+    }),
     VITE_ENABLE_COMPUTE_CONSOLE: String(requested.compute_console),
     VITE_ENABLE_TINKER_CUSTOMER: String(requested.tinker_customer),
     VITE_ENABLE_COLLABORATION: String(requested.collaboration),
@@ -6446,6 +6712,7 @@ export async function buildReleaseEnv({
     ...computeWorkloadEnv,
     VITE_ENABLE_ARENA_SUBMISSION: String(requested.arena_submission),
     VITE_ARENA_VERIFIED_QUOTE_SHA256: candidate.attestations.arena.quote_sha256,
+    VITE_ARENA_RECIPIENT_TRUST_JSON: JSON.stringify(projectRecipientTrustPolicy(candidate, "arena", arenaEvidence)),
     VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256:
       candidate.attestations.compute_metering.quote_sha256,
     VITE_ARENA_CHALLENGE_REGISTRY_BINDINGS_JSON: JSON.stringify(candidate.arena_registry_bindings),

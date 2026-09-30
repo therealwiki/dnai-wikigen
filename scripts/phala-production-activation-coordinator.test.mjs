@@ -52,6 +52,7 @@ assert.ok([
   "partial-lock",
   "postpersist-facade-failure",
   "wrong-proof-array",
+  "recipient-phase-expired-during-verification",
 ].includes(scenario));
 const moduleUrl = (basename) => pathToFileURL(
   path.join(process.cwd(), "scripts", basename),
@@ -425,13 +426,53 @@ await mockWithOriginalExports("reviewed-final-authority-runtime.mjs", {
   },
 });
 let downstreamProjectionCalls = 0;
+const recipientEvidence = Object.freeze({ kind: "observed-recipient-evidence" });
+const recipientVerificationInputs = Object.freeze({ kind: "phase-bound-recipient-verification-inputs" });
+const recipientTrustProjection = Object.freeze({ kind: "verified-recipient-trust-projection" });
+let retainedRecipientAuthority;
+let recipientInputReads = 0;
+await mockWithOriginalExports("phala-recipient-evidence-bootstrap.mjs", {
+  namedExports: {
+    async collectPhalaRecipientBootstrapEvidence({ authority }) {
+      assert.equal(authority.schema, "dnai.phala-recipient-bootstrap-authority.v1");
+      assert.deepEqual(authorityEvents, ["reviewed-deployment-intent", "stage-a", "stage-b"]);
+      authorityEvents.push("recipient-bootstrap");
+      retainedRecipientAuthority = authority;
+      return recipientEvidence;
+    },
+    readPhalaRecipientBootstrapVerificationInputs(value) {
+      assert.equal(value, recipientEvidence);
+      recipientInputReads += 1;
+      if (scenario === "recipient-phase-expired-during-verification" && recipientInputReads > 1) {
+        throw new Error("recipient bootstrap phase expired during signature verification");
+      }
+      return recipientVerificationInputs;
+    },
+  },
+});
+const releaseEnvUrl = pathToFileURL(path.join(process.cwd(), "web/scripts/release-env-core.mjs")).href;
+const originalReleaseEnv = await import(releaseEnvUrl);
+mock.module(releaseEnvUrl, {
+  namedExports: {
+    ...originalReleaseEnv,
+    async createRecipientTrustProjectionFromBootstrapEvidence(inputs) {
+      assert.equal(inputs, recipientVerificationInputs);
+      assert.equal(authorityEvents.at(-1), "recipient-bootstrap");
+      authorityEvents.push("recipient-verification");
+      return recipientTrustProjection;
+    },
+  },
+});
 await mockWithOriginalExports("phala-production-environment-authority.mjs", {
   namedExports: {
-    async projectPhalaDeferredPublicEnvironmentAuthority() {
+    async projectPhalaDeferredPublicEnvironmentAuthority({ reviewedRecipientTrustProjection }) {
+      assert.equal(reviewedRecipientTrustProjection, recipientTrustProjection);
       assert.deepEqual(authorityEvents, [
         "reviewed-deployment-intent",
         "stage-a",
         "stage-b",
+        "recipient-bootstrap",
+        "recipient-verification",
       ]);
       authorityEvents.push("deferred-projection");
       downstreamProjectionCalls += 1;
@@ -677,7 +718,10 @@ try {
     } catch (error) {
       firstError = error;
     }
-    assert.match(firstError?.message || "", /forced downstream Stage-B preparation failure/);
+    assert.match(firstError?.message || "", scenario === "recipient-phase-expired-during-verification"
+      ? /phase expired during signature verification/
+      : /forced downstream Stage-B preparation failure/);
+    assert.throws(() => coordinator.readPhalaRecipientBootstrapAuthority(retainedRecipientAuthority), /exact active coordinator phase/);
     await assert.rejects(
       coordinator.resumePhalaProductionActivationWithEvidence(resumeInput),
       /same-process/,
@@ -694,6 +738,7 @@ try {
       loadCalls,
       reconstructedCompletionCalls,
       downstreamProjectionCalls,
+      recipientInputReads,
       capabilityConsumeCalls,
       stageAFacadeCalls,
       stageBFacadeCalls,
@@ -996,6 +1041,8 @@ test("a bubbled postlaunch resume failure burns capability and evidence session"
     "reviewed-deployment-intent",
     "stage-a",
     "stage-b",
+    "recipient-bootstrap",
+    "recipient-verification",
     "deferred-projection",
   ]);
   assert.equal(result.closedPinnedHandles, 1);
@@ -1016,6 +1063,8 @@ test("a post-persist facade failure reconstructs L from the exact durable manife
     "reviewed-deployment-intent",
     "stage-a",
     "stage-b",
+    "recipient-bootstrap",
+    "recipient-verification",
     "deferred-projection",
   ]);
   assert.equal(result.closedPinnedHandles, 1);
@@ -1027,6 +1076,18 @@ test("a wrong proof array is rejected only after the manifest capability is burn
   assert.equal(result.capabilityDisposeCalls, 0);
   assert.equal(result.capabilityLive, false);
   assert.equal(result.closedPinnedHandles, 1);
+});
+
+test("recipient phase expiry during asynchronous verification blocks environment authority and retires the session", async () => {
+  const result = await runRecoveryHarness("recipient-phase-expired-during-verification");
+  assert.equal(result.recipientInputReads, 2);
+  assert.equal(result.downstreamProjectionCalls, 0);
+  assert.equal(result.capabilityConsumeCalls, 1);
+  assert.equal(result.closedPinnedHandles, 1);
+  assert.deepEqual(result.authorityEvents, [
+    "reviewed-deployment-intent", "stage-a", "stage-b",
+    "recipient-bootstrap", "recipient-verification",
+  ]);
 });
 
 test("a bubbled transcript persistence failure irreversibly disposes the session", async () => {

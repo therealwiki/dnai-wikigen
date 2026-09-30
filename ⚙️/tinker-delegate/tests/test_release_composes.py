@@ -658,6 +658,56 @@ def _load(path: Path) -> dict:
 
 
 class ReleaseComposeTest(unittest.TestCase):
+    def test_recipient_credentials_have_exact_delegate_and_qvl_holders(self):
+        main = {"services": {
+            "delegate": {"environment": dict(
+                release_composes_module.RECIPIENT_DELEGATE_ENVIRONMENT
+            )},
+            "arena-worker": {"environment": {}},
+        }}
+        qvls = {
+            domain: {"services": {
+                "policy-init": {"environment": {}},
+                "qvl": {"environment": dict(
+                    release_composes_module.RECIPIENT_QVL_ENVIRONMENT.get(domain, {})
+                )},
+            }}
+            for domain, _, _ in release_composes_module.QVL_DOMAINS
+        }
+        metering = {"services": {"metering": {"environment": {}}}}
+        validate = release_composes_module._validate_recipient_environment
+        validate(main, qvls, metering)
+        for key, value in release_composes_module.RECIPIENT_DELEGATE_ENVIRONMENT.items():
+            for service in ("delegate", "arena-worker"):
+                changed = deepcopy(main)
+                changed["services"][service]["environment"][key] = (
+                    "${QVL_AUTH_TOKEN:-}" if service == "delegate" else value
+                )
+                with self.subTest(key=key, service=service):
+                    with self.assertRaisesRegex(ReleaseComposeError, "recipient-only"):
+                        validate(changed, qvls, metering)
+        for domain, expected in release_composes_module.RECIPIENT_QVL_ENVIRONMENT.items():
+            key, value = next(iter(expected.items()))
+            for other_domain in qvls:
+                for service in ("qvl", "policy-init"):
+                    changed = deepcopy(qvls)
+                    changed[other_domain]["services"][service]["environment"][key] = (
+                        "${QVL_AUTH_TOKEN:-}"
+                        if other_domain == domain and service == "qvl" else value
+                    )
+                    with self.subTest(domain=other_domain, service=service, key=key):
+                        with self.assertRaisesRegex(ReleaseComposeError, "recipient"):
+                            validate(main, changed, metering)
+            for field in ("environment", "command"):
+                changed = deepcopy(qvls)
+                if field == "environment":
+                    changed[domain]["services"]["policy-init"][field]["UNRELATED_TOKEN"] = value
+                else:
+                    changed[domain]["services"]["qvl"][field] = ["--token", value]
+                with self.subTest(domain=domain, hidden_field=field):
+                    with self.assertRaisesRegex(ReleaseComposeError, "exact service field"):
+                        validate(main, changed, metering)
+
     def test_late_environment_interpolation_is_empty_only_and_exact(self):
         valid = {
             "runtime": {

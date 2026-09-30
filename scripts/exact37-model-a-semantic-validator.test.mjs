@@ -230,13 +230,16 @@ test("the exact-37 validator has an explicit recorded-time DCAP replay closure",
   const basenames = new Set([...sources.keys()].map((file) => path.basename(file)));
   // The contract-KMS/wire-compose migration adds four pure authorities and
   // replaces the descriptor-v2 file reader with its explicit v3 counterpart.
+  // The fifth pure addition freezes historical v2 policy before current
+  // recipient settings, without adding another entrypoint or capability.
   const reviewedPureAdditions = [
+    "cvm-descriptor-runtime-authority-v2-policy.mjs",
     "cvm-descriptor-runtime-authority-v3-core.mjs",
     "phala-app-compose-wire-core.mjs",
     "phala-contract-kms-core.mjs",
     "phala-seven-cvm-release-verification-authority-v5-core.mjs",
   ];
-  assert.equal(sources.size, 58, "dual current/historical DCAP closure file count drifted");
+  assert.equal(sources.size, 59, "dual current/historical DCAP closure file count drifted");
   assert.match(
     entrypointSource,
     /TINKER_COMPUTE_WORKLOAD_MAIN_RUNTIME_EVIDENCE_SHA256[\s\S]*?main\.machine_evidence_sha256/,

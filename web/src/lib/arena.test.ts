@@ -3,6 +3,8 @@ import { keccak256, type Address, type Hex } from "viem";
 import { deployment } from "../config";
 import { publicClient } from "./contract";
 import encryptionContractFixtureSource from "./fixtures/arena-candidate-encryption-contract.v1.json?raw";
+import recipientEvidenceFixture from "./fixtures/recipient-evidence-arena.json";
+import { parseRecipientTrustPolicy, parseRecipientDeploymentBinding } from "./recipientEvidence";
 import {
   ARENA_SAFE_IR_STARTER_FILENAME,
   ARENA_QUEUE_REASONS,
@@ -298,7 +300,9 @@ function encryptionContractFixture() {
   // arena_candidate_browser_contract, so backend schema drift fails its suite.
   return JSON.parse(encryptionContractFixtureSource) as Record<string, unknown> & {
     aad: { exact_fields: string[]; hash_formulas: Record<string, string> };
-    recipient: ReturnType<typeof parseArenaEncryptionContract>["recipient"];
+    recipient: ReturnType<typeof parseArenaEncryptionContract>["recipient"] & {
+      report_data_contract: { canonical_json: { encryption_public_key: string; key_id: string } };
+    };
   };
 }
 
@@ -348,19 +352,35 @@ describe("Arena browser boundary", () => {
     };
     const source = arenaSafeIrStarterCandidateBytes();
     validateArenaSafeIrCandidateBytes(source);
-    // All quote and registry evidence below is synthetic and nonauthorizing.
-    // This exercises the browser path, not TDX verification or live execution.
-    const quoteBytes = new Uint8Array(632).fill(1);
-    const quote = Array.from(quoteBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const quotePin = await candidateCommitment(quoteBytes);
+    // The Python provider fixture is synthetic/non-hardware; its independent
+    // test signatures exercise the complete browser evidence parser.
+    const recipient = recipientEvidenceFixture.evidence.recipient;
+    Object.assign(contract.recipient, recipient, {
+      attestation_report_data_sha256: await candidateCommitment(Uint8Array.from(recipient.report_data.match(/../g)!, (part) => Number.parseInt(part, 16))),
+    });
+    Object.assign(contract.recipient.report_data_contract.canonical_json, {
+      encryption_public_key: recipient.encryption_public_key,
+      key_id: recipient.key_id,
+    });
     const settings = {
       delegateUrl: "https://delegate.test",
       arenaSubmissionEnabled: true,
-      arenaVerifiedQuoteSha256: quotePin,
-      composeHash: "1".repeat(64),
-      appId: "arena-fixture",
-      osImageHash: "2".repeat(64),
-      challengeRegistryAddress: registryAddress,
+      arenaRecipientTrust: parseRecipientTrustPolicy(recipientEvidenceFixture.trust, "arena"),
+      recipientDeploymentBinding: parseRecipientDeploymentBinding(JSON.stringify({
+        schema: "dnai.recipient-deployment-binding.v1",
+        release_sha: "a".repeat(40),
+        delegate_url: "https://delegate.test",
+        deployment_intent_sha256: recipientEvidenceFixture.trust.deployment_intent_sha256,
+        release_authority_sha256: recipientEvidenceFixture.trust.release_authority_sha256,
+        ceremony_nonce: recipientEvidenceFixture.trust.ceremony_nonce,
+      })),
+      releaseSha: "a".repeat(40),
+      cvmId: recipientEvidenceFixture.trust.cvm_id,
+      teeIdentity: recipientEvidenceFixture.trust.signer_address as Address,
+      composeHash: recipientEvidenceFixture.trust.compose_hash.slice(2),
+      appId: recipientEvidenceFixture.trust.app_id,
+      osImageHash: recipientEvidenceFixture.trust.os_image_hash,
+      challengeRegistryAddress: recipientEvidenceFixture.trust.contract_address as Address,
       challengeRegistryCodeHash: registryCodeHash,
       arenaChallengeRegistryBindingsJson: JSON.stringify(safeIrBindings),
       arenaApprovedChallengeSetSha256: arenaReleaseApprovedChallengeSetSha256(safeIrBindings),
@@ -368,7 +388,11 @@ describe("Arena browser boundary", () => {
     const originalSettings = {
       delegateUrl: deployment.delegateUrl,
       arenaSubmissionEnabled: deployment.arenaSubmissionEnabled,
-      arenaVerifiedQuoteSha256: deployment.arenaVerifiedQuoteSha256,
+      arenaRecipientTrust: deployment.arenaRecipientTrust,
+      recipientDeploymentBinding: deployment.recipientDeploymentBinding,
+      releaseSha: deployment.releaseSha,
+      cvmId: deployment.cvmId,
+      teeIdentity: deployment.teeIdentity,
       composeHash: deployment.composeHash,
       appId: deployment.appId,
       osImageHash: deployment.osImageHash,
@@ -400,23 +424,13 @@ describe("Arena browser boundary", () => {
       if (url === "https://delegate.test/arena/candidate-encryption-contract") {
         return new Response(JSON.stringify(contract));
       }
-      if (url === "https://delegate.test/attestation?context=arena") {
-        return new Response(JSON.stringify({
-          mode: "tdx",
-          quote,
-          encryption_public_key: contract.recipient.encryption_public_key,
-          report_context: "arena",
-          report_data: contract.recipient.report_data,
-          quote_report_data: contract.recipient.report_data + "0".repeat(64),
-          app_id: settings.appId,
-          compose_hash: settings.composeHash,
-          os_image_hash: settings.osImageHash,
-          verified: false,
-        }));
+      if (url === "https://delegate.test/attestation/recipient?context=arena") {
+        return new Response(JSON.stringify(recipientEvidenceFixture.evidence));
       }
       throw new Error("Unexpected network request");
     });
     vi.stubGlobal("fetch", fetchMock);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(recipientEvidenceFixture.now * 1000);
     try {
       const prepared = await prepareArenaSubmission({
         source,
@@ -447,6 +461,7 @@ describe("Arena browser boundary", () => {
       blockRead.mockRestore();
       codeRead.mockRestore();
       contractRead.mockRestore();
+      clock.mockRestore();
       for (const [key, value] of Object.entries(originalSettings)) {
         Object.defineProperty(deployment, key, { value, configurable: true });
       }

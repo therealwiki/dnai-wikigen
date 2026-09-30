@@ -1089,6 +1089,8 @@ function completeSnapshot() {
     ETHERSCAN_API_KEY: "SUPER_SECRET_ETHERSCAN",
     TINKER_DILIGENCE_QVL_AUTH_TOKEN: internalCredential("1"),
     TINKER_ARENA_WORKER_QVL_AUTH_TOKEN: internalCredential("2"),
+    TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN: internalCredential("9"),
+    TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN: internalCredential("a"),
     TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN: internalCredential("3"),
     TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN: internalCredential("4"),
     TINKER_COMPUTE_METERING_QVL_AUTH_TOKEN: internalCredential("5"),
@@ -1118,6 +1120,11 @@ function completeSnapshot() {
   mainServices.delegate.ports = ["8080:8080"];
   mainServices.delegate.networks = { "tee-net": {}, "deal-control": {} };
   mainServices.delegate.environment = {
+    ...Object.fromEntries(["ARTIFACT", "ARENA"].flatMap((context) =>
+      ["QVL_AUTH_TOKEN", "QVL_URL", "TRUST_JSON"].map((suffix) => {
+        const key = `TINKER_${context}_RECIPIENT_${suffix}`;
+        return [key, `\${${key}:-}`];
+      }))),
     TINKER_COLLABORATION_ENABLED:
       "${TINKER_COLLABORATION_ENABLED:-false}",
     TINKER_EVALUATOR_MODE: "deterministic",
@@ -1240,6 +1247,11 @@ function completeSnapshot() {
         volumes: [{ type: "volume", source: "qvl-policy", target: "/run/qvl" }],
       }),
       qvl: hardened(qvlImage, {
+        environment: domain === "diligence_qvl_cvm"
+          ? { QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN: "${TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN:-}" }
+          : domain === "arena_qvl_cvm"
+            ? { QVL_ARENA_RECIPIENT_AUTH_TOKEN: "${TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN:-}" }
+            : {},
         ports: ["8443:8443"],
         volumes: [{
           type: "bind",
@@ -1708,6 +1720,24 @@ test("secret classification excludes public auth and key configuration controls"
   };
   assert.doesNotThrow(() =>
     assertReportContainsNoSensitiveValues(boundedPublicReport, env));
+});
+
+test("recipient QVL credentials stay in exactly two bounded delegate/QVL pairs", () => {
+  const status = (snapshot) => buildPreflightReport(snapshot).checks.find(
+    ({ id }) => id === "phala.recipient_qvl_scope_isolation",
+  ).status;
+  assert.equal(status(completeSnapshot()), "pass");
+  for (const mutate of [
+    (s) => { delete s.compose.services.delegate.environment.TINKER_ARTIFACT_RECIPIENT_TRUST_JSON; },
+    (s) => { s.compose.services["arena-worker"].environment.TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN = "${TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN:-}"; },
+    (s) => { s.diligenceQvlCompose.services.qvl.environment.QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN = "${QVL_AUTH_TOKEN:-}"; },
+    (s) => { s.arenaQvlCompose.services["policy-init"].environment = { QVL_ARENA_RECIPIENT_AUTH_TOKEN: "${TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN:-}" }; },
+    (s) => { s.computeWorkloadQvlCompose.services.qvl.environment.QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN = "${TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN:-}"; },
+  ]) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot);
+    assert.equal(status(snapshot), "fail");
+  }
 });
 
 test("CVM execution readiness reports the available reviewed boundary", () => {
@@ -2972,8 +3002,8 @@ test("every internal activation credential is mandatory and structurally validat
   const internalRows = REQUIRED_RUNTIME_CREDENTIALS.filter(
     ([, key]) => key !== "ETHERSCAN_API_KEY",
   );
-  assert.equal(internalRows.length, 10);
-  assert.equal(INTERNAL_RUNTIME_CREDENTIAL_GROUPS.length, 8);
+  assert.equal(internalRows.length, 12);
+  assert.equal(INTERNAL_RUNTIME_CREDENTIAL_GROUPS.length, 10);
 
   for (const [id, key] of internalRows) {
     const missing = completeSnapshot();

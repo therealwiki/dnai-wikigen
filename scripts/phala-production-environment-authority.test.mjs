@@ -29,6 +29,7 @@ import {
   PHALA_PHASE_SECRET_INPUT_SCHEMA,
   assemblePrivateBootstrapEnvironment,
   assertPostCommitProvisioningEnvironmentAuthority,
+  assertRecipientQvlEndpointBindings,
   bootstrapPublicEnvironmentAuthorityDigest,
   canonicalBootstrapPublicEnvironmentAuthorityText,
   canonicalPrivateEnvironmentAssemblyReceiptText,
@@ -720,6 +721,55 @@ test("phase-secret binding rejects a same-path byte replacement before mutation"
     );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("recipient credential endpoints cannot diverge from their independently reviewed QVL domains", () => {
+  const reviewed = {
+    TINKER_DILIGENCE_QVL_URL: "https://diligence.example/verify",
+    TINKER_ARENA_WORKER_QVL_VERDICT_URL: "https://arena.example/verify",
+  };
+  const projection = {
+    artifact: { qvl_url: reviewed.TINKER_DILIGENCE_QVL_URL },
+    arena: { qvl_url: reviewed.TINKER_ARENA_WORKER_QVL_VERDICT_URL },
+  };
+  assert.doesNotThrow(() => assertRecipientQvlEndpointBindings(projection, reviewed));
+  for (const context of ["artifact", "arena"]) {
+    for (const endpoint of ["https://unrelated.example/verify", "https://arena.example/verify", "https://diligence.example/verify"]) {
+      if (endpoint === projection[context].qvl_url) continue;
+      const changed = structuredClone(projection);
+      changed[context].qvl_url = endpoint;
+      assert.throws(() => assertRecipientQvlEndpointBindings(changed, reviewed), /reviewed domain endpoint/);
+    }
+  }
+  assert.throws(() => assertRecipientQvlEndpointBindings(projection, {}), /reviewed domain endpoint/);
+});
+
+test("recipient-only secrets cannot alias each other or existing private domains", () => {
+  for (const recipient of ["TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN", "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"]) {
+    const valid = finalSecretInput();
+    for (const other of Object.keys(valid.values).filter((key) => key !== recipient)) {
+      const input = structuredClone(valid);
+      input.values[recipient] = input.values[other];
+      assert.throws(() => normalizePhaseSecretInput(input), /recipient-only secret/);
+    }
+    for (const invalid of ["short", " ".repeat(40), "x".repeat(4097)]) {
+      const input = structuredClone(valid);
+      input.values[recipient] = invalid;
+      assert.throws(() => normalizePhaseSecretInput(input));
+    }
+  }
+  for (const [domain, recipient] of [
+    ["diligence_qvl_cvm", "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN"],
+    ["arena_qvl_cvm", "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN"],
+  ]) {
+    const input = {
+      ...finalSecretInput(), domain, phase: "post_measurement_policy_bootstrap",
+      values: { QVL_AUTH_TOKEN: "a".repeat(43), QVL_RELEASE_POLICY_B64: "policy", [recipient]: "b".repeat(43) },
+    };
+    assert.deepEqual(normalizePhaseSecretInput(input), input);
+    input.values[recipient] = input.values.QVL_AUTH_TOKEN;
+    assert.throws(() => normalizePhaseSecretInput(input), /recipient-only secret/);
   }
 });
 

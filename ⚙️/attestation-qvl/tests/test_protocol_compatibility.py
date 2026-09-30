@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -29,6 +30,10 @@ from tinker_delegate.chain_submitter import (  # noqa: E402
     SignerAttestationEvidence,
     signer_attestation_report_data,
 )
+from tinker_delegate.qvl_freshness import (  # noqa: E402
+    authenticate_qvl_challenge,
+    qvl_challenge_from_public_dict,
+)
 from tinker_delegate.deal_runtime import (  # noqa: E402
     HttpsIndependentQvlClient,
     QVL_REQUEST_SCHEMA as DEAL_QVL_REQUEST_SCHEMA,
@@ -44,6 +49,7 @@ from tinker_delegate.result_verifier import (  # noqa: E402
     IndependentAttestationExpectation,
     authenticate_independent_attestation_verdict,
     independent_attestation_verdict_digest,
+    independent_attestation_verdict_from_public_dict,
 )
 
 from attestation_qvl.qvl import (  # noqa: E402
@@ -170,6 +176,34 @@ def test_report_data_algorithms_match_both_delegate_consumers_exactly():
         policy_set_hash=policy_set_hash,
         signer_custody=DSTACK_METERING_CUSTODY,
     )
+
+
+def test_artifact_recipient_protocol_matches_shared_delegate_consumers(tmp_path):
+    context = make_context(tmp_path, artifact_recipient=True)
+    challenge = qvl_challenge_from_public_dict(
+        context.challenge.model_dump(mode="json", by_alias=True)
+    )
+    authenticated = authenticate_qvl_challenge(
+        challenge,
+        expected_profile="artifact_recipient",
+        expected_chain_id=context.challenge.chain_id,
+        expected_domain=context.challenge.domain,
+        expected_cvm_id=context.challenge.cvm_id,
+        expected_deployment_intent_sha256=context.challenge.deployment_intent_sha256,
+        expected_release_authority_sha256=context.challenge.release_authority_sha256,
+        expected_ceremony_nonce=context.challenge.ceremony_nonce,
+        expected_measurement_policy_sha256=context.challenge.measurement_policy_sha256,
+        trusted_verifier_addresses=(context.signer.address,),
+        expected_policy_hash=context.release.policy_hash,
+        now=NOW,
+    )
+    assert authenticated.profile == "artifact_recipient"
+    produced = asyncio.run(context.verifier.verify(context.request()))
+    verdict = independent_attestation_verdict_from_public_dict(
+        produced.model_dump(mode="json", by_alias=True, exclude_none=True)
+    )
+    assert independent_attestation_verdict_digest(verdict) == independent_verdict_digest(produced)
+    assert _authenticate(context, verdict).verifier_address == context.signer.address
 
 
 def test_deal_https_qvl_client_round_trips_exact_request_verdict_and_signature(tmp_path, monkeypatch):

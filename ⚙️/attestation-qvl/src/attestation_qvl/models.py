@@ -54,6 +54,7 @@ DecimalUint256 = Annotated[
 ]
 QvlProfile = Literal[
     "diligence",
+    "artifact_recipient",
     "royalty_settlement",
     "arena",
     "execution_policy_anchor_writer",
@@ -428,6 +429,22 @@ class ArenaCandidateIngressBinding(StrictModel):
         return self
 
 
+class ArtifactRecipientBinding(StrictModel):
+    """Exact artifact X25519 recipient authorized by the Diligence QVL."""
+
+    kind: Literal["artifact_recipient_v1"]
+    encryption_public_key: Hex32Raw
+    key_id: Sha256KeyId
+
+    @model_validator(mode="after")
+    def verify_canonical_key_id(self) -> "ArtifactRecipientBinding":
+        key = bytes.fromhex(self.encryption_public_key)
+        expected = "sha256:" + hashlib.sha256(key).hexdigest()
+        if not any(key) or self.key_id != expected:
+            raise ValueError("Artifact recipient key ID does not match a nonzero public key")
+        return self
+
+
 class ExecutionPolicyAnchorWriterBinding(StrictModel):
     """Purpose-separated writer context committed into quote report data."""
 
@@ -497,6 +514,10 @@ class ReleasePolicy(StrictModel):
     os_image_hash: BareSha256
     allowed_signer_addresses: tuple[Address, ...] = Field(max_length=64)
     report_data_binding: ReportDataBinding
+    # Preserve canonical hashes for existing policies that do not opt in.
+    artifact_recipient_binding: ArtifactRecipientBinding | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     royalty_settlement_binding: RoyaltySettlementQvlBinding | None = None
     email_oracle_kms_restart_binding: EmailOracleKmsRestartBinding | None = None
     measurements: TdxMeasurements
@@ -543,6 +564,13 @@ class ReleasePolicy(StrictModel):
                 raise ValueError("compute metering vault must be nonzero")
             if len(self.allowed_signer_addresses) != 1:
                 raise ValueError("compute metering release must pin exactly one signer")
+        if self.artifact_recipient_binding is not None:
+            if not isinstance(self.report_data_binding, DiligenceResultSignerBinding):
+                raise ValueError("artifact recipient binding is restricted to the Diligence QVL")
+            if self.chain_id != 84_532 or len(self.allowed_signer_addresses) != 1:
+                raise ValueError(
+                    "artifact recipient release must pin Base Sepolia and one main-runtime signer"
+                )
         if self.royalty_settlement_binding is not None:
             if not isinstance(self.report_data_binding, DiligenceResultSignerBinding):
                 raise ValueError(

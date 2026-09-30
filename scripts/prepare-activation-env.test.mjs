@@ -34,6 +34,8 @@ import {
 const EXPECTED_SECRET_KEYS = [
   "TINKER_DILIGENCE_QVL_AUTH_TOKEN",
   "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN",
+  "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+  "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
   "TINKER_EXECUTION_POLICY_ANCHOR_WRITER_QVL_AUTH_TOKEN",
   "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN",
   "TINKER_COMPUTE_METERING_QVL_AUTH_TOKEN",
@@ -90,10 +92,10 @@ function valuesFrom(text) {
   return parseEnvText(text);
 }
 
-test("the helper is pinned to exactly ten preflight credentials in eight trust groups", () => {
+test("the helper is pinned to exactly twelve preflight credentials in ten trust groups", () => {
   assert.deepEqual(INTERNAL_ACTIVATION_SECRET_KEYS, EXPECTED_SECRET_KEYS);
-  assert.equal(INTERNAL_ACTIVATION_SECRET_KEYS.length, 10);
-  assert.equal(INTERNAL_ACTIVATION_SECRET_GROUPS.length, 8);
+  assert.equal(INTERNAL_ACTIVATION_SECRET_KEYS.length, 12);
+  assert.equal(INTERNAL_ACTIVATION_SECRET_GROUPS.length, 10);
   assert.deepEqual(FORBIDDEN_LEGACY_PRIVATE_KEY_NAMES, [
     "JUDGE_PRIVATE_KEY",
     "KMS_PRIVATE_KEY",
@@ -123,7 +125,7 @@ test("example.env carries every internal activation field exactly once", async (
   }
 });
 
-test("absent target is created atomically at 0600 with ten fields and eight random values", async () => {
+test("absent target is created atomically at 0600 with twelve fields and ten random values", async () => {
   const value = await fixture();
   const randomBytes = deterministicRng();
   const summary = await prepareActivationEnvironment(options(value, {
@@ -137,9 +139,9 @@ test("absent target is created atomically at 0600 with ten fields and eight rand
   assert.equal(summary.schema, ACTIVATION_ENV_SCHEMA);
   assert.equal(summary.status, "updated");
   assert.equal(summary.wrote, true);
-  assert.equal(summary.secretFieldsPrepared, 10);
-  assert.equal(summary.randomSecretsGenerated, 8);
-  assert.equal(randomBytes.calls(), 8);
+  assert.equal(summary.secretFieldsPrepared, 12);
+  assert.equal(summary.randomSecretsGenerated, 10);
+  assert.equal(randomBytes.calls(), 10);
   assert.equal((await stat(value.targetPath)).mode & 0o7777, 0o600);
   assert.equal(env.PRESERVED_DEFAULT, "hello");
   assert.equal(env.EXTERNAL_SECRET, "");
@@ -147,7 +149,7 @@ test("absent target is created atomically at 0600 with ten fields and eight rand
   for (const secret of generated) assert.match(secret, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(env.TINKER_COMPUTE_METERING_QVL_AUTH_TOKEN, env.METERING_QVL_AUTH_TOKEN);
   assert.equal(env.METERING_AUTH_TOKEN, env.TINKER_COMPUTE_METERING_AUTH_TOKEN);
-  assert.equal(new Set(generated).size, 8);
+  assert.equal(new Set(generated).size, 10);
   assert.notEqual(env.NEKO_PASSWORD, env.NEKO_PASSWORD_ADMIN);
   assert.equal(env.NEKO_PASSWORD === "neko" || env.NEKO_PASSWORD_ADMIN === "admin", false);
   assert.deepEqual(
@@ -217,8 +219,8 @@ test("one existing alias is copied without new entropy and mismatched aliases fa
   }));
   const env = valuesFrom(await readFile(value.targetPath, "utf8"));
   assert.equal(env.METERING_QVL_AUTH_TOKEN, existingSecret);
-  assert.equal(summary.randomSecretsGenerated, 7);
-  assert.equal(randomBytes.calls(), 7);
+  assert.equal(summary.randomSecretsGenerated, 9);
+  assert.equal(randomBytes.calls(), 9);
 
   const mismatchText = (await readFile(value.targetPath, "utf8")).replace(
     `METERING_QVL_AUTH_TOKEN=${existingSecret}`,
@@ -424,16 +426,16 @@ test("CLI is fixed to repository files, has exact read-only flag semantics, and 
     status: "needs-update",
     changesRequired: true,
     addedKeys: 300,
-    secretFieldsPrepared: 10,
+    secretFieldsPrepared: 12,
     randomSecretsGenerated: 0,
-    internalSecretKeyCount: 10,
-    distinctSecretGroupCount: 8,
+    internalSecretKeyCount: 12,
+    distinctSecretGroupCount: 10,
   };
   assert.equal(exitCodeForSummary(args, summary), 1);
   const rendered = summaryLines(summary).join("\n");
   assert.match(rendered, /activation_env_status=needs-update/);
-  assert.match(rendered, /activation_env_internal_secret_keys=10/);
-  assert.match(rendered, /activation_env_distinct_secret_groups=8/);
+  assert.match(rendered, /activation_env_internal_secret_keys=12/);
+  assert.match(rendered, /activation_env_distinct_secret_groups=10/);
   assert.equal(rendered.includes("TINKER_DILIGENCE_QVL_AUTH_TOKEN"), false);
   assert.equal(exitCodeForSummary(parseArgs(["--check"]), {
     ...summary,

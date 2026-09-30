@@ -383,6 +383,10 @@ const MAIN_PROVISIONING_KEYS = Object.freeze([
 ]);
 
 const MAIN_DEFERRED_KEYS = Object.freeze([
+  "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+  "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+  "TINKER_ARENA_RECIPIENT_QVL_URL",
+  "TINKER_ARENA_RECIPIENT_TRUST_JSON",
   "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
   "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
   "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
@@ -452,6 +456,8 @@ const MAIN_SECRET_KEYS_BY_PHASE = Object.freeze({
     "TINKER_ACCOUNT_BINDING_SHARE_TWO",
   ]),
   final_authority_runtime: Object.freeze([
+    "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
     "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
     "TINKER_ARENA_REGISTRY_RPC_URL",
     "TINKER_ARENA_PROVISION_AUTH_KEY_B64",
@@ -625,6 +631,12 @@ export const CVM_MAIN_PRODUCT_EMBEDDED_ENVIRONMENT_KEYS = Object.freeze([
 // pinned authority file. All other late values are restricted to one
 // initially-disabled profile.
 export const CVM_MAIN_ACTIVE_SERVICE_LATE_INPUT_KEYS = Object.freeze([
+  "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+  "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+  "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+  "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+  "TINKER_ARENA_RECIPIENT_QVL_URL",
+  "TINKER_ARENA_RECIPIENT_TRUST_JSON",
   "ORACLE_REVIEW_NOTIFICATIONS_ENABLED",
   "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
   "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
@@ -889,17 +901,26 @@ const MAIN_ENVIRONMENT = environmentClassification({
   ],
 });
 
-const QVL_ENVIRONMENT = environmentClassification({
-  descriptorStaticKeys: QVL_NUMERIC_KEYS,
-  postMeasurementPhaseControlKeys: ["COMPOSE_PROFILES"],
-  encryptedSecretKeysByPhase: {
-    bootstrap_provision: [],
-    post_measurement_policy_bootstrap: ["QVL_AUTH_TOKEN", "QVL_RELEASE_POLICY_B64"],
-    final_authority_runtime: [],
-    anchor_writer_ceremony: [],
-  },
-  embeddedOnlyKeys: QVL_NUMERIC_KEYS,
-});
+function qvlEnvironment(domain) {
+  const recipientToken = {
+    diligence_qvl_cvm: "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+    arena_qvl_cvm: "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+  }[domain];
+  return environmentClassification({
+    descriptorStaticKeys: QVL_NUMERIC_KEYS,
+    postMeasurementPhaseControlKeys: ["COMPOSE_PROFILES"],
+    encryptedSecretKeysByPhase: {
+      bootstrap_provision: [],
+      post_measurement_policy_bootstrap: [
+        "QVL_AUTH_TOKEN", "QVL_RELEASE_POLICY_B64",
+        ...(recipientToken ? [recipientToken] : []),
+      ],
+      final_authority_runtime: [],
+      anchor_writer_ceremony: [],
+    },
+    embeddedOnlyKeys: QVL_NUMERIC_KEYS,
+  });
+}
 
 const METERING_ENVIRONMENT = environmentClassification({
   descriptorStaticKeys: [
@@ -992,7 +1013,7 @@ export const CVM_LAUNCH_DESCRIPTOR_POLICY = Object.freeze(Object.fromEntries(
   CVM_LAUNCH_DOMAINS.map((domain) => {
     const environment = domain === "main_runtime_cvm"
       ? MAIN_ENVIRONMENT
-      : (domain.endsWith("_qvl_cvm") ? QVL_ENVIRONMENT : METERING_ENVIRONMENT);
+      : (domain.endsWith("_qvl_cvm") ? qvlEnvironment(domain) : METERING_ENVIRONMENT);
     return [domain, Object.freeze({
       trust_domain: domain,
       descriptor_file: CVM_LAUNCH_DESCRIPTOR_FILES[domain],

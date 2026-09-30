@@ -392,6 +392,7 @@ class CollaborationExecutionCoordinator:
         execution_journal: CollaborationExecutionJournal,
         integrity_key: bytes,
         signature_verifier: Any,
+        workload_ingress: Any | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         if len(integrity_key) < 32:
@@ -422,6 +423,7 @@ class CollaborationExecutionCoordinator:
         self.store = collaboration_store
         self.journal = execution_journal
         self.signature_verifier = signature_verifier
+        self.workload_ingress = workload_ingress
         self._token_key = hashlib.sha256(
             b"dnai-collaboration-execution-token-codec-v1\0" + integrity_key
         ).digest()
@@ -858,8 +860,7 @@ class CollaborationExecutionCoordinator:
             minimum=60,
             maximum=3_600,
         )
-        return (
-            CollaborationExecutionBasis.create_with_royalty_owner_amounts(
+        basis = CollaborationExecutionBasis.create_with_royalty_owner_amounts(
                 royalty_owner_amounts=amounts,
                 release_git_sha=release_git_sha,
                 release_verification_sha256=release_verification,
@@ -915,9 +916,23 @@ class CollaborationExecutionCoordinator:
                 intent_created_at=intent_created_at,
                 authorization_expiry=authorization_expiry,
                 **fields,
-            ),
-            amounts,
-        )
+            )
+        validate_workload = getattr(self.workload_ingress, "validate_collaboration_workload", None)
+        if not callable(validate_workload):
+            raise CollaborationExecutionServiceUnavailable("Current Compute workload authority is unavailable")
+        from tinker_delegate.compute_workload_ingress import ComputeWorkloadIngressError
+
+        try:
+            validate_workload(basis, release_context={
+                "deployment_intent_sha256": str(getattr(self.settings, "release_deployment_intent_sha256", "") or ""),
+                "release_authority_sha256": str(getattr(self.settings, "release_authority_sha256", "") or ""),
+                "ceremony_nonce": str(getattr(self.settings, "release_ceremony_nonce", "") or ""),
+            })
+        except ComputeWorkloadIngressError as exc:
+            raise CollaborationExecutionServiceError("Current Compute project or workload authority does not match this execution") from exc
+        except Exception as exc:
+            raise CollaborationExecutionServiceUnavailable("Current Compute project or workload authority is unavailable") from exc
+        return basis, amounts
 
     def _validate_plan_request(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(request, Mapping) or set(request) != self._PLAN_REQUEST_FIELDS:

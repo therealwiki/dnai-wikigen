@@ -22,6 +22,7 @@ TINKER_CUSTOMER_REQUEST_MAX_BYTES = 4_096
 TINKER_CUSTOMER_CREDENTIAL_LIST_REQUEST_MAX_BYTES = 0
 COLLABORATION_AUTH_REQUEST_MAX_BYTES = 8_192
 COLLABORATION_REQUEST_MAX_BYTES = 32_768
+RECIPIENT_QUOTE_REQUEST_MAX_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,11 @@ class RouteBodyLimit:
 
 
 DEFAULT_ROUTE_BODY_LIMITS = (
+    RouteBodyLimit(
+        method="POST",
+        path=re.compile(r"^/attestation/recipient-quote$"),
+        max_bytes=RECIPIENT_QUOTE_REQUEST_MAX_BYTES,
+    ),
     RouteBodyLimit(
         method="POST",
         path=re.compile(r"^/deal/[^/]+/artifact(?:/encrypted)?$"),

@@ -756,9 +756,12 @@ as separate canonical bounded artifacts and validated under the rules below.
 ## Independent TDX verdicts
 
 `attestations` contains exactly `artifact`, `arena`, and `compute_metering`.
-Each object contains the QVL-issued challenge, quote hash, and one signed v4
-verdict. The raw quote is sent only to the authenticated QVL and is never
-serialized into the browser candidate. Email/KMS restart proof is instead a
+Each object contains the quote hash and one signed v4 verdict, including its
+authenticated challenge commitment. Raw quotes are not serialized into the
+browser release candidate. Renewable recipient evidence transports its public
+raw quote to the browser for exact hash/report-data checks alongside the
+independent signed verdict; this contains no private artifact or candidate data.
+Email/KMS restart proof is instead a
 separate canonical `dnai.email-oracle-external-release-evidence.v1` artifact;
 its exact byte hash is pinned at
 `contracts.email_oracle_auth.release.external_evidence_sha256`, and its nested
@@ -776,7 +779,7 @@ QVL verdict uses the Diligence root's separately scoped
       "verified": true,
       "chain_id": 84532,
       "domain": "main_runtime_cvm",
-      "profile": "diligence",
+      "profile": "artifact_recipient",
       "cvm_id": "<exact lowercase evaluated CVM id>",
       "deployment_intent_sha256": "sha256:<exact deployment-intent digest>",
       "release_authority_sha256": "sha256:<exact seven-CVM release-authority digest>",
@@ -819,6 +822,48 @@ outlive the consumed challenge, and is capped at the reviewed 900-second
 activation-evidence lease. A wrong profile/policy, replay, challenge-boundary
 completion, expired or oversized lease, alias mismatch, or verifier that
 overlaps an execution/control role fails closed.
+
+### Renewable artifact and Arena recipient evidence
+
+Artifact encryption uses the Diligence QVL's explicitly enabled
+`artifact_recipient` auxiliary profile and exact `artifact_recipient_binding`
+public key/key ID. It does not use the `diligence` result-signer report digest.
+The result-signing, Email/KMS, and Royalty profiles remain separate. Arena uses
+its existing `arena` recipient profile. Dedicated recipient-only bearer domains
+are scoped at both QVL challenge issuance and verification; they cannot request
+result or other execution authorization.
+
+`VITE_ARTIFACT_RECIPIENT_TRUST_JSON` and `VITE_ARENA_RECIPIENT_TRUST_JSON` contain
+immutable, independently reviewed recipient/verifier/policy/release roots, not
+an expiring quote. `VITE_RECIPIENT_DEPLOYMENT_JSON` binds both to the current
+source release, delegate endpoint, deployment intent, authority, and ceremony;
+clients also require agreement with direct contract/CVM/measurement pins.
+The old `VITE_*_VERIFIED_QUOTE_SHA256` values remain release provenance only.
+
+Before encryption, clients fetch `/attestation/recipient?context=artifact|arena`.
+They authenticate the signed challenge and v4 verdict, hash the actual quote,
+extract its exact 64-byte report data, and require the recipient's canonical
+static digest followed by the authenticated challenge digest. The challenge
+must have been valid at appraisal; the separately signed evidence lease must
+still be current and no longer than 900 seconds. A service-local `verified`
+flag, stale lease, static zero upper half, or legacy envelope cannot enable
+upload. The lease is checked again before POST. Arena retries renew public
+evidence while preserving the original ciphertext and idempotency identity.
+
+Bootstrap has a separate bounded, unappraised collection boundary:
+`POST /attestation/recipient-quote` accepts only a context and nonzero challenge
+digest and returns `verified:false`. It does not depend on final recipient trust
+configuration. The phase-bound operator bridge authenticates the independent
+challenge first, obtains the actual runtime-key quote, independently appraises
+it, and creates a branded recipient projection before final runtime trust is
+installed. The read-only release verifier independently checks those raw signed
+observations without importing the network collector or deployment coordinator;
+the environment projector then cross-binds the resulting roots to its branded
+seven-CVM release evidence. A caller-selected root set or arbitrary operator
+JSON cannot replace that deployment authority.
+Artifact and Arena recipients use separate real-dstack key domains; unchanged
+derivation material survives the expected activation restart. A changed key,
+app, compose/KMS identity, or release root requires new reviewed evidence.
 
 The separately loaded anchor-writer artifact has exact schema
 `dnai.execution-policy-anchor-writer-qvl-evidence.v2`. It contains only the

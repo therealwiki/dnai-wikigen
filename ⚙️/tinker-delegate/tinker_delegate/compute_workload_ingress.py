@@ -3022,6 +3022,8 @@ class ComputeWorkloadIngressService:
         activation_provider: ComputeWorkloadActivationProvider | None = None,
         *,
         clock: Any = time.time,
+        project_resolver: Callable[[str, str], str] | None = None,
+        wallet_adoption_enabled: bool = False,
     ) -> None:
         if not isinstance(store, ComputeWorkloadIngressStore) or not isinstance(
             recipient, ComputeWorkloadRecipient
@@ -3033,6 +3035,84 @@ class ComputeWorkloadIngressService:
             activation_provider or UnavailableComputeWorkloadActivationProvider()
         )
         self.clock = clock
+        self.project_resolver = project_resolver
+        self.wallet_adoption_enabled = wallet_adoption_enabled is True
+
+    def _execution_project(self, reference: str, funding_wallet: str) -> str:
+        from tinker_delegate.compute_store import ComputeAuthorizationError
+
+        if self.project_resolver is None:
+            # Directly constructed local/test ingress can still use its exact
+            # resource IDs. A canonical chain hash always needs trusted state.
+            if not isinstance(reference, str) or not _RESOURCE_ID.fullmatch(reference):
+                raise ComputeWorkloadIngressUnavailable("Compute project resolver is unavailable")
+            return reference
+        try:
+            project_id = self.project_resolver(reference, funding_wallet)
+        except ComputeAuthorizationError as exc:
+            raise ComputeWorkloadIngressError("Current Compute project mutation authority was denied") from exc
+        except Exception as exc:
+            raise ComputeWorkloadIngressUnavailable("Current Compute project mutation authority is unavailable") from exc
+        if not isinstance(project_id, str) or not _RESOURCE_ID.fullmatch(project_id):
+            raise ComputeWorkloadIngressUnavailable("Compute project resolver returned an invalid resource")
+        return project_id
+
+    def _validate_execution_source(
+        self, stored: Any, *, project_id: str, funding_wallet: str,
+        source_kind: str, recipient_release_commitment: str,
+        activation: ComputeWorkloadRecipientActivation,
+    ) -> None:
+        binding = stored.binding
+        wallet = ComputeWorkloadPrincipal(kind="wallet", project_id=project_id, actor_id=funding_wallet)
+        if binding.actor_kind != source_kind:
+            raise ComputeWorkloadIngressError("Compute workload source kind does not match")
+        if binding.actor_kind == "wallet" and not hmac.compare_digest(binding.actor_commitment, wallet.actor_commitment):
+            raise ComputeWorkloadIngressError("Compute workload belongs to a different wallet")
+        if binding.actor_kind == "credential" and not self.wallet_adoption_enabled:
+            raise ComputeWorkloadIngressUnavailable("Credential workload wallet adoption is disabled by this release")
+        if (
+            binding.recipient_key_id != self.recipient.key_id
+            or binding.recipient_release_commitment != activation.recipient_release_commitment
+            or binding.recipient_release_commitment != recipient_release_commitment
+        ):
+            raise ComputeWorkloadIngressUnavailable("Compute workload recipient release is no longer current")
+
+    def validate_collaboration_workload(self, basis: Any, *, release_context: Mapping[str, str] | None = None) -> str:
+        """Check the unchanged signed one-shot tuple against real ingress state."""
+
+        project_id = self._execution_project(basis.compute_project_id, basis.compute_user_address)
+        activation = self.current_activation()
+        if (
+            activation.chain_id != basis.chain_id
+            or activation.cvm_id != basis.cvm_id
+            or activation.compose_hash != basis.compose_hash
+            or activation.recipient_attestation["compute_vault_address"].lower() != basis.compute_vault_address.lower()
+            or activation.recipient_attestation["compute_vault_runtime_code_hash"].lower() != basis.compute_vault_runtime_code_hash.lower()
+            or (release_context is not None and any(getattr(activation, field) != expected for field, expected in release_context.items()))
+        ):
+            raise ComputeWorkloadIngressUnavailable("Compute and Collaboration release authority differ")
+        stored = self.store.get_for_project(basis.compute_workload_id, project_commitment=compute_workload_project_commitment(project_id))
+        self._validate_execution_source(
+            stored, project_id=project_id, funding_wallet=basis.compute_user_address,
+            source_kind=basis.compute_workload_source_kind,
+            recipient_release_commitment=basis.compute_workload_recipient_release_commitment,
+            activation=activation,
+        )
+        manifest = stored.binding.manifest
+        if (
+            manifest.schema != basis.compute_workload_schema
+            or manifest.operation != basis.operation
+            or manifest.model != basis.model
+            or manifest.recipe != basis.recipe
+            or manifest.max_prefill_tokens != basis.max_prefill_tokens
+            or manifest.max_sample_tokens != basis.max_sample_tokens
+            or manifest.max_train_tokens != basis.max_train_tokens
+            or "0x" + stored.binding.manifest_commitment.removeprefix("sha256:") != basis.compute_manifest_commitment
+            or "0x" + stored.binding.workload_commitment.removeprefix("sha256:") != basis.compute_workload_commitment
+            or stored.execution_binding_commitment != basis.compute_workload_execution_binding_commitment
+        ):
+            raise ComputeWorkloadIngressError("Compute workload does not match the exact Collaboration execution tuple")
+        return project_id
 
     def current_activation(self) -> ComputeWorkloadRecipientActivation:
         now = int(self.clock())
@@ -3260,10 +3340,16 @@ class ComputeWorkloadIngressService:
                 "Compute workload dispatch authority is malformed"
             )
         activation = self.current_activation()
+        project_id = self._execution_project(project_id, funding_wallet)
         project_commitment = compute_workload_project_commitment(project_id)
         stored = self.store.get_for_project(
             workload_id,
             project_commitment=project_commitment,
+        )
+        self._validate_execution_source(
+            stored, project_id=project_id, funding_wallet=funding_wallet,
+            source_kind=source_kind, recipient_release_commitment=recipient_release_commitment,
+            activation=activation,
         )
         actual_execution_binding = compute_workload_execution_binding_commitment(
             stored.workload_id,
@@ -3321,8 +3407,10 @@ class ComputeWorkloadIngressService:
             raise ComputeWorkloadIngressError(
                 "Compute workload execution authority is invalid"
             )
-        project_commitment = compute_workload_project_commitment(project_id)
+        project_reference = project_id
         with self.store.execution_lease():
+            project_id = self._execution_project(project_reference, claim.funding_wallet)
+            project_commitment = compute_workload_project_commitment(project_id)
             activation = self.current_activation()
             stored = self.store.get_claimed_for_execution(
                 workload_id,
@@ -3330,6 +3418,11 @@ class ComputeWorkloadIngressService:
                 claim=claim,
             )
             binding = stored.binding
+            self._validate_execution_source(
+                stored, project_id=project_id, funding_wallet=claim.funding_wallet,
+                source_kind=source_kind, recipient_release_commitment=recipient_release_commitment,
+                activation=activation,
+            )
             if (
                 binding.actor_kind != source_kind
                 or binding.recipient_key_id != self.recipient.key_id
@@ -3394,11 +3487,18 @@ class ComputeWorkloadIngressService:
                 del private_payload
 
                 def _reauthenticate() -> ValidatedComputeWorkload:
+                    if self._execution_project(project_reference, claim.funding_wallet) != project_id:
+                        raise ComputeWorkloadIngressUnavailable("Compute project resolution changed")
                     latest_activation = self.current_activation()
                     latest = self.store.get_claimed_for_execution(
                         workload_id,
                         project_commitment=project_commitment,
                         claim=claim,
+                    )
+                    self._validate_execution_source(
+                        latest, project_id=project_id, funding_wallet=claim.funding_wallet,
+                        source_kind=source_kind, recipient_release_commitment=recipient_release_commitment,
+                        activation=latest_activation,
                     )
                     if (
                         latest.binding != binding
@@ -3439,6 +3539,7 @@ class ComputeWorkloadIngressService:
         claim: ComputeWorkloadDispatchClaim,
         release_checkpoint_commitment: str,
     ) -> bool:
+        project_id = self._execution_project(project_id, claim.funding_wallet)
         return self.store.release_claimed_ciphertext_after_checkpoint(
             workload_id,
             project_commitment=compute_workload_project_commitment(project_id),
@@ -3461,6 +3562,7 @@ class ComputeWorkloadIngressService:
         makes a crash/retry at this boundary exact and no-clobber.
         """
 
+        project_id = self._execution_project(project_id, claim.funding_wallet)
         return self.store.release_claimed_ciphertext_after_checkpoint(
             workload_id,
             project_commitment=compute_workload_project_commitment(project_id),
@@ -3688,10 +3790,14 @@ def build_compute_workload_ingress(
             MAX_ENVELOPES,
         ),
     )
+    from tinker_delegate.compute_store import compute_project_resolver_from_settings
+
     return ComputeWorkloadIngressService(
         store,
         recipient,
         activation_provider=provider,
+        project_resolver=compute_project_resolver_from_settings(settings),
+        wallet_adoption_enabled=_setting(settings, "compute_workload_wallet_adoption_enabled", False),
     )
 
 

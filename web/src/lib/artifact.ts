@@ -1,6 +1,7 @@
 import { keccak256, type Hex } from "viem";
 import { deployment } from "../config";
 import { publicErrorText } from "./errorText";
+import { authenticateRecipientEvidence, assertRecipientTrustMatchesDeployment, requireFreshRecipientEvidence } from "./recipientEvidence";
 
 export const ARTIFACT_COMMITMENT_SCHEME = "dnai-wikigen/artifact-commitment/v2" as const;
 export const ARTIFACT_ENVELOPE_SCHEME = "dnai-wikigen/artifact-envelope/v3" as const;
@@ -19,19 +20,6 @@ export interface ArtifactRecoveryReceipt {
   commitment_secret: Hex;
 }
 
-interface AttestationEnvelope {
-  mode: string;
-  quote: string;
-  encryption_public_key: string;
-  report_context: string;
-  report_data: string;
-  quote_report_data: string;
-  app_id: string;
-  compose_hash: string;
-  os_image_hash: string;
-  verified: boolean;
-}
-
 export interface EncryptedArtifactPayload {
   ephemeral_public_key: string;
   nonce: string;
@@ -41,19 +29,6 @@ export interface EncryptedArtifactPayload {
   envelope_scheme: typeof ARTIFACT_ENVELOPE_SCHEME;
   padding_profile: typeof ARTIFACT_PADDING_PROFILE;
 }
-
-const PUBLIC_FIELDS = new Set([
-  "mode",
-  "quote",
-  "encryption_public_key",
-  "report_context",
-  "report_data",
-  "quote_report_data",
-  "app_id",
-  "compose_hash",
-  "os_image_hash",
-  "verified",
-]);
 
 const encoder = new TextEncoder();
 const COMMITMENT_PREFIX = encoder.encode(`${ARTIFACT_COMMITMENT_SCHEME}\u0000`);
@@ -105,13 +80,6 @@ function hexFromBytes(value: ArrayBuffer | Uint8Array): string {
 
 function arrayBuffer(value: Uint8Array): ArrayBuffer {
   return value.slice().buffer as ArrayBuffer;
-}
-
-function constantEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) difference |= left[index] ^ right[index];
-  return difference === 0;
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
@@ -261,65 +229,6 @@ export function parseArtifactRecoveryReceipt(value: unknown): ArtifactRecoveryRe
   };
 }
 
-async function expectedReportData(context: string, publicKey: string): Promise<Uint8Array> {
-  const canonical = JSON.stringify({
-    context,
-    encryption_public_key: publicKey,
-    service: "tinker-delegate",
-  });
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(canonical)));
-}
-
-async function independentQuoteDigest(quote: string): Promise<`sha256:${string}`> {
-  const quoteBytes = bytesFromHex(quote);
-  if (quoteBytes.length < 512 || quoteBytes.length > 16 * 1024) throw new Error("TDX quote length is outside the approved bound");
-  try {
-    return `sha256:${hexFromBytes(await crypto.subtle.digest("SHA-256", arrayBuffer(quoteBytes)))}`;
-  } finally {
-    quoteBytes.fill(0);
-  }
-}
-
-function requireEnvelopeShape(value: unknown): AttestationEnvelope {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Attestation envelope is not an object");
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some((key) => !PUBLIC_FIELDS.has(key))) throw new Error("Attestation envelope contains undeclared fields");
-  const requiredStrings = ["mode", "quote", "encryption_public_key", "report_context", "report_data", "quote_report_data", "app_id", "compose_hash", "os_image_hash"];
-  if (requiredStrings.some((key) => typeof record[key] !== "string") || typeof record.verified !== "boolean") {
-    throw new Error("Attestation envelope is missing a declared field");
-  }
-  return record as unknown as AttestationEnvelope;
-}
-
-async function verifyArtifactEnvelope(value: unknown): Promise<AttestationEnvelope> {
-  const envelope = requireEnvelopeShape(value);
-  if (envelope.mode !== "tdx" || !envelope.quote) throw new Error("Artifact ingress requires a TDX quote");
-  if (envelope.verified !== false) throw new Error("Artifact ingress refuses a service-local verification claim; an independent quote pin is required");
-  if (!/^sha256:[0-9a-f]{64}$/.test(deployment.artifactVerifiedQuoteSha256)) throw new Error("No independently verified artifact quote is pinned in this build");
-  if (await independentQuoteDigest(envelope.quote) !== deployment.artifactVerifiedQuoteSha256) throw new Error("Artifact quote does not match the independently verified quote pin");
-  if (envelope.report_context !== "artifact") throw new Error("Attestation context is not artifact ingress");
-  if (!deployment.composeHash || envelope.compose_hash !== deployment.composeHash) throw new Error("Compose hash does not match the approved frontend manifest");
-  if (deployment.appId && envelope.app_id !== deployment.appId) throw new Error("Phala app identity does not match the approved frontend manifest");
-  if (deployment.osImageHash && envelope.os_image_hash !== deployment.osImageHash) throw new Error("OS image hash does not match the approved frontend manifest");
-  const publicKey = bytesFromHex(envelope.encryption_public_key, 32);
-  const reportData = bytesFromHex(envelope.report_data, 32);
-  const expected = await expectedReportData("artifact", envelope.encryption_public_key);
-  const quoteReportData = bytesFromHex(envelope.quote_report_data);
-  try {
-    if (!constantEqual(reportData, expected)) throw new Error("Report data does not bind the artifact encryption key");
-    const validLength = quoteReportData.length === 32 || quoteReportData.length === 64;
-    if (!validLength || !constantEqual(quoteReportData.slice(0, 32), reportData) || (quoteReportData.length === 64 && quoteReportData.slice(32).some((byte) => byte !== 0))) {
-      throw new Error("Quote report data does not match the declared report binding");
-    }
-    return envelope;
-  } finally {
-    publicKey.fill(0);
-    expected.fill(0);
-    reportData.fill(0);
-    quoteReportData.fill(0);
-  }
-}
-
 export async function encryptArtifact(
   rawArtifact: Uint8Array,
   commitmentSecret: Uint8Array,
@@ -453,16 +362,19 @@ export async function uploadEncryptedArtifact(
     const actualHash = artifactCommitment(bytes, secret);
     if (actualHash !== expected) throw new Error("Selected file and recovery receipt do not match the on-chain artifact commitment");
     const baseUrl = deployment.delegateUrl.replace(/\/$/, "");
-    const envelope = await verifyArtifactEnvelope(await boundedJson(await fetch(`${baseUrl}/attestation?context=artifact`, {
+    if (!deployment.artifactRecipientTrust) throw new Error("Fresh artifact recipient trust is not configured");
+    assertRecipientTrustMatchesDeployment(deployment.artifactRecipientTrust, deployment);
+    const evidence = await authenticateRecipientEvidence(await boundedJson(await fetch(`${baseUrl}/attestation/recipient?context=artifact`, {
       cache: "no-store",
       credentials: "omit",
       headers: { "Accept": "application/json" },
-      signal: AbortSignal.timeout(10000),
-    })));
+      signal: AbortSignal.timeout(90000),
+    })), deployment.artifactRecipientTrust);
+    requireFreshRecipientEvidence(evidence);
     const payload = await encryptArtifact(
       bytes,
       secret,
-      envelope.encryption_public_key,
+      evidence.recipient.encryption_public_key,
       deal,
       actualHash,
       deployment.contractAddress,
@@ -475,6 +387,8 @@ export async function uploadEncryptedArtifact(
     } finally {
       ciphertextBytes.fill(0);
     }
+    requireFreshRecipientEvidence(evidence);
+    assertRecipientTrustMatchesDeployment(deployment.artifactRecipientTrust, deployment);
     lifecycle.onPostStarted?.();
     const result = await boundedJson(await fetch(`${baseUrl}/deal/${encodeURIComponent(deal)}/artifact/encrypted`, {
       method: "POST",

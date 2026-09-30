@@ -8,7 +8,7 @@ import {
 import {
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_SECRET_PHASES,
-} from "./cvm-launch-intent-core.mjs";
+} from "./cvm-descriptor-runtime-authority-v2-policy.mjs";
 import {
   CVM_RELEASE_DESCRIPTOR_SET_RECEIPT_SCHEMA,
 } from "./cvm-release-descriptor-set-constants-v3.mjs";

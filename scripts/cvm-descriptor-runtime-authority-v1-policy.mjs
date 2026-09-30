@@ -19,6 +19,12 @@ import {
 // Any future launch-policy change therefore fails closed here until it is
 // explicitly versioned or accounted for; it can never silently alter v1.
 const CURRENT_ONLY_MAIN_RUNTIME_KEYS = Object.freeze([
+  "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+  "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+  "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+  "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+  "TINKER_ARENA_RECIPIENT_QVL_URL",
+  "TINKER_ARENA_RECIPIENT_TRUST_JSON",
   "TINKER_COLLABORATION_ENABLED",
   "TINKER_COLLABORATION_EXECUTION_ENABLED",
   "TINKER_COLLABORATION_EXECUTION_RELEASE_GIT_SHA",
@@ -62,11 +68,18 @@ function currentOnlyMainRuntimeKey(key) {
     );
 }
 
+function currentOnlyKey(domain, key) {
+  if (domain === "main_runtime_cvm") return currentOnlyMainRuntimeKey(key);
+  // Recipient-scoped authentication did not exist in v1. Preserve its exact
+  // replay bytes without widening any current QVL authentication domain.
+  return (domain === "diligence_qvl_cvm" && key === "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN")
+    || (domain === "arena_qvl_cvm" && key === "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN");
+}
+
 function currentV1PolicyProjection(domain) {
   const current = CURRENT_CVM_LAUNCH_DESCRIPTOR_POLICY[domain];
   const allowed = current.exact_allowed_environment_keys.filter(
-    (key) => domain !== "main_runtime_cvm"
-      || !currentOnlyMainRuntimeKey(key),
+    (key) => !currentOnlyKey(domain, key),
   );
   return {
     exact_allowed_environment_keys: allowed,
@@ -76,8 +89,7 @@ function currentV1PolicyProjection(domain) {
       descriptor_defaulted_keys: [
         ...current.public_environment_key_classification
           .descriptor_defaulted_keys.filter(
-            (key) => domain !== "main_runtime_cvm"
-              || !currentOnlyMainRuntimeKey(key),
+            (key) => !currentOnlyKey(domain, key),
           ),
       ],
     },
@@ -111,8 +123,7 @@ function currentV1PolicyProjection(domain) {
         phase,
         [
           ...current.encrypted_secret_environment_keys_by_phase[phase].filter(
-            (key) => domain !== "main_runtime_cvm"
-              || !currentOnlyMainRuntimeKey(key),
+            (key) => !currentOnlyKey(domain, key),
           ),
         ],
       ]),

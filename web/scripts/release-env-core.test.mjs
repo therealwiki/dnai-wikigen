@@ -20,11 +20,14 @@ import {
   buildReleaseEnv,
   canonicalLiveReleaseCandidatePrebuildProjectionText,
   canonicalPreLiveActivationReleaseCandidateText,
+  createRecipientTrustProjection,
+  createRecipientTrustProjectionFromBootstrapEvidence,
   githubAttestationCommands,
   liveReleaseCandidatePrebuildProjectionSha256,
   normalizePreLiveActivationReleaseCandidate,
   normalizeReleaseCandidate,
   projectLiveReleaseCandidateToPrebuild,
+  readRecipientTrustProjection,
   serializeEnv,
   validateDeploymentEvidence,
 } from "./release-env-core.mjs";
@@ -70,6 +73,8 @@ const COMPOSE = "b".repeat(64);
 const LOCAL_COMPOSE = "f".repeat(64);
 const RENDERED_COMPOSE = "a1".repeat(32);
 const OS_IMAGE = "c".repeat(64);
+const ARTIFACT_RECIPIENT_PUBLIC_KEY = "ab".repeat(32);
+const ARENA_RECIPIENT_PUBLIC_KEY = "cd".repeat(32);
 const ACCOUNT_COMMITMENT = `0x${"d".repeat(64)}`;
 const TINKER_MAX_ADD_BALANCE_WEI = "1000000000000000000";
 const TINKER_MAX_SPEND_WEI = "250000000000000000";
@@ -835,6 +840,109 @@ function emailKmsRestartBinding() {
   };
 }
 
+function recipientKeyId(publicKey) {
+  return `sha256:${createHash("sha256").update(Buffer.from(publicKey, "hex")).digest("hex")}`;
+}
+
+function recipientReportData(context, publicKey = context === "artifact"
+  ? ARTIFACT_RECIPIENT_PUBLIC_KEY : ARENA_RECIPIENT_PUBLIC_KEY) {
+  const payload = context === "artifact"
+    ? { context, encryption_public_key: publicKey, service: "tinker-delegate" }
+    : {
+      context,
+      encryption_public_key: publicKey,
+      key_id: recipientKeyId(publicKey),
+      protocol: "arena_candidate_ingress_v1",
+      service: "dnai-wikigen",
+    };
+  return `0x${createHash("sha256").update(canonicalJson(payload), "ascii").digest("hex")}`;
+}
+
+function artifactRecipientBinding(publicKey = ARTIFACT_RECIPIENT_PUBLIC_KEY) {
+  return {
+    kind: "artifact_recipient_v1",
+    encryption_public_key: publicKey,
+    key_id: recipientKeyId(publicKey),
+  };
+}
+
+function bootstrapRecipientFixture(renewed = false) {
+  const fixtureUrls = {
+    artifact: new URL("../src/lib/fixtures/recipient-evidence-artifact.json", import.meta.url),
+    arena: new URL("../src/lib/fixtures/recipient-evidence-arena.json", import.meta.url),
+  };
+  const fixtures = Object.fromEntries(Object.entries(fixtureUrls).map(([context, url]) => [
+    context,
+    JSON.parse(readFileSync(url, "utf8")),
+  ]));
+  const entries = Object.fromEntries(Object.entries(fixtures).map(([context, fixture]) => {
+    assert.equal(fixture.synthetic_non_authorizing, true);
+    const evidence = renewed ? fixture.renewed.evidence : fixture.evidence;
+    const { schema: _schema, encryption_public_key: _key, key_id: _keyId,
+      report_data: _report, max_verdict_age_seconds: _age, ...authority } = fixture.trust;
+    return [context, {
+      expected: { ...authority, qvl_url: `https://qvl-${context}.release.wikigen.me/verify` },
+      challenge: evidence.challenge,
+      quote: {
+        schema: "dnai.recipient-quote.v1",
+        context,
+        recipient: evidence.recipient,
+        quote: evidence.quote,
+        quote_hash: evidence.verdict.quote_hash,
+        quote_report_data: evidence.quote_report_data,
+        compose_hash: evidence.verdict.compose_hash,
+        app_id: evidence.verdict.app_id,
+        os_image_hash: evidence.verdict.os_image_hash,
+        verified: false,
+      },
+      verdict: evidence.verdict,
+    }];
+  }));
+  return {
+    fixtures,
+    input: {
+      releaseSha: SHA,
+      ...entries,
+      trustedVerifierAddresses: {
+        artifact: fixtures.artifact.trust.verifier_address,
+        arena: fixtures.arena.trust.verifier_address,
+      },
+      now: renewed ? fixtures.artifact.renewed.now : fixtures.artifact.now,
+    },
+  };
+}
+
+function replaceBootstrapQuoteBytes(entry, offset, replacement) {
+  const index = 2 + offset * 2;
+  entry.quote.quote = entry.quote.quote.slice(0, index) + replacement
+    + entry.quote.quote.slice(index + replacement.length);
+}
+
+async function resignBootstrapFixtureEntry(entry, { challenge = false } = {}) {
+  // Public synthetic key used by the Python fixture harness, never live authority.
+  const signer = privateKeyToAccount(`0x${"81".repeat(32)}`);
+  if (challenge) {
+    const { challenge_digest: _digest, verifier_signature: _signature, ...payload } = entry.challenge;
+    entry.challenge.challenge_digest = `0x${createHash("sha256")
+      .update("dnai-wikigen/attestation-qvl/challenge/v2\0", "ascii")
+      .update(canonicalJson(payload), "ascii").digest("hex")}`;
+    entry.challenge.verifier_signature = await signer.signMessage({
+      message: { raw: entry.challenge.challenge_digest },
+    });
+    entry.verdict.challenge_digest = entry.challenge.challenge_digest;
+    entry.verdict.challenge_issued_at = entry.challenge.issued_at;
+    entry.verdict.challenge_expires_at = entry.challenge.expires_at;
+    replaceBootstrapQuoteBytes(entry, 600, entry.challenge.challenge_digest.slice(2));
+    entry.quote.quote_report_data = `${entry.verdict.report_data}${entry.challenge.challenge_digest.slice(2)}`;
+  }
+  entry.quote.quote_hash = `0x${createHash("sha256")
+    .update(Buffer.from(entry.quote.quote.slice(2), "hex")).digest("hex")}`;
+  entry.verdict.quote_hash = entry.quote.quote_hash;
+  entry.verdict.verifier_signature = await signer.signMessage({
+    message: { raw: __test.canonicalVerdictDigest(entry.verdict) },
+  });
+}
+
 function emailKmsRestartReportData() {
   const { kind: _kind, ...binding } = emailKmsRestartBinding();
   const payload = {
@@ -928,17 +1036,17 @@ async function fixture() {
   const artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     measurementPolicySha256: DILIGENCE_MEASUREMENT_POLICY_SHA256,
   });
   const arena = await signedVerdict({
     context: "arena",
     quoteByte: "3",
-    reportByte: "4",
+    reportData: recipientReportData("arena"),
     contract: CHALLENGE,
     signer: arenaQvl,
     profile: "arena",
@@ -1215,6 +1323,7 @@ async function fixture() {
           evaluated_os_image_hash: OS_IMAGE,
           allowed_signer_address: TEE,
           report_data_binding_kind: "diligence_result_signer_v1",
+          artifact_recipient_binding: artifactRecipientBinding(),
           email_oracle_kms_restart_binding: emailKmsRestartBinding(),
         },
       },
@@ -1776,7 +1885,7 @@ async function fixture() {
       app_id: MAIN_APP_ID,
       os_image_hash: OS_IMAGE,
       report_data: verdict.verdict.report_data.slice(2),
-      encryption_public_key: context === "artifact" ? "ab".repeat(32) : "cd".repeat(32),
+      encryption_public_key: context === "artifact" ? ARTIFACT_RECIPIENT_PUBLIC_KEY : ARENA_RECIPIENT_PUBLIC_KEY,
       quote_size: 5_010,
       fetched_at: NOW,
       quote_verification: "public-envelope-only; Intel TDX quote internals not parsed",
@@ -2239,6 +2348,24 @@ async function build(input, overrides = {}, rpcOverrides = {}) {
   );
 }
 
+async function projectRecipients(input, overrides = {}) {
+  return createRecipientTrustProjection({
+    candidate: input.candidate,
+    artifactEvidence: input.artifactEvidence,
+    arenaEvidence: input.arenaEvidence,
+    trustedVerifierAddresses: [
+      diligenceQvl.address,
+      arenaQvl.address,
+      anchorWriterQvl.address,
+      computeMeteringQvl.address,
+      computeWorkloadQvl.address,
+    ],
+    now: NOW,
+    candidateAuthorityStage: input.candidateAuthorityStage ?? "live",
+    ...overrides,
+  });
+}
+
 async function buildWithTrusted(
   input,
   trustedVerifierAddresses,
@@ -2359,6 +2486,39 @@ test("builds only the allowlisted production Vite environment after every bindin
   assert.equal(env.VITE_PHALA_COMPOSE_HASH, COMPOSE);
   assert.equal(env.VITE_WALLETCONNECT_PROJECT_ID, "12".repeat(16));
   assert.equal(env.VITE_ARTIFACT_VERIFIED_QUOTE_SHA256, `sha256:${"1".repeat(64)}`);
+  for (const [context, key, profile, policy, measurement, verifier, contract] of [
+    ["artifact", ARTIFACT_RECIPIENT_PUBLIC_KEY, "artifact_recipient", DILIGENCE_QVL_POLICY,
+      DILIGENCE_MEASUREMENT_POLICY_SHA256, diligenceQvl.address, DILIGENCE],
+    ["arena", ARENA_RECIPIENT_PUBLIC_KEY, "arena", ARENA_QVL_POLICY,
+      ARENA_MEASUREMENT_POLICY_SHA256, arenaQvl.address, CHALLENGE],
+  ]) {
+    const trust = JSON.parse(env[`VITE_${context.toUpperCase()}_RECIPIENT_TRUST_JSON`]);
+    assert.deepEqual(trust, {
+      schema: "dnai.recipient-trust-policy.v1",
+      context,
+      profile,
+      domain: "main_runtime_cvm",
+      chain_id: 84_532,
+      cvm_id: MAIN_CVM_ID,
+      deployment_intent_sha256: DEPLOYMENT_INTENT_SHA256,
+      release_authority_sha256: RELEASE_AUTHORITY_SHA256,
+      ceremony_nonce: CEREMONY_NONCE,
+      measurement_policy_sha256: measurement,
+      release_policy_hash: policy,
+      verifier_address: verifier.toLowerCase(),
+      signer_address: TEE.toLowerCase(),
+      contract_address: contract.toLowerCase(),
+      compose_hash: `0x${COMPOSE}`,
+      app_id: MAIN_APP_ID,
+      os_image_hash: OS_IMAGE,
+      encryption_public_key: key,
+      key_id: recipientKeyId(key),
+      report_data: recipientReportData(context, key),
+      max_verdict_age_seconds: 900,
+    });
+    assert.equal(Object.hasOwn(trust, "quote_hash"), false,
+      "renewable trust pins reviewed recipient authority, not one expiring quote");
+  }
   assert.equal(
     env.VITE_COMPUTE_METERING_VERIFIED_QUOTE_SHA256,
     `sha256:${"6".repeat(64)}`,
@@ -3217,10 +3377,10 @@ test("QVL descriptors bind distinct canonical policies to the evaluated release 
   wrongDomainSigner.candidate.attestations.artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: arenaQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
   });
   await assert.rejects(
@@ -3236,6 +3396,348 @@ test("QVL descriptors bind distinct canonical policies to the evaluated release 
     ),
     /must contain exactly five distinct QVL roots/,
   );
+});
+
+test("artifact recipient policy is exact and separate from Diligence result authorization", async () => {
+  const missing = await fixture();
+  delete missing.candidate.trust_domains.diligence_qvl.policy_binding.artifact_recipient_binding;
+  assert.throws(() => normalizeReleaseCandidate(missing.candidate), /fields are not exact/);
+
+  for (const replacement of [
+    { ...artifactRecipientBinding(), kind: "diligence_result_signer_v1" },
+    { ...artifactRecipientBinding(), key_id: `sha256:${"ef".repeat(32)}` },
+    artifactRecipientBinding("00".repeat(32)),
+    { ...artifactRecipientBinding(), unexpected: true },
+  ]) {
+    const invalid = await fixture();
+    invalid.candidate.trust_domains.diligence_qvl.policy_binding.artifact_recipient_binding = replacement;
+    assert.throws(() => normalizeReleaseCandidate(invalid.candidate),
+      /artifact recipient.*(binding|key)|fields are not exact/);
+  }
+
+  const resultPurpose = await fixture();
+  resultPurpose.candidate.attestations.artifact = await signedVerdict({
+    context: "artifact", quoteByte: "1", reportData: recipientReportData("artifact"),
+    contract: DILIGENCE, signer: diligenceQvl, profile: "diligence",
+    releasePolicyHash: DILIGENCE_QVL_POLICY,
+  });
+  await assert.rejects(build(resultPurpose), /profile does not match its release purpose/);
+});
+
+test("recipient evidence binds the actual artifact and Arena keys, not matching fake report labels", async () => {
+  for (const context of ["artifact", "arena"]) {
+    const wrongKey = await fixture();
+    wrongKey[`${context}Evidence`].cvm.encryption_public_key = "ef".repeat(32);
+    await assert.rejects(build(wrongKey), /appraised report data does not bind the actual recipient public key/);
+
+    const forgedReport = await fixture();
+    forgedReport.candidate.attestations[context] = await signedVerdict({
+      context,
+      quoteByte: context === "artifact" ? "1" : "3",
+      reportData: `0x${"44".repeat(32)}`,
+      contract: context === "artifact" ? DILIGENCE : CHALLENGE,
+      signer: context === "artifact" ? diligenceQvl : arenaQvl,
+      profile: context === "artifact" ? "artifact_recipient" : "arena",
+      releasePolicyHash: context === "artifact" ? DILIGENCE_QVL_POLICY : ARENA_QVL_POLICY,
+    });
+    forgedReport[`${context}Evidence`].cvm.report_data = "44".repeat(32);
+    await assert.rejects(build(forgedReport), /appraised report data does not bind the actual recipient public key/);
+  }
+
+  const unreviewedKey = await fixture();
+  const replacementKey = "ef".repeat(32);
+  unreviewedKey.candidate.attestations.artifact = await signedVerdict({
+    context: "artifact", quoteByte: "1", reportData: recipientReportData("artifact", replacementKey),
+    contract: DILIGENCE, signer: diligenceQvl, profile: "artifact_recipient",
+    releasePolicyHash: DILIGENCE_QVL_POLICY,
+  });
+  unreviewedKey.artifactEvidence.cvm.encryption_public_key = replacementKey;
+  unreviewedKey.artifactEvidence.cvm.report_data = recipientReportData("artifact", replacementKey).slice(2);
+  await assert.rejects(build(unreviewedKey), /recipient differs from the reviewed independent QVL policy/);
+});
+
+test("authenticated recipient projections exactly match browser trust without trusting JSON clones", async () => {
+  const input = await fixture();
+  input.candidate.attestations.arena = await signedVerdict({
+    context: "arena", quoteByte: "3", reportData: recipientReportData("arena"),
+    contract: CHALLENGE, signer: arenaQvl, profile: "arena",
+    releasePolicyHash: ARENA_QVL_POLICY, expiresAt: NOW + 40,
+  });
+  const env = await build(input);
+  const projection = await projectRecipients(input);
+  assert.equal(readRecipientTrustProjection(projection, { now: NOW }), projection);
+  assert.equal(projection.schema, "dnai.recipient-trust-projection.v1");
+  assert.equal(projection.release_sha, SHA);
+  assert.equal(projection.deployment_intent_sha256, DEPLOYMENT_INTENT_SHA256);
+  assert.equal(projection.release_authority_sha256, RELEASE_AUTHORITY_SHA256);
+  assert.equal(projection.ceremony_nonce, CEREMONY_NONCE);
+  assert.equal(projection.validated_at, NOW);
+  assert.equal(projection.evidence_expires_at, Math.min(
+    input.candidate.attestations.artifact.verdict.expires_at,
+    input.candidate.attestations.arena.verdict.expires_at,
+  ));
+  assert.ok(Object.isFrozen(projection));
+  for (const context of ["artifact", "arena"]) {
+    const projected = projection[context];
+    assert.ok(Object.isFrozen(projected));
+    assert.ok(Object.isFrozen(projected.trust));
+    assert.deepEqual(projected.trust,
+      JSON.parse(env[`VITE_${context.toUpperCase()}_RECIPIENT_TRUST_JSON`]));
+    assert.equal(projected.qvl_url, input.candidate.trust_domains[
+      context === "artifact" ? "diligence_qvl" : "arena_qvl"
+    ].endpoint);
+    assert.equal(projected.quote_sha256, input.candidate.attestations[context].quote_sha256);
+    assert.equal(projected.verdict_digest,
+      __test.canonicalVerdictDigest(input.candidate.attestations[context].verdict));
+  }
+  for (const clone of [
+    { ...projection },
+    structuredClone(projection),
+    JSON.parse(JSON.stringify(projection)),
+  ]) {
+    assert.throws(() => readRecipientTrustProjection(clone, { now: NOW }),
+      /lacks authenticated producer provenance/);
+  }
+  assert.equal(readRecipientTrustProjection(projection, {
+    now: projection.evidence_expires_at - 1,
+  }), projection);
+  assert.throws(() => readRecipientTrustProjection(projection, {
+    now: projection.evidence_expires_at,
+  }), /activation evidence is stale/);
+  assert.throws(() => readRecipientTrustProjection(projection, { now: NOW - 6 }),
+    /activation evidence is stale/);
+});
+
+test("recipient projection producer snapshots caller-owned verdicts and key evidence before awaiting signatures", async () => {
+  const mutations = [
+    ...["artifact", "arena"].map((context) => ({
+      label: `${context} signed identity and measurement tuple`,
+      mutate(input) {
+        Object.assign(input.candidate.attestations[context].verdict, {
+          signer_address: OPERATOR.toLowerCase(),
+          contract_address: ROYALTY.toLowerCase(),
+          measurement_policy_sha256: `sha256:${"ef".repeat(32)}`,
+        });
+      },
+    })),
+    {
+      label: "artifact and Arena recipient keys, reports, and reviewed binding",
+      mutate(input) {
+        const replacementKey = "ef".repeat(32);
+        input.candidate.trust_domains.diligence_qvl.policy_binding.artifact_recipient_binding =
+          artifactRecipientBinding(replacementKey);
+        for (const context of ["artifact", "arena"]) {
+          const report = recipientReportData(context, replacementKey);
+          input.candidate.attestations[context].verdict.report_data = report;
+          input[`${context}Evidence`].cvm.encryption_public_key = replacementKey;
+          input[`${context}Evidence`].cvm.report_data = report.slice(2);
+        }
+      },
+    },
+  ];
+  for (const { label, mutate } of mutations) {
+    const input = await fixture();
+    const expected = await projectRecipients(input);
+    const pending = projectRecipients(input);
+    // Deliberately retain and mutate the original objects while the producer's
+    // first signature recovery is awaiting. No mutated tuple may be branded.
+    mutate(input);
+    const projected = await pending;
+    assert.deepEqual(projected, expected, label);
+    assert.equal(readRecipientTrustProjection(projected, { now: NOW }), projected, label);
+  }
+});
+
+test("recipient projection producer rejects wrong keys, purposes, signatures, roots, and expired evidence", async () => {
+  for (const context of ["artifact", "arena"]) {
+    const wrongKey = await fixture();
+    wrongKey[`${context}Evidence`].cvm.encryption_public_key = "ef".repeat(32);
+    await assert.rejects(projectRecipients(wrongKey),
+      /appraised report data does not bind the actual recipient public key/);
+
+    const wrongPurpose = await fixture();
+    wrongPurpose.candidate.attestations[context] = await signedVerdict({
+      context,
+      quoteByte: context === "artifact" ? "1" : "3",
+      reportData: recipientReportData(context),
+      contract: context === "artifact" ? DILIGENCE : CHALLENGE,
+      signer: context === "artifact" ? diligenceQvl : arenaQvl,
+      profile: context === "artifact" ? "diligence" : "artifact_recipient",
+      releasePolicyHash: context === "artifact" ? DILIGENCE_QVL_POLICY : ARENA_QVL_POLICY,
+    });
+    await assert.rejects(projectRecipients(wrongPurpose),
+      /profile does not match its release purpose/);
+
+    const forged = await fixture();
+    const verdict = forged.candidate.attestations[context].verdict;
+    const wrongSigner = context === "artifact" ? arenaQvl : diligenceQvl;
+    verdict.verifier_signature = await wrongSigner.signMessage({
+      message: { raw: __test.canonicalVerdictDigest(verdict) },
+    });
+    await assert.rejects(projectRecipients(forged), /signature is not authenticated/);
+  }
+  const input = await fixture();
+  await assert.rejects(projectRecipients(input, {
+    trustedVerifierAddresses: [diligenceQvl.address, arenaQvl.address],
+  }), /must contain exactly five distinct QVL roots/);
+  await assert.rejects(projectRecipients(input, {
+    now: input.candidate.attestations.artifact.verdict.expires_at,
+  }), /expired|stale/);
+});
+
+test("pure bootstrap recipient projection authenticates exact Python evidence and renewed leases", async () => {
+  const { input, fixtures } = bootstrapRecipientFixture();
+  const projected = await createRecipientTrustProjectionFromBootstrapEvidence(input);
+  assert.equal(readRecipientTrustProjection(projected, { now: input.now }), projected);
+  assert.equal(projected.release_sha, SHA);
+  assert.equal(projected.deployment_intent_sha256, fixtures.artifact.trust.deployment_intent_sha256);
+  assert.equal(projected.release_authority_sha256, fixtures.artifact.trust.release_authority_sha256);
+  assert.equal(projected.ceremony_nonce, fixtures.artifact.trust.ceremony_nonce);
+  assert.equal(projected.validated_at, input.now);
+  assert.equal(projected.evidence_expires_at, Math.min(input.artifact.verdict.expires_at, input.arena.verdict.expires_at));
+  assert.ok(Object.isFrozen(projected));
+  for (const context of ["artifact", "arena"]) {
+    assert.deepEqual(projected[context].trust, { ...fixtures[context].trust, max_verdict_age_seconds: 900 });
+    assert.equal(projected[context].qvl_url, input[context].expected.qvl_url);
+    assert.equal(projected[context].quote_sha256, `sha256:${input[context].verdict.quote_hash.slice(2)}`);
+    assert.equal(projected[context].verdict_digest, __test.canonicalVerdictDigest(input[context].verdict));
+    assert.ok(Object.isFrozen(projected[context]));
+    assert.ok(Object.isFrozen(projected[context].trust));
+  }
+  assert.throws(() => readRecipientTrustProjection(structuredClone(projected), { now: input.now }),
+    /lacks authenticated producer provenance/);
+  const renewed = bootstrapRecipientFixture(true).input;
+  await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence({ ...input, now: renewed.now }),
+    /expired|stale|lease/i);
+  const renewedProjection = await createRecipientTrustProjectionFromBootstrapEvidence(renewed);
+  assert.deepEqual(renewedProjection.artifact.trust, projected.artifact.trust);
+  assert.deepEqual(renewedProjection.arena.trust, projected.arena.trust);
+  assert.notEqual(renewedProjection.artifact.quote_sha256, projected.artifact.quote_sha256);
+  assert.notEqual(renewedProjection.arena.quote_sha256, projected.arena.quote_sha256);
+});
+
+test("pure bootstrap recipient projection rejects forged keys and report labels", async () => {
+  for (const context of ["artifact", "arena"]) {
+    for (const matchingReport of [false, true]) {
+      const { input } = bootstrapRecipientFixture();
+      const key = "ef".repeat(32);
+      input[context].quote.recipient.encryption_public_key = key;
+      if (matchingReport) {
+        input[context].quote.recipient.key_id = recipientKeyId(key);
+        input[context].quote.recipient.report_data = recipientReportData(context, key).slice(2);
+      }
+      await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input),
+        /key|recipient|report/i);
+    }
+    const { input } = bootstrapRecipientFixture();
+    input[context].quote.quote_report_data = `0x${"44".repeat(64)}`;
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input), /report|quote/i);
+  }
+});
+
+test("pure bootstrap recipient projection checks actual quote hash and both report halves", async () => {
+  for (const context of ["artifact", "arena"]) {
+    const changedBytes = bootstrapRecipientFixture().input;
+    replaceBootstrapQuoteBytes(changedBytes[context], 700, "ff");
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(changedBytes), /hash|quote/i);
+
+    const falseHash = bootstrapRecipientFixture().input;
+    falseHash[context].quote.quote_hash = `0x${"ef".repeat(32)}`;
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(falseHash), /hash|quote/i);
+
+    const zeroUpper = bootstrapRecipientFixture().input;
+    replaceBootstrapQuoteBytes(zeroUpper[context], 600, "00".repeat(32));
+    zeroUpper[context].quote.quote_report_data = `${zeroUpper[context].verdict.report_data}${"00".repeat(32)}`;
+    await resignBootstrapFixtureEntry(zeroUpper[context]);
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(zeroUpper), /report|challenge|quote/i);
+
+    const wrongStatic = bootstrapRecipientFixture().input;
+    replaceBootstrapQuoteBytes(wrongStatic[context], 568, "ef".repeat(32));
+    await resignBootstrapFixtureEntry(wrongStatic[context]);
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(wrongStatic), /report|quote/i);
+
+    const wrongFormat = bootstrapRecipientFixture().input;
+    replaceBootstrapQuoteBytes(wrongFormat[context], 0, "0500");
+    await resignBootstrapFixtureEntry(wrongFormat[context]);
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(wrongFormat), /TDX|format|quote/i);
+  }
+});
+
+test("pure bootstrap recipient projection rejects cross-purpose evidence and forged signatures", async () => {
+  for (const context of ["artifact", "arena"]) {
+    for (const field of ["challenge", "verdict"]) {
+      const { input } = bootstrapRecipientFixture();
+      input[context][field].verifier_signature = await diligenceQvl.signMessage({
+        message: { raw: field === "challenge" ? input[context].challenge.challenge_digest
+          : __test.canonicalVerdictDigest(input[context].verdict) },
+      });
+      await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input), /signature/i);
+    }
+    const { input } = bootstrapRecipientFixture();
+    input[context].verdict.profile = context === "artifact" ? "diligence" : "artifact_recipient";
+    await resignBootstrapFixtureEntry(input[context]);
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input), /profile|purpose|authority/i);
+  }
+});
+
+test("pure bootstrap recipient projection binds external roots and one authenticated lineage", async () => {
+  for (const context of ["artifact", "arena"]) {
+    const wrongRoot = bootstrapRecipientFixture().input;
+    wrongRoot.trustedVerifierAddresses[context] = diligenceQvl.address;
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(wrongRoot), /root|verifier|trusted/i);
+  }
+  for (const field of ["release_authority_sha256", "deployment_intent_sha256", "ceremony_nonce", "cvm_id"]) {
+    const { input } = bootstrapRecipientFixture();
+    const value = field === "ceremony_nonce" ? `0x${"ef".repeat(32)}`
+      : field === "cvm_id" ? "cvm-other-runtime-0001" : `sha256:${"ef".repeat(32)}`;
+    input.arena.expected[field] = value;
+    input.arena.challenge[field] = value;
+    input.arena.verdict[field] = value;
+    await resignBootstrapFixtureEntry(input.arena, { challenge: true });
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input),
+      /lineage|shared|same|identity|CVM/i);
+  }
+});
+
+test("pure bootstrap recipient projection rejects expired and oversized signed leases and extra authority fields", async () => {
+  const expired = bootstrapRecipientFixture().input;
+  expired.now = expired.artifact.verdict.expires_at;
+  await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(expired), /expired|stale|lease/i);
+  const excessive = bootstrapRecipientFixture().input;
+  excessive.artifact.verdict.expires_at = excessive.now + 901;
+  excessive.artifact.verdict.activation_evidence_lease_expires_at = excessive.now + 901;
+  await resignBootstrapFixtureEntry(excessive.artifact);
+  await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(excessive), /lease|expiry|age/i);
+  const longChallenge = bootstrapRecipientFixture().input;
+  longChallenge.artifact.challenge.expires_at = longChallenge.now + 121;
+  await resignBootstrapFixtureEntry(longChallenge.artifact, { challenge: true });
+  await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(longChallenge), /challenge|lease|expiry/i);
+  for (const target of ["entry", "expected", "quote", "recipient", "roots"]) {
+    const { input } = bootstrapRecipientFixture();
+    const record = target === "entry" ? input.artifact
+      : target === "recipient" ? input.artifact.quote.recipient
+        : target === "roots" ? input.trustedVerifierAddresses : input.artifact[target];
+    record.unreviewed_authority = true;
+    await assert.rejects(createRecipientTrustProjectionFromBootstrapEvidence(input), /exact|field|unexpected/i);
+  }
+});
+
+test("pure bootstrap recipient projection snapshots all inputs before asynchronous verification", async () => {
+  const { input } = bootstrapRecipientFixture();
+  const expected = await createRecipientTrustProjectionFromBootstrapEvidence(input);
+  const pending = createRecipientTrustProjectionFromBootstrapEvidence(input);
+  for (const context of ["artifact", "arena"]) {
+    input[context].expected.signer_address = OPERATOR.toLowerCase();
+    input[context].expected.qvl_url = "https://unreviewed.example/verify";
+    input[context].verdict.contract_address = ROYALTY.toLowerCase();
+    input[context].verdict.measurement_policy_sha256 = `sha256:${"ef".repeat(32)}`;
+    input[context].quote.recipient.encryption_public_key = "ef".repeat(32);
+    input[context].challenge.profile = "diligence";
+    input.trustedVerifierAddresses[context] = diligenceQvl.address;
+  }
+  const projected = await pending;
+  assert.deepEqual(projected, expected);
+  assert.equal(readRecipientTrustProjection(projected, { now: input.now }), projected);
 });
 
 test("Diligence QVL binding and the external five-root policy are exact", async () => {
@@ -4273,10 +4775,10 @@ test("rejects stale, self-declared, and unauthenticated independent verdicts", a
   stale.candidate.attestations.artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     challengeIssuedAt: NOW - 120,
     challengeExpiresAt: NOW,
@@ -4307,8 +4809,10 @@ test("rejects stale, self-declared, and unauthenticated independent verdicts", a
   );
 
   const forged = await fixture();
-  forged.candidate.attestations.arena.verdict.report_data = `0x${"9".repeat(64)}`;
-  forged.arenaEvidence.cvm.report_data = "9".repeat(64);
+  forged.candidate.attestations.arena.verdict.verifier_signature =
+    await diligenceQvl.signMessage({
+      message: { raw: __test.canonicalVerdictDigest(forged.candidate.attestations.arena.verdict) },
+    });
   await assert.rejects(build(forged), /signature is not authenticated/);
 });
 
@@ -4356,10 +4860,10 @@ test("independent verdict validation is single-version v4 and exact-lineage only
   wrongDomain.candidate.attestations.artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     domain: "independent_metering_cvm",
   });
@@ -4369,10 +4873,10 @@ test("independent verdict validation is single-version v4 and exact-lineage only
   wrongCvm.candidate.attestations.artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     cvmId: "main-runtime-cvm-substitution",
   });
@@ -4382,10 +4886,10 @@ test("independent verdict validation is single-version v4 and exact-lineage only
   wrongIntent.candidate.attestations.artifact = await signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     deploymentIntentSha256: `sha256:${"9a".repeat(32)}`,
   });
@@ -4395,7 +4899,7 @@ test("independent verdict validation is single-version v4 and exact-lineage only
   crossCeremony.candidate.attestations.arena = await signedVerdict({
     context: "arena",
     quoteByte: "3",
-    reportByte: "4",
+    reportData: recipientReportData("arena"),
     contract: CHALLENGE,
     signer: arenaQvl,
     profile: "arena",
@@ -4413,10 +4917,10 @@ test("challenge-bound verdicts reject cross-profile, cross-policy, future, and z
   const replacement = async (overrides = {}) => signedVerdict({
     context: "artifact",
     quoteByte: "1",
-    reportByte: "2",
+    reportData: recipientReportData("artifact"),
     contract: DILIGENCE,
     signer: diligenceQvl,
-    profile: "diligence",
+    profile: "artifact_recipient",
     releasePolicyHash: DILIGENCE_QVL_POLICY,
     ...overrides,
   });

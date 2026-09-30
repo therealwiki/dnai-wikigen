@@ -80,6 +80,57 @@ release keeps every mutation gate closed: it has no activated Collaboration
 witness, per-job TDX/QVL verdict, or live payment/settlement effect. Browser
 DTOs never unlock the worker, and the adjacent failure lab remains modeled.
 
+#### Compute workload → joint execution
+
+Start at `#/compute?tab=workloads`, upload a sealed workload, then select
+**Prepare public Collaboration draft**. The export contains only the project,
+wallet and release references, bounded workload metadata, and immutable
+commitments. It contains no bearer, API credential, wallet signature, private
+key, plaintext input, or ciphertext. The public draft can pass between pages
+in app memory or be copied explicitly; it is not a grant or an attestation.
+
+In Collaboration, select the current joint-consent snapshot and import that
+draft. The sponsor enters a new job reference, exact asset, Compute cap, owner
+royalty, all-in cap, and a 60–3,600-second lifetime. Amounts are whole base units
+of the selected asset, not service credits; ETH uses wei. The current browser
+request protocol accepts integers no larger than `9,007,199,254,740,991` and
+never rounds them. Compute cap plus royalty must fit the all-in cap, and the
+positive royalty total must split into exact positive base-unit payouts under
+the room's current basis-point allocations. Fund the project's Compute vault
+capacity separately before preparing these terms.
+
+Preparation may request the general `compute:console` wallet session; this
+step uses it only for reads, not a specially read-only-scoped token. It checks
+current project membership, workload custody and recipient release, then
+checks capacity, nonce and an unused job at one pinned vault block. It repeats
+those checks before creating the exact plan. Every owner then signs a fresh
+one-shot grant. After authorization, the sponsor separately authorizes the
+**Collaboration-only Compute job** and funds the **Royalty reservation**.
+Standalone Compute authorization is never relabeled or reused. Both exact
+finalized authorities are required by the worker; a wallet balance, allowance,
+browser status, or worker heartbeat is not a substitute.
+
+The console bearer, owner signatures, selected plan/request, and any late
+authorization response remain only in the mounted page's memory. Navigation,
+reload or tab loss can discard them. Account/session changes cannot publish a
+late response into another scope: a successful response is retained against
+its original plan and request key, and the original sponsor can explicitly
+recover it using authenticated status reads without resubmitting authorization.
+If no response was received, the existing exact-key reconciliation boundary
+still applies; expiry does not prove that the server rejected the request.
+
+Public transaction intents and hashes for the separate Compute and Royalty
+wallet actions use browser storage for scoped recovery. Tokens, private keys,
+raw signatures and workload payloads do not. An ambiguous Compute submission
+keeps its sticky attempted state and cannot be replaced or automatically
+resent. Reconciliation requires matching calldata, event and finalized chain
+state; even successful browser reconciliation is not independent worker,
+Intel TDX, QVL or provider-execution evidence. The complete local integration
+is source-tested, with synthetic QVL/chain observations in tests—not proof of
+fresh production activation. See the
+[Compute API boundary](../docs/compute-console-api.md#collaboration-workload-handoff-and-trusted-project-resolution)
+for the trusted backend project-resolution seam.
+
 ### Modeled Health Guide evidence boundary
 
 The Health Guide is a deliberately static worked example. It accepts no health

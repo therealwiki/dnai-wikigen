@@ -15,6 +15,7 @@ from .errors import VerificationRejected, VerifierUnavailable
 from .challenge import qvl_profiles
 from .models import (
     ArenaCandidateIngressBinding,
+    ArtifactRecipientBinding,
     ComputeMeteringSignerBinding,
     ComputeWorkloadRecipientAttestation,
     ComputeWorkloadRecipientBinding,
@@ -468,6 +469,19 @@ def derive_email_oracle_kms_restart_report_data(
     ).digest()
 
 
+def derive_artifact_recipient_report_data(binding: ArtifactRecipientBinding) -> bytes:
+    """Match the main CVM's existing artifact context/key digest exactly."""
+    return hashlib.sha256(json.dumps(
+        {
+            "service": "tinker-delegate",
+            "context": "artifact",
+            "encryption_public_key": binding.encryption_public_key,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")).digest()
+
+
 def derive_release_report_data(
     binding: (
         DiligenceResultSignerBinding
@@ -645,7 +659,17 @@ class IndependentQuoteVerifier:
             if signer_address is None:
                 raise VerificationRejected
             expected_contract_address = policy.contract_address
-        if challenge.profile == "email_oracle_kms_restart":
+        if challenge.profile == "artifact_recipient":
+            binding = policy.artifact_recipient_binding
+            if binding is None or any(value is not None for value in (
+                request.result_authorization,
+                request.compute_authorization,
+                request.royalty_authorization,
+                request.compute_workload_recipient,
+            )):
+                raise VerificationRejected
+            expected_report_data = derive_artifact_recipient_report_data(binding)
+        elif challenge.profile == "email_oracle_kms_restart":
             binding = policy.email_oracle_kms_restart_binding
             if binding is None:
                 raise VerificationRejected

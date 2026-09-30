@@ -575,6 +575,12 @@ MAIN_POST_MEASUREMENT_ENVIRONMENT_KEYS = (
     "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_JSON",
     "ORACLE_REVIEW_NOTIFICATION_RECIPIENTS_SHA256",
     "ORACLE_REVIEW_NOTIFICATION_SMTP_HOST",
+    "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARTIFACT_RECIPIENT_QVL_URL",
+    "TINKER_ARTIFACT_RECIPIENT_TRUST_JSON",
+    "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARENA_RECIPIENT_QVL_URL",
+    "TINKER_ARENA_RECIPIENT_TRUST_JSON",
     "TINKER_ARENA_REGISTRY_ADDRESS",
     "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_BINDINGS_JSON",
     "TINKER_ARENA_REGISTRY_APPROVED_CHALLENGE_SET_SHA256",
@@ -721,6 +727,36 @@ QVL_POST_MEASUREMENT_ENVIRONMENT_KEYS = (
     "QVL_AUTH_TOKEN",
     "QVL_RELEASE_POLICY_B64",
 )
+# Recipient appraisal is a separate authentication scope from result/worker
+# appraisal. Only the delegate and the corresponding independent QVL receive
+# each token; neither the result signer nor Arena worker gains either scope.
+RECIPIENT_DELEGATE_ENVIRONMENT = {
+    f"TINKER_{context}_RECIPIENT_{field}": (
+        "${" + f"TINKER_{context}_RECIPIENT_{field}" + ":-}"
+    )
+    for context in ("ARTIFACT", "ARENA")
+    for field in ("QVL_AUTH_TOKEN", "QVL_URL", "TRUST_JSON")
+}
+RECIPIENT_QVL_ENVIRONMENT = {
+    "diligence_qvl_cvm": {
+        "QVL_ARTIFACT_RECIPIENT_AUTH_TOKEN": (
+            "${TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN:-}"
+        ),
+    },
+    "arena_qvl_cvm": {
+        "QVL_ARENA_RECIPIENT_AUTH_TOKEN": (
+            "${TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN:-}"
+        ),
+    },
+}
+
+
+def _qvl_post_measurement_environment_keys(domain: str) -> tuple[str, ...]:
+    return QVL_POST_MEASUREMENT_ENVIRONMENT_KEYS + tuple(
+        value[2:-3] for value in RECIPIENT_QVL_ENVIRONMENT.get(domain, {}).values()
+    )
+
+
 METERING_POST_MEASUREMENT_ENVIRONMENT_KEYS = (
     "METERING_AUTH_TOKEN",
     "METERING_POLICY_SET_B64",
@@ -2366,6 +2402,7 @@ def _render_main(
     delegate_environment.update(
         {
             **DELEGATE_RELEASE_LINEAGE_ALIASES,
+            **RECIPIENT_DELEGATE_ENVIRONMENT,
             **ARENA_AUTHENTICATED_STORE_ENVIRONMENT,
             "TINKER_ARENA_WORKER_LIVE_CAPABILITY_ENABLED": "true",
             "TINKER_ARENA_WORKER_APPROVED_CHALLENGE_SET_SHA256": (
@@ -2478,10 +2515,11 @@ def _render_independent(
             f"{trust_domain} runtime service has no reviewed environment mapping"
         )
     service["environment"].update(numeric_environment)
+    service["environment"].update(RECIPIENT_QVL_ENVIRONMENT.get(trust_domain, {}))
     _render_late_environment_pass_through(
         compose,
         (
-            QVL_POST_MEASUREMENT_ENVIRONMENT_KEYS
+            _qvl_post_measurement_environment_keys(trust_domain)
             if runtime_profile == QVL_RUNTIME_PROFILE
             else METERING_POST_MEASUREMENT_ENVIRONMENT_KEYS
         ),
@@ -2493,6 +2531,82 @@ def _render_independent(
 def _environment(service: Mapping[str, Any]) -> Mapping[str, Any]:
     value = service.get("environment", {})
     return value if isinstance(value, dict) else {}
+
+
+def _validate_recipient_environment(
+    main: Mapping[str, Any],
+    qvls: Mapping[str, Mapping[str, Any]],
+    metering: Mapping[str, Any],
+) -> None:
+    main_services = main["services"]
+    for key, expected_value in RECIPIENT_DELEGATE_ENVIRONMENT.items():
+        holders = [
+            name for name, service in main_services.items()
+            if key in _environment(service)
+        ]
+        if holders != ["delegate"] or (
+            _environment(main_services["delegate"]).get(key) != expected_value
+        ):
+            raise ReleaseComposeError(
+                f"{key} escaped its recipient-only delegate boundary"
+            )
+    recipient_aliases = {
+        key for environment in RECIPIENT_QVL_ENVIRONMENT.values()
+        for key in environment
+    }
+    recipient_inputs = set(RECIPIENT_DELEGATE_ENVIRONMENT)
+
+    def recipient_references(
+        value: Any, path: tuple[str, ...] = (),
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        if isinstance(value, dict):
+            return [
+                reference for key, item in value.items()
+                for reference in recipient_references(item, (*path, str(key)))
+            ]
+        if isinstance(value, list):
+            return [
+                reference for index, item in enumerate(value)
+                for reference in recipient_references(item, (*path, str(index)))
+            ]
+        if isinstance(value, str):
+            return [
+                (name, path) for name in re.findall(r"\$\{([A-Z][A-Z0-9_]*)", value)
+                if name in recipient_inputs
+            ]
+        return []
+
+    for domain, compose in {"main": main, **qvls, "metering": metering}.items():
+        expected_references = (
+            [(key, ("services", "delegate", "environment", key))
+             for key in RECIPIENT_DELEGATE_ENVIRONMENT]
+            if domain == "main" else [
+                (value[2:-3], ("services", "qvl", "environment", key))
+                for key, value in RECIPIENT_QVL_ENVIRONMENT.get(domain, {}).items()
+            ]
+        )
+        if sorted(recipient_references(compose)) != sorted(expected_references):
+            raise ReleaseComposeError(
+                f"{domain} recipient input escaped its exact service field"
+            )
+        for name, service in compose["services"].items():
+            environment = _environment(service)
+            expected = (
+                RECIPIENT_QVL_ENVIRONMENT.get(domain, {})
+                if name == "qvl" else {}
+            )
+            actual = {
+                key: environment[key] for key in recipient_aliases
+                if key in environment
+            }
+            if actual != expected:
+                raise ReleaseComposeError(
+                    f"{domain}.{name} has incorrect recipient QVL scope"
+                )
+            if domain != "main" and recipient_inputs.intersection(environment):
+                raise ReleaseComposeError(
+                    f"{domain}.{name} exposes a delegate recipient input"
+                )
 
 
 def _validate_production_oracle_environment(
@@ -2834,7 +2948,7 @@ def _validate_rendered(
         elif domain in qvls:
             _validate_late_environment_pass_through(
                 services,
-                QVL_POST_MEASUREMENT_ENVIRONMENT_KEYS,
+                _qvl_post_measurement_environment_keys(domain),
                 domain=domain,
             )
         else:
@@ -3837,6 +3951,8 @@ def _validate_rendered(
 
     bearer_holders = {
         "TINKER_QVL_AUTH_TOKEN": ["deal-runtime"],
+        "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN": ["delegate"],
+        "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN": ["delegate"],
         "TINKER_ARENA_WORKER_QVL_AUTH_TOKEN": ["arena-worker"],
         "TINKER_COMPUTE_WORKLOAD_QVL_AUTH_TOKEN": [
             "delegate",
@@ -3853,6 +3969,8 @@ def _validate_rendered(
         ]
         if actual_holders != expected_holders:
             raise ReleaseComposeError(f"{bearer} escaped its purpose-separated service")
+
+    _validate_recipient_environment(main, qvls, metering)
 
     if _network_names(main_services["anchor-writer-evidence"]) != {"writer-egress"}:
         raise ReleaseComposeError("anchor writer must use its dedicated egress network")

@@ -963,7 +963,7 @@ test("release ceremony and live activation require all five roles to be distinct
   }
 });
 
-test("all four stage reports stay bounded to the exact 110-check contract", () => {
+test("all four stage reports stay bounded to the exact 113-check contract", () => {
   assert.equal(PREFLIGHT_SCHEMA, "dnai.activation-preflight.v4");
   assert.equal(
     PREFLIGHT_ROOT_CAUSE_PROJECTION_SCHEMA,
@@ -1235,7 +1235,7 @@ test("root-cause diagnosis rejects duplicate or unbounded check sets", () => {
       })),
       "fresh_deployment",
     ),
-    /at most 110 checks/,
+    /at most 113 checks/,
   );
 });
 

@@ -37,6 +37,7 @@ MAX_CHALLENGE_TTL_SECONDS = 120
 QVL_IDENTITY_DOMAIN_PROFILES: dict[str, tuple[QvlProfile, ...]] = {
     "diligence_qvl_cvm": (
         "diligence",
+        "artifact_recipient",
         "royalty_settlement",
         "email_oracle_kms_restart",
     ),
@@ -47,6 +48,7 @@ QVL_IDENTITY_DOMAIN_PROFILES: dict[str, tuple[QvlProfile, ...]] = {
 }
 QVL_PROFILE_TARGET_DOMAIN: dict[QvlProfile, str] = {
     "diligence": "main_runtime_cvm",
+    "artifact_recipient": "main_runtime_cvm",
     "royalty_settlement": "main_runtime_cvm",
     "arena": "main_runtime_cvm",
     "execution_policy_anchor_writer": "main_runtime_cvm",
@@ -72,6 +74,8 @@ def qvl_profile(binding: ReportDataBinding) -> QvlProfile:
 
 def qvl_profiles(policy: ReleasePolicy) -> tuple[QvlProfile, ...]:
     profiles: list[QvlProfile] = [qvl_profile(policy.report_data_binding)]
+    if policy.artifact_recipient_binding is not None:
+        profiles.append("artifact_recipient")
     if policy.royalty_settlement_binding is not None:
         profiles.append("royalty_settlement")
     if policy.email_oracle_kms_restart_binding is not None:

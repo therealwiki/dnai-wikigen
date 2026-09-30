@@ -71,8 +71,16 @@ const MODULE_SOURCES = Object.freeze({
   ].join("\n"),
   "scripts/cvm-descriptor-runtime-authority-v2-core.mjs": [
     'import { canonical } from "./canonical-authority-graph.mjs";',
+    'import { v2Policy } from "./cvm-descriptor-runtime-authority-v2-policy.mjs";',
     'import { descriptors } from "./cvm-release-descriptor-set-constants-v3.mjs";',
-    "export const descriptorV2 = canonical && descriptors;",
+    "export const descriptorV2 = canonical && v2Policy && descriptors;",
+    "",
+  ].join("\n"),
+  "scripts/cvm-descriptor-runtime-authority-v2-policy.mjs": [
+    'import "node:crypto";',
+    'import { canonical } from "./canonical-authority-graph.mjs";',
+    'import { launch } from "./cvm-launch-intent-core.mjs";',
+    "export const v2Policy = canonical && launch;",
     "",
   ].join("\n"),
   "scripts/cvm-descriptor-runtime-authority-v3-core.mjs": [
@@ -611,6 +619,8 @@ const WEB_SCRIPT_SOURCES = Object.freeze({
     "  import.meta.url,",
     ");",
     'export const manifest = new URL("../RELEASE-MANIFEST.md", import.meta.url);',
+    'export const arenaRecipient = new URL("../src/lib/fixtures/recipient-evidence-arena.json", import.meta.url);',
+    'export const artifactRecipient = new URL("../src/lib/fixtures/recipient-evidence-artifact.json", import.meta.url);',
     "",
   ].join("\n"),
   "web/scripts/royalty-release-env-core.mjs": [
@@ -1031,6 +1041,29 @@ test("closure rejects omission, undeclared transitive imports, extras, and back-
       () => normalizeCloudflareExternalBuildClosure(extra),
       /not exact|incomplete/,
     );
+  });
+});
+
+test("recipient projection cannot import the operator bootstrap collector or coordinator", async () => {
+  for (const module of ["phala-recipient-evidence-bootstrap.mjs", "phala-production-activation-coordinator.mjs"]) {
+    await withFixture(async (root) => {
+      await writeFixtureFile(root, "web/scripts/recipient-projection-regression.mjs",
+        `export const collector = () => import("../../scripts/${module}");\n`);
+      await assert.rejects(projectCloudflareExternalBuildClosure(root),
+        /dynamic import or CommonJS require in any consumer/);
+    });
+    await withFixture(async (root) => {
+      await writeFixtureFile(root, "web/scripts/recipient-projection-regression.mjs",
+        `import "../../scripts/${module}";\n`);
+      await assert.rejects(projectCloudflareExternalBuildClosure(root),
+        /undeclared external import/);
+    });
+  }
+  await withFixture(async (root) => {
+    await writeFixtureFile(root, "web/scripts/recipient-projection-regression.mjs",
+      'import https from "node:https";\nexport const request = https.request;\n');
+    await assert.rejects(projectCloudflareExternalBuildClosure(root),
+      /unsupported or unaudited URI module specifier/);
   });
 });
 
@@ -2115,16 +2148,18 @@ test("real checked-in external bytes match the final release projection KAT", as
   const repositoryRoot = path.resolve(new URL("../..", import.meta.url).pathname);
   const closure = await projectCloudflareExternalBuildClosure(repositoryRoot);
   assert.equal(closure.entrypoints.length, 36);
-  assert.equal(closure.files.length, 82);
-  // Includes the reviewed credential-replay API doc consumed by ComputeWorkloadPanel.test.ts;
-  // the external graph and the other 81 projected files are unchanged.
+  assert.equal(closure.files.length, 83);
+  // Relative to the frozen 82-file baseline: the reviewed Collaboration API
+  // doc, current recipient launch keys, v1 exclusions, and v2 import changed;
+  // one pure v2 policy adapter was added. Historical v1/v2 policy and release
+  // KATs remain byte-frozen, with no new entrypoint or network capability.
   assert.equal(
     closure.aggregate_sha256,
-    "sha256:fea138d226a487faa854cc3ad8b46b0d5abfd6f09fffcc89ebac9dd61a3797f4",
+    "sha256:cab12739e936dbef8165312b25920a1155b823f8ac364fe845c34f35e6cd9cb4",
   );
   assert.equal(
     cloudflareExternalBuildClosureSha256(closure),
-    "sha256:63fa5a6408aac028d5dd2d7f9a594a4128599bbc7fa40ae84abde0841025d47f",
+    "sha256:145cbfde2d6f74d9392c59eb2e1ecc837ff1339801b4eb8b10023556f88f937d",
   );
   assert.deepEqual(closureTest.MODULE_ENTRYPOINT_PATHS, [
     "scripts/canonical-authority-graph.mjs",
@@ -2156,6 +2191,7 @@ test("real checked-in external bytes match the final release projection KAT", as
     "scripts/cvm-descriptor-runtime-authority-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v1-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v2-core.mjs",
+    "scripts/cvm-descriptor-runtime-authority-v2-policy.mjs",
     "scripts/cvm-descriptor-runtime-authority-v3-core.mjs",
     "scripts/cvm-descriptor-runtime-authority-v3.mjs",
     "scripts/cvm-launch-intent-core.mjs",
@@ -2408,6 +2444,8 @@ test("real checked-in external bytes match the final release projection KAT", as
     "web/scripts/release-env-core.test.mjs": [
       "../RELEASE-MANIFEST.md",
       "../../⚙️/tinker-delegate/contracts/scripts/merge-base-sepolia-suite-manifest.jq",
+      "../src/lib/fixtures/recipient-evidence-arena.json",
+      "../src/lib/fixtures/recipient-evidence-artifact.json",
     ],
     "web/scripts/security-headers-core.test.mjs": [
       "./security-headers-core.test.mjs",

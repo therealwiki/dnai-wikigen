@@ -76,6 +76,7 @@ class CardChannelTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch("tinker_delegate.card_channel.is_dstack_enabled", return_value=True),
             patch("tinker_delegate.card_channel.is_dstack_simulator", return_value=False),
+            patch("tinker_delegate.card_channel.dstack_utils.derive_storage_key", return_value=b"\x21" * 32),
             patch("tinker_delegate.card_channel.get_attestation_details", return_value=details),
         ):
             attestation = get_attestation("artifact")

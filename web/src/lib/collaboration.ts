@@ -13,6 +13,8 @@ import {
 } from "./executionPolicyAnchor";
 import { publicErrorText } from "./errorText";
 import { verifyCollaborationFundingReservationProjection } from "./collaborationRoyaltyReservation";
+import { validateWorkloadAuthorizationBinding } from "./computeVault";
+import type { CollaborationComputeAuthorizationTerms } from "./collaborationComputeAuthorization";
 
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_RESPONSE_CONTAINERS = 16_384;
@@ -522,6 +524,12 @@ export interface CollaborationExecutionStatusProjection {
   readonly settlementFinalizedInBrowser: false;
   readonly royaltyDistributionObservedInBrowser: false;
   readonly clientDtoMayUnlockExecutionControls: false;
+  /** Authenticated API terms only; never finalized vault evidence. */
+  readonly computeAuthorization: Omit<CollaborationComputeAuthorizationTerms, "basisCommitment" | "releaseFingerprint"> & {
+    readonly releaseSha: string;
+    readonly releaseVerificationSha256: string;
+    readonly cvmId: string;
+  };
 }
 
 export interface CollaborationExecutionWorkerReleaseBinding {
@@ -4044,6 +4052,92 @@ export function assertCollaborationExecutionAuthorizationMatchesPlan(
   );
 }
 
+export function assertCollaborationComputeAuthorizationMatchesPlanRequest(
+  status: CollaborationExecutionStatusProjection,
+  plan: CollaborationExecutionPlanProjection,
+  request: CollaborationExecutionPlanRequest,
+): void {
+  assertCollaborationExecutionPlanRequest(request, plan.sponsor_address);
+  const terms = status.computeAuthorization;
+  const workload = terms.workload;
+  if (status.room_id !== plan.room_id || terms.executionId !== status.execution_id
+    || terms.grantSetCommitment !== status.execution_grant_set_commitment
+    || terms.releaseSha !== plan.release_git_sha || terms.releaseVerificationSha256 !== plan.release_verification_sha256
+    || terms.cvmId !== plan.cvm_id || terms.composeHash !== plan.compose_hash
+    || terms.projectId !== request.compute_project_id || terms.jobId !== request.compute_job_id
+    || terms.user !== request.compute_user_address || terms.user !== plan.sponsor_address
+    || terms.asset !== request.asset || terms.asset !== plan.asset
+    || terms.authorizationNonce !== BigInt(request.authorization_nonce)
+    || terms.maxAssetDebit !== BigInt(request.max_compute_asset_debit)
+    || terms.authorizationExpiry !== plan.authorization_expiry
+    || terms.ratePolicyCommitment !== request.compute_rate_policy_commitment
+    || workload.workloadId !== request.compute_workload_id || workload.workloadSchema !== request.compute_workload_schema
+    || workload.workloadCommitment !== request.compute_workload_commitment || workload.manifestCommitment !== request.compute_manifest_commitment
+    || workload.sourceKind !== request.compute_workload_source_kind
+    || workload.executionBindingCommitment !== request.compute_workload_execution_binding_commitment
+    || workload.recipientReleaseCommitment !== request.compute_workload_recipient_release_commitment
+    || workload.operation !== request.operation || workload.model !== request.model || workload.recipe !== request.recipe
+    || workload.resultPolicy !== request.result_policy || workload.maxPrefillTokens !== request.max_prefill_tokens
+    || workload.maxSampleTokens !== request.max_sample_tokens || workload.maxTrainTokens !== request.max_train_tokens) {
+    throw new Error("One-shot Compute authorization differs from the retained workload, plan or funding terms");
+  }
+}
+
+function parseCollaborationExecutionComputeAuthorization(status: Record<string, unknown>): CollaborationExecutionStatusProjection["computeAuthorization"] {
+  const release = record(status.release, "Compute authorization release");
+  exactKeys(release, ["git_sha", "verification_sha256", "chain_id", "cvm_id", "compose_hash"], "Compute authorization release");
+  const authority = record(status.compute_authority, "Compute vault authority");
+  exactKeys(authority, ["vault_address", "vault_runtime_code_hash", "finality_model", "user_address"], "Compute vault authority");
+  const authorization = record(status.compute_authorization, "Compute one-shot authorization");
+  exactKeys(authorization, ["kind", "context_commitment", "standalone_path_used"], "Compute one-shot authorization");
+  literal(authorization.kind, "collaboration_one_shot", "Compute authorization kind");
+  literal(authorization.standalone_path_used, false, "Compute standalone boundary");
+  const caps = record(status.resource_limits, "Compute resource caps");
+  exactKeys(caps, ["max_prefill_tokens", "max_sample_tokens", "max_train_tokens"], "Compute resource caps");
+  const user = address(authority.user_address, "Compute funding wallet");
+  if (user !== address(status.sponsor_address, "Compute sponsor")) throw new Error("Compute sponsor differs from its funding wallet");
+  const hex = (value: unknown, label: string) => patterned(value, BYTES32, label, 66) as `0x${string}`;
+  const pin = (value: unknown, label: string) => commitment(value, label) as `sha256:${string}`;
+  const workload: CollaborationComputeAuthorizationTerms["workload"] = Object.freeze({
+    workloadId: patterned(status.compute_workload_id, WORKLOAD_ID, "Compute workload", 36),
+    workloadSchema: choice(status.compute_workload_schema, ["dnai.compute.workload.inference.v1", "dnai.compute.workload.sft-jsonl.v1"] as const, "Compute workload schema"),
+    workloadCommitment: hex(status.compute_workload_commitment, "Compute workload commitment"),
+    manifestCommitment: hex(status.compute_manifest_commitment, "Compute manifest commitment"),
+    sourceKind: choice(status.compute_workload_source_kind, ["wallet", "credential"] as const, "Compute source kind"),
+    executionBindingCommitment: pin(status.compute_workload_execution_binding_commitment, "Compute execution binding"),
+    recipientReleaseCommitment: pin(status.compute_workload_recipient_release_commitment, "Compute recipient binding"),
+    operation: choice(status.operation, ["inference", "training"] as const, "Compute operation"),
+    model: literal(status.model, "qwen3_8b", "Compute model"),
+    recipe: choice(status.recipe, ["qwen3_8b_bounded", "qwen3_8b_lora_r32"] as const, "Compute recipe"),
+    resultPolicy: choice(status.result_policy, ["bounded_summary_receipt", "score_band_hash"] as const, "Compute result policy"),
+    maxPrefillTokens: integer(caps.max_prefill_tokens, "Compute prefill cap", 0, 32768),
+    maxSampleTokens: integer(caps.max_sample_tokens, "Compute sample cap", 0, 4096),
+    maxTrainTokens: integer(caps.max_train_tokens, "Compute training cap", 0, 10000000),
+  });
+  validateWorkloadAuthorizationBinding(workload);
+  return Object.freeze({
+    executionId: patterned(status.execution_id, EXECUTION_ID, "Compute execution ID", 69),
+    grantSetCommitment: pin(status.execution_grant_set_commitment, "Compute grant set"),
+    chainId: literal(release.chain_id, 84532, "Compute chain"),
+    releaseSha: patterned(release.git_sha, GIT_SHA, "Compute release SHA", 40),
+    releaseVerificationSha256: pin(release.verification_sha256, "Compute release verification"),
+    cvmId: patterned(release.cvm_id, CVM_ID, "Compute CVM", 128),
+    composeHash: hex(release.compose_hash, "Compute compose hash"),
+    vaultAddress: address(authority.vault_address, "Compute vault") as `0x${string}`,
+    vaultRuntimeCodeHash: hex(authority.vault_runtime_code_hash, "Compute vault runtime"),
+    finalityModel: literal(authority.finality_model, "single_rpc_reported_finalized", "Compute finality boundary"),
+    authorizationKind: "collaboration_one_shot",
+    authorizationContextCommitment: pin(authorization.context_commitment, "Compute one-shot context"),
+    dispatchIntentCommitment: hex(status.compute_dispatch_intent_commitment, "Compute dispatch commitment"),
+    projectId: hex(status.compute_project_id, "Compute project"), jobId: hex(status.compute_job_id, "Compute job"),
+    user: user as `0x${string}`, asset: address(status.asset, "Compute asset") as `0x${string}`,
+    authorizationNonce: BigInt(integer(status.authorization_nonce, "Compute nonce", 0, Number.MAX_SAFE_INTEGER)),
+    maxAssetDebit: BigInt(integer(status.max_compute_asset_debit, "Compute cap", 1, Number.MAX_SAFE_INTEGER)),
+    authorizationExpiry: integer(status.authorization_expiry, "Compute expiry", 1, 4102444800),
+    ratePolicyCommitment: hex(status.compute_rate_policy_commitment, "Compute rate policy"), workload,
+  });
+}
+
 function parseCollaborationExecutionStatusRoyalty(value: unknown): {
   reservation: CollaborationExecutionRoyaltyReservationProjection;
   finalizationProven: boolean;
@@ -4288,6 +4382,7 @@ function parseCollaborationExecutionStatusRecord(
     "Collaboration authority-invalidated state",
   );
   const royalty = parseCollaborationExecutionStatusRoyalty(status.royalty);
+  const computeAuthorization = parseCollaborationExecutionComputeAuthorization(status);
   return Object.freeze({
     surface: "collaboration_one_shot_execution" as const,
     schema_version: 1 as const,
@@ -4303,6 +4398,7 @@ function parseCollaborationExecutionStatusRecord(
     authority_invalidated_before_claim: authorityInvalidated,
     bounded_result_present: status.bounded_result !== null,
     royalty_reservation: royalty.reservation,
+    computeAuthorization,
     royaltyReservationFinalizationProven: royalty.finalizationProven,
     participantAuthenticatedApiProjection: true as const,
     apiWorkerWiringAvailable: apiProjection,

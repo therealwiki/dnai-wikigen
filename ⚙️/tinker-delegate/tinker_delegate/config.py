@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     arena_qvl_measurement_policy_sha256: str = ""
     anchor_writer_qvl_measurement_policy_sha256: str = ""
 
+    # Public, exact recipient trust roots projected by the signed release.
+    # Dedicated QVL bearer credentials are direct environment reads only;
+    # they are deliberately absent from Settings and its representation.
+    artifact_recipient_trust_json: str = ""
+    arena_recipient_trust_json: str = ""
+    artifact_recipient_qvl_url: str = ""
+    arena_recipient_qvl_url: str = ""
+
     # Remote Playwright browser server
     browser_ws_endpoint: str = ""
     browser_timeout: float = 180.0

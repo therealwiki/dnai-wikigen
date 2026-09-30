@@ -865,6 +865,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
             )
 
     def test_dispatch_claim_is_exact_restart_safe_and_one_job_only(self):
+        self.service.wallet_adoption_enabled = True
         credential = ComputeWorkloadPrincipal(
             kind="credential",
             project_id="prj_alpha",
@@ -996,6 +997,7 @@ class ComputeWorkloadIngressTests(unittest.TestCase):
         self.assertEqual(len(list((self.root / "envelopes").iterdir())), 2)
 
     def test_claimed_provider_lease_release_is_checkpoint_exact_and_zeroizes(self):
+        self.service.wallet_adoption_enabled = True
         credential = ComputeWorkloadPrincipal(
             kind="credential",
             project_id="prj_alpha",

@@ -495,6 +495,19 @@ function assertIndependentWalletAuthRpcSecrets(values) {
   }
 }
 
+function assertRecipientSecretSeparation(values) {
+  for (const key of [
+    "TINKER_ARTIFACT_RECIPIENT_QVL_AUTH_TOKEN",
+    "TINKER_ARENA_RECIPIENT_QVL_AUTH_TOKEN",
+  ]) {
+    if (!Object.hasOwn(values, key)) continue;
+    if (!/^[\x21-\x7e]{32,4096}$/.test(values[key])
+      || Object.entries(values).some(([other, value]) => other !== key && value === values[key])) {
+      throw new Error(`${key} must be a bounded, distinct recipient-only secret`);
+    }
+  }
+}
+
 function assertArenaRegistryRpcSecret(values) {
   const value = values.TINKER_ARENA_REGISTRY_RPC_URL;
   if (typeof value !== "string"
@@ -946,6 +959,7 @@ export function assemblePrivatePostMeasurementEnvironment(options = {}) {
     ...finalSecret.values,
     COMPOSE_PROFILES: CVM_MAIN_FINAL_ACTIVATION_COMPOSE_PROFILES_VALUE,
   };
+  assertRecipientSecretSeparation({ ...bootstrapSecret.values, ...finalSecret.values });
   const policy = CVM_LAUNCH_DESCRIPTOR_POLICY[domain];
   const expectedKeys = [
     ...expectedPublicKeys(domain, "bootstrap_static"),
@@ -1480,6 +1494,7 @@ export async function projectPhalaDeferredPublicEnvironmentAuthority({
   launchCompletionReceipt: launchCompletionValue,
   reviewedFinalAuthorityRuntimeProjection:
     reviewedFinalAuthorityRuntimeProjectionValue,
+  reviewedRecipientTrustProjection,
   reviewedUnresolvedValuesByDomain,
   reviewedAt,
   validUntil,
@@ -1593,6 +1608,41 @@ export async function projectPhalaDeferredPublicEnvironmentAuthority({
   }
   const reviewedAtValue = canonicalTimestamp(reviewedAt, "deferred reviewed_at");
   const validUntilValue = canonicalTimestamp(validUntil, "deferred valid_until");
+  const recipientModule = await import("../web/scripts/release-env-core.mjs");
+  const recipientCheckedAt = Math.floor(Date.now() / 1_000);
+  const recipients = recipientModule.readRecipientTrustProjection(
+    reviewedRecipientTrustProjection,
+    { now: recipientCheckedAt },
+  );
+  if (recipients.release_sha !== releaseAuthority.release_sha
+    || recipients.deployment_intent_sha256 !== releaseAuthority.deployment_intent_sha256
+    || recipients.release_authority_sha256 !== releaseAuthoritySha256
+    || recipients.ceremony_nonce !== releaseAuthority.ceremony_nonce
+    || Date.parse(validUntilValue) <= recipientCheckedAt * 1_000
+    || Date.parse(validUntilValue) > recipients.evidence_expires_at * 1_000) {
+    throw new Error("recipient trust projection does not bind the exact fresh launch lineage");
+  }
+  for (const [context, domain] of [
+    ["artifact", "diligence_qvl_cvm"], ["arena", "arena_qvl_cvm"],
+  ]) {
+    const trust = recipients[context].trust;
+    const qvl = evidenceByDomain.get(domain);
+    const contractKey = context === "artifact" ? "diligence_room" : "challenge_registry";
+    if (!qvl || trust.cvm_id !== mainReleaseDescriptor.cvm_id
+      || trust.app_id !== mainReleaseDescriptor.app_id
+      || trust.compose_hash !== `0x${mainReleaseDescriptor.compose_hash.replace(/^0x/, "")}`
+      || trust.os_image_hash.replace(/^0x/, "") !== mainReleaseDescriptor.os_image_hash.replace(/^0x/, "")
+      || trust.verifier_address.toLowerCase() !== qvl.tee_identity.toLowerCase()
+      || trust.measurement_policy_sha256 !== qvl.tdx_measurement_policy_sha256
+      || trust.signer_address !== reviewedFinalAuthority.cvm.tee_identity
+      || trust.signer_address !== evidenceByDomain.get("main_runtime_cvm").tee_identity
+      || trust.contract_address !== reviewedFinalAuthority.contracts[contractKey].address
+      || (context === "artifact"
+        && trust.contract_address !== releaseAuthority.contracts.diligence_room)
+      || trust.release_policy_hash !== `0x${qvl.qvl_release_policy_sha256.slice(7)}`) {
+      throw new Error(`${context} recipient trust differs from independently verified CVM/QVL identity`);
+    }
+  }
   if (Date.parse(validUntilValue)
       > evidenceSet.minimum_activation_evidence_lease_expires_at * 1_000) {
     throw new Error(
@@ -1605,11 +1655,18 @@ export async function projectPhalaDeferredPublicEnvironmentAuthority({
     challengeRegistryRuntimeEnvironment,
     reviewedFinalAuthorityDependencies,
   );
+  Object.assign(derived.main_runtime_cvm, {
+    TINKER_ARTIFACT_RECIPIENT_TRUST_JSON: JSON.stringify(sortedObject(recipients.artifact.trust)),
+    TINKER_ARTIFACT_RECIPIENT_QVL_URL: recipients.artifact.qvl_url,
+    TINKER_ARENA_RECIPIENT_TRUST_JSON: JSON.stringify(sortedObject(recipients.arena.trust)),
+    TINKER_ARENA_RECIPIENT_QVL_URL: recipients.arena.qvl_url,
+  });
   const unresolved = normalizeReviewedUnresolvedDeferredValues(
     reviewedUnresolvedValuesByDomain,
     derived,
   );
   const unresolvedByDomain = new Map(unresolved.map((entry) => [entry.domain, entry.values]));
+  assertRecipientQvlEndpointBindings(recipients, unresolvedByDomain.get("main_runtime_cvm"));
   const candidate = deepFreezeCanonicalPlainDataGraph(
     normalizeDeferredPublicEnvironmentAuthority({
       schema: PHALA_DEFERRED_PUBLIC_ENVIRONMENT_AUTHORITY_SCHEMA,
@@ -1647,8 +1704,26 @@ export async function projectPhalaDeferredPublicEnvironmentAuthority({
     launchCompletion,
     reviewedFinalAuthorityRuntimeProjection,
     challengeRegistryRuntimeEnvironment,
+    reviewedRecipientTrustProjection: recipients,
   }));
   return candidate;
+}
+
+/** Equality check only: callers still require branded evidence and signed B. */
+export function assertRecipientQvlEndpointBindings(recipients, reviewedMainValues) {
+  for (const [context, key] of [
+    ["artifact", "TINKER_DILIGENCE_QVL_URL"],
+    ["arena", "TINKER_ARENA_WORKER_QVL_VERDICT_URL"],
+  ]) {
+    // These existing endpoints are independently reviewed in the exact
+    // deferred-value candidate and committed by the activation plan and B.
+    // A valid signed verdict alone cannot authorize bearer egress to a new URL.
+    const expected = reviewedMainValues?.[key];
+    if (typeof expected !== "string" || recipients?.[context]?.qvl_url !== expected) {
+      throw new Error(`${context} recipient QVL URL differs from its reviewed domain endpoint`);
+    }
+    exactWalletAuthRpcEndpoint(expected, `${context} recipient QVL endpoint`);
+  }
 }
 
 export function assertProjectedPhalaDeferredPublicEnvironmentAuthority(value) {
@@ -1815,6 +1890,7 @@ export function normalizePhaseSecretInput(value, {
   if (domain === "main_runtime_cvm" && phase === "final_authority_runtime") {
     assertArenaRegistryRpcSecret(values);
   }
+  assertRecipientSecretSeparation(values);
   return {
     schema: PHALA_PHASE_SECRET_INPUT_SCHEMA,
     domain,

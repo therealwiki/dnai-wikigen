@@ -24,6 +24,9 @@ import {
 } from "./phala-app-compose-wire-core.mjs";
 import * as historicalV2 from "./cvm-descriptor-runtime-authority-v2.mjs";
 import {
+  syntheticCurrentPhalaSevenCvmReleaseVerificationAuthorityFixture as historicalV4Fixture,
+} from "./current-cvm-authority-v4.fixture.mjs";
+import {
   CVM_LAUNCH_DESCRIPTOR_FILES,
   CVM_LAUNCH_DESCRIPTOR_POLICY,
   CVM_LAUNCH_DOMAINS,
@@ -425,19 +428,22 @@ test("normalization never mints the private stable-read brand", async () => {
   }
 });
 
-test("descriptor v3 keeps runtime and audit hashes distinct while historical v2 retains its original meaning", async () => {
+test("descriptor v3 keeps wire hashes distinct and current policy cannot mint historical v2 authority", async () => {
   const fixture = await buildFixture();
   try {
     const options = { releaseDirectory: fixture.releaseDirectory, expectedReleaseSha: RELEASE_SHA };
-    const historical = await historicalV2.createFreshCvmDescriptorRuntimeAuthority(options);
+    await assert.rejects(
+      historicalV2.createFreshCvmDescriptorRuntimeAuthority(options),
+      /descriptor environment, phase, or privacy policy drifted/,
+    );
+    const historical = historicalV4Fixture().cvm_descriptor_runtime_authority;
     const current = await createFreshCvmDescriptorRuntimeAuthority(options);
     assert.equal(historical.schema, "dnai.cvm-descriptor-runtime-authority.v2");
     assert.equal(current.schema, "dnai.cvm-descriptor-runtime-authority.v3");
     assert.equal(Object.hasOwn(historical, "compose_hash_semantics"), false);
-    assert.deepEqual(historical.descriptor_sha256_by_domain, current.descriptor_sha256_by_domain);
-    assert.deepEqual(historical.app_compose_hash_by_domain, current.pre_transform_app_compose_hash_by_domain);
+    assert.deepEqual(historicalV2.normalizeCvmDescriptorRuntimeAuthority(historical), historical);
     for (const domain of CVM_LAUNCH_DOMAINS) {
-      assert.notEqual(historical.app_compose_hash_by_domain[domain], current.app_compose_hash_by_domain[domain]);
+      assert.notEqual(current.pre_transform_app_compose_hash_by_domain[domain], current.app_compose_hash_by_domain[domain]);
     }
     assert.throws(() => normalizeCvmDescriptorRuntimeAuthority(historical));
     assert.throws(() => historicalV2.normalizeCvmDescriptorRuntimeAuthority(current));
