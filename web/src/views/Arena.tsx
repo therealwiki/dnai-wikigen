@@ -327,6 +327,54 @@ function Trend(props: { value: number }) {
   return <span class="trend flat">—</span>;
 }
 
+type ArenaSafeIrStarterDownload =
+  | { status: "preparing" }
+  | { status: "ready"; href: string }
+  | { status: "unavailable" };
+
+/** Call in the Arena owner so switching panels does not revoke its public starter. */
+export function createArenaSafeIrStarterDownload() {
+  const [download, setDownload] = createSignal<ArenaSafeIrStarterDownload>({ status: "preparing" });
+  let objectUrl: string | undefined;
+  onMount(() => {
+    try {
+      objectUrl = URL.createObjectURL(new Blob(
+        [new Uint8Array(arenaSafeIrStarterCandidateBytes())],
+        { type: "application/json" },
+      ));
+      setDownload({ status: "ready", href: objectUrl });
+    } catch {
+      setDownload({ status: "unavailable" });
+    }
+  });
+  onCleanup(() => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  });
+  return download;
+}
+
+export function ArenaSafeIrStarterLink(props: { download: ArenaSafeIrStarterDownload }) {
+  return (
+    <Show
+      when={props.download.status === "ready" ? props.download.href : undefined}
+      fallback={(
+        <div class="non-action-state" role="status">
+          <Code2 size={16} />
+          {props.download.status === "unavailable"
+            ? "Starter download unavailable. This browser could not prepare the file."
+            : "Preparing Safe-IR starter…"}
+        </div>
+      )}
+    >
+      {(href) => (
+        <a class="starter-kit-button" href={href()} download={ARENA_SAFE_IR_STARTER_FILENAME} type="application/json">
+          <Code2 size={16} /> Download byte-exact Safe-IR starter
+        </a>
+      )}
+    </Show>
+  );
+}
+
 export function canReusePreparedArenaSubmission(
   prepared: PreparedArenaSubmission | undefined,
   context: {
@@ -397,6 +445,7 @@ export function Arena(props: {
   const [registryPreflightState, setRegistryPreflightState] = createSignal<RegistryPreflightState>("not_applicable");
   const [registryBrowserPreflight, setRegistryBrowserPreflight] = createSignal<ArenaChallengeRegistryBrowserPreflight>();
   const [registryPreflightError, setRegistryPreflightError] = createSignal("");
+  const starterDownload = createArenaSafeIrStarterDownload();
   const arenaAgentDeviceKeys = new Map<string, ArenaAgentDeviceKey>();
   let submissionDialogRef: HTMLElement | undefined;
 
@@ -511,19 +560,6 @@ export function Arena(props: {
     }
     return `def ${entrypoint}(public_inputs, sealed_inputs):\n    # Return only the challenge-declared output.\n    return result`;
   });
-
-  const downloadSafeIrStarter = () => {
-    const bytes = arenaSafeIrStarterCandidateBytes();
-    const objectUrl = URL.createObjectURL(new Blob(
-      [new TextDecoder("utf-8", { fatal: true }).decode(bytes)],
-      { type: "application/json" },
-    ));
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = ARENA_SAFE_IR_STARTER_FILENAME;
-    anchor.click();
-    queueMicrotask(() => URL.revokeObjectURL(objectUrl));
-  };
 
   let projectionRequest = 0;
   let queuePaginationRequest = 0;
@@ -1515,9 +1551,7 @@ export function Arena(props: {
                   when={challenge().runtime === "dnai-safe-ir-v1"}
                   fallback={<div class="non-action-state roadmap"><Code2 size={16} /> Starter kit · roadmap</div>}
                 >
-                  <button class="starter-kit-button" type="button" onClick={downloadSafeIrStarter}>
-                    <Code2 size={16} /> Download byte-exact Safe-IR starter
-                  </button>
+                  <ArenaSafeIrStarterLink download={starterDownload()} />
                 </Show>
               </aside>
             </section>
